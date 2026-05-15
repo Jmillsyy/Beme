@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --color-beme-50: #fff7ed;
+  --color-beme-100: #ffedd5;
+  --color-beme-200: #fed7aa;
+  --color-beme-300: #fdba74;
+  --color-beme-400: #fb923c;
+  --color-beme-500: #ed7d31;
+  --color-beme-600: #c5530a;
+  --color-beme-700: #9a3f08;
+  --color-beme-800: #7c2d12;
+  --color-beme-900: #431407;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: white;
+  color: #1f2937;
+}
