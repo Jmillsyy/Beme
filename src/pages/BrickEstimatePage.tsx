@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import Header from '../components/Header'
+import PdfWorkspace from '../components/PdfWorkspace'
 
 export default function BrickEstimatePage() {
   return (
@@ -17,10 +18,7 @@ export default function BrickEstimatePage() {
           and let beme auto-add lintels, brick ties, and plascourse to your takeoff.
         </p>
 
-        <div className="border-2 border-dashed border-neutral-300 rounded-xl p-16 text-center bg-neutral-50">
-          <p className="text-neutral-500">Plan importer and tracing tools coming soon.</p>
-          <p className="text-xs text-neutral-400 mt-2">Next: PDF viewer with scale calibration.</p>
-        </div>
+        <PdfWorkspace />
       </main>
     </div>
   )
