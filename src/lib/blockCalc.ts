@@ -291,18 +291,23 @@ export function planEnd(
   junctionType: JunctionType,
   cornerBlockCode: BlockCode
 ): EndPlan {
+  // The "full" end block is the makeup's cornerBlockCode (defaults to 20.01; 20.21 when
+  // knockout corners is enabled). That code is used everywhere a full end block sits.
+  const fullEndBlock = cornerBlockCode
+
   if (bondType === 'stretcher') {
     if (junctionType === 'corner') {
       return {
-        oddBlock: cornerBlockCode,
-        evenBlock: cornerBlockCode,
+        oddBlock: fullEndBlock,
+        evenBlock: fullEndBlock,
         oddModular: FULL_END_MODULE_MM,
         evenModular: FULL_END_MODULE_MM,
       }
     }
-    // Free, T-junction, control-joint: alternating in stretcher
+    // Free, T-junction, control-joint: alternating in stretcher.
+    // Full block uses cornerBlockCode; half stays 20.03.
     return {
-      oddBlock: '20.01',
+      oddBlock: fullEndBlock,
       evenBlock: '20.03',
       oddModular: FULL_END_MODULE_MM,
       evenModular: HALF_END_MODULE_MM,
@@ -311,17 +316,17 @@ export function planEnd(
   // Stack bond
   if (junctionType === 'corner') {
     return {
-      oddBlock: cornerBlockCode,
-      evenBlock: cornerBlockCode,
+      oddBlock: fullEndBlock,
+      evenBlock: fullEndBlock,
       oddModular: FULL_END_MODULE_MM,
       evenModular: FULL_END_MODULE_MM,
     }
   }
-  // Stack bond free / T-junction / control-joint: simplification — always 20.01.
+  // Stack bond free / T-junction / control-joint: same full block all courses.
   // TODO: implement best-fit picker that considers both ends together.
   return {
-    oddBlock: '20.01',
-    evenBlock: '20.01',
+    oddBlock: fullEndBlock,
+    evenBlock: fullEndBlock,
     oddModular: FULL_END_MODULE_MM,
     evenModular: FULL_END_MODULE_MM,
   }
@@ -537,6 +542,10 @@ function applyOpeningAdjustments(
     }
   }
 
+  // The "full" jamb block follows the makeup's cornerBlockCode (20.01 normally, 20.21 when
+  // knockout corners is enabled). Half-block jambs (even courses, stretcher) stay 20.03.
+  const fullJambBlock = makeup.cornerBlockCode
+
   // ---- Opening area: jambs + body subtraction per course (parity-aware) ----
   for (let i = 0; i < openingCourses; i++) {
     const wallCourseNumber = sillCoursesFloor + i + 1 // 1-indexed from wall base
@@ -547,10 +556,10 @@ function applyOpeningAdjustments(
     let bodyToSubtract: number
 
     if (isStretcher) {
-      jambCode = isOddCourse ? '20.01' : '20.03'
+      jambCode = isOddCourse ? fullJambBlock : '20.03'
       bodyToSubtract = (isOddCourse ? 2 : 1) + blocksAcrossOpening
     } else {
-      jambCode = '20.01'
+      jambCode = fullJambBlock
       bodyToSubtract = 2 + blocksAcrossOpening
     }
 
