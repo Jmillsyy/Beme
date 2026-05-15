@@ -181,6 +181,32 @@ export interface BrickLintelEntry {
 }
 
 /**
+ * Project metadata captured before/during an estimate — used in the exported document header.
+ */
+export interface ProjectDetails {
+  projectName: string
+  siteAddress: string
+  clientName: string
+  estimatorName: string
+  /** ISO date string (YYYY-MM-DD). */
+  date: string
+  /** Multi-line free text — each non-empty line becomes an extra assumption in the export. */
+  notes: string
+}
+
+/**
+ * Tickbox state for which sections to include in the brick estimate export.
+ */
+export interface BrickExportInclusions {
+  assumptions: boolean
+  brickAreaSummary: boolean
+  lintels: boolean
+  brickTies: boolean
+  plascourse: boolean
+  disclaimer: boolean
+}
+
+/**
  * Project-level settings for a brick estimate. Applied across all walls/openings on the page.
  */
 export interface BrickSettings {

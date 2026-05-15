@@ -44,22 +44,45 @@ export default function WallTypesPanel({
 }: WallTypesPanelProps) {
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(true)
 
   const editingMakeup =
     editingId && editingId !== 'new' ? makeups.find((m) => m.id === editingId) : null
 
+  const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
+
   return (
     <div className="my-4 border border-neutral-200 rounded-xl bg-white p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-neutral-700">Wall types</h3>
-        <button
-          onClick={() => setEditingId('new')}
-          className="text-sm px-3 py-1 rounded-lg bg-beme-600 text-white hover:bg-beme-700 transition-colors"
-        >
-          + Add wall type
-        </button>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-neutral-700">Wall types</h3>
+          {!expanded && activeMakeup && (
+            <span className="text-xs text-neutral-500">
+              Active: <span className="font-medium text-neutral-700">{activeMakeup.name}</span> ·{' '}
+              {makeups.length} total
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {expanded && (
+            <button
+              onClick={() => setEditingId('new')}
+              className="text-sm px-3 py-1 rounded-lg bg-beme-600 text-white hover:bg-beme-700 transition-colors"
+            >
+              + Add wall type
+            </button>
+          )}
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="text-sm text-beme-600 hover:text-beme-700 hover:underline"
+          >
+            {expanded ? '− Hide' : '+ Show'}
+          </button>
+        </div>
       </div>
 
+      {expanded && (
+        <>
       <div className="flex gap-3 overflow-x-auto pb-2">
         {makeups.map((m) => {
           const isActive = m.id === activeMakeupId
@@ -143,6 +166,8 @@ export default function WallTypesPanel({
           }}
           onCancel={() => setEditingId(null)}
         />
+      )}
+        </>
       )}
     </div>
   )

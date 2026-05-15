@@ -7,9 +7,22 @@ import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickSettingsPanel from './BrickSettingsPanel'
 import BrickTallyPanel from './BrickTallyPanel'
-import type { BrickSettings, Opening, Wall, WallMakeup } from '../types/walls'
+import ProjectDetailsPanel from './ProjectDetailsPanel'
+import BrickExportPanel from './BrickExportPanel'
+import type {
+  BrickExportInclusions,
+  BrickSettings,
+  Opening,
+  ProjectDetails,
+  Wall,
+  WallMakeup,
+} from '../types/walls'
 import { createDefaultWallMakeup } from '../lib/makeups'
 import { createDefaultBrickSettings, selectBrickLintelSize } from '../lib/brickCalc'
+import {
+  createDefaultExportInclusions,
+  createDefaultProjectDetails,
+} from '../lib/brickExport'
 import { detectJunctionsForNewWall, recomputeAllJunctions } from '../lib/junctions'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 
@@ -97,6 +110,14 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   // Brick-mode settings
   const [brickSettings, setBrickSettings] = useState<BrickSettings>(() =>
     createDefaultBrickSettings()
+  )
+
+  // Project details + export inclusion tickboxes (brick mode)
+  const [projectDetails, setProjectDetails] = useState<ProjectDetails>(() =>
+    createDefaultProjectDetails()
+  )
+  const [exportInclusions, setExportInclusions] = useState<BrickExportInclusions>(() =>
+    createDefaultExportInclusions()
   )
 
   // Keep drawingMode ref in sync for pan handler
@@ -702,6 +723,11 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
 
   return (
     <div>
+      {/* Project details panel (block + brick) — at the very top since it's one-time setup */}
+      {(mode === 'block' || mode === 'brick') && (
+        <ProjectDetailsPanel details={projectDetails} onChange={setProjectDetails} />
+      )}
+
       {/* Top toolbar — filename & page nav */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
@@ -826,6 +852,11 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
           </button>
         )}
       </div>
+
+      {/* Sticky action bar — keeps drawing controls + banners glued to the top of the
+          viewport while the user scrolls, so they don't need to scroll up to start a new
+          wall/opening. Wraps the wall-drawing toolbar and all contextual banners/forms. */}
+      <div className="sticky top-0 z-20 bg-white pt-2 pb-1 -mx-1 px-1 mb-2 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
 
       {/* Wall drawing toolbar (block + brick modes) */}
       {(mode === 'block' || mode === 'brick') && (
@@ -1219,6 +1250,9 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
         </div>
       )}
 
+      </div>
+      {/* End of sticky action bar */}
+
       {/* Wall types management panel (block mode) */}
       {mode === 'block' && (
         <WallTypesPanel
@@ -1457,6 +1491,18 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
       {/* Brick tally panel (brick mode) */}
       {mode === 'brick' && (
         <BrickTallyPanel walls={allWalls} openings={allOpenings} settings={brickSettings} />
+      )}
+
+      {/* Brick export panel (brick mode) */}
+      {mode === 'brick' && (
+        <BrickExportPanel
+          projectDetails={projectDetails}
+          inclusions={exportInclusions}
+          onChangeInclusions={setExportInclusions}
+          settings={brickSettings}
+          walls={allWalls}
+          openings={allOpenings}
+        />
       )}
     </div>
   )

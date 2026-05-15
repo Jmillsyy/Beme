@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { BrickSettings } from '../types/walls'
 
 interface BrickSettingsPanelProps {
@@ -6,14 +7,36 @@ interface BrickSettingsPanelProps {
 }
 
 export default function BrickSettingsPanel({ settings, onChange }: BrickSettingsPanelProps) {
+  const [expanded, setExpanded] = useState(true)
+
   function patch(p: Partial<BrickSettings>) {
     onChange({ ...settings, ...p })
   }
 
   return (
     <div className="my-4 border border-neutral-200 rounded-xl bg-white p-4">
-      <h3 className="text-sm font-semibold text-neutral-700 mb-3">Brick settings</h3>
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-neutral-700">Brick settings</h3>
+          {!expanded && (
+            <span className="text-xs text-neutral-500">
+              {settings.defaultWallHeightMm}mm walls · {settings.bricksPerSquareMetre} bricks/m²
+              {settings.ties.enabled && ` · ${settings.ties.perSquareMetre} ties/m²`}
+              {settings.plascourse.enabled &&
+                ` · plascourse 1/${settings.plascourse.metresPerUnit}m`}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="text-sm text-beme-600 hover:text-beme-700 hover:underline"
+        >
+          {expanded ? '− Hide' : '+ Show'}
+        </button>
+      </div>
 
+      {expanded && (
+        <>
       {/* General */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <label className="text-sm">
@@ -117,6 +140,8 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   )
 }
