@@ -166,10 +166,36 @@ export type BlockTally = Partial<Record<BlockCode, number>>
 
 /**
  * A single lintel entry for a brick estimate.
+ *
+ * `requiredLengthMm` is the raw figure (opening width + 2 × bearing). The actual lintel
+ * supplied (`selectedLintel`) is the next stock size up from the catalogue. `selectedLintel`
+ * may be null when the required length exceeds the largest stock size — these need a
+ * custom lintel and are flagged separately in the UI.
  */
 export interface BrickLintelEntry {
   openingId: string
   openingWidthMm: number
   bearingEachSideMm: number
-  totalLintelLengthMm: number
+  requiredLengthMm: number
+  selectedLintel: { lengthMm: number; profile: string } | null
+}
+
+/**
+ * Project-level settings for a brick estimate. Applied across all walls/openings on the page.
+ */
+export interface BrickSettings {
+  /** Height applied to newly drawn brick walls. Existing walls keep their `heightMmOverride`. */
+  defaultWallHeightMm: number
+  /** Bricks per square metre of brickwork (typical Australian face brick ≈ 57). */
+  bricksPerSquareMetre: number
+  /** Brick ties — added per m² of brickwork when enabled. */
+  ties: {
+    enabled: boolean
+    perSquareMetre: number
+  }
+  /** Plascourse — one unit per `metresPerUnit` of brickwork when enabled. */
+  plascourse: {
+    enabled: boolean
+    metresPerUnit: number
+  }
 }

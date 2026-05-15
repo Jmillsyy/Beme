@@ -18,7 +18,7 @@ export default function BrickEstimatePage() {
           and let beme auto-add lintels, brick ties, and plascourse to your takeoff.
         </p>
 
-        <PdfWorkspace />
+        <PdfWorkspace mode="brick" />
       </main>
     </div>
   )

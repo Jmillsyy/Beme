@@ -292,6 +292,14 @@ export default function WallDrawingLayer({
       onOpeningPlaced(proj.wallId, startAlong, widthMm)
       setOpeningPlacementStart(null)
       setOpeningHoverProjection(null)
+      return
+    }
+
+    // View mode: clicking on empty stage area deselects. Konva only fires onClick when
+    // there's no significant drag, so a click+drag (pan) won't trigger deselect.
+    if (e.target === e.target.getStage()) {
+      if (selectedWallId) onWallSelect(null)
+      if (selectedOpeningId) onOpeningSelect(null)
     }
   }
 
@@ -312,12 +320,9 @@ export default function WallDrawingLayer({
     }
   }
 
-  function handleStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
-    if (drawingMode || placingOpening) return
-    if (e.target === e.target.getStage()) {
-      if (selectedWallId) onWallSelect(null)
-      if (selectedOpeningId) onOpeningSelect(null)
-    }
+  function handleStageMouseDown(_e: Konva.KonvaEventObject<MouseEvent>) {
+    // Empty intentionally: deselect is handled by the click handler (so it only fires when
+    // there's no drag), and pan is started by the container's mousedown bubbling from here.
   }
 
   // ---------- Endpoint drag ----------
