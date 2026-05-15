@@ -27,6 +27,7 @@
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type { BlockCode } from '../types/blocks'
 import type { BlockTally, BondType, JunctionType, Wall, WallMakeup } from '../types/walls'
+import { findCornerPoints } from './junctions'
 
 // ---------- Modular constants (block face + mortar joint) ----------
 
@@ -65,6 +66,19 @@ export function combineTallies(...tallies: BlockTally[]): BlockTally {
       const v = t[key]
       if (v) result[key] = (result[key] ?? 0) + v
     }
+  }
+  return result
+}
+
+/** Subtract `b` from `a` (clamps to ≥ 0 and removes empty entries). Does not mutate inputs. */
+export function subtractTally(a: BlockTally, b: BlockTally): BlockTally {
+  const result: BlockTally = { ...a }
+  for (const key of Object.keys(b) as BlockCode[]) {
+    const aVal = result[key] ?? 0
+    const bVal = b[key] ?? 0
+    const diff = aVal - bVal
+    if (diff > 0) result[key] = diff
+    else delete result[key]
   }
   return result
 }
@@ -423,9 +437,9 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
  * T-junction, control-joint). Corners in stretcher bond use the corner block on every course;
  * other end types alternate (stretcher) or use the same block on every course (stack).
  *
- * Known limitation: when two walls meet at a corner, each currently counts an end block on its
- * corner side, double-counting the shared corner column. A project-level correction will be
- * added in a follow-up.
+ * Note: when two walls share a corner, each wall's tally will include a full corner column
+ * of end blocks. The project-level `calculateProjectTally` subtracts the duplicate column to
+ * give the correct physical count.
  */
 export function calculateWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   const heightMm = wall.heightMmOverride ?? makeup.heightMm
@@ -473,17 +487,62 @@ export function wallLengthMm(wall: Wall): number {
 // ---------- Project-level aggregation ----------
 
 /**
- * Aggregate tallies across multiple walls (just a convenience wrapper around combineTallies).
+ * Aggregate tallies across multiple walls, then subtract over-counted corner columns.
+ *
+ * Per-wall, each corner end contributes courseCount × cornerBlockCode to the tally.
+ * When two walls share a corner, the column gets counted once per wall → 2× the real count.
+ * For each unique corner shared by n walls, we subtract (n − 1) × courseCount × cornerBlockCode
+ * to leave exactly one corner column counted per physical corner.
+ *
+ * Assumption: walls meeting at a corner share the same height and cornerBlockCode. The corner
+ * column's cornerBlockCode and courseCount are taken from the first wall at the corner.
+ * If makeups differ across a corner this is approximate.
  */
 export function calculateProjectTally(
   walls: Wall[],
   makeupsById: Record<string, WallMakeup>
 ): BlockTally {
-  const tallies = walls
+  const wallTallies = walls
     .map((wall) => {
       const makeup = makeupsById[wall.makeupId]
       return makeup ? calculateWallTally(wall, makeup) : null
     })
     .filter((t): t is BlockTally => t !== null)
-  return combineTallies(...tallies)
+  const summed = combineTallies(...wallTallies)
+
+  const adjustment = calculateCornerAdjustment(walls, makeupsById)
+  return subtractTally(summed, adjustment)
+}
+
+/**
+ * Compute the corner over-count adjustment (a tally to subtract from the summed per-wall tally).
+ */
+export function calculateCornerAdjustment(
+  walls: Wall[],
+  makeupsById: Record<string, WallMakeup>
+): BlockTally {
+  const wallsById = new Map(walls.map((w) => [w.id, w]))
+  const adjustment: BlockTally = {}
+  const corners = findCornerPoints(walls)
+
+  for (const corner of corners) {
+    const n = corner.wallIds.length
+    if (n < 2) continue
+
+    // Use the first wall at this corner for the cornerBlockCode + course count
+    const firstWall = wallsById.get(corner.wallIds[0])
+    if (!firstWall) continue
+    const makeup = makeupsById[firstWall.makeupId]
+    if (!makeup) continue
+
+    const heightMm = firstWall.heightMmOverride ?? makeup.heightMm
+    const stack = calculateCourseStack(heightMm)
+    const courseCount = stack.totalCourses
+    if (courseCount <= 0) continue
+
+    const overcount = (n - 1) * courseCount
+    addToTally(adjustment, makeup.cornerBlockCode, overcount)
+  }
+
+  return adjustment
 }

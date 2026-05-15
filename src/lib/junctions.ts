@@ -8,7 +8,7 @@
  * with full 20.01 blocks every course).
  */
 
-import type { Wall, WallJunction } from '../types/walls'
+import type { JunctionType, Wall, WallJunction } from '../types/walls'
 
 interface Point {
   x: number
@@ -133,4 +133,51 @@ export function recomputeAllJunctions(walls: Wall[]): Wall[] {
   }
 
   return reset
+}
+
+// ---------- Corner-point grouping ----------
+
+export interface CornerPoint {
+  /** Stringified mm coordinates used as a hash key. */
+  key: string
+  /** Real-world x in mm. */
+  x: number
+  /** Real-world y in mm. */
+  y: number
+  /** IDs of walls sharing this corner column. */
+  wallIds: string[]
+}
+
+function positionKey(x: number, y: number): string {
+  // Round to nearest 0.1mm for hashing (avoids floating-point near-misses)
+  return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`
+}
+
+/**
+ * Collect every unique point where multiple walls meet at a corner.
+ *
+ * A corner is detected when 2+ walls have a corner-tagged endpoint at the same position.
+ * Returned corners are the basis for project-level adjustments — e.g. subtracting the
+ * over-counted corner column from the project tally.
+ */
+export function findCornerPoints(walls: Wall[]): CornerPoint[] {
+  const groups = new Map<string, CornerPoint>()
+
+  function record(x: number, y: number, wallId: string, type: JunctionType) {
+    if (type !== 'corner') return
+    const key = positionKey(x, y)
+    let g = groups.get(key)
+    if (!g) {
+      g = { key, x, y, wallIds: [] }
+      groups.set(key, g)
+    }
+    if (!g.wallIds.includes(wallId)) g.wallIds.push(wallId)
+  }
+
+  for (const wall of walls) {
+    record(wall.startX, wall.startY, wall.id, wall.startJunction.type)
+    record(wall.endX, wall.endY, wall.id, wall.endJunction.type)
+  }
+
+  return Array.from(groups.values()).filter((g) => g.wallIds.length >= 2)
 }
