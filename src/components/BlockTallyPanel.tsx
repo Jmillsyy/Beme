@@ -6,13 +6,13 @@ import { calculateProjectTally } from '../lib/blockCalc'
 
 interface BlockTallyPanelProps {
   walls: Wall[]
-  makeup: WallMakeup
+  makeupsById: Record<string, WallMakeup>
 }
 
-export default function BlockTallyPanel({ walls, makeup }: BlockTallyPanelProps) {
+export default function BlockTallyPanel({ walls, makeupsById }: BlockTallyPanelProps) {
   const tally: BlockTally = useMemo(
-    () => calculateProjectTally(walls, { [makeup.id]: makeup }),
-    [walls, makeup]
+    () => calculateProjectTally(walls, makeupsById),
+    [walls, makeupsById]
   )
 
   const entries = useMemo(
@@ -29,6 +29,7 @@ export default function BlockTallyPanel({ walls, makeup }: BlockTallyPanelProps)
     const dy = wall.endY - wall.startY
     return sum + Math.sqrt(dx * dx + dy * dy)
   }, 0)
+  const makeupCount = Object.keys(makeupsById).length
 
   if (walls.length === 0) {
     return (
@@ -44,10 +45,7 @@ export default function BlockTallyPanel({ walls, makeup }: BlockTallyPanelProps)
         <div>
           <h3 className="text-lg font-bold text-beme-700">Block tally</h3>
           <p className="text-xs text-beme-600">
-            Using wall makeup: <span className="font-semibold">{makeup.name}</span>{' '}
-            (<span>{makeup.bondType} bond</span>,{' '}
-            <span>{makeup.heightMm}mm high</span>,{' '}
-            <span>fractions {makeup.useFractions ? 'on' : 'off'}</span>)
+            Across {makeupCount} wall type{makeupCount === 1 ? '' : 's'} · corner columns deduplicated
           </p>
         </div>
         <div className="text-right text-xs text-neutral-600">

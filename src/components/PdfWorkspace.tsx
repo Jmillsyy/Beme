@@ -4,6 +4,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import BlockTallyPanel from './BlockTallyPanel'
+import WallTypesPanel from './WallTypesPanel'
 import type { Wall, WallMakeup } from '../types/walls'
 import { createDefaultWallMakeup } from '../lib/makeups'
 import { detectJunctionsForNewWall, recomputeAllJunctions } from '../lib/junctions'
@@ -64,8 +65,14 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   const [drawingMode, setDrawingMode] = useState(false)
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
   const drawingModeRef = useRef(false)
-  const [defaultMakeup] = useState<WallMakeup>(() =>
-    createDefaultWallMakeup({ name: 'Default 2400mm stretcher' })
+  const [makeups, setMakeups] = useState<WallMakeup[]>(() => [
+    createDefaultWallMakeup({ name: 'External 2400mm stretcher' }),
+  ])
+  const [activeMakeupId, setActiveMakeupId] = useState<string>(() => makeups[0].id)
+
+  const makeupsById = useMemo(
+    () => Object.fromEntries(makeups.map((m) => [m.id, m])),
+    [makeups]
   )
 
   // Keep drawingMode ref in sync for pan handler
@@ -76,13 +83,24 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   const allWalls = useMemo(() => Object.values(wallsByPage).flat(), [wallsByPage])
   const currentPageWalls = wallsByPage[currentPage] ?? []
 
+  const wallCountsByMakeupId = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const w of allWalls) counts[w.makeupId] = (counts[w.makeupId] ?? 0) + 1
+    return counts
+  }, [allWalls])
+
+  const selectedWall = useMemo(
+    () => (selectedWallId ? currentPageWalls.find((w) => w.id === selectedWallId) : null),
+    [selectedWallId, currentPageWalls]
+  )
+
   function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      makeupId: defaultMakeup.id,
+      makeupId: activeMakeupId,
       startX: startMm.x,
       startY: startMm.y,
       endX: endMm.x,
@@ -100,7 +118,37 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
     }))
   }
 
+  function handleAddMakeup(makeup: WallMakeup) {
+    setMakeups((prev) => [...prev, makeup])
+    setActiveMakeupId(makeup.id)
+  }
+
+  function handleUpdateMakeup(updated: WallMakeup) {
+    setMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+  }
+
+  function handleDeleteMakeup(id: string) {
+    setMakeups((prev) => {
+      const remaining = prev.filter((m) => m.id !== id)
+      if (remaining.length === 0) return prev
+      if (activeMakeupId === id) {
+        setActiveMakeupId(remaining[0].id)
+      }
+      return remaining
+    })
+  }
+
+  function handleReassignWallMakeup(wallId: string, makeupId: string) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const updated = pageWalls.map((w) => (w.id === wallId ? { ...w, makeupId } : w))
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
   function clearAllWalls() {
+    if (allWalls.length === 0) return
+    if (!window.confirm(`Delete all ${allWalls.length} walls in this project?`)) return
     setWallsByPage({})
     setDrawingMode(false)
     setSelectedWallId(null)
@@ -673,15 +721,29 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
         </div>
       )}
 
-      {mode === 'block' && selectedWallId && !drawingMode && (
+      {mode === 'block' && selectedWall && !drawingMode && (
         <div className="mb-3 px-4 py-3 bg-blue-50 border border-blue-300 rounded-lg text-sm text-blue-700 flex items-center justify-between flex-wrap gap-2">
           <span>
             1 wall selected. Drag its endpoints to reposition, or press{' '}
             <kbd className="px-1.5 py-0.5 rounded border border-blue-300 bg-white text-xs font-mono">Del</kbd> to remove.
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="flex items-center gap-2 text-sm text-blue-700">
+              <span>Wall type:</span>
+              <select
+                value={selectedWall.makeupId}
+                onChange={(e) => handleReassignWallMakeup(selectedWall.id, e.target.value)}
+                className="px-2 py-1 border border-blue-300 rounded text-sm bg-white"
+              >
+                {makeups.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
-              onClick={() => handleWallDelete(selectedWallId)}
+              onClick={() => handleWallDelete(selectedWall.id)}
               className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 transition-colors"
             >
               Delete wall
@@ -694,6 +756,19 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Wall types management panel */}
+      {mode === 'block' && (
+        <WallTypesPanel
+          makeups={makeups}
+          activeMakeupId={activeMakeupId}
+          wallCountsByMakeupId={wallCountsByMakeupId}
+          onSetActive={setActiveMakeupId}
+          onAddMakeup={handleAddMakeup}
+          onUpdateMakeup={handleUpdateMakeup}
+          onDeleteMakeup={handleDeleteMakeup}
+        />
       )}
 
       {/* Calibration instructions banner */}
@@ -896,7 +971,7 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
 
       {/* Block tally panel (block mode only) */}
       {mode === 'block' && (
-        <BlockTallyPanel walls={allWalls} makeup={defaultMakeup} />
+        <BlockTallyPanel walls={allWalls} makeupsById={makeupsById} />
       )}
     </div>
   )
