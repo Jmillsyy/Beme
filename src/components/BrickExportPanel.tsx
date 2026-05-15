@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type {
   BrickExportInclusions,
   BrickSettings,
@@ -24,6 +25,10 @@ export default function BrickExportPanel({
   walls,
   openings,
 }: BrickExportPanelProps) {
+  // Collapsed by default in the rail — export is end-of-workflow so it shouldn't
+  // take space while you're drawing.
+  const [expanded, setExpanded] = useState(false)
+
   function patch(p: Partial<BrickExportInclusions>) {
     onChangeInclusions({ ...inclusions, ...p })
   }
@@ -41,25 +46,42 @@ export default function BrickExportPanel({
   const canExport = walls.length > 0
 
   return (
-    <div className="mt-6 border border-neutral-200 rounded-xl bg-white p-4">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-neutral-700">Export estimate</h3>
-          <p className="text-xs text-neutral-500">
-            Tick what you want in the document, then click Export. A printable page opens in
-            a new tab — use your browser's <em>Print → Save as PDF</em> to save it.
-          </p>
-        </div>
+    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-3">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 text-left group mb-2"
+      >
+        <span className="text-neutral-400 group-hover:text-neutral-600 text-xs">
+          {expanded ? '▾' : '▸'}
+        </span>
+        <h3 className="text-sm font-semibold text-neutral-700 group-hover:text-beme-700">
+          Export estimate
+        </h3>
+        {!expanded && (
+          <span className="text-xs text-neutral-500 truncate">
+            · {Object.values(inclusions).filter(Boolean).length} sections selected
+          </span>
+        )}
+      </button>
+
+      {!expanded && (
         <button
           onClick={handleExport}
           disabled={!canExport}
-          className="px-4 py-2 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+          className="w-full px-3 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
         >
           Export estimate →
         </button>
-      </div>
+      )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+      {expanded && (
+        <>
+      <p className="text-xs text-neutral-500 mb-2">
+        Tick what you want in the document, then click Export. A printable page opens in a new
+        tab — use your browser's <em>Print → Save as PDF</em> to save it.
+      </p>
+
+      <div className="grid grid-cols-1 gap-1.5 text-sm mb-3">
         <Toggle
           label="Assumptions page"
           checked={inclusions.assumptions}
@@ -96,10 +118,18 @@ export default function BrickExportPanel({
         />
       </div>
 
+      <button
+        onClick={handleExport}
+        disabled={!canExport}
+        className="w-full px-3 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+      >
+        Export estimate →
+      </button>
+
       {!canExport && (
-        <p className="text-xs text-neutral-500 mt-3">
-          Draw at least one wall before exporting.
-        </p>
+        <p className="text-xs text-neutral-500 mt-2">Draw at least one wall before exporting.</p>
+      )}
+        </>
       )}
     </div>
   )

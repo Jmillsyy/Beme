@@ -52,38 +52,39 @@ export default function WallTypesPanel({
   const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-4">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-neutral-700">Wall types</h3>
-          {!expanded && activeMakeup && (
-            <span className="text-xs text-neutral-500">
-              Active: <span className="font-medium text-neutral-700">{activeMakeup.name}</span> ·{' '}
-              {makeups.length} total
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          {expanded && (
-            <button
-              onClick={() => setEditingId('new')}
-              className="text-sm px-3 py-1 rounded-lg bg-beme-600 text-white hover:bg-beme-700 transition-colors"
-            >
-              + Add wall type
-            </button>
-          )}
+    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-3">
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-2 text-left flex-1 min-w-0 group"
+        >
+          <span className="text-neutral-400 group-hover:text-neutral-600 text-xs">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <h3 className="text-sm font-semibold text-neutral-700 group-hover:text-beme-700">
+            Wall types
+          </h3>
+          <span className="text-xs text-neutral-500 truncate">
+            {!expanded && activeMakeup ? (
+              <>· {activeMakeup.name}</>
+            ) : (
+              <>· {makeups.length}</>
+            )}
+          </span>
+        </button>
+        {expanded && (
           <button
-            onClick={() => setExpanded((v) => !v)}
-            className="text-sm text-beme-600 hover:text-beme-700 hover:underline"
+            onClick={() => setEditingId('new')}
+            className="text-sm px-2.5 py-1 rounded-lg bg-beme-600 text-white hover:bg-beme-700 transition-colors flex-shrink-0"
           >
-            {expanded ? '− Hide' : '+ Show'}
+            + Add
           </button>
-        </div>
+        )}
       </div>
 
       {expanded && (
         <>
-      <div className="flex gap-3 overflow-x-auto pb-2">
+      <div className="flex flex-col gap-2 pb-1">
         {makeups.map((m) => {
           const isActive = m.id === activeMakeupId
           const wallCount = wallCountsByMakeupId[m.id] ?? 0
@@ -92,7 +93,7 @@ export default function WallTypesPanel({
             <button
               key={m.id}
               onClick={() => onSetActive(m.id)}
-              className={`relative flex-shrink-0 w-64 p-3 rounded-lg border text-left transition-colors ${
+              className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
                 isActive
                   ? 'border-blue-500 ring-2 ring-blue-200 bg-blue-50'
                   : 'border-neutral-200 hover:border-blue-300 bg-white'
@@ -247,7 +248,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         {existing ? `Edit "${existing.name}"` : 'New wall type'}
       </h4>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         <label className="text-sm">
           <span className="block text-neutral-600 mb-1">Name</span>
           <input
@@ -320,7 +321,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 mb-2">
           Block composition
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3">
           <label className="text-sm">
             <span className="block text-neutral-600 mb-1">Base course block</span>
             <select

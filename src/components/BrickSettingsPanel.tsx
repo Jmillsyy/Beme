@@ -14,31 +14,30 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
   }
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-4">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-neutral-700">Brick settings</h3>
-          {!expanded && (
-            <span className="text-xs text-neutral-500">
-              {settings.defaultWallHeightMm}mm walls · {settings.bricksPerSquareMetre} bricks/m²
-              {settings.ties.enabled && ` · ${settings.ties.perSquareMetre} ties/m²`}
-              {settings.plascourse.enabled &&
-                ` · plascourse 1/${settings.plascourse.metresPerUnit}m`}
-            </span>
-          )}
-        </div>
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="text-sm text-beme-600 hover:text-beme-700 hover:underline"
-        >
-          {expanded ? '− Hide' : '+ Show'}
-        </button>
-      </div>
+    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-3">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center gap-2 text-left group mb-2"
+      >
+        <span className="text-neutral-400 group-hover:text-neutral-600 text-xs">
+          {expanded ? '▾' : '▸'}
+        </span>
+        <h3 className="text-sm font-semibold text-neutral-700 group-hover:text-beme-700">
+          Brick settings
+        </h3>
+        {!expanded && (
+          <span className="text-xs text-neutral-500 truncate min-w-0">
+            · {settings.defaultWallHeightMm}mm · {settings.bricksPerSquareMetre}/m²
+            {settings.ties.enabled && ` · ties`}
+            {settings.plascourse.enabled && ` · plascourse`}
+          </span>
+        )}
+      </button>
 
       {expanded && (
         <>
       {/* General */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+      <div className="grid grid-cols-1 gap-3 mb-3">
         <label className="text-sm">
           <span className="block text-neutral-600 mb-1">Default wall height (mm)</span>
           <input

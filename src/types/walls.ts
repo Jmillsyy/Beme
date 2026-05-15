@@ -207,6 +207,20 @@ export interface BrickExportInclusions {
 }
 
 /**
+ * Tickbox state for which sections to include in the block estimate export.
+ */
+export interface BlockExportInclusions {
+  assumptions: boolean
+  /** The full block-by-code schedule. */
+  blockSchedule: boolean
+  /** Breakdown of the schedule grouped by wall type (makeup). */
+  wallTypeBreakdown: boolean
+  /** List of openings with dimensions, head, sill, and chosen lintel block. */
+  openingsList: boolean
+  disclaimer: boolean
+}
+
+/**
  * Project-level settings for a brick estimate. Applied across all walls/openings on the page.
  */
 export interface BrickSettings {

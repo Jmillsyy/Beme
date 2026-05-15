@@ -7,9 +7,20 @@ import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickSettingsPanel from './BrickSettingsPanel'
 import BrickTallyPanel from './BrickTallyPanel'
-import ProjectDetailsPanel from './ProjectDetailsPanel'
+import ProjectBar from './ProjectBar'
+import ProjectDetailsDrawer from './ProjectDetailsDrawer'
 import BrickExportPanel from './BrickExportPanel'
+import BlockExportPanel from './BlockExportPanel'
+import {
+  type ProjectStatus,
+  type SavedProject,
+  deleteProject as deleteProjectFromStore,
+  generateProjectId,
+  getProject,
+  saveProject as saveProjectToStore,
+} from '../lib/projectStorage'
 import type {
+  BlockExportInclusions,
   BrickExportInclusions,
   BrickSettings,
   Opening,
@@ -23,6 +34,7 @@ import {
   createDefaultExportInclusions,
   createDefaultProjectDetails,
 } from '../lib/brickExport'
+import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { detectJunctionsForNewWall, recomputeAllJunctions } from '../lib/junctions'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 
@@ -66,12 +78,14 @@ function clamp(v: number, min: number, max: number) {
 interface PdfWorkspaceProps {
   /**
    * Estimate mode. When 'block', enables wall drawing tools and a live block tally panel
-   * below the PDF view. 'brick' will get its own workflow later.
+   * below the PDF view. 'brick' enables the brick workflow.
    */
   mode?: 'block' | 'brick'
+  /** When set, loads the matching saved project from IndexedDB on mount. */
+  projectId?: string | null
 }
 
-export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
+export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}) {
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [numPages, setNumPages] = useState<number>(0)
   const [currentPage, setCurrentPage] = useState<number>(1)
@@ -119,6 +133,165 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   const [exportInclusions, setExportInclusions] = useState<BrickExportInclusions>(() =>
     createDefaultExportInclusions()
   )
+  const [blockExportInclusions, setBlockExportInclusions] = useState<BlockExportInclusions>(
+    () => createDefaultBlockExportInclusions()
+  )
+
+  // ---------- Saved-project tracking ----------
+  /** ID of the currently-loaded saved project (null if this is a fresh, unsaved workspace). */
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(projectId ?? null)
+  const [projectStatus, setProjectStatus] = useState<ProjectStatus>('in-progress')
+  const [projectCreatedAt, setProjectCreatedAt] = useState<string | null>(null)
+  const [projectCompletedAt, setProjectCompletedAt] = useState<string | null>(null)
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
+  const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false)
+
+  // Load a saved project on mount if projectId was provided
+  useEffect(() => {
+    if (!projectId) return
+    let cancelled = false
+    getProject(projectId)
+      .then((proj) => {
+        if (cancelled || !proj) return
+        // Reconstruct File from saved Blob (react-pdf accepts either; using File keeps name)
+        const file = new File([proj.pdfBlob], proj.pdfFileName, {
+          type: proj.pdfBlob.type || 'application/pdf',
+        })
+        setPdfFile(file)
+        setProjectDetails(proj.projectDetails)
+        setPagesData(proj.pagesData)
+        setWallsByPage(proj.wallsByPage)
+        setOpeningsByPage(proj.openingsByPage)
+        setCurrentPage(proj.currentPage || 1)
+        if (proj.makeups && proj.makeups.length > 0) {
+          setMakeups(proj.makeups)
+          if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
+        }
+        if (proj.brickSettings) setBrickSettings(proj.brickSettings)
+        if (proj.exportInclusions) setExportInclusions(proj.exportInclusions)
+        if (proj.blockExportInclusions) setBlockExportInclusions(proj.blockExportInclusions)
+
+        setCurrentProjectId(proj.id)
+        setProjectStatus(proj.status)
+        setProjectCreatedAt(proj.createdAt)
+        setProjectCompletedAt(proj.completedAt ?? null)
+        setLastSavedAt(proj.updatedAt)
+      })
+      .catch((err) => {
+        console.error('Failed to load project', err)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId])
+
+  // Reasons save might be blocked, evaluated each render
+  const saveBlockedReason = useMemo<string | null>(() => {
+    if (!pdfFile) return 'Upload a PDF before saving.'
+    if (!projectDetails.projectName.trim() && !projectDetails.siteAddress.trim()) {
+      return 'Fill in a project name or site address in Project details before saving.'
+    }
+    return null
+  }, [pdfFile, projectDetails.projectName, projectDetails.siteAddress])
+  const canSave = saveBlockedReason === null
+
+  async function handleSaveProject() {
+    if (!pdfFile || !mode) return
+    const now = new Date().toISOString()
+    const id = currentProjectId ?? generateProjectId()
+    const project: SavedProject = {
+      id,
+      type: mode,
+      status: projectStatus,
+      createdAt: projectCreatedAt ?? now,
+      updatedAt: now,
+      completedAt: projectCompletedAt ?? undefined,
+      projectDetails,
+      pdfBlob: pdfFile,
+      pdfFileName: pdfFile.name,
+      pagesData,
+      wallsByPage,
+      openingsByPage,
+      currentPage,
+      ...(mode === 'block'
+        ? { makeups, activeMakeupId, blockExportInclusions }
+        : {}),
+      ...(mode === 'brick' ? { brickSettings, exportInclusions } : {}),
+    }
+    try {
+      await saveProjectToStore(project)
+      setCurrentProjectId(id)
+      setProjectCreatedAt(project.createdAt)
+      setLastSavedAt(now)
+      // Update URL with the project id (so refresh keeps you in the saved project)
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href)
+        if (url.searchParams.get('id') !== id) {
+          url.searchParams.set('id', id)
+          window.history.replaceState({}, '', url.toString())
+        }
+      }
+    } catch (err) {
+      console.error('Failed to save project', err)
+      alert('Failed to save the project. Your browser may be low on storage.')
+    }
+  }
+
+  async function handleToggleProjectStatus() {
+    if (!currentProjectId) return
+    const now = new Date().toISOString()
+    const nextStatus: ProjectStatus =
+      projectStatus === 'completed' ? 'in-progress' : 'completed'
+    setProjectStatus(nextStatus)
+    if (nextStatus === 'completed') setProjectCompletedAt(now)
+    // Persist immediately
+    if (pdfFile && mode) {
+      const project: SavedProject = {
+        id: currentProjectId,
+        type: mode,
+        status: nextStatus,
+        createdAt: projectCreatedAt ?? now,
+        updatedAt: now,
+        completedAt: nextStatus === 'completed' ? now : projectCompletedAt ?? undefined,
+        projectDetails,
+        pdfBlob: pdfFile,
+        pdfFileName: pdfFile.name,
+        pagesData,
+        wallsByPage,
+        openingsByPage,
+        currentPage,
+        ...(mode === 'block' ? { makeups, activeMakeupId } : {}),
+        ...(mode === 'brick' ? { brickSettings, exportInclusions } : {}),
+      }
+      try {
+        await saveProjectToStore(project)
+        setLastSavedAt(now)
+      } catch (err) {
+        console.error('Failed to update project status', err)
+      }
+    }
+  }
+
+  async function handleDeleteProject() {
+    if (!currentProjectId) return
+    if (!window.confirm('Delete this project? This cannot be undone.')) return
+    try {
+      await deleteProjectFromStore(currentProjectId)
+      setCurrentProjectId(null)
+      setProjectStatus('in-progress')
+      setProjectCreatedAt(null)
+      setProjectCompletedAt(null)
+      setLastSavedAt(null)
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href)
+        url.searchParams.delete('id')
+        window.history.replaceState({}, '', url.toString())
+      }
+    } catch (err) {
+      console.error('Failed to delete project', err)
+    }
+  }
 
   // Keep drawingMode ref in sync for pan handler
   useEffect(() => {
@@ -344,7 +517,14 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   // During interactive zoom we apply (zoom / renderedZoom) via CSS transform for smooth, flicker-free scaling.
   const [zoom, setZoom] = useState(1)
   const [renderedZoom, setRenderedZoom] = useState(1)
-  const baseWidth = Math.min(900, typeof window !== 'undefined' ? window.innerWidth - 120 : 900)
+  // Tailwind `lg` = 1024px. At/above lg the right rail is side-by-side with the canvas
+  // (eats ~400px including gap), below lg it stacks beneath, so the canvas can use full width.
+  const baseWidth = (() => {
+    if (typeof window === 'undefined') return 880
+    return window.innerWidth >= 1024
+      ? Math.min(880, window.innerWidth - 600)
+      : Math.min(900, window.innerWidth - 120)
+  })()
   const renderedPageWidth = Math.round(baseWidth * renderedZoom)
   const visualScale = zoom / renderedZoom
 
@@ -723,15 +903,37 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
 
   return (
     <div>
-      {/* Project details panel (block + brick) — at the very top since it's one-time setup */}
+      {/* Slim project bar — replaces the old Project details + Save panels */}
       {(mode === 'block' || mode === 'brick') && (
-        <ProjectDetailsPanel details={projectDetails} onChange={setProjectDetails} />
+        <ProjectBar
+          details={projectDetails}
+          isSaved={currentProjectId !== null}
+          status={projectStatus}
+          lastSavedAt={lastSavedAt}
+          canSave={canSave}
+          saveBlockedReason={saveBlockedReason}
+          onSave={handleSaveProject}
+          onToggleStatus={handleToggleProjectStatus}
+          onDelete={handleDeleteProject}
+          onOpenDetails={() => setDetailsDrawerOpen(true)}
+        />
       )}
 
-      {/* Top toolbar — filename & page nav */}
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-        <div>
-          <p className="text-sm font-medium text-neutral-700">{pdfFile.name}</p>
+      {/* Project details drawer (overlay) */}
+      <ProjectDetailsDrawer
+        open={detailsDrawerOpen}
+        details={projectDetails}
+        onChange={setProjectDetails}
+        onClose={() => setDetailsDrawerOpen(false)}
+      />
+
+      {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
+      <div className="flex items-center mb-3 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg gap-4 flex-wrap">
+        {/* PDF filename + Replace */}
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-medium text-neutral-700 truncate max-w-[16rem]">
+            {pdfFile.name}
+          </span>
           <button
             onClick={() => {
               setPdfFile(null)
@@ -741,80 +943,88 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
               setZoom(1)
               cancelCalibration()
             }}
-            className="text-xs text-beme-600 hover:text-beme-700 hover:underline"
+            className="text-xs text-beme-600 hover:text-beme-700 hover:underline whitespace-nowrap"
           >
-            Replace PDF
+            Replace
           </button>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="h-5 w-px bg-neutral-300" />
+
+        {/* Page nav */}
+        <div className="flex items-center gap-1">
           <button
             onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
             disabled={currentPage <= 1}
-            className="px-4 py-2 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            aria-label="Previous page"
           >
-            ← Prev
+            ←
           </button>
-          <span className="text-sm text-neutral-600 tabular-nums min-w-[6rem] text-center">
-            Page {currentPage} of {numPages || '…'}
+          <span className="text-sm text-neutral-600 tabular-nums px-1 min-w-[5.5rem] text-center">
+            Page {currentPage} / {numPages || '…'}
           </span>
           <button
             onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
             disabled={currentPage >= numPages}
-            className="px-4 py-2 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            aria-label="Next page"
           >
-            Next →
+            →
           </button>
         </div>
-      </div>
 
-      {/* Zoom toolbar */}
-      <div className="flex items-center justify-between mb-3 px-4 py-2 bg-neutral-50 border border-neutral-200 rounded-lg">
-        <span className="text-xs text-neutral-500">Scroll to zoom. Click and drag to pan. Click the percentage to reset.</span>
-        <div className="flex items-center gap-2">
+        <div className="h-5 w-px bg-neutral-300" />
+
+        {/* Zoom */}
+        <div className="flex items-center gap-1">
           <button
             onClick={zoomOutButton}
             disabled={zoom <= MIN_ZOOM + 0.001}
-            className="px-3 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Zoom out"
           >
             −
           </button>
           <button
             onClick={resetZoom}
-            className="px-3 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors min-w-[4.5rem] tabular-nums"
+            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors min-w-[3.5rem] tabular-nums"
+            title="Scroll to zoom · Click and drag to pan · Click to reset"
           >
             {Math.round(zoom * 100)}%
           </button>
           <button
             onClick={zoomInButton}
             disabled={zoom >= MAX_ZOOM - 0.001}
-            className="px-3 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Zoom in"
           >
             +
           </button>
         </div>
-      </div>
 
-      {/* Scale toolbar */}
-      <div className="flex items-center justify-between mb-3 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-lg flex-wrap gap-3">
-        <div className="text-sm">
-          {currentScale ? (
+        <div className="h-5 w-px bg-neutral-300" />
+
+        {/* Scale — collapsed inline when set, expanded controls when not */}
+        {currentScale && !calibrating ? (
+          <div className="flex items-center gap-2 text-sm">
             <span className="text-neutral-700">
-              Scale on page {currentPage}:{' '}
-              <span className="font-semibold tabular-nums">{currentScale.toFixed(4)}</span>{' '}
-              <span className="text-neutral-500">px/mm</span>{' '}
-              <span className="text-neutral-400">({(1 / currentScale).toFixed(2)} mm/px)</span>
+              Scale:{' '}
+              <span className="font-semibold tabular-nums">
+                {currentScale.toFixed(3)}
+              </span>{' '}
+              <span className="text-neutral-500">px/mm</span>
             </span>
-          ) : (
-            <span className="text-neutral-500">No scale set for page {currentPage}.</span>
-          )}
-        </div>
-
-        {!calibrating && (
+            <button
+              onClick={startCalibration}
+              className="text-xs text-beme-600 hover:text-beme-700 hover:underline whitespace-nowrap"
+            >
+              Recalibrate
+            </button>
+          </div>
+        ) : !calibrating ? (
           <div className="flex items-center gap-2 flex-wrap">
-            <label className="text-sm text-neutral-600">Ratio:</label>
+            <span className="text-sm text-neutral-500">No scale set.</span>
             <select
               value=""
               onChange={(e) => {
@@ -824,34 +1034,40 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
                 e.target.value = ''
               }}
               disabled={!pageData?.pageWidthMm}
-              className="px-3 py-1.5 border border-neutral-300 rounded-lg text-sm bg-white disabled:opacity-50 focus:outline-none focus:border-beme-500"
+              className="px-2 py-1 border border-neutral-300 rounded text-sm bg-white disabled:opacity-50 focus:outline-none focus:border-beme-500"
             >
-              <option value="">Choose…</option>
+              <option value="">Ratio…</option>
               {RATIO_PRESETS.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
               ))}
             </select>
-            <span className="text-sm text-neutral-400">or</span>
             <button
               onClick={startCalibration}
-              className="px-4 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 transition-colors font-medium"
+              className="px-3 py-1 rounded bg-beme-600 text-white text-sm hover:bg-beme-700 transition-colors font-medium"
             >
-              {currentScale ? 'Recalibrate by clicking' : 'Set by clicking'}
+              Set by clicking
             </button>
           </div>
-        )}
-
-        {calibrating && (
+        ) : (
           <button
             onClick={cancelCalibration}
-            className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+            className="px-3 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
           >
             Cancel calibration
           </button>
         )}
       </div>
+
+      {/* ──────────────────── Two-column workspace body ────────────────────
+          Left column = canvas + drawing controls (where your eyes/hands live).
+          Right rail = setup + reference panels (wall types, tally, export).
+          Stacks vertically on screens narrower than `lg`. */}
+      <div className="flex flex-col lg:flex-row gap-4 items-start">
+
+      {/* ───── Left column: canvas area ───── */}
+      <div className="flex-1 min-w-0 w-full">
 
       {/* Sticky action bar — keeps drawing controls + banners glued to the top of the
           viewport while the user scrolls, so they don't need to scroll up to start a new
@@ -1253,24 +1469,6 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
       </div>
       {/* End of sticky action bar */}
 
-      {/* Wall types management panel (block mode) */}
-      {mode === 'block' && (
-        <WallTypesPanel
-          makeups={makeups}
-          activeMakeupId={activeMakeupId}
-          wallCountsByMakeupId={wallCountsByMakeupId}
-          onSetActive={setActiveMakeupId}
-          onAddMakeup={handleAddMakeup}
-          onUpdateMakeup={handleUpdateMakeup}
-          onDeleteMakeup={handleDeleteMakeup}
-        />
-      )}
-
-      {/* Brick settings panel (brick mode) */}
-      {mode === 'brick' && (
-        <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
-      )}
-
       {/* Calibration instructions banner */}
       {calibrating && !(calPoint1 && calPoint2) && (
         <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg text-sm text-beme-700">
@@ -1483,27 +1681,71 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
       </div>
       </div>
 
-      {/* Block tally panel (block mode) */}
-      {mode === 'block' && (
-        <BlockTallyPanel walls={allWalls} makeupsById={makeupsById} openings={allOpenings} />
-      )}
+      </div>
+      {/* ───── End of left column ───── */}
 
-      {/* Brick tally panel (brick mode) */}
-      {mode === 'brick' && (
-        <BrickTallyPanel walls={allWalls} openings={allOpenings} settings={brickSettings} />
-      )}
+      {/* ───── Right rail: setup + reference panels ─────
+          ~340px wide on lg+ screens, full-width stacked below the canvas on smaller.
+          Each panel handles its own collapse state, so users can hide what they're
+          not actively using and the rail can absorb new panels (selection details,
+          piers, control joints, etc.) without making the page taller. */}
+      <aside className="w-full lg:w-[380px] lg:flex-shrink-0 -mt-4 lg:mt-0">
 
-      {/* Brick export panel (brick mode) */}
-      {mode === 'brick' && (
-        <BrickExportPanel
-          projectDetails={projectDetails}
-          inclusions={exportInclusions}
-          onChangeInclusions={setExportInclusions}
-          settings={brickSettings}
-          walls={allWalls}
-          openings={allOpenings}
-        />
-      )}
+        {/* Wall types management panel (block mode) */}
+        {mode === 'block' && (
+          <WallTypesPanel
+            makeups={makeups}
+            activeMakeupId={activeMakeupId}
+            wallCountsByMakeupId={wallCountsByMakeupId}
+            onSetActive={setActiveMakeupId}
+            onAddMakeup={handleAddMakeup}
+            onUpdateMakeup={handleUpdateMakeup}
+            onDeleteMakeup={handleDeleteMakeup}
+          />
+        )}
+
+        {/* Brick settings panel (brick mode) */}
+        {mode === 'brick' && (
+          <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+        )}
+
+        {/* Block tally panel (block mode) */}
+        {mode === 'block' && (
+          <BlockTallyPanel walls={allWalls} makeupsById={makeupsById} openings={allOpenings} />
+        )}
+
+        {/* Brick tally panel (brick mode) */}
+        {mode === 'brick' && (
+          <BrickTallyPanel walls={allWalls} openings={allOpenings} settings={brickSettings} />
+        )}
+
+        {/* Block export panel (block mode) */}
+        {mode === 'block' && (
+          <BlockExportPanel
+            projectDetails={projectDetails}
+            inclusions={blockExportInclusions}
+            onChangeInclusions={setBlockExportInclusions}
+            walls={allWalls}
+            makeups={makeups}
+            openings={allOpenings}
+          />
+        )}
+
+        {/* Brick export panel (brick mode) */}
+        {mode === 'brick' && (
+          <BrickExportPanel
+            projectDetails={projectDetails}
+            inclusions={exportInclusions}
+            onChangeInclusions={setExportInclusions}
+            settings={brickSettings}
+            walls={allWalls}
+            openings={allOpenings}
+          />
+        )}
+      </aside>
+
+      </div>
+      {/* ─────────────────── End of two-column body ─────────────────── */}
     </div>
   )
 }

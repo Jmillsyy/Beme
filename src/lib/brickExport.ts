@@ -166,7 +166,7 @@ export function exportBrickEstimate(params: ExportParams): void {
     <header class="page-header">
       <div class="brand">
         <div class="brand-name">beme</div>
-        <div class="brand-tag">Block Estimates Made Easy</div>
+        <div class="brand-tag">Brick and Block Estimates Made Easy</div>
       </div>
       <div class="title-block">
         <div class="title-main">Brickwork Takeoff — Material Schedule</div>
