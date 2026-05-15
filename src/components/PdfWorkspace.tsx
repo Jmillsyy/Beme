@@ -6,6 +6,7 @@ import WallDrawingLayer from './WallDrawingLayer'
 import BlockTallyPanel from './BlockTallyPanel'
 import type { Wall, WallMakeup } from '../types/walls'
 import { createDefaultWallMakeup } from '../lib/makeups'
+import { detectJunctionsForNewWall, recomputeAllJunctions } from '../lib/junctions'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
@@ -61,6 +62,7 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   // ---------- Wall drawing state (block mode) ----------
   const [wallsByPage, setWallsByPage] = useState<Record<number, Wall[]>>({})
   const [drawingMode, setDrawingMode] = useState(false)
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
   const drawingModeRef = useRef(false)
   const [defaultMakeup] = useState<WallMakeup>(() =>
     createDefaultWallMakeup({ name: 'Default 2400mm stretcher' })
@@ -75,7 +77,7 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   const currentPageWalls = wallsByPage[currentPage] ?? []
 
   function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
-    const newWall: Wall = {
+    const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
@@ -88,16 +90,70 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
       startJunction: { type: 'free' },
       endJunction: { type: 'free' },
     }
+
+    const existing = wallsByPage[currentPage] ?? []
+    const { newWall, updatedExistingWalls } = detectJunctionsForNewWall(rawWall, existing)
+
     setWallsByPage((prev) => ({
       ...prev,
-      [currentPage]: [...(prev[currentPage] ?? []), newWall],
+      [currentPage]: [...updatedExistingWalls, newWall],
     }))
   }
 
   function clearAllWalls() {
     setWallsByPage({})
     setDrawingMode(false)
+    setSelectedWallId(null)
   }
+
+  function handleWallEndpointMoved(
+    wallId: string,
+    which: 'start' | 'end',
+    newPositionMm: { x: number; y: number }
+  ) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const updated = pageWalls.map((w) => {
+        if (w.id !== wallId) return w
+        if (which === 'start') {
+          return { ...w, startX: newPositionMm.x, startY: newPositionMm.y }
+        }
+        return { ...w, endX: newPositionMm.x, endY: newPositionMm.y }
+      })
+      return { ...prev, [currentPage]: recomputeAllJunctions(updated) }
+    })
+  }
+
+  function handleWallDelete(wallId: string) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const remaining = pageWalls.filter((w) => w.id !== wallId)
+      return { ...prev, [currentPage]: recomputeAllJunctions(remaining) }
+    })
+    setSelectedWallId(null)
+  }
+
+  // Delete / Backspace removes the selected wall
+  useEffect(() => {
+    if (!selectedWallId) return
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Skip if the user is typing in an input or textarea
+        const tgt = e.target as HTMLElement | null
+        if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return
+        e.preventDefault()
+        if (selectedWallId) handleWallDelete(selectedWallId)
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWallId])
+
+  // Clear selection when leaving the page or replacing PDF
+  useEffect(() => {
+    setSelectedWallId(null)
+  }, [currentPage, pdfFile])
 
   // Zoom — two values:
   //   zoom: live target zoom (updates immediately on wheel/pinch/buttons)
@@ -617,6 +673,29 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
         </div>
       )}
 
+      {mode === 'block' && selectedWallId && !drawingMode && (
+        <div className="mb-3 px-4 py-3 bg-blue-50 border border-blue-300 rounded-lg text-sm text-blue-700 flex items-center justify-between flex-wrap gap-2">
+          <span>
+            1 wall selected. Drag its endpoints to reposition, or press{' '}
+            <kbd className="px-1.5 py-0.5 rounded border border-blue-300 bg-white text-xs font-mono">Del</kbd> to remove.
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleWallDelete(selectedWallId)}
+              className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 transition-colors"
+            >
+              Delete wall
+            </button>
+            <button
+              onClick={() => setSelectedWallId(null)}
+              className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+            >
+              Deselect
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Calibration instructions banner */}
       {calibrating && !(calPoint1 && calPoint2) && (
         <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg text-sm text-beme-700">
@@ -803,7 +882,10 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
                 visualHeight={visualPageHeight}
                 pxPerMmAtCurrentZoom={currentScale * zoom}
                 drawingMode={drawingMode}
+                selectedWallId={selectedWallId}
                 onWallAdded={handleWallAdded}
+                onWallSelect={setSelectedWallId}
+                onWallEndpointMoved={handleWallEndpointMoved}
                 onCancel={() => setDrawingMode(false)}
               />
             )}

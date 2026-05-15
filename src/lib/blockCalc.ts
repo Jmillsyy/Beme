@@ -26,7 +26,7 @@
 
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type { BlockCode } from '../types/blocks'
-import type { BlockTally, BondType, Wall, WallMakeup } from '../types/walls'
+import type { BlockTally, BondType, JunctionType, Wall, WallMakeup } from '../types/walls'
 
 // ---------- Modular constants (block face + mortar joint) ----------
 
@@ -156,25 +156,24 @@ const FRACTION_OPTIONS: FractionOption[] = [
 ]
 
 /**
- * Find the combination of end blocks (fixed), fraction blocks (optional), and body blocks
- * (variable count) that achieves a length closest to but ≥ wallLengthMm.
+ * Find the combination of fraction blocks (optional) and body blocks (variable count)
+ * that achieves a length closest to but ≥ wallLengthMm, given a fixed total end-block
+ * modular contribution.
  *
  * When fractions are ON:
  *   Tries 0, 1, or 2 fraction blocks (each independently one of {20.02, 20.22}).
  *   Picks the combination with the smallest overshoot vs wallLengthMm.
- *   Per the brief, fractions on both ends (e.g. a 20.22 on one end and a 20.02 on the other)
- *   typically get within a few mm of the actual length.
  *
  * When fractions are OFF:
  *   Uses body blocks only, rounded up. cutBlocks = 1 if the last block needs cutting.
  *
  * @param wallLengthMm Real-world wall length in millimetres
- * @param endModuleEach Modular length of the end block on each side (400 for 20.01, 200 for 20.03)
+ * @param endsTotalModular Sum of both ends' modular widths (e.g. 800 for 20.01+20.01, 600 for 20.01+20.03)
  * @param useFractions Whether fraction blocks are allowed
  */
 export function fitCourseLength(
   wallLengthMm: number,
-  endModuleEach: number,
+  endsTotalModular: number,
   useFractions: boolean
 ): CourseLengthFit {
   // We work in "modular" lengths: every block contributes (face width + mortar) mm.
@@ -182,7 +181,7 @@ export function fitCourseLength(
   // sum(blockWidths) + (N-1)*mortar. Equivalent to: sum(blockModulars) - mortar.
   // So "target total modular" = wallLengthMm + mortar.
   const targetTotal = wallLengthMm + MORTAR_MM
-  const endsTotal = 2 * endModuleEach
+  const endsTotal = endsTotalModular
 
   if (!useFractions) {
     const remainingForBody = targetTotal - endsTotal
@@ -245,50 +244,113 @@ export function fitCourseLength(
   )
 }
 
-// ---------- End termination plan ----------
+// ---------- End block plan (per end) ----------
 
-export type EndTerminationMode = 'alternating-stretcher' | 'full-stacked' | 'half-stacked'
+/**
+ * The end-block choice and modular width for a single wall end, for each course-parity.
+ *
+ * In stretcher bond:
+ *   - Free / T-junction / control-joint ends alternate (20.01 odd, 20.03 even).
+ *   - Corner ends use the makeup's corner block (20.01 or 20.21) on EVERY course
+ *     — per the brief's rule: at a corner, the 20.03 halves are substituted for full blocks.
+ *
+ * In stack bond:
+ *   - All ends use the same block top-to-bottom.
+ *   - Corner ends use the corner block.
+ *   - Free / T-junction / control-joint ends default to 20.01 for now (a future improvement
+ *     is to pick 20.01 vs 20.03 based on best length fit when free ends are involved).
+ */
+export interface EndPlan {
+  /** Block code at this end for odd courses (course 1, 3, …). */
+  oddBlock: BlockCode
+  /** Block code at this end for even courses (course 2, 4, …). */
+  evenBlock: BlockCode
+  /** Modular width (mm) of oddBlock. */
+  oddModular: number
+  /** Modular width (mm) of evenBlock. */
+  evenModular: number
+}
 
-export interface EndTerminationPlan {
-  bondType: BondType
-  mode: EndTerminationMode
-  /** Length fit for odd courses (or all courses for stack bond). */
-  fit: CourseLengthFit
-  /** Length fit for even courses (stretcher bond only — has one extra body block since the half-block ends are shorter). */
-  evenFit?: CourseLengthFit
+export function planEnd(
+  bondType: BondType,
+  junctionType: JunctionType,
+  cornerBlockCode: BlockCode
+): EndPlan {
+  if (bondType === 'stretcher') {
+    if (junctionType === 'corner') {
+      return {
+        oddBlock: cornerBlockCode,
+        evenBlock: cornerBlockCode,
+        oddModular: FULL_END_MODULE_MM,
+        evenModular: FULL_END_MODULE_MM,
+      }
+    }
+    // Free, T-junction, control-joint: alternating in stretcher
+    return {
+      oddBlock: '20.01',
+      evenBlock: '20.03',
+      oddModular: FULL_END_MODULE_MM,
+      evenModular: HALF_END_MODULE_MM,
+    }
+  }
+  // Stack bond
+  if (junctionType === 'corner') {
+    return {
+      oddBlock: cornerBlockCode,
+      evenBlock: cornerBlockCode,
+      oddModular: FULL_END_MODULE_MM,
+      evenModular: FULL_END_MODULE_MM,
+    }
+  }
+  // Stack bond free / T-junction / control-joint: simplification — always 20.01.
+  // TODO: implement best-fit picker that considers both ends together.
+  return {
+    oddBlock: '20.01',
+    evenBlock: '20.01',
+    oddModular: FULL_END_MODULE_MM,
+    evenModular: FULL_END_MODULE_MM,
+  }
+}
+
+// ---------- Wall plan (start end + end end + per-course fits) ----------
+
+export interface WallPlan {
+  startEnd: EndPlan
+  endEnd: EndPlan
+  /** Length fit (body count + fractions) for odd courses. */
+  oddCourseFit: CourseLengthFit
+  /** Length fit for even courses. May differ from oddCourseFit if end-block modulars differ between course parities. */
+  evenCourseFit: CourseLengthFit
 }
 
 /**
- * Plan the end terminations and length fit for a wall.
+ * Plan a wall: figure out end blocks per parity and length fit per course-type.
  *
- * Stretcher bond: courses alternate full ends (20.01, course 1) and half ends (20.03, course 2).
- *   The half-block end course needs one extra body block to compensate for the shorter end blocks.
- *   Both course types produce the same total wall length.
+ * If both ends are the same kind (e.g. both free, or both corner), the odd and even fits
+ * will be similar except for body count (in stretcher with alternating ends, even courses
+ * use 1 extra body block).
  *
- * Stack bond: pick whichever of full (20.01) or half (20.03) end blocks gives the smaller
- *   overshoot, and use that same end across all courses.
+ * If ends differ (e.g. one free, one corner), odd and even fits are computed independently —
+ * they may pick different fraction combinations or body counts to hit the wall length with
+ * the smallest overshoot.
  */
-export function planEndTerminations(
-  wallLengthMm: number,
-  bondType: BondType,
-  useFractions: boolean
-): EndTerminationPlan {
-  if (bondType === 'stretcher') {
-    const oddFit = fitCourseLength(wallLengthMm, FULL_END_MODULE_MM, useFractions)
-    const evenFit = fitCourseLength(wallLengthMm, HALF_END_MODULE_MM, useFractions)
-    return { bondType, mode: 'alternating-stretcher', fit: oddFit, evenFit }
-  }
+export function planWall(wall: Wall, makeup: WallMakeup): WallPlan {
+  const startEnd = planEnd(makeup.bondType, wall.startJunction.type, makeup.cornerBlockCode)
+  const endEnd = planEnd(makeup.bondType, wall.endJunction.type, makeup.cornerBlockCode)
+  const lengthMm = wallLengthMm(wall)
 
-  // Stack bond: try both end choices, pick the smaller overshoot
-  const fullFit = fitCourseLength(wallLengthMm, FULL_END_MODULE_MM, useFractions)
-  const halfFit = fitCourseLength(wallLengthMm, HALF_END_MODULE_MM, useFractions)
-  const fullOver = fullFit.actualLengthMm - wallLengthMm
-  const halfOver = halfFit.actualLengthMm - wallLengthMm
+  const oddCourseFit = fitCourseLength(
+    lengthMm,
+    startEnd.oddModular + endEnd.oddModular,
+    makeup.useFractions
+  )
+  const evenCourseFit = fitCourseLength(
+    lengthMm,
+    startEnd.evenModular + endEnd.evenModular,
+    makeup.useFractions
+  )
 
-  if (halfOver < fullOver) {
-    return { bondType, mode: 'half-stacked', fit: halfFit }
-  }
-  return { bondType, mode: 'full-stacked', fit: fullFit }
+  return { startEnd, endEnd, oddCourseFit, evenCourseFit }
 }
 
 // ---------- Per-course composition ----------
@@ -357,13 +419,18 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
 /**
  * Calculate the block tally for a single wall instance.
  *
- * Assumes free ends at both sides for now (corner / T-junction handling comes later).
+ * Each end of the wall is planned independently based on its junction state (free, corner,
+ * T-junction, control-joint). Corners in stretcher bond use the corner block on every course;
+ * other end types alternate (stretcher) or use the same block on every course (stack).
+ *
+ * Known limitation: when two walls meet at a corner, each currently counts an end block on its
+ * corner side, double-counting the shared corner column. A project-level correction will be
+ * added in a follow-up.
  */
 export function calculateWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   const heightMm = wall.heightMmOverride ?? makeup.heightMm
-  const lengthMm = wallLengthMm(wall)
   const stack = calculateCourseStack(heightMm)
-  const plan = planEndTerminations(lengthMm, makeup.bondType, makeup.useFractions)
+  const plan = planWall(wall, makeup)
   const courses = buildCourses(stack, makeup)
 
   const tally: BlockTally = {}
@@ -371,9 +438,26 @@ export function calculateWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   for (let i = 0; i < courses.length; i++) {
     const course = courses[i]
     const isOddCourse = i % 2 === 0 // courseIndex 0 = course 1 (odd)
-    const useEvenFit = plan.bondType === 'stretcher' && !isOddCourse
-    const fit = useEvenFit && plan.evenFit ? plan.evenFit : plan.fit
-    addCourseToTally(tally, course, fit, plan, isOddCourse)
+    const fit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
+    const startBlock = isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock
+    const endBlock = isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock
+
+    // Body blocks (this course's body block: 20.45 / 20.48 / 20.20 / 20.71 / 20.140)
+    addToTally(tally, course.bodyBlock, fit.bodyCount)
+
+    // Paired tiles (50.45 with 20.45 on the base course)
+    if (course.pairedTile && fit.bodyCount > 0) {
+      addToTally(tally, course.pairedTile, fit.bodyCount)
+    }
+
+    // Fraction blocks (length makeup)
+    for (const fracCode of fit.fractions) {
+      addToTally(tally, fracCode)
+    }
+
+    // End termination blocks (one per end)
+    addToTally(tally, startBlock)
+    addToTally(tally, endBlock)
   }
 
   return tally
@@ -384,36 +468,6 @@ export function wallLengthMm(wall: Wall): number {
   const dx = wall.endX - wall.startX
   const dy = wall.endY - wall.startY
   return Math.sqrt(dx * dx + dy * dy)
-}
-
-function addCourseToTally(
-  tally: BlockTally,
-  course: CourseSpec,
-  fit: CourseLengthFit,
-  plan: EndTerminationPlan,
-  isOddCourse: boolean
-): void {
-  // Body blocks (use this course's body block, e.g. 20.45 / 20.48 / 20.20 / 20.71 / 20.140)
-  addToTally(tally, course.bodyBlock, fit.bodyCount)
-
-  // Paired tiles (50.45 paired with 20.45 on the base course)
-  if (course.pairedTile && fit.bodyCount > 0) {
-    addToTally(tally, course.pairedTile, fit.bodyCount)
-  }
-
-  // Fraction blocks (length makeup)
-  for (const fracCode of fit.fractions) {
-    addToTally(tally, fracCode)
-  }
-
-  // End termination blocks (2 per course — one at each end)
-  let endBlock: BlockCode
-  if (plan.bondType === 'stretcher') {
-    endBlock = isOddCourse ? '20.01' : '20.03'
-  } else {
-    endBlock = plan.mode === 'full-stacked' ? '20.01' : '20.03'
-  }
-  addToTally(tally, endBlock, 2)
 }
 
 // ---------- Project-level aggregation ----------
