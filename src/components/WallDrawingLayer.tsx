@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
-import type { Wall } from '../types/walls'
+import type { Opening, Wall } from '../types/walls'
 
 interface Point {
   x: number
@@ -10,14 +10,20 @@ interface Point {
 
 interface WallDrawingLayerProps {
   walls: Wall[]
+  /** Openings on the current page (across all walls). */
+  openings: Opening[]
   visualWidth: number
   visualHeight: number
   /** Visual pixels per mm at the current zoom. */
   pxPerMmAtCurrentZoom: number
-  /** Whether drawing mode is active (clicking creates walls). */
+  /** Whether drawing-wall mode is active. */
   drawingMode: boolean
+  /** Whether placing-opening mode is active. */
+  placingOpening: boolean
   /** Currently selected wall id (null = nothing selected). */
   selectedWallId: string | null
+  /** Currently selected opening id (null = nothing selected). */
+  selectedOpeningId: string | null
   onWallAdded: (startMm: Point, endMm: Point) => void
   onWallSelect: (wallId: string | null) => void
   onWallEndpointMoved: (
@@ -25,10 +31,19 @@ interface WallDrawingLayerProps {
     which: 'start' | 'end',
     newPositionMm: Point
   ) => void
-  onCancel?: () => void
+  /** Called when both placement clicks are done. Width is the distance between the projected points along the wall. */
+  onOpeningPlaced: (
+    wallId: string,
+    startAlongWallMm: number,
+    widthMm: number
+  ) => void
+  onOpeningSelect: (openingId: string | null) => void
+  onCancelDraw?: () => void
 }
 
 const SNAP_THRESHOLD_PX = 12
+/** Max distance from a click to a wall line for opening-placement projection to snap to that wall. */
+const WALL_SNAP_THRESHOLD_PX = 20
 
 interface EndpointPixel {
   x: number
@@ -37,42 +52,62 @@ interface EndpointPixel {
   end: 'start' | 'end'
 }
 
+interface WallProjection {
+  wallId: string
+  /** Distance along the wall from its start, in mm. */
+  alongMm: number
+  /** Projected point in pixel coords. */
+  px: Point
+  /** Distance from the click to the wall line, in pixels. */
+  distFromLinePx: number
+}
+
 function distance(a: Point, b: Point) {
   const dx = b.x - a.x
   const dy = b.y - a.y
   return Math.sqrt(dx * dx + dy * dy)
 }
 
+function wallLengthMmOf(wall: Wall) {
+  const dx = wall.endX - wall.startX
+  const dy = wall.endY - wall.startY
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
 /**
- * Konva overlay for drawing, displaying, selecting and editing walls.
- *
- *   - drawingMode = true  →  click two points to create a new wall
- *   - drawingMode = false →  click a wall to select it, drag its endpoint handles
- *
- * All wall coordinates are stored in mm; the layer converts to current visual pixels.
+ * Konva overlay for drawing/selecting/editing walls + placing/displaying openings.
  */
 export default function WallDrawingLayer({
   walls,
+  openings,
   visualWidth,
   visualHeight,
   pxPerMmAtCurrentZoom,
   drawingMode,
+  placingOpening,
   selectedWallId,
+  selectedOpeningId,
   onWallAdded,
   onWallSelect,
   onWallEndpointMoved,
-  onCancel,
+  onOpeningPlaced,
+  onOpeningSelect,
+  onCancelDraw,
 }: WallDrawingLayerProps) {
   const [startPx, setStartPx] = useState<Point | null>(null)
   const [cursorPx, setCursorPx] = useState<Point | null>(null)
   const [snapTarget, setSnapTarget] = useState<EndpointPixel | null>(null)
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null)
-  /** Live preview while dragging an endpoint (so the line follows the cursor). */
   const [dragPreview, setDragPreview] = useState<{
     wallId: string
     which: 'start' | 'end'
     px: Point
   } | null>(null)
+
+  /** First click during opening placement. Subsequent clicks must be on the same wall. */
+  const [openingPlacementStart, setOpeningPlacementStart] = useState<WallProjection | null>(null)
+  /** Live projection while placing an opening (hover preview). */
+  const [openingHoverProjection, setOpeningHoverProjection] = useState<WallProjection | null>(null)
 
   const pxToMm = (px: number) => px / pxPerMmAtCurrentZoom
   const mmToPx = (mm: number) => mm * pxPerMmAtCurrentZoom
@@ -86,6 +121,54 @@ export default function WallDrawingLayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [walls, pxPerMmAtCurrentZoom]
   )
+
+  // ---------- Wall geometry helpers ----------
+
+  function projectOntoWall(clickPx: Point, wall: Wall): WallProjection | null {
+    const sx = mmToPx(wall.startX)
+    const sy = mmToPx(wall.startY)
+    const ex = mmToPx(wall.endX)
+    const ey = mmToPx(wall.endY)
+    const dx = ex - sx
+    const dy = ey - sy
+    const lenSq = dx * dx + dy * dy
+    if (lenSq === 0) return null
+    const t = ((clickPx.x - sx) * dx + (clickPx.y - sy) * dy) / lenSq
+    const tClamped = Math.max(0, Math.min(1, t))
+    const projX = sx + tClamped * dx
+    const projY = sy + tClamped * dy
+    const distFromLinePx = Math.sqrt((clickPx.x - projX) ** 2 + (clickPx.y - projY) ** 2)
+    const alongMm = tClamped * wallLengthMmOf(wall)
+    return { wallId: wall.id, alongMm, px: { x: projX, y: projY }, distFromLinePx }
+  }
+
+  function findClosestWallProjection(
+    clickPx: Point,
+    only?: string
+  ): WallProjection | null {
+    let best: WallProjection | null = null
+    for (const wall of walls) {
+      if (only && wall.id !== only) continue
+      const proj = projectOntoWall(clickPx, wall)
+      if (!proj) continue
+      if (proj.distFromLinePx > WALL_SNAP_THRESHOLD_PX) continue
+      if (!best || proj.distFromLinePx < best.distFromLinePx) {
+        best = proj
+      }
+    }
+    return best
+  }
+
+  /** A point along a wall, in pixel coords, given start-along-wall in mm. */
+  function pointAlongWallPx(wall: Wall, alongMm: number): Point {
+    const length = wallLengthMmOf(wall)
+    const t = length === 0 ? 0 : alongMm / length
+    const sx = mmToPx(wall.startX)
+    const sy = mmToPx(wall.startY)
+    const ex = mmToPx(wall.endX)
+    const ey = mmToPx(wall.endY)
+    return { x: sx + t * (ex - sx), y: sy + t * (ey - sy) }
+  }
 
   function findSnap(cursor: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): EndpointPixel | null {
     let closest: EndpointPixel | null = null
@@ -101,7 +184,7 @@ export default function WallDrawingLayer({
     return closest
   }
 
-  // Reset in-progress draw whenever drawing mode toggles off
+  // ---------- Cleanup on mode toggle ----------
   useEffect(() => {
     if (!drawingMode) {
       setStartPx(null)
@@ -110,7 +193,13 @@ export default function WallDrawingLayer({
     }
   }, [drawingMode])
 
-  // Esc cancels the current draw or deselects
+  useEffect(() => {
+    if (!placingOpening) {
+      setOpeningPlacementStart(null)
+      setOpeningHoverProjection(null)
+    }
+  }, [placingOpening])
+
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -118,52 +207,75 @@ export default function WallDrawingLayer({
           setStartPx(null)
           setCursorPx(null)
           setSnapTarget(null)
-          onCancel?.()
+          onCancelDraw?.()
+        } else if (placingOpening) {
+          setOpeningPlacementStart(null)
+          setOpeningHoverProjection(null)
+          onCancelDraw?.()
         } else if (selectedWallId) {
           onWallSelect(null)
+        } else if (selectedOpeningId) {
+          onOpeningSelect(null)
         }
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, selectedWallId, onCancel, onWallSelect])
+  }, [drawingMode, placingOpening, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
   }
 
-  /** Resolve raw stage coords through snap (returns the snapped position if any). */
   function resolveSnap(pos: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): Point {
     const snap = findSnap(pos, excludeWallId, excludeEnd)
     return snap ? { x: snap.x, y: snap.y } : pos
   }
 
-  // ---- Drawing mode events ----
+  // ---------- Stage events ----------
 
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>) {
-    if (!drawingMode) return
     const stage = e.target.getStage()
     if (!stage) return
     const raw = stage.getPointerPosition()
     if (!raw) return
-    const pos = resolveSnap(raw)
 
-    if (!startPx) {
-      setStartPx(pos)
-      setCursorPx(pos)
+    if (drawingMode) {
+      const pos = resolveSnap(raw)
+      if (!startPx) {
+        setStartPx(pos)
+        setCursorPx(pos)
+        return
+      }
+      if (distance(startPx, pos) < 5) return
+      onWallAdded(
+        { x: pxToMm(startPx.x), y: pxToMm(startPx.y) },
+        { x: pxToMm(pos.x), y: pxToMm(pos.y) }
+      )
+      setStartPx(null)
+      setCursorPx(null)
+      setSnapTarget(null)
       return
     }
 
-    const pxDist = distance(startPx, pos)
-    if (pxDist < 5) return
-
-    onWallAdded(
-      { x: pxToMm(startPx.x), y: pxToMm(startPx.y) },
-      { x: pxToMm(pos.x), y: pxToMm(pos.y) }
-    )
-    setStartPx(null)
-    setCursorPx(null)
-    setSnapTarget(null)
+    if (placingOpening) {
+      const onlyWall = openingPlacementStart?.wallId
+      const proj = findClosestWallProjection(raw, onlyWall)
+      if (!proj) return
+      if (!openingPlacementStart) {
+        setOpeningPlacementStart(proj)
+        return
+      }
+      // Second click — compute opening start + width
+      const a = openingPlacementStart.alongMm
+      const b = proj.alongMm
+      const startAlong = Math.min(a, b)
+      const widthMm = Math.abs(b - a)
+      if (widthMm < 100) return // ignore degenerate
+      onOpeningPlaced(proj.wallId, startAlong, widthMm)
+      setOpeningPlacementStart(null)
+      setOpeningHoverProjection(null)
+    }
   }
 
   function handleStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
@@ -175,25 +287,22 @@ export default function WallDrawingLayer({
     if (drawingMode) {
       setSnapTarget(findSnap(raw))
       setCursorPx(resolveSnap(raw))
+    } else if (placingOpening) {
+      const onlyWall = openingPlacementStart?.wallId
+      const proj = findClosestWallProjection(raw, onlyWall)
+      setOpeningHoverProjection(proj)
     }
   }
 
-  /**
-   * Click on empty stage area:
-   *   - Drawing mode: handled by handleStageClick
-   *   - Selection mode: deselect any selected wall
-   * The DOM event still bubbles to the container for pan to work.
-   */
   function handleStageMouseDown(e: Konva.KonvaEventObject<MouseEvent>) {
-    if (drawingMode) return
-    // Click landed on the Stage itself, not a shape
+    if (drawingMode || placingOpening) return
     if (e.target === e.target.getStage()) {
       if (selectedWallId) onWallSelect(null)
-      // Don't stopPropagation — let it bubble for pan
+      if (selectedOpeningId) onOpeningSelect(null)
     }
   }
 
-  // ---- Endpoint drag ----
+  // ---------- Endpoint drag ----------
 
   function handleEndpointDragMove(
     e: Konva.KonvaEventObject<DragEvent>,
@@ -203,7 +312,6 @@ export default function WallDrawingLayer({
     const pos = e.target.position()
     const snap = findSnap(pos, wallId, which)
     const resolved = snap ? { x: snap.x, y: snap.y } : pos
-    // Keep handle visually pinned to the snap target if snapped
     if (snap) e.target.position(resolved)
     setSnapTarget(snap)
     setDragPreview({ wallId, which, px: resolved })
@@ -226,7 +334,6 @@ export default function WallDrawingLayer({
     return `${Math.round(mm)} mm`
   }
 
-  /** Effective position for a wall's endpoint, considering live drag preview. */
   function effectiveEndpoint(wall: Wall, which: 'start' | 'end'): Point {
     if (dragPreview?.wallId === wall.id && dragPreview.which === which) {
       return dragPreview.px
@@ -235,6 +342,10 @@ export default function WallDrawingLayer({
       ? { x: mmToPx(wall.startX), y: mmToPx(wall.startY) }
       : { x: mmToPx(wall.endX), y: mmToPx(wall.endY) }
   }
+
+  const wallsById = useMemo(() => new Map(walls.map((w) => [w.id, w])), [walls])
+
+  const containerCursor = drawingMode || placingOpening ? 'crosshair' : 'inherit'
 
   return (
     <Stage
@@ -245,14 +356,14 @@ export default function WallDrawingLayer({
         top: 0,
         left: 0,
         pointerEvents: 'auto',
-        cursor: drawingMode ? 'crosshair' : 'inherit',
+        cursor: containerCursor,
       }}
       onClick={handleStageClick}
       onMouseMove={handleStageMouseMove}
       onMouseDown={handleStageMouseDown}
     >
       <Layer>
-        {/* Existing walls */}
+        {/* Walls */}
         {walls.map((wall) => {
           const start = effectiveEndpoint(wall, 'start')
           const end = effectiveEndpoint(wall, 'end')
@@ -264,7 +375,7 @@ export default function WallDrawingLayer({
           const midY = (start.y + end.y) / 2
 
           const isSelected = wall.id === selectedWallId
-          const isHovered = wall.id === hoveredWallId && !drawingMode
+          const isHovered = wall.id === hoveredWallId && !drawingMode && !placingOpening
           const strokeColor = isSelected ? '#3b82f6' : '#ED7D31'
           const strokeWidth = isSelected ? 5 : isHovered ? 5 : 4
           const startIsCorner = wall.startJunction.type === 'corner'
@@ -274,14 +385,12 @@ export default function WallDrawingLayer({
             <Group
               key={wall.id}
               onClick={(e) => {
-                if (drawingMode) return
+                if (drawingMode || placingOpening) return
                 onWallSelect(wall.id)
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
-                if (drawingMode) return
-                // Prevent the pan handler on the container from firing when interacting
-                // with anything inside this wall (line or endpoint markers).
+                if (drawingMode || placingOpening) return
                 e.evt.stopPropagation()
               }}
             >
@@ -291,18 +400,17 @@ export default function WallDrawingLayer({
                 strokeWidth={strokeWidth}
                 hitStrokeWidth={14}
                 onMouseEnter={(e) => {
-                  if (!drawingMode) {
+                  if (!drawingMode && !placingOpening) {
                     setHoveredWallId(wall.id)
                     setCursor(e.target.getStage(), 'pointer')
                   }
                 }}
                 onMouseLeave={(e) => {
                   setHoveredWallId(null)
-                  setCursor(e.target.getStage(), drawingMode ? 'crosshair' : 'inherit')
+                  setCursor(e.target.getStage(), containerCursor)
                 }}
               />
 
-              {/* Start endpoint marker */}
               {renderEndpointMarker({
                 pos: start,
                 isCorner: startIsCorner,
@@ -311,10 +419,9 @@ export default function WallDrawingLayer({
                 onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'start'),
                 onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'start'),
                 onMouseEnterStage: (ev) => setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
-                onMouseLeaveStage: (ev) => setCursor(ev.target.getStage(), drawingMode ? 'crosshair' : 'inherit'),
+                onMouseLeaveStage: (ev) => setCursor(ev.target.getStage(), containerCursor),
               })}
 
-              {/* End endpoint marker */}
               {renderEndpointMarker({
                 pos: end,
                 isCorner: endIsCorner,
@@ -323,7 +430,7 @@ export default function WallDrawingLayer({
                 onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'end'),
                 onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'end'),
                 onMouseEnterStage: (ev) => setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
-                onMouseLeaveStage: (ev) => setCursor(ev.target.getStage(), drawingMode ? 'crosshair' : 'inherit'),
+                onMouseLeaveStage: (ev) => setCursor(ev.target.getStage(), containerCursor),
               })}
 
               <Text
@@ -339,7 +446,108 @@ export default function WallDrawingLayer({
           )
         })}
 
-        {/* Drawing preview line */}
+        {/* Openings */}
+        {openings.map((opening) => {
+          const wall = wallsById.get(opening.wallId)
+          if (!wall) return null
+          const start = pointAlongWallPx(wall, opening.startAlongWallMm)
+          const end = pointAlongWallPx(wall, opening.startAlongWallMm + opening.widthMm)
+          const midX = (start.x + end.x) / 2
+          const midY = (start.y + end.y) / 2
+          const isSelected = opening.id === selectedOpeningId
+
+          return (
+            <Group
+              key={opening.id}
+              onClick={(e) => {
+                if (drawingMode || placingOpening) return
+                onOpeningSelect(opening.id)
+                e.cancelBubble = true
+              }}
+              onMouseDown={(e) => {
+                if (drawingMode || placingOpening) return
+                e.evt.stopPropagation()
+              }}
+            >
+              {/* Background "gap" rectangle covering the wall segment */}
+              <Line
+                points={[start.x, start.y, end.x, end.y]}
+                stroke={isSelected ? '#1e40af' : '#FEF3C7'}
+                strokeWidth={isSelected ? 8 : 8}
+                hitStrokeWidth={14}
+              />
+              {/* Outline */}
+              <Line
+                points={[start.x, start.y, end.x, end.y]}
+                stroke={isSelected ? '#1e40af' : '#D97706'}
+                strokeWidth={2}
+                dash={[8, 4]}
+                listening={false}
+              />
+              <Circle x={start.x} y={start.y} radius={4} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1.5} listening={false} />
+              <Circle x={end.x} y={end.y} radius={4} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1.5} listening={false} />
+              <Text
+                x={midX - 35}
+                y={midY + 10}
+                text={`${Math.round(opening.widthMm)} × ${Math.round(opening.heightMm)}`}
+                fontSize={12}
+                fill={isSelected ? '#1e40af' : '#92400E'}
+                fontStyle="bold"
+                listening={false}
+              />
+            </Group>
+          )
+        })}
+
+        {/* Opening placement preview */}
+        {placingOpening && openingPlacementStart && (
+          <Group listening={false}>
+            <Circle
+              x={openingPlacementStart.px.x}
+              y={openingPlacementStart.px.y}
+              radius={6}
+              fill="#D97706"
+              stroke="white"
+              strokeWidth={2}
+            />
+            {openingHoverProjection && openingHoverProjection.wallId === openingPlacementStart.wallId && (
+              <>
+                <Line
+                  points={[
+                    openingPlacementStart.px.x,
+                    openingPlacementStart.px.y,
+                    openingHoverProjection.px.x,
+                    openingHoverProjection.px.y,
+                  ]}
+                  stroke="#D97706"
+                  strokeWidth={6}
+                  opacity={0.5}
+                />
+                <Text
+                  x={(openingPlacementStart.px.x + openingHoverProjection.px.x) / 2 + 8}
+                  y={(openingPlacementStart.px.y + openingHoverProjection.px.y) / 2 + 10}
+                  text={`${Math.round(Math.abs(openingHoverProjection.alongMm - openingPlacementStart.alongMm))} mm wide`}
+                  fontSize={12}
+                  fill="#92400E"
+                  fontStyle="bold"
+                />
+              </>
+            )}
+          </Group>
+        )}
+        {placingOpening && !openingPlacementStart && openingHoverProjection && (
+          <Circle
+            x={openingHoverProjection.px.x}
+            y={openingHoverProjection.px.y}
+            radius={6}
+            stroke="#D97706"
+            strokeWidth={2}
+            fill="rgba(217, 119, 6, 0.3)"
+            listening={false}
+          />
+        )}
+
+        {/* Wall drawing preview */}
         {drawingMode && startPx && (
           <Group listening={false}>
             <Circle x={startPx.x} y={startPx.y} radius={5} fill="#ED7D31" stroke="white" strokeWidth={2} />
@@ -410,7 +618,6 @@ function renderEndpointMarker({
   const radius = isSelected ? 7 : 5
   const fill = isSelected ? '#3b82f6' : isCorner ? '#10b981' : '#ED7D31'
 
-  // Corner ends use a square marker; free ends use a circle
   if (isCorner && !isSelected) {
     const size = 12
     return (

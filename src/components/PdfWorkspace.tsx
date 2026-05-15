@@ -5,9 +5,10 @@ import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
-import type { Wall, WallMakeup } from '../types/walls'
+import type { Opening, Wall, WallMakeup } from '../types/walls'
 import { createDefaultWallMakeup } from '../lib/makeups'
 import { detectJunctionsForNewWall, recomputeAllJunctions } from '../lib/junctions'
+import { selectBlockLintel } from '../lib/lintels'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
@@ -65,6 +66,19 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   const [drawingMode, setDrawingMode] = useState(false)
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
   const drawingModeRef = useRef(false)
+
+  // ---------- Opening state (block mode) ----------
+  const [openingsByPage, setOpeningsByPage] = useState<Record<number, Opening[]>>({})
+  const [placingOpening, setPlacingOpening] = useState(false)
+  const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(null)
+  const [pendingOpening, setPendingOpening] = useState<{
+    wallId: string
+    startAlongWallMm: number
+    widthMm: number
+  } | null>(null)
+  const placingOpeningRef = useRef(false)
+  const [openingSillHeightMm, setOpeningSillHeightMm] = useState(0)
+  const [openingHeadHeightMm, setOpeningHeadHeightMm] = useState(300)
   const [makeups, setMakeups] = useState<WallMakeup[]>(() => [
     createDefaultWallMakeup({ name: 'External 2400mm stretcher' }),
   ])
@@ -80,8 +94,22 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
     drawingModeRef.current = drawingMode
   }, [drawingMode])
 
+  useEffect(() => {
+    placingOpeningRef.current = placingOpening
+  }, [placingOpening])
+
   const allWalls = useMemo(() => Object.values(wallsByPage).flat(), [wallsByPage])
   const currentPageWalls = wallsByPage[currentPage] ?? []
+  const allOpenings = useMemo(() => Object.values(openingsByPage).flat(), [openingsByPage])
+  const currentPageOpenings = openingsByPage[currentPage] ?? []
+  const selectedOpening = useMemo(
+    () => (selectedOpeningId ? currentPageOpenings.find((o) => o.id === selectedOpeningId) : null),
+    [selectedOpeningId, currentPageOpenings]
+  )
+  const pendingOpeningWall = useMemo(
+    () => (pendingOpening ? currentPageWalls.find((w) => w.id === pendingOpening.wallId) : null),
+    [pendingOpening, currentPageWalls]
+  )
 
   const wallCountsByMakeupId = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -146,6 +174,51 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
     })
   }
 
+  // ---------- Opening handlers ----------
+
+  function handleOpeningPlaced(wallId: string, startAlongWallMm: number, widthMm: number) {
+    setPendingOpening({ wallId, startAlongWallMm, widthMm })
+    setPlacingOpening(false)
+  }
+
+  function handleSavePendingOpening() {
+    if (!pendingOpening) return
+    const wall = currentPageWalls.find((w) => w.id === pendingOpening.wallId)
+    if (!wall) return
+    const makeup = makeupsById[wall.makeupId]
+    const wallHeightMm = wall.heightMmOverride ?? makeup?.heightMm ?? 0
+    const computedOpeningHeightMm = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
+    if (computedOpeningHeightMm < 100) return // safety net — UI should disable Save before this
+    const newOpening: Opening = {
+      id:
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `o-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      wallId: pendingOpening.wallId,
+      startAlongWallMm: pendingOpening.startAlongWallMm,
+      widthMm: pendingOpening.widthMm,
+      heightMm: computedOpeningHeightMm,
+      sillHeightMm: openingSillHeightMm,
+    }
+    setOpeningsByPage((prev) => ({
+      ...prev,
+      [currentPage]: [...(prev[currentPage] ?? []), newOpening],
+    }))
+    setPendingOpening(null)
+  }
+
+  function handleCancelPendingOpening() {
+    setPendingOpening(null)
+  }
+
+  function handleOpeningDelete(openingId: string) {
+    setOpeningsByPage((prev) => {
+      const pageOpenings = prev[currentPage] ?? []
+      return { ...prev, [currentPage]: pageOpenings.filter((o) => o.id !== openingId) }
+    })
+    setSelectedOpeningId(null)
+  }
+
   function clearAllWalls() {
     if (allWalls.length === 0) return
     if (!window.confirm(`Delete all ${allWalls.length} walls in this project?`)) return
@@ -181,26 +254,27 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
     setSelectedWallId(null)
   }
 
-  // Delete / Backspace removes the selected wall
+  // Delete / Backspace removes the selected wall or selected opening
   useEffect(() => {
-    if (!selectedWallId) return
+    if (!selectedWallId && !selectedOpeningId) return
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        // Skip if the user is typing in an input or textarea
         const tgt = e.target as HTMLElement | null
         if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return
         e.preventDefault()
-        if (selectedWallId) handleWallDelete(selectedWallId)
+        if (selectedOpeningId) handleOpeningDelete(selectedOpeningId)
+        else if (selectedWallId) handleWallDelete(selectedWallId)
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWallId])
+  }, [selectedWallId, selectedOpeningId])
 
   // Clear selection when leaving the page or replacing PDF
   useEffect(() => {
     setSelectedWallId(null)
+    setSelectedOpeningId(null)
   }, [currentPage, pdfFile])
 
   // Zoom — two values:
@@ -369,7 +443,7 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   }, [pdfFile])
 
   function handlePanMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (calibratingRef.current || drawingModeRef.current) return
+    if (calibratingRef.current || drawingModeRef.current || placingOpeningRef.current) return
     if (e.button !== 0) return // only left mouse button
     const container = containerRef.current
     if (!container) return
@@ -693,7 +767,12 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={() => setDrawingMode((v) => !v)}
+              onClick={() => {
+                setDrawingMode((v) => !v)
+                setPlacingOpening(false)
+                setSelectedWallId(null)
+                setSelectedOpeningId(null)
+              }}
               disabled={!currentScale || calibrating}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 drawingMode
@@ -702,6 +781,22 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
               }`}
             >
               {drawingMode ? 'Stop drawing' : 'Draw wall'}
+            </button>
+            <button
+              onClick={() => {
+                setPlacingOpening((v) => !v)
+                setDrawingMode(false)
+                setSelectedWallId(null)
+                setSelectedOpeningId(null)
+              }}
+              disabled={!currentScale || calibrating || currentPageWalls.length === 0}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                placingOpening
+                  ? 'bg-amber-700 text-white hover:bg-amber-800'
+                  : 'bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed'
+              }`}
+            >
+              {placingOpening ? 'Cancel opening' : '+ Add opening'}
             </button>
             {allWalls.length > 0 && (
               <button
@@ -720,6 +815,146 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
           Click two points on the plan to draw a wall. Press <kbd className="px-1.5 py-0.5 rounded border border-beme-300 bg-white text-xs font-mono">Esc</kbd> to cancel.
         </div>
       )}
+
+      {placingOpening && (
+        <div className="mb-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-800">
+          Click two points along the same wall to define the opening. Press{' '}
+          <kbd className="px-1.5 py-0.5 rounded border border-amber-300 bg-white text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
+      {/* Pending opening form (after the two placement clicks) */}
+      {pendingOpening && pendingOpeningWall && (() => {
+        const pendingMakeup = makeupsById[pendingOpeningWall.makeupId]
+        const wallHeightMm = pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
+        const computedOpeningHeightMm = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
+        const lintelBlock = openingHeadHeightMm > 0 ? selectBlockLintel(openingHeadHeightMm).code : null
+        const tooSmall = computedOpeningHeightMm < 100
+        return (
+          <div className="mb-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-800">
+            <div className="font-medium mb-3">
+              Opening on a {Math.round(wallHeightMm)}mm wall · {Math.round(pendingOpening.widthMm)}mm wide
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="text-sm">
+                <span className="block text-amber-700 mb-1">Sill height (mm)</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="50"
+                  value={openingSillHeightMm}
+                  onChange={(e) => setOpeningSillHeightMm(parseInt(e.target.value || '0', 10))}
+                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-white w-28 focus:outline-none focus:border-amber-500"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="block text-amber-700 mb-1">Head height (mm)</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="50"
+                  value={openingHeadHeightMm}
+                  onChange={(e) => setOpeningHeadHeightMm(parseInt(e.target.value || '0', 10))}
+                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-white w-28 focus:outline-none focus:border-amber-500"
+                />
+              </label>
+              <button
+                onClick={handleSavePendingOpening}
+                disabled={tooSmall}
+                className="px-4 py-1.5 rounded-lg bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+              >
+                Save opening
+              </button>
+              <button
+                onClick={handleCancelPendingOpening}
+                className="px-4 py-1.5 rounded-lg border border-amber-300 text-sm hover:bg-amber-100 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+
+            {/* Live breakdown of wall composition with this opening */}
+            <div className="mt-3 px-3 py-2 bg-white border border-amber-200 rounded-lg text-xs">
+              <div className="font-mono text-amber-800 leading-relaxed">
+                <div>
+                  <span className="text-amber-500">└─</span> Head (above opening):{' '}
+                  <span className="font-semibold">{Math.round(openingHeadHeightMm)}mm</span>{' '}
+                  {lintelBlock ? (
+                    <span className="text-amber-600">→ Lintel {lintelBlock}</span>
+                  ) : (
+                    <span className="text-red-600">→ no lintel</span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-amber-500">│</span> Opening (computed):{' '}
+                  <span className={tooSmall ? 'text-red-600 font-semibold' : 'font-semibold'}>
+                    {Math.round(pendingOpening.widthMm)} × {Math.round(computedOpeningHeightMm)}mm
+                  </span>
+                </div>
+                <div>
+                  <span className="text-amber-500">└─</span> Sill (wall below):{' '}
+                  <span className="font-semibold">{Math.round(openingSillHeightMm)}mm</span>{' '}
+                  <span className="text-amber-600">— from floor</span>
+                </div>
+              </div>
+              {tooSmall && (
+                <div className="mt-1 text-red-600">
+                  Sill + Head leave less than 100mm for the opening on a {Math.round(wallHeightMm)}mm wall.
+                  Reduce one of them.
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-amber-700 mt-2">
+              Typical door: sill <strong>0</strong>, head <strong>300</strong> (gives a 2100mm opening on a 2400mm
+              wall). Typical window: sill <strong>900</strong>, head <strong>300</strong> (gives a 1200mm opening
+              on a 2400mm wall).
+            </p>
+          </div>
+        )
+      })()}
+
+      {/* Selected opening banner */}
+      {mode === 'block' && selectedOpening && !placingOpening && !drawingMode && (() => {
+        const selWall = currentPageWalls.find((w) => w.id === selectedOpening.wallId)
+        const selMakeup = selWall ? makeupsById[selWall.makeupId] : undefined
+        const selWallHeightMm = selWall?.heightMmOverride ?? selMakeup?.heightMm ?? 0
+        const selHead = selWallHeightMm - selectedOpening.sillHeightMm - selectedOpening.heightMm
+        const selLintel = selHead > 0 ? selectBlockLintel(selHead).code : null
+        return (
+          <div className="mb-3 px-4 py-3 bg-blue-50 border border-blue-300 rounded-lg text-sm text-blue-700 flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <div className="font-medium">
+                Opening: {Math.round(selectedOpening.widthMm)} × {Math.round(selectedOpening.heightMm)} mm
+              </div>
+              <div className="text-xs text-blue-600 mt-0.5">
+                Sill {Math.round(selectedOpening.sillHeightMm)}mm · Head{' '}
+                {Math.round(selHead)}mm
+                {selLintel && <span> · Lintel {selLintel}</span>} · on a{' '}
+                {Math.round(selWallHeightMm)}mm wall
+              </div>
+              <div className="text-xs text-blue-600 mt-0.5">
+                Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-blue-300 bg-white text-xs font-mono">Del</kbd> to remove.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleOpeningDelete(selectedOpening.id)}
+                className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 transition-colors"
+              >
+                Delete opening
+              </button>
+              <button
+                onClick={() => setSelectedOpeningId(null)}
+                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+              >
+                Deselect
+              </button>
+            </div>
+          </div>
+        )
+      })()}
 
       {mode === 'block' && selectedWall && !drawingMode && (
         <div className="mb-3 px-4 py-3 bg-blue-50 border border-blue-300 rounded-lg text-sm text-blue-700 flex items-center justify-between flex-wrap gap-2">
@@ -860,7 +1095,7 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
         className="flex-1 border border-neutral-200 rounded-xl overflow-auto bg-neutral-100 min-h-[400px] max-h-[80vh]"
-        style={{ cursor: calibrating || drawingMode ? 'crosshair' : 'grab' }}
+        style={{ cursor: calibrating || drawingMode || placingOpening ? 'crosshair' : 'grab' }}
       >
         <div className="flex justify-center" style={{ minWidth: 'max-content' }}>
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
@@ -953,15 +1188,29 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
             {mode === 'block' && visualPageHeight !== null && currentScale && (
               <WallDrawingLayer
                 walls={currentPageWalls}
+                openings={currentPageOpenings}
                 visualWidth={visualPageWidth}
                 visualHeight={visualPageHeight}
                 pxPerMmAtCurrentZoom={currentScale * zoom}
                 drawingMode={drawingMode}
+                placingOpening={placingOpening}
                 selectedWallId={selectedWallId}
+                selectedOpeningId={selectedOpeningId}
                 onWallAdded={handleWallAdded}
-                onWallSelect={setSelectedWallId}
+                onWallSelect={(id) => {
+                  setSelectedWallId(id)
+                  if (id) setSelectedOpeningId(null)
+                }}
                 onWallEndpointMoved={handleWallEndpointMoved}
-                onCancel={() => setDrawingMode(false)}
+                onOpeningPlaced={handleOpeningPlaced}
+                onOpeningSelect={(id) => {
+                  setSelectedOpeningId(id)
+                  if (id) setSelectedWallId(null)
+                }}
+                onCancelDraw={() => {
+                  setDrawingMode(false)
+                  setPlacingOpening(false)
+                }}
               />
             )}
           </div>
@@ -971,7 +1220,7 @@ export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
 
       {/* Block tally panel (block mode only) */}
       {mode === 'block' && (
-        <BlockTallyPanel walls={allWalls} makeupsById={makeupsById} />
+        <BlockTallyPanel walls={allWalls} makeupsById={makeupsById} openings={allOpenings} />
       )}
     </div>
   )

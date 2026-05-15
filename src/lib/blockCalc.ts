@@ -26,8 +26,9 @@
 
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type { BlockCode } from '../types/blocks'
-import type { BlockTally, BondType, JunctionType, Wall, WallMakeup } from '../types/walls'
+import type { BlockTally, BondType, JunctionType, Opening, Wall, WallMakeup } from '../types/walls'
 import { findCornerPoints } from './junctions'
+import { selectBlockLintel } from './lintels'
 
 // ---------- Modular constants (block face + mortar joint) ----------
 
@@ -431,7 +432,7 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
 // ---------- Wall tally ----------
 
 /**
- * Calculate the block tally for a single wall instance.
+ * Calculate the block tally for a single wall instance, with optional openings subtracted.
  *
  * Each end of the wall is planned independently based on its junction state (free, corner,
  * T-junction, control-joint). Corners in stretcher bond use the corner block on every course;
@@ -441,7 +442,11 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
  * of end blocks. The project-level `calculateProjectTally` subtracts the duplicate column to
  * give the correct physical count.
  */
-export function calculateWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
+export function calculateWallTally(
+  wall: Wall,
+  makeup: WallMakeup,
+  openings: Opening[] = []
+): BlockTally {
   const heightMm = wall.heightMmOverride ?? makeup.heightMm
   const stack = calculateCourseStack(heightMm)
   const plan = planWall(wall, makeup)
@@ -456,25 +461,125 @@ export function calculateWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
     const startBlock = isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock
     const endBlock = isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock
 
-    // Body blocks (this course's body block: 20.45 / 20.48 / 20.20 / 20.71 / 20.140)
     addToTally(tally, course.bodyBlock, fit.bodyCount)
 
-    // Paired tiles (50.45 with 20.45 on the base course)
     if (course.pairedTile && fit.bodyCount > 0) {
       addToTally(tally, course.pairedTile, fit.bodyCount)
     }
 
-    // Fraction blocks (length makeup)
     for (const fracCode of fit.fractions) {
       addToTally(tally, fracCode)
     }
 
-    // End termination blocks (one per end)
     addToTally(tally, startBlock)
     addToTally(tally, endBlock)
   }
 
+  for (const opening of openings) {
+    applyOpeningAdjustments(tally, opening, wall, makeup, courses)
+  }
+
   return tally
+}
+
+/**
+ * Apply an opening's block-tally adjustments per the brief's refined rules.
+ *
+ * Jambs (sides of opening) — alternate with the wall's course parity in stretcher bond:
+ *   Odd course → 20.01 (full), Even course → 20.03 (half). 2 jambs per course.
+ *   In stack bond → always 20.01 (no alternation).
+ *
+ * Body subtraction per opening course (stretcher):
+ *   Odd  course: −(2 + ceil(W/400))  body blocks
+ *   Even course: −(1 + ceil(W/400))  body blocks  (smaller 20.03 jambs mean fewer net bodies lost)
+ *   Stack bond:  −(2 + ceil(W/400))  per course (same modular jambs as bodies)
+ *
+ * Head area — lintel slab fills (W + 2 × 200mm bearing) horizontally × headHeight vertically:
+ *   Lintels are stood UP with 190mm face × variable height (190 / 290 / 390).
+ *   Horizontal count = ceil(lintelSpanMm / 200)
+ *   Vertical count   = ceil(headHeightMm / lintelVerticalModule)
+ *   Total lintels    = horizontal × vertical
+ *   Body subtraction per head course = ceil((W + 400) / 400)
+ *
+ * The per-course bodyBlock is read from the courses array (so an opening that covers the
+ * base course subtracts 20.45 + 50.45 instead of 20.48, etc.).
+ */
+function applyOpeningAdjustments(
+  tally: BlockTally,
+  opening: Opening,
+  wall: Wall,
+  makeup: WallMakeup,
+  courses: CourseSpec[]
+): void {
+  const wallHeightMm = wall.heightMmOverride ?? makeup.heightMm
+
+  const sillCoursesFloor = Math.floor(opening.sillHeightMm / COURSE_MODULE_MM)
+  const openingCourses = Math.max(0, Math.floor(opening.heightMm / COURSE_MODULE_MM))
+  if (openingCourses === 0) return
+
+  const blocksAcrossOpening = Math.ceil(opening.widthMm / BODY_BLOCK_MODULE_MM)
+  const isStretcher = makeup.bondType === 'stretcher'
+
+  /** Subtract `n` of the actual course's body block (and paired tile if present). */
+  function subtractCourseBody(courseIdx: number, n: number) {
+    const course = courses[courseIdx]
+    if (!course || n <= 0) return
+    const code = course.bodyBlock
+    const cur = tally[code] ?? 0
+    const next = Math.max(0, cur - n)
+    if (next > 0) tally[code] = next
+    else delete tally[code]
+    if (course.pairedTile) {
+      const tileCur = tally[course.pairedTile] ?? 0
+      const tileNext = Math.max(0, tileCur - n)
+      if (tileNext > 0) tally[course.pairedTile] = tileNext
+      else delete tally[course.pairedTile]
+    }
+  }
+
+  // ---- Opening area: jambs + body subtraction per course (parity-aware) ----
+  for (let i = 0; i < openingCourses; i++) {
+    const wallCourseNumber = sillCoursesFloor + i + 1 // 1-indexed from wall base
+    const courseIdx = sillCoursesFloor + i
+    const isOddCourse = wallCourseNumber % 2 === 1
+
+    let jambCode: BlockCode
+    let bodyToSubtract: number
+
+    if (isStretcher) {
+      jambCode = isOddCourse ? '20.01' : '20.03'
+      bodyToSubtract = (isOddCourse ? 2 : 1) + blocksAcrossOpening
+    } else {
+      jambCode = '20.01'
+      bodyToSubtract = 2 + blocksAcrossOpening
+    }
+
+    addToTally(tally, jambCode, 2)
+    subtractCourseBody(courseIdx, bodyToSubtract)
+  }
+
+  // ---- Head area: lintels + body subtraction per head course ----
+  const headHeightMm = wallHeightMm - opening.sillHeightMm - opening.heightMm
+  if (headHeightMm <= 0) return
+
+  const lintel = selectBlockLintel(headHeightMm)
+  const bearingMm = 200
+  const lintelSpanMm = opening.widthMm + 2 * bearingMm
+  const horizontalLintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)
+  const verticalLintelCount = Math.ceil(headHeightMm / lintel.verticalModuleMm)
+  const lintelTotal = horizontalLintelCount * verticalLintelCount
+  addToTally(tally, lintel.code, lintelTotal)
+
+  // Body subtraction in head area — per head course, bodies within the lintel span are replaced
+  const headStartIdx = sillCoursesFloor + openingCourses
+  const headCoursesNeeded = Math.ceil(headHeightMm / COURSE_MODULE_MM)
+  const headCoursesAvailable = Math.max(0, courses.length - headStartIdx)
+  const headCoursesToUse = Math.min(headCoursesNeeded, headCoursesAvailable)
+  const bodyPerHeadCourse = Math.ceil((opening.widthMm + 400) / BODY_BLOCK_MODULE_MM)
+
+  for (let i = 0; i < headCoursesToUse; i++) {
+    subtractCourseBody(headStartIdx + i, bodyPerHeadCourse)
+  }
 }
 
 /** Real-world wall length in mm (from start to end coordinates). */
@@ -500,12 +605,21 @@ export function wallLengthMm(wall: Wall): number {
  */
 export function calculateProjectTally(
   walls: Wall[],
-  makeupsById: Record<string, WallMakeup>
+  makeupsById: Record<string, WallMakeup>,
+  openings: Opening[] = []
 ): BlockTally {
+  // Group openings by wall id once
+  const openingsByWallId: Record<string, Opening[]> = {}
+  for (const op of openings) {
+    if (!openingsByWallId[op.wallId]) openingsByWallId[op.wallId] = []
+    openingsByWallId[op.wallId].push(op)
+  }
+
   const wallTallies = walls
     .map((wall) => {
       const makeup = makeupsById[wall.makeupId]
-      return makeup ? calculateWallTally(wall, makeup) : null
+      if (!makeup) return null
+      return calculateWallTally(wall, makeup, openingsByWallId[wall.id] ?? [])
     })
     .filter((t): t is BlockTally => t !== null)
   const summed = combineTallies(...wallTallies)

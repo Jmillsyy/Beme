@@ -26,9 +26,10 @@ export type BlockCode =
   | '20.21' // Knockout Corner
   | '20.20' // Knockout — top course bond beam
   | '40.925' // 400mm Pier Block
-  | '20.18' // Lintel >300mm head
-  | '20.25' // Lintel 190–290mm head
-  | '20.12' // Lintel standard ~200mm
+  | '20.18' // Lintel ≥300mm head (stood up, 400mm tall modular)
+  | '20.25' // Lintel 200–299mm head (stood up, 300mm tall modular)
+  | '20.13' // Half lintel — heads <200mm (stood up, 200mm tall modular)
+  | '20.12' // Standard lintel (laid flat, ~200mm high) — legacy
 
 /**
  * Functional role(s) a block can play within a wall.

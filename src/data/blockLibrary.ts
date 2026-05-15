@@ -150,8 +150,19 @@ export const BLOCK_LIBRARY: Record<BlockCode, Block> = {
   '20.25': {
     code: '20.25',
     name: '300mm Lintel Block',
-    description: 'Lintel block for opening head heights between 190mm and 290mm.',
+    description:
+      'Lintel for opening head heights between 200mm and 299mm. Stood upwards so the 290mm ' +
+      'dimension is vertical (300mm modular height).',
     dimensions: { widthMm: 290, heightMm: 190, depthMm: 190 },
+    roles: ['lintel'],
+  },
+  '20.13': {
+    code: '20.13',
+    name: 'Half Lintel Block',
+    description:
+      'Half-height lintel for opening head heights under 200mm. Stood upwards (200mm modular ' +
+      'height). Cubic 190mm block.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
     roles: ['lintel'],
   },
   '20.12': {

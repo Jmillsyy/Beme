@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { BlockTally, Wall, WallMakeup } from '../types/walls'
+import type { BlockTally, Opening, Wall, WallMakeup } from '../types/walls'
 import type { BlockCode } from '../types/blocks'
 import { BLOCK_LIBRARY } from '../data/blockLibrary'
 import { calculateProjectTally } from '../lib/blockCalc'
@@ -7,12 +7,13 @@ import { calculateProjectTally } from '../lib/blockCalc'
 interface BlockTallyPanelProps {
   walls: Wall[]
   makeupsById: Record<string, WallMakeup>
+  openings: Opening[]
 }
 
-export default function BlockTallyPanel({ walls, makeupsById }: BlockTallyPanelProps) {
+export default function BlockTallyPanel({ walls, makeupsById, openings }: BlockTallyPanelProps) {
   const tally: BlockTally = useMemo(
-    () => calculateProjectTally(walls, makeupsById),
-    [walls, makeupsById]
+    () => calculateProjectTally(walls, makeupsById, openings),
+    [walls, makeupsById, openings]
   )
 
   const entries = useMemo(
@@ -45,7 +46,8 @@ export default function BlockTallyPanel({ walls, makeupsById }: BlockTallyPanelP
         <div>
           <h3 className="text-lg font-bold text-beme-700">Block tally</h3>
           <p className="text-xs text-beme-600">
-            Across {makeupCount} wall type{makeupCount === 1 ? '' : 's'} · corner columns deduplicated
+            Across {makeupCount} wall type{makeupCount === 1 ? '' : 's'} · corners deduplicated
+            {openings.length > 0 && ` · ${openings.length} opening${openings.length === 1 ? '' : 's'} subtracted`}
           </p>
         </div>
         <div className="text-right text-xs text-neutral-600">
