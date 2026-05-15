@@ -1,73 +1,55 @@
-# React + TypeScript + Vite
+# beme
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**Block Estimates Made Easy** — masonry estimating software for the Australian market.
 
-Currently, two official plugins are available:
+beme imports a building plan PDF, lets the user calibrate scale and either trace brick walls or draw block walls over the plan, then produces an itemised takeoff of all materials ready to export to PDF or Excel — with optional extras (cement, lime, lintels, ties, sundries) added at export time.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The full functional and rule-level specification lives in [`docs/beme - Project Brief.docx`](./docs/beme%20-%20Project%20Brief.docx).
 
-## React Compiler
+## Estimate modes
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Brick Estimates** — trace walls, set heights, subtract openings, auto-add lintels (per opening-width bearing rules), brick ties (per m²) and plascourse (per lineal m).
+- **Block Estimates** — define wall makeups (bond type, height, course composition, end terminations, fractions, etc.), draw walls over the plan with auto-handling of corners, T-junctions and openings, and tally blocks across the project using the full block library (20.48, 20.01, 20.03, 20.02, 20.22, 20.71, 20.140, 20.20, 20.21, 40.925 etc.).
 
-## Expanding the ESLint configuration
+## Tech stack
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- **React 19** + **TypeScript** + **Vite**
+- **Tailwind CSS v4** for styling (orange/white brand palette defined in `src/index.css`)
+- **react-pdf** for plan rendering *(planned)*
+- **react-konva** for the wall drawing layer *(planned)*
+- **Zustand** for state management *(planned)*
+- **Supabase** for auth (Microsoft OAuth) and cloud sync *(planned)*
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Development
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+The app starts on [http://localhost:5173](http://localhost:5173).
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+To build for production:
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run build
+npm run preview
 ```
+
+## Project structure
+
+```
+beme/
+├── docs/                  # Project brief and supporting documents
+├── public/                # Static assets
+├── src/
+│   ├── App.tsx            # Root component
+│   ├── main.tsx           # Entry point
+│   └── index.css          # Tailwind + beme theme tokens
+├── package.json
+└── vite.config.ts
+```
+
+## Status
+
+Early development. The landing page and brand theme are live; the PDF viewer, drawing layer, wall makeup model, and block calculation engine are next on the roadmap.
