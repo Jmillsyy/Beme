@@ -94,23 +94,42 @@ export default function WallDrawingLayer({
   onOpeningSelect,
   onCancelDraw,
 }: WallDrawingLayerProps) {
-  const [startPx, setStartPx] = useState<Point | null>(null)
-  const [cursorPx, setCursorPx] = useState<Point | null>(null)
+  const pxToMm = (px: number) => px / pxPerMmAtCurrentZoom
+  const mmToPx = (mm: number) => mm * pxPerMmAtCurrentZoom
+
+  /**
+   * In-progress drawing state is stored in MM (real-world coordinates on the plan), not pixels.
+   * Pixel positions are derived at render time using the current zoom, so anything you've
+   * already placed stays anchored to the same physical point on the plan even if you zoom or pan.
+   */
+  const [startMm, setStartMm] = useState<Point | null>(null)
+  const [cursorMm, setCursorMm] = useState<Point | null>(null)
   const [snapTarget, setSnapTarget] = useState<EndpointPixel | null>(null)
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null)
-  const [dragPreview, setDragPreview] = useState<{
+  const [dragPreviewMm, setDragPreviewMm] = useState<{
     wallId: string
     which: 'start' | 'end'
-    px: Point
+    mm: Point
   } | null>(null)
 
-  /** First click during opening placement. Subsequent clicks must be on the same wall. */
-  const [openingPlacementStart, setOpeningPlacementStart] = useState<WallProjection | null>(null)
+  /** First click during opening placement — stored by wall id + alongMm only. */
+  const [openingPlacementStart, setOpeningPlacementStart] = useState<{
+    wallId: string
+    alongMm: number
+  } | null>(null)
   /** Live projection while placing an opening (hover preview). */
   const [openingHoverProjection, setOpeningHoverProjection] = useState<WallProjection | null>(null)
 
-  const pxToMm = (px: number) => px / pxPerMmAtCurrentZoom
-  const mmToPx = (mm: number) => mm * pxPerMmAtCurrentZoom
+  // Derive current pixel positions from mm state — these recompute automatically on zoom.
+  const startPx: Point | null = startMm ? { x: mmToPx(startMm.x), y: mmToPx(startMm.y) } : null
+  const cursorPx: Point | null = cursorMm ? { x: mmToPx(cursorMm.x), y: mmToPx(cursorMm.y) } : null
+  const dragPreview = dragPreviewMm
+    ? {
+        wallId: dragPreviewMm.wallId,
+        which: dragPreviewMm.which,
+        px: { x: mmToPx(dragPreviewMm.mm.x), y: mmToPx(dragPreviewMm.mm.y) },
+      }
+    : null
 
   const endpointsPx: EndpointPixel[] = useMemo(
     () =>
@@ -187,8 +206,8 @@ export default function WallDrawingLayer({
   // ---------- Cleanup on mode toggle ----------
   useEffect(() => {
     if (!drawingMode) {
-      setStartPx(null)
-      setCursorPx(null)
+      setStartMm(null)
+      setCursorMm(null)
       setSnapTarget(null)
     }
   }, [drawingMode])
@@ -204,8 +223,8 @@ export default function WallDrawingLayer({
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         if (drawingMode) {
-          setStartPx(null)
-          setCursorPx(null)
+          setStartMm(null)
+          setCursorMm(null)
           setSnapTarget(null)
           onCancelDraw?.()
         } else if (placingOpening) {
@@ -242,18 +261,16 @@ export default function WallDrawingLayer({
 
     if (drawingMode) {
       const pos = resolveSnap(raw)
-      if (!startPx) {
-        setStartPx(pos)
-        setCursorPx(pos)
+      const posMm: Point = { x: pxToMm(pos.x), y: pxToMm(pos.y) }
+      if (!startMm) {
+        setStartMm(posMm)
+        setCursorMm(posMm)
         return
       }
-      if (distance(startPx, pos) < 5) return
-      onWallAdded(
-        { x: pxToMm(startPx.x), y: pxToMm(startPx.y) },
-        { x: pxToMm(pos.x), y: pxToMm(pos.y) }
-      )
-      setStartPx(null)
-      setCursorPx(null)
+      if (distance(startPx!, pos) < 5) return
+      onWallAdded(startMm, posMm)
+      setStartMm(null)
+      setCursorMm(null)
       setSnapTarget(null)
       return
     }
@@ -263,7 +280,7 @@ export default function WallDrawingLayer({
       const proj = findClosestWallProjection(raw, onlyWall)
       if (!proj) return
       if (!openingPlacementStart) {
-        setOpeningPlacementStart(proj)
+        setOpeningPlacementStart({ wallId: proj.wallId, alongMm: proj.alongMm })
         return
       }
       // Second click — compute opening start + width
@@ -286,7 +303,8 @@ export default function WallDrawingLayer({
 
     if (drawingMode) {
       setSnapTarget(findSnap(raw))
-      setCursorPx(resolveSnap(raw))
+      const resolved = resolveSnap(raw)
+      setCursorMm({ x: pxToMm(resolved.x), y: pxToMm(resolved.y) })
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
       const proj = findClosestWallProjection(raw, onlyWall)
@@ -314,7 +332,11 @@ export default function WallDrawingLayer({
     const resolved = snap ? { x: snap.x, y: snap.y } : pos
     if (snap) e.target.position(resolved)
     setSnapTarget(snap)
-    setDragPreview({ wallId, which, px: resolved })
+    setDragPreviewMm({
+      wallId,
+      which,
+      mm: { x: pxToMm(resolved.x), y: pxToMm(resolved.y) },
+    })
   }
 
   function handleEndpointDragEnd(
@@ -327,7 +349,7 @@ export default function WallDrawingLayer({
     const finalPx = snap ? { x: snap.x, y: snap.y } : pos
     onWallEndpointMoved(wallId, which, { x: pxToMm(finalPx.x), y: pxToMm(finalPx.y) })
     setSnapTarget(null)
-    setDragPreview(null)
+    setDragPreviewMm(null)
   }
 
   function formatMm(mm: number) {
@@ -499,42 +521,47 @@ export default function WallDrawingLayer({
           )
         })}
 
-        {/* Opening placement preview */}
-        {placingOpening && openingPlacementStart && (
-          <Group listening={false}>
-            <Circle
-              x={openingPlacementStart.px.x}
-              y={openingPlacementStart.px.y}
-              radius={6}
-              fill="#D97706"
-              stroke="white"
-              strokeWidth={2}
-            />
-            {openingHoverProjection && openingHoverProjection.wallId === openingPlacementStart.wallId && (
-              <>
-                <Line
-                  points={[
-                    openingPlacementStart.px.x,
-                    openingPlacementStart.px.y,
-                    openingHoverProjection.px.x,
-                    openingHoverProjection.px.y,
-                  ]}
-                  stroke="#D97706"
-                  strokeWidth={6}
-                  opacity={0.5}
-                />
-                <Text
-                  x={(openingPlacementStart.px.x + openingHoverProjection.px.x) / 2 + 8}
-                  y={(openingPlacementStart.px.y + openingHoverProjection.px.y) / 2 + 10}
-                  text={`${Math.round(Math.abs(openingHoverProjection.alongMm - openingPlacementStart.alongMm))} mm wide`}
-                  fontSize={12}
-                  fill="#92400E"
-                  fontStyle="bold"
-                />
-              </>
-            )}
-          </Group>
-        )}
+        {/* Opening placement preview — derive pixel positions from wall + alongMm at current zoom */}
+        {placingOpening && openingPlacementStart && (() => {
+          const startWall = wallsById.get(openingPlacementStart.wallId)
+          if (!startWall) return null
+          const startPosPx = pointAlongWallPx(startWall, openingPlacementStart.alongMm)
+          return (
+            <Group listening={false}>
+              <Circle
+                x={startPosPx.x}
+                y={startPosPx.y}
+                radius={6}
+                fill="#D97706"
+                stroke="white"
+                strokeWidth={2}
+              />
+              {openingHoverProjection && openingHoverProjection.wallId === openingPlacementStart.wallId && (
+                <>
+                  <Line
+                    points={[
+                      startPosPx.x,
+                      startPosPx.y,
+                      openingHoverProjection.px.x,
+                      openingHoverProjection.px.y,
+                    ]}
+                    stroke="#D97706"
+                    strokeWidth={6}
+                    opacity={0.5}
+                  />
+                  <Text
+                    x={(startPosPx.x + openingHoverProjection.px.x) / 2 + 8}
+                    y={(startPosPx.y + openingHoverProjection.px.y) / 2 + 10}
+                    text={`${Math.round(Math.abs(openingHoverProjection.alongMm - openingPlacementStart.alongMm))} mm wide`}
+                    fontSize={12}
+                    fill="#92400E"
+                    fontStyle="bold"
+                  />
+                </>
+              )}
+            </Group>
+          )
+        })()}
         {placingOpening && !openingPlacementStart && openingHoverProjection && (
           <Circle
             x={openingHoverProjection.px.x}
