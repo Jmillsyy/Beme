@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
+import WallDrawingLayer from './WallDrawingLayer'
+import BlockTallyPanel from './BlockTallyPanel'
+import type { Wall, WallMakeup } from '../types/walls'
+import { createDefaultWallMakeup } from '../lib/makeups'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
@@ -40,11 +44,60 @@ function clamp(v: number, min: number, max: number) {
   return Math.max(min, Math.min(max, v))
 }
 
-export default function PdfWorkspace() {
+interface PdfWorkspaceProps {
+  /**
+   * Estimate mode. When 'block', enables wall drawing tools and a live block tally panel
+   * below the PDF view. 'brick' will get its own workflow later.
+   */
+  mode?: 'block' | 'brick'
+}
+
+export default function PdfWorkspace({ mode }: PdfWorkspaceProps = {}) {
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [numPages, setNumPages] = useState<number>(0)
   const [currentPage, setCurrentPage] = useState<number>(1)
   const [isDragging, setIsDragging] = useState(false)
+
+  // ---------- Wall drawing state (block mode) ----------
+  const [wallsByPage, setWallsByPage] = useState<Record<number, Wall[]>>({})
+  const [drawingMode, setDrawingMode] = useState(false)
+  const drawingModeRef = useRef(false)
+  const [defaultMakeup] = useState<WallMakeup>(() =>
+    createDefaultWallMakeup({ name: 'Default 2400mm stretcher' })
+  )
+
+  // Keep drawingMode ref in sync for pan handler
+  useEffect(() => {
+    drawingModeRef.current = drawingMode
+  }, [drawingMode])
+
+  const allWalls = useMemo(() => Object.values(wallsByPage).flat(), [wallsByPage])
+  const currentPageWalls = wallsByPage[currentPage] ?? []
+
+  function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
+    const newWall: Wall = {
+      id:
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      makeupId: defaultMakeup.id,
+      startX: startMm.x,
+      startY: startMm.y,
+      endX: endMm.x,
+      endY: endMm.y,
+      startJunction: { type: 'free' },
+      endJunction: { type: 'free' },
+    }
+    setWallsByPage((prev) => ({
+      ...prev,
+      [currentPage]: [...(prev[currentPage] ?? []), newWall],
+    }))
+  }
+
+  function clearAllWalls() {
+    setWallsByPage({})
+    setDrawingMode(false)
+  }
 
   // Zoom — two values:
   //   zoom: live target zoom (updates immediately on wheel/pinch/buttons)
@@ -212,7 +265,7 @@ export default function PdfWorkspace() {
   }, [pdfFile])
 
   function handlePanMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (calibratingRef.current) return
+    if (calibratingRef.current || drawingModeRef.current) return
     if (e.button !== 0) return // only left mouse button
     const container = containerRef.current
     if (!container) return
@@ -513,6 +566,57 @@ export default function PdfWorkspace() {
         )}
       </div>
 
+      {/* Wall drawing toolbar (block mode only) */}
+      {mode === 'block' && (
+        <div className="flex items-center justify-between mb-3 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-lg flex-wrap gap-3">
+          <div className="text-sm">
+            {currentScale ? (
+              <span className="text-neutral-700">
+                {currentPageWalls.length}{' '}
+                wall{currentPageWalls.length === 1 ? '' : 's'} on this page
+                {allWalls.length !== currentPageWalls.length && (
+                  <span className="text-neutral-500">
+                    {' '}
+                    · {allWalls.length} total in project
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span className="text-neutral-500">
+                Calibrate the scale on this page before drawing walls.
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setDrawingMode((v) => !v)}
+              disabled={!currentScale || calibrating}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                drawingMode
+                  ? 'bg-beme-700 text-white hover:bg-beme-800'
+                  : 'bg-beme-600 text-white hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed'
+              }`}
+            >
+              {drawingMode ? 'Stop drawing' : 'Draw wall'}
+            </button>
+            {allWalls.length > 0 && (
+              <button
+                onClick={clearAllWalls}
+                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+              >
+                Clear all walls
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {drawingMode && (
+        <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg text-sm text-beme-700">
+          Click two points on the plan to draw a wall. Press <kbd className="px-1.5 py-0.5 rounded border border-beme-300 bg-white text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
       {/* Calibration instructions banner */}
       {calibrating && !(calPoint1 && calPoint2) && (
         <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg text-sm text-beme-700">
@@ -602,7 +706,7 @@ export default function PdfWorkspace() {
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
         className="flex-1 border border-neutral-200 rounded-xl overflow-auto bg-neutral-100 min-h-[400px] max-h-[80vh]"
-        style={{ cursor: calibrating ? 'crosshair' : 'grab' }}
+        style={{ cursor: calibrating || drawingMode ? 'crosshair' : 'grab' }}
       >
         <div className="flex justify-center" style={{ minWidth: 'max-content' }}>
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
@@ -690,10 +794,28 @@ export default function PdfWorkspace() {
                 <circle cx={calPoint2.x} cy={calPoint2.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
               )}
             </svg>
+
+            {/* Wall drawing layer (block mode) */}
+            {mode === 'block' && visualPageHeight !== null && currentScale && (
+              <WallDrawingLayer
+                walls={currentPageWalls}
+                visualWidth={visualPageWidth}
+                visualHeight={visualPageHeight}
+                pxPerMmAtCurrentZoom={currentScale * zoom}
+                drawingMode={drawingMode}
+                onWallAdded={handleWallAdded}
+                onCancel={() => setDrawingMode(false)}
+              />
+            )}
           </div>
         </div>
       </div>
       </div>
+
+      {/* Block tally panel (block mode only) */}
+      {mode === 'block' && (
+        <BlockTallyPanel walls={allWalls} makeup={defaultMakeup} />
+      )}
     </div>
   )
 }

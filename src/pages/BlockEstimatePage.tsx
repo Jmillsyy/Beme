@@ -18,7 +18,7 @@ export default function BlockEstimatePage() {
           blocks across the project with full corner, T-junction, fraction, and opening logic.
         </p>
 
-        <PdfWorkspace />
+        <PdfWorkspace mode="block" />
       </main>
     </div>
   )
