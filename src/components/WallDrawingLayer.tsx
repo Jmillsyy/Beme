@@ -77,6 +77,42 @@ const SNAP_THRESHOLD_PX = 12
  *  or for projecting an opening click onto a wall. Endpoint snap wins if both are in range. */
 const WALL_SNAP_THRESHOLD_PX = 20
 
+/**
+ * Angular tolerance for orthogonal snap, in degrees.
+ *
+ * When drawing a new wall (or dragging an endpoint), if the segment is within
+ * ±this-many degrees of horizontal or vertical, it snaps cleanly to that axis.
+ * Most plans are drawn on a grid so the *intent* is almost always ortho — this
+ * removes a frustrating class of "wall is 1° off and I have to nudge it" bugs
+ * without locking out walls that are genuinely on an angle.
+ *
+ * Hold Shift while drawing or dragging to bypass the snap.
+ */
+const AXIS_SNAP_DEGREES = 4
+
+/**
+ * If the segment from `from` → `to` is near horizontal or vertical, return a
+ * snapped `to` that lies exactly on the axis. Otherwise return `to` unchanged.
+ * Operates in any coordinate system since the comparison is purely angular.
+ */
+function applyAxisSnap(from: Point, to: Point): Point {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  if (dx === 0 && dy === 0) return to
+  // atan2(|dy|, |dx|) → 0 = horizontal, π/2 = vertical. Comparing against a
+  // small threshold catches both axes symmetrically regardless of direction.
+  const angleDeg = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI
+  if (angleDeg < AXIS_SNAP_DEGREES) {
+    // Near horizontal — flatten the segment by collapsing y to the anchor.
+    return { x: to.x, y: from.y }
+  }
+  if (angleDeg > 90 - AXIS_SNAP_DEGREES) {
+    // Near vertical — collapse x.
+    return { x: from.x, y: to.y }
+  }
+  return to
+}
+
 interface EndpointPixel {
   x: number
   y: number
@@ -847,6 +883,36 @@ function WallDrawingLayerInner({
     return snap ? { x: snap.x, y: snap.y } : pos
   }
 
+  /**
+   * Wall-snap first, axis-snap second. If the cursor is in range of an
+   * existing wall's endpoint or face, snapping to that wins outright —
+   * users always want geometric continuity over a small angular tweak.
+   * Otherwise, if the resulting segment from `anchor` → cursor is within
+   * a few degrees of horizontal or vertical, flatten it to the axis.
+   *
+   * Returns the resolved point plus a hint about which (if any) snap fired,
+   * so callers can mirror it into the snap-target state for the visual
+   * indicator.
+   *
+   * The `shiftKey` argument bypasses axis-snap (wall-snap still applies) —
+   * useful for tracing a plan where one wall is genuinely on an angle but
+   * happens to point within a few degrees of horizontal.
+   */
+  function resolveDrawSnap(
+    pos: Point,
+    anchor: Point | null,
+    shiftKey: boolean,
+    excludeWallId?: string,
+    excludeEnd?: 'start' | 'end'
+  ): { point: Point; snap: SnapResult | null } {
+    const snap = findSnap(pos, excludeWallId, excludeEnd)
+    if (snap) {
+      return { point: { x: snap.x, y: snap.y }, snap }
+    }
+    if (!anchor || shiftKey) return { point: pos, snap: null }
+    return { point: applyAxisSnap(anchor, pos), snap: null }
+  }
+
   // ---------- Stage events ----------
 
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>) {
@@ -856,14 +922,21 @@ function WallDrawingLayerInner({
     if (!raw) return
 
     if (drawingMode) {
-      const pos = resolveSnap(raw)
-      const posMm: Point = { x: pxToMm(pos.x), y: pxToMm(pos.y) }
+      // First click: just record the anchor (axis-snap has nothing to anchor
+      // to yet; wall-snap is still active so corners and T-junctions snap).
+      // Second click: snap relative to startMm, with shiftKey overriding the
+      // ortho lock — see resolveDrawSnap.
       if (!startMm) {
+        const { point } = resolveDrawSnap(raw, null, e.evt.shiftKey)
+        const posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
         setStartMm(posMm)
         setCursorMm(posMm)
         return
       }
-      if (distance(startPx!, pos) < 5) return
+      const startPxAnchor = { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
+      const { point } = resolveDrawSnap(raw, startPxAnchor, e.evt.shiftKey)
+      if (distance(startPxAnchor, point) < 5) return
+      const posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
       onWallAdded(startMm, posMm)
       setStartMm(null)
       setCursorMm(null)
@@ -970,9 +1043,20 @@ function WallDrawingLayerInner({
     if (!raw) return
 
     if (drawingMode) {
-      setSnapTarget(findSnap(raw))
-      const resolved = resolveSnap(raw)
-      setCursorMm({ x: pxToMm(resolved.x), y: pxToMm(resolved.y) })
+      // While the user is moving the cursor for the second click, anchor
+      // axis-snap to startMm. Before the first click there's no anchor,
+      // so axis-snap is a no-op (wall-snap still runs). Shift bypasses
+      // the ortho lock.
+      const startPxAnchor = startMm
+        ? { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
+        : null
+      const { point, snap } = resolveDrawSnap(
+        raw,
+        startPxAnchor,
+        e.evt.shiftKey
+      )
+      setSnapTarget(snap)
+      setCursorMm({ x: pxToMm(point.x), y: pxToMm(point.y) })
     } else if (drawingCurveMode && curveAnchorA && curveAnchorB) {
       // After both anchors are picked, follow the cursor so we can preview the arc
       // through anchorA → cursor → anchorB.
@@ -1014,15 +1098,43 @@ function WallDrawingLayerInner({
 
   // ---------- Endpoint drag ----------
 
+  /**
+   * The opposite-end anchor for axis-snap during an endpoint drag, in pixels.
+   * `null` if the wall has gone missing somehow — caller falls back to no
+   * axis-snap in that case.
+   */
+  function oppositeEndPx(wallId: string, dragging: 'start' | 'end'): Point | null {
+    const wall = wallsById.get(wallId)
+    if (!wall) return null
+    const opp = dragging === 'start'
+      ? { x: wall.endX, y: wall.endY }
+      : { x: wall.startX, y: wall.startY }
+    return { x: mmToPx(opp.x), y: mmToPx(opp.y) }
+  }
+
   function handleEndpointDragMove(
     e: Konva.KonvaEventObject<DragEvent>,
     wallId: string,
     which: 'start' | 'end'
   ) {
     const pos = e.target.position()
-    const snap = findSnap(pos, wallId, which)
-    const resolved = snap ? { x: snap.x, y: snap.y } : pos
-    if (snap) e.target.position(resolved)
+    // Wall-snap wins over axis-snap (same precedence as during drawing).
+    // Holding Shift bypasses the ortho lock for walls that genuinely sit on
+    // a slight angle.
+    const anchor = oppositeEndPx(wallId, which)
+    const shiftKey = !!(e.evt as DragEvent & { shiftKey?: boolean }).shiftKey
+    const { point: resolved, snap } = resolveDrawSnap(
+      pos,
+      anchor,
+      shiftKey,
+      wallId,
+      which
+    )
+    // Push the dragged marker back to the snapped position so it visually
+    // tracks the snap target (the user sees the endpoint click into place).
+    if (resolved.x !== pos.x || resolved.y !== pos.y) {
+      e.target.position(resolved)
+    }
     setSnapTarget(snap)
     setDragPreviewMm({
       wallId,
@@ -1037,8 +1149,9 @@ function WallDrawingLayerInner({
     which: 'start' | 'end'
   ) {
     const pos = e.target.position()
-    const snap = findSnap(pos, wallId, which)
-    const finalPx = snap ? { x: snap.x, y: snap.y } : pos
+    const anchor = oppositeEndPx(wallId, which)
+    const shiftKey = !!(e.evt as DragEvent & { shiftKey?: boolean }).shiftKey
+    const { point: finalPx } = resolveDrawSnap(pos, anchor, shiftKey, wallId, which)
     onWallEndpointMoved(wallId, which, { x: pxToMm(finalPx.x), y: pxToMm(finalPx.y) })
     setSnapTarget(null)
     setDragPreviewMm(null)
