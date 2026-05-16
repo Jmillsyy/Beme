@@ -73,9 +73,18 @@ interface WallDrawingLayerProps {
 
 /** Pixel radius for snapping to an existing wall's endpoint (corner candidate). */
 const SNAP_THRESHOLD_PX = 12
-/** Pixel radius for snapping perpendicular to an existing wall's body (T-junction candidate)
- *  or for projecting an opening click onto a wall. Endpoint snap wins if both are in range. */
-const WALL_SNAP_THRESHOLD_PX = 20
+/** Pixel radius for projecting a click onto a wall when placing openings, control joints
+ *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
+ *  click precision against a visible wall — the user targets the wall on screen. */
+const WALL_PROJECTION_THRESHOLD_PX = 20
+/**
+ * Real-world distance at which a cursor near an existing wall's *face* will snap onto it
+ * to form a T-junction. Expressed in mm so the snap feels the same at every zoom level
+ * and on every plan — at 1:50 a 20-pixel threshold is hundreds of mm of real space, which
+ * is far too sticky. 50 mm = roughly one half-block joint, which is tight enough to feel
+ * intentional but forgiving enough to land without millimetre precision.
+ */
+const WALL_FACE_SNAP_MM = 50
 
 /**
  * Angular tolerance for orthogonal snap, in degrees.
@@ -696,7 +705,7 @@ function WallDrawingLayerInner({
       if (only && wall.id !== only) continue
       const proj = projectOntoWall(clickPx, wall)
       if (!proj) continue
-      if (proj.distFromLinePx > WALL_SNAP_THRESHOLD_PX) continue
+      if (proj.distFromLinePx > WALL_PROJECTION_THRESHOLD_PX) continue
       if (!best || proj.distFromLinePx < best.distFromLinePx) {
         best = proj
       }
@@ -771,8 +780,11 @@ function WallDrawingLayerInner({
 
       // Distance from cursor to the nearest face line. Inside the wall: halfThickness−perp.
       // Outside the wall: perp−halfThickness. Either way: |perp − halfThickness|.
+      // Threshold lives in mm (WALL_FACE_SNAP_MM) and gets converted to the current zoom
+      // here, so the snap range stays a fixed real-world distance no matter how far the
+      // user has zoomed in or out — see WALL_FACE_SNAP_MM jsdoc for rationale.
       const distToFace = Math.abs(perpDist - halfThicknessPx)
-      if (distToFace > WALL_SNAP_THRESHOLD_PX) continue
+      if (distToFace > mmToPx(WALL_FACE_SNAP_MM)) continue
 
       // Snap target is the face point: centreline projection + perpendicular_dir × halfThickness.
       // If perp is near zero (cursor sits ON the centreline), default to one side arbitrarily.
