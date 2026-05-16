@@ -81,7 +81,7 @@ import {
   createDefaultProjectDetails,
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
-import { recomputeAllJunctions } from '../lib/junctions'
+import { recomputeAllJunctions, snapEndpointToThroughWallFace } from '../lib/junctions'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
@@ -535,6 +535,37 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
     const isBrick = mode === 'brick'
+    const existing = wallsByPage[currentPage] ?? []
+
+    // Thicknesses for snapping — based on the existing walls (the new wall's own
+    // thickness isn't relevant here; we're only checking which through-wall the
+    // new endpoint lies inside of).
+    const existingThicknesses = computeWallThicknessByWallId(
+      existing,
+      makeupsById,
+      mode,
+      brickSettings.brickTypeCode
+    )
+
+    // If either endpoint landed strictly inside another wall's body, pull it onto the
+    // through-wall's face on the side facing the opposite endpoint. Otherwise the wall
+    // is stored half-a-thickness longer than it visually appears, which then surfaces
+    // as confusing length labels later. See snapEndpointToThroughWallFace for full
+    // rationale. We feed each call the ORIGINAL opposite endpoint so the two snaps
+    // are independent of evaluation order.
+    const snappedStart = snapEndpointToThroughWallFace(
+      startMm,
+      endMm,
+      existing,
+      existingThicknesses
+    )
+    const snappedEnd = snapEndpointToThroughWallFace(
+      endMm,
+      startMm,
+      existing,
+      existingThicknesses
+    )
+
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -542,16 +573,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       // Brick walls don't reference a WallMakeup — they use brickSettings instead.
       makeupId: isBrick ? '' : activeMakeupId,
-      startX: startMm.x,
-      startY: startMm.y,
-      endX: endMm.x,
-      endY: endMm.y,
+      startX: snappedStart.x,
+      startY: snappedStart.y,
+      endX: snappedEnd.x,
+      endY: snappedEnd.y,
       startJunction: { type: 'free' },
       endJunction: { type: 'free' },
       heightMmOverride: isBrick ? brickSettings.defaultWallHeightMm : undefined,
     }
 
-    const existing = wallsByPage[currentPage] ?? []
     // Junction detection only matters for block walls (corners + T-junctions affect tally).
     // We run a full recompute across all walls on the page so detection picks up both
     // directions: the new wall butting into an existing wall's body (T-junction on new),
@@ -943,12 +973,38 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   ) {
     setWallsByPage((prev) => {
       const pageWalls = prev[currentPage] ?? []
+      const draggedWall = pageWalls.find((w) => w.id === wallId)
+      if (!draggedWall) return prev
+
+      // If the drag finished strictly inside another wall's body, pull the endpoint
+      // onto that wall's face on the side facing the dragged wall's opposite end.
+      // Mirrors the new-wall handler — see snapEndpointToThroughWallFace for the
+      // rationale. Excludes the dragged wall itself so we don't try to snap onto
+      // its own body if the drag wiggled the endpoint past it.
+      const oppositeEnd =
+        which === 'start'
+          ? { x: draggedWall.endX, y: draggedWall.endY }
+          : { x: draggedWall.startX, y: draggedWall.startY }
+      const existingThicknesses = computeWallThicknessByWallId(
+        pageWalls,
+        makeupsById,
+        mode,
+        brickSettings.brickTypeCode
+      )
+      const snapped = snapEndpointToThroughWallFace(
+        newPositionMm,
+        oppositeEnd,
+        pageWalls,
+        existingThicknesses,
+        wallId
+      )
+
       const updated = pageWalls.map((w) => {
         if (w.id !== wallId) return w
         if (which === 'start') {
-          return { ...w, startX: newPositionMm.x, startY: newPositionMm.y }
+          return { ...w, startX: snapped.x, startY: snapped.y }
         }
-        return { ...w, endX: newPositionMm.x, endY: newPositionMm.y }
+        return { ...w, endX: snapped.x, endY: snapped.y }
       })
       const thicknesses = computeWallThicknessByWallId(updated, makeupsById, mode, brickSettings.brickTypeCode)
       return { ...prev, [currentPage]: recomputeAllJunctions(updated, thicknesses) }

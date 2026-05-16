@@ -127,6 +127,79 @@ function addConnection(junction: WallJunction, otherWallId: string): WallJunctio
 }
 
 /**
+ * If `endpoint` lies STRICTLY INSIDE the body of another wall, return the perpendicular
+ * face point on the side facing `oppositeEndpoint` (i.e. the side the new wall is coming
+ * from). Otherwise return `endpoint` unchanged.
+ *
+ * Background: the wall-snap during drawing only fires when the cursor is within ~20px of
+ * a face. On thick walls (e.g. 290 mm) clicking near the centreline puts you outside that
+ * radius, so the cursor doesn't snap and the wall endpoint is stored at the click position
+ * — typically halfThickness past the face. Visually the wall trims to the face (the
+ * displayed length subtracts the T-junction overlap), but the underlying coordinates
+ * say the wall is longer than it really is, which surfaces as confusing differences
+ * between the on-screen length label and the centreline distance the rest of the app
+ * sees.
+ *
+ * This helper pulls the endpoint back onto the face so stored coords = visual position.
+ * The displayed length is unchanged: before-snap centrelineLen − halfT_other = after-snap
+ * centrelineLen, and the T-junction overlap adjustment becomes 0.
+ *
+ * The face side is picked from the OTHER endpoint of the new wall — whichever face is
+ * on that side of the through-wall is the one the new wall is approaching. If the other
+ * endpoint sits on the through-wall's centreline (degenerate), we fall back to the
+ * endpoint's own side, and ultimately to +N if everything is on the line.
+ *
+ * Curved walls are skipped (they snap at endpoints only, not their body).
+ */
+export function snapEndpointToThroughWallFace(
+  endpoint: Point,
+  oppositeEndpoint: Point,
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>,
+  excludeWallId?: string
+): Point {
+  for (const wall of walls) {
+    if (wall.id === excludeWallId) continue
+    if (isCurvedWall(wall)) continue
+    const dx = wall.endX - wall.startX
+    const dy = wall.endY - wall.startY
+    const len2 = dx * dx + dy * dy
+    if (len2 < 0.001) continue
+    const len = Math.sqrt(len2)
+    // Project endpoint onto the centreline as a parameter 0..1 along start→end.
+    const t = ((endpoint.x - wall.startX) * dx + (endpoint.y - wall.startY) * dy) / len2
+    // Ignore points whose projection falls past the ends — they're not "inside the body".
+    if (t < 0 || t > 1) continue
+    const projX = wall.startX + t * dx
+    const projY = wall.startY + t * dy
+    const perpDx = endpoint.x - projX
+    const perpDy = endpoint.y - projY
+    const perpDist = Math.sqrt(perpDx * perpDx + perpDy * perpDy)
+    const halfT = (thicknessByWallId[wall.id] ?? 190) / 2
+    // Only snap if STRICTLY inside (not already on or past a face). The 0.5 mm
+    // slack keeps us from doing redundant work when the wall-snap during drawing
+    // already deposited the endpoint exactly on the face.
+    if (perpDist >= halfT - 0.5) continue
+    // Face side = the side the OTHER endpoint of the new wall lies on. If the
+    // other endpoint is itself on the centreline, fall back to the endpoint's
+    // own perpendicular sign; if that's also zero, default to +N.
+    const nx = -dy / len
+    const ny = dx / len
+    const otherDot =
+      (oppositeEndpoint.x - projX) * nx + (oppositeEndpoint.y - projY) * ny
+    const ownDot = perpDx * nx + perpDy * ny
+    const decisive =
+      Math.abs(otherDot) > 0.001 ? otherDot : Math.abs(ownDot) > 0.001 ? ownDot : 1
+    const sign = decisive >= 0 ? 1 : -1
+    return {
+      x: projX + sign * nx * halfT,
+      y: projY + sign * ny * halfT,
+    }
+  }
+  return endpoint
+}
+
+/**
  * Given a freshly-drawn wall and the list of existing walls (same page), produce:
  *   - The new wall with its start/end junctions tagged where corners are detected
  *   - The updated existing walls with their matching endpoints tagged as corners too
