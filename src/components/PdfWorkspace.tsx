@@ -126,6 +126,25 @@ const MIN_ZOOM = 0.25
 const MAX_ZOOM = 8
 const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 
+/**
+ * Cap on how high the PDF + Konva canvases will rasterise.
+ *
+ * Without this, zooming to 8× on a ~880-wide base produces a 7040-wide
+ * rasterised canvas (14080 on a retina display once Konva multiplies by
+ * `pixelRatio`). Every wall hover or mouse move triggers a re-raster of
+ * the whole Konva layer, which is GPU-expensive at that size — especially
+ * with lots of walls on the page, since each wall's mitre/T-junction
+ * geometry has to be recomputed and stroked.
+ *
+ * Capping at 2.5 means the underlying canvas stays at ~2200 px wide no
+ * matter how far the user zooms, and CSS transform handles the rest of
+ * the visual scaling (which the compositor does for free on the GPU).
+ * Lines look very slightly soft at extreme zoom but the wall layer stays
+ * responsive, and the PDF export path is unaffected (it uses the original
+ * PDF, not the rasterised canvas).
+ */
+const MAX_RENDERED_ZOOM = 2.5
+
 const RATIO_PRESETS = [
   { label: '1:20', value: 20 },
   { label: '1:50', value: 50 },
@@ -1072,15 +1091,19 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }, [currentPage, pdfFile])
 
   // After the user stops zooming, re-rasterise the PDF at the new resolution
-  // so the canvas is crisp instead of relying on the CSS transform upscale.
+  // so the canvas is crisp instead of relying on the CSS transform upscale —
+  // but cap the rasterisation at MAX_RENDERED_ZOOM. Beyond that, the canvas
+  // stays at the cap and the CSS transform handles further visual scaling.
+  // Cap rationale lives in the MAX_RENDERED_ZOOM jsdoc above.
   //
   // The debounce is generous (300ms) so it doesn't fire mid-pinch — a re-raster mid-zoom
   // causes a visible snap (blurry transformed canvas → crisp native canvas). We'd rather
   // keep the canvas in CSS-transform mode for the whole gesture and snap once at the end.
   useEffect(() => {
-    if (zoom === renderedZoom) return
+    const target = Math.min(zoom, MAX_RENDERED_ZOOM)
+    if (target === renderedZoom) return
     const timer = setTimeout(() => {
-      setRenderedZoom(zoom)
+      setRenderedZoom(target)
     }, 300)
     return () => clearTimeout(timer)
   }, [zoom, renderedZoom])

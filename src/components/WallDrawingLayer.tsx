@@ -1063,6 +1063,157 @@ function WallDrawingLayerInner({
 
   const wallsById = useMemo(() => new Map(walls.map((w) => [w.id, w])), [walls])
 
+  /**
+   * Per-wall precomputed geometry (polygon vertices, outer-edge length, label
+   * anchor in pixels). Hover/selection state changes cause WallDrawingLayer
+   * to re-render constantly as the cursor crosses walls — and each render
+   * was recomputing every wall's mitre intersections + connected-wall lookups
+   * inline inside the JSX, which is O(N²) for N corner-connected walls.
+   *
+   * Caching by `[walls, wallThicknessByWallId, dragPreview, pxPerMmAtCurrentZoom]`
+   * means hover and snap state can change freely without re-running the heavy
+   * math. Konva still re-rasterises the layer (that's structural), but the
+   * JavaScript portion drops out of the hot path, which is the difference
+   * between fluid and laggy when there are lots of walls on the plan.
+   */
+  const wallGeometry = useMemo(() => {
+    const out = new Map<
+      string,
+      { polygonPx: number[]; lengthMm: number; labelPx: Point }
+    >()
+    for (const wall of walls) {
+      const isCurved = isCurvedWall(wall)
+      const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+
+      const startEff =
+        dragPreview?.wallId === wall.id && dragPreview.which === 'start'
+          ? { x: pxToMm(dragPreview.px.x), y: pxToMm(dragPreview.px.y) }
+          : { x: wall.startX, y: wall.startY }
+      const endEff =
+        dragPreview?.wallId === wall.id && dragPreview.which === 'end'
+          ? { x: pxToMm(dragPreview.px.x), y: pxToMm(dragPreview.px.y) }
+          : { x: wall.endX, y: wall.endY }
+
+      let polygonPx: number[] = []
+      if (isCurved) {
+        polygonPx = bandPxForCurvedWall(wall, thicknessMm, mmToPx)
+      } else {
+        const dx = endEff.x - startEff.x
+        const dy = endEff.y - startEff.y
+        const wlen = Math.sqrt(dx * dx + dy * dy)
+        if (wlen > 0) {
+          const nx = -dy / wlen
+          const ny = dx / wlen
+          const half = thicknessMm / 2
+
+          let startPos: Point
+          let startNeg: Point
+          if (wall.startJunction.type === 'corner') {
+            const m = mitredCornerPointsMm(wall, 'start', walls, wallThicknessByWallId)
+            if (m) {
+              startPos = m.posCorner
+              startNeg = m.negCorner
+            } else {
+              startPos = { x: startEff.x + nx * half, y: startEff.y + ny * half }
+              startNeg = { x: startEff.x - nx * half, y: startEff.y - ny * half }
+            }
+          } else {
+            const trim =
+              wall.startJunction.type === 't-junction'
+                ? trimmedEndpointMm(wall, 'start', walls, wallThicknessByWallId)
+                : { x: startEff.x, y: startEff.y }
+            startPos = { x: trim.x + nx * half, y: trim.y + ny * half }
+            startNeg = { x: trim.x - nx * half, y: trim.y - ny * half }
+          }
+
+          let endPos: Point
+          let endNeg: Point
+          if (wall.endJunction.type === 'corner') {
+            const m = mitredCornerPointsMm(wall, 'end', walls, wallThicknessByWallId)
+            if (m) {
+              endPos = m.posCorner
+              endNeg = m.negCorner
+            } else {
+              endPos = { x: endEff.x + nx * half, y: endEff.y + ny * half }
+              endNeg = { x: endEff.x - nx * half, y: endEff.y - ny * half }
+            }
+          } else {
+            const trim =
+              wall.endJunction.type === 't-junction'
+                ? trimmedEndpointMm(wall, 'end', walls, wallThicknessByWallId)
+                : { x: endEff.x, y: endEff.y }
+            endPos = { x: trim.x + nx * half, y: trim.y + ny * half }
+            endNeg = { x: trim.x - nx * half, y: trim.y - ny * half }
+          }
+
+          polygonPx = [
+            mmToPx(startPos.x), mmToPx(startPos.y),
+            mmToPx(endPos.x), mmToPx(endPos.y),
+            mmToPx(endNeg.x), mmToPx(endNeg.y),
+            mmToPx(startNeg.x), mmToPx(startNeg.y),
+          ]
+        }
+      }
+
+      // Outer-edge length (matches what a tape measure reads on the outside
+      // of the wall — see the original inline comment for the corner/T
+      // adjustment rationale).
+      let lengthMm: number
+      if (isCurved) {
+        lengthMm =
+          arcFromThreePoints(
+            { x: wall.startX, y: wall.startY },
+            { x: wall.midX ?? 0, y: wall.midY ?? 0 },
+            { x: wall.endX, y: wall.endY }
+          )?.arcLengthMm ?? 0
+      } else {
+        const centrelineLen = Math.sqrt(
+          (endEff.x - startEff.x) ** 2 + (endEff.y - startEff.y) ** 2
+        )
+        let adjust = 0
+        for (const which of ['start', 'end'] as const) {
+          const j = which === 'start' ? wall.startJunction : wall.endJunction
+          if (j.type !== 'corner' && j.type !== 't-junction') continue
+          const otherId = j.connectedWallIds?.[0]
+          if (!otherId) continue
+          const otherThickness = wallThicknessByWallId[otherId]
+          if (!otherThickness) continue
+          const other = wallsById.get(otherId)
+          if (!other) continue
+          const dataX = which === 'start' ? wall.startX : wall.endX
+          const dataY = which === 'start' ? wall.startY : wall.endY
+          const odx = other.endX - other.startX
+          const ody = other.endY - other.startY
+          const oLen = Math.sqrt(odx * odx + ody * ody)
+          if (oLen === 0) continue
+          const onx = -ody / oLen
+          const ony = odx / oLen
+          const perpDist = Math.abs(
+            (dataX - other.startX) * onx + (dataY - other.startY) * ony
+          )
+          const overlap = Math.max(0, otherThickness / 2 - perpDist)
+          adjust += j.type === 'corner' ? overlap : -overlap
+        }
+        lengthMm = Math.max(0, centrelineLen + adjust)
+      }
+
+      // Label anchor — chord midpoint for straight, user-clicked arc midpoint for curved.
+      const labelPx: Point = isCurved
+        ? {
+            x: mmToPx(wall.midX ?? (wall.startX + wall.endX) / 2),
+            y: mmToPx(wall.midY ?? (wall.startY + wall.endY) / 2),
+          }
+        : {
+            x: (mmToPx(startEff.x) + mmToPx(endEff.x)) / 2,
+            y: (mmToPx(startEff.y) + mmToPx(endEff.y)) / 2,
+          }
+
+      out.set(wall.id, { polygonPx, lengthMm, labelPx })
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walls, wallThicknessByWallId, dragPreviewMm, pxPerMmAtCurrentZoom])
+
   const containerCursor =
     drawingMode ||
     placingOpening ||
@@ -1094,137 +1245,17 @@ function WallDrawingLayerInner({
           const start = effectiveEndpoint(wall, 'start')
           const end = effectiveEndpoint(wall, 'end')
 
-          // Each wall renders as a closed polygon at its physical thickness:
-          //   - free / t-junction endpoints: perpendicular cut at the (possibly trimmed) centreline
-          //   - corner endpoints: MITRED — the polygon's two corners at that end are the L's outer
-          //     and inner corner points, so the two walls tile cleanly into the L
-          //   - curved walls: thick arc band (no junction-aware trim — curves connect at endpoints)
+          // Geometry (polygon vertices, outer-edge length, label anchor) is
+          // precomputed and memoised in `wallGeometry` so re-renders driven by
+          // hover/selection state don't re-run mitre intersection math for
+          // every wall. See the `wallGeometry` useMemo above for details.
+          const geom = wallGeometry.get(wall.id)
+          const polygonPx = geom?.polygonPx ?? []
+          const len = geom?.lengthMm ?? 0
+          const midX = geom?.labelPx.x ?? (start.x + end.x) / 2
+          const midY = geom?.labelPx.y ?? (start.y + end.y) / 2
+
           const isCurved = isCurvedWall(wall)
-          const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
-          const polygonPx: number[] = (() => {
-            if (isCurved) {
-              return bandPxForCurvedWall(wall, thicknessMm, mmToPx)
-            }
-
-            // Compute the four polygon corners in mm:
-            //   startPos / startNeg = at the start end, on +N / -N side
-            //   endPos / endNeg     = at the end end, on +N / -N side
-            const dx = wall.endX - wall.startX
-            const dy = wall.endY - wall.startY
-            const wlen = Math.sqrt(dx * dx + dy * dy)
-            if (wlen === 0) return []
-            const nx = -dy / wlen
-            const ny = dx / wlen
-            const half = thicknessMm / 2
-
-            // ── start end ──
-            let startPos: Point
-            let startNeg: Point
-            if (wall.startJunction.type === 'corner') {
-              const m = mitredCornerPointsMm(wall, 'start', walls, wallThicknessByWallId)
-              if (m) {
-                startPos = m.posCorner
-                startNeg = m.negCorner
-              } else {
-                startPos = { x: wall.startX + nx * half, y: wall.startY + ny * half }
-                startNeg = { x: wall.startX - nx * half, y: wall.startY - ny * half }
-              }
-            } else {
-              const trim =
-                wall.startJunction.type === 't-junction'
-                  ? trimmedEndpointMm(wall, 'start', walls, wallThicknessByWallId)
-                  : { x: wall.startX, y: wall.startY }
-              startPos = { x: trim.x + nx * half, y: trim.y + ny * half }
-              startNeg = { x: trim.x - nx * half, y: trim.y - ny * half }
-            }
-
-            // ── end end ──
-            let endPos: Point
-            let endNeg: Point
-            if (wall.endJunction.type === 'corner') {
-              const m = mitredCornerPointsMm(wall, 'end', walls, wallThicknessByWallId)
-              if (m) {
-                endPos = m.posCorner
-                endNeg = m.negCorner
-              } else {
-                endPos = { x: wall.endX + nx * half, y: wall.endY + ny * half }
-                endNeg = { x: wall.endX - nx * half, y: wall.endY - ny * half }
-              }
-            } else {
-              const trim =
-                wall.endJunction.type === 't-junction'
-                  ? trimmedEndpointMm(wall, 'end', walls, wallThicknessByWallId)
-                  : { x: wall.endX, y: wall.endY }
-              endPos = { x: trim.x + nx * half, y: trim.y + ny * half }
-              endNeg = { x: trim.x - nx * half, y: trim.y - ny * half }
-            }
-
-            // Walk the polygon counter-clockwise (start+N → end+N → end-N → start-N).
-            return [
-              mmToPx(startPos.x), mmToPx(startPos.y),
-              mmToPx(endPos.x), mmToPx(endPos.y),
-              mmToPx(endNeg.x), mmToPx(endNeg.y),
-              mmToPx(startNeg.x), mmToPx(startNeg.y),
-            ]
-          })()
-
-          // Wall length displayed in the label = OUTER-EDGE length, not centreline.
-          //   - For corner-tagged ends, the polygon mitre extends the outer face past the
-          //     centreline endpoint to the L's outer corner — that adds halfThickness of
-          //     the connected wall to the wall's "as-measured-on-the-outside" length.
-          //   - For free / t-junction ends, no extension.
-          //   - Curved walls use arc length (no mitre concept).
-          //
-          // This matches what users measure with a tape on the outside of the wall.
-          const len = isCurved
-            ? (arcFromThreePoints(
-                { x: wall.startX, y: wall.startY },
-                { x: wall.midX ?? 0, y: wall.midY ?? 0 },
-                { x: wall.endX, y: wall.endY }
-              )?.arcLengthMm ?? 0)
-            : (() => {
-                const centrelineLen = distance(
-                  { x: pxToMm(start.x), y: pxToMm(start.y) },
-                  { x: pxToMm(end.x), y: pxToMm(end.y) }
-                )
-                // Per-end adjustment:
-                //   - CORNER: + overlap (outer-edge extension)
-                //   - T-JUNCTION: − overlap (face-aligned length, stem is a separate wall)
-                // overlap = max(0, halfThickness_other − perpDist to other's centreline)
-                let adjust = 0
-                for (const which of ['start', 'end'] as const) {
-                  const j = which === 'start' ? wall.startJunction : wall.endJunction
-                  if (j.type !== 'corner' && j.type !== 't-junction') continue
-                  const otherId = j.connectedWallIds?.[0]
-                  if (!otherId) continue
-                  const otherThickness = wallThicknessByWallId[otherId]
-                  if (!otherThickness) continue
-                  const other = walls.find((w) => w.id === otherId)
-                  if (!other) continue
-                  const dataX = which === 'start' ? wall.startX : wall.endX
-                  const dataY = which === 'start' ? wall.startY : wall.endY
-                  const odx = other.endX - other.startX
-                  const ody = other.endY - other.startY
-                  const oLen = Math.sqrt(odx * odx + ody * ody)
-                  if (oLen === 0) continue
-                  const onx = -ody / oLen
-                  const ony = odx / oLen
-                  const perpDist = Math.abs(
-                    (dataX - other.startX) * onx + (dataY - other.startY) * ony
-                  )
-                  const overlap = Math.max(0, otherThickness / 2 - perpDist)
-                  adjust += j.type === 'corner' ? overlap : -overlap
-                }
-                return Math.max(0, centrelineLen + adjust)
-              })()
-
-          // Label position: chord midpoint for straight, the user-clicked midpoint for curved.
-          const midX = isCurved
-            ? mmToPx(wall.midX ?? (wall.startX + wall.endX) / 2)
-            : (start.x + end.x) / 2
-          const midY = isCurved
-            ? mmToPx(wall.midY ?? (wall.startY + wall.endY) / 2)
-            : (start.y + end.y) / 2
 
           const isSelected = wall.id === selectedWallId
           const isHovered =
@@ -1294,6 +1325,15 @@ function WallDrawingLayerInner({
                 strokeWidth={isSelected || isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
                 hitStrokeWidth={8}
                 lineJoin="miter"
+                // Konva perf flags. perfectDrawEnabled forces an offscreen
+                // buffer when a shape has both fill and stroke (so the stroke
+                // doesn't tint the fill at the edges); with semi-transparent
+                // fills it's barely visible but the buffer cost shows up in
+                // every redraw. shadowForStrokeEnabled is the same idea for
+                // shadows we don't use. Disabling both noticeably speeds up
+                // hover/zoom redraws on plans with lots of walls.
+                perfectDrawEnabled={false}
+                shadowForStrokeEnabled={false}
                 onMouseEnter={(e) => {
                   if (
                     !drawingMode &&
