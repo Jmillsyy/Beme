@@ -3,6 +3,8 @@ import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
 import type { Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
+import { formatLengthShort } from '../lib/units'
+import { useUserSettings } from '../lib/userSettings'
 
 interface Point {
   x: number
@@ -1042,8 +1044,12 @@ function WallDrawingLayerInner({
     setDragPreviewMm(null)
   }
 
+  // Respect the user's unit preference for length labels on the canvas.
+  // Metric (default) renders the bare number; imperial renders "X' Y\""
+  // — the suffix is implied by the units toggle / settings.
+  const { settings: __userSettings } = useUserSettings()
   function formatMm(mm: number) {
-    return `${Math.round(mm)} mm`
+    return formatLengthShort(mm, __userSettings.preferences.units)
   }
 
   function effectiveEndpoint(wall: Wall, which: 'start' | 'end'): Point {

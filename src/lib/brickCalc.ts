@@ -152,11 +152,18 @@ export function calculateBrickTally(
 
 /**
  * Sensible defaults for a fresh brick estimate.
+ *
+ * Defaults to the 'standard' brick type from the library (230×76 face). The
+ * brick library may rename or re-dimension that type; we don't compute the
+ * rate here because the library hasn't loaded yet at module init. The brick
+ * settings panel reconciles `bricksPerSquareMetre` against the active type
+ * whenever it changes.
  */
 export function createDefaultBrickSettings(): BrickSettings {
   return {
     defaultWallHeightMm: 2400,
-    bricksPerSquareMetre: 57, // typical Australian 76mm face brick
+    brickTypeCode: 'standard',
+    bricksPerSquareMetre: 48, // 230×76 + 10mm joint → ~48/m²
     ties: { enabled: false, perSquareMetre: 2 },
     plascourse: { enabled: false, metresPerUnit: 30 },
   }

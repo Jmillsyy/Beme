@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import type { BlockTally, Opening, Pier, PierMakeup, Wall, WallMakeup } from '../types/walls'
 import type { BlockCode } from '../types/blocks'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 import { calculateProjectTally } from '../lib/blockCalc'
+import { formatLengthMm } from '../lib/units'
+import { useUserSettings } from '../lib/userSettings'
 
 interface BlockTallyPanelProps {
   walls: Wall[]
@@ -20,10 +22,14 @@ export default function BlockTallyPanel({
   pierMakeupsById = {},
 }: BlockTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
+  // Re-run the tally when the user edits the library (depth lookups, etc.)
+  const { version: libVersion } = useBlockLibrary()
+  const { settings: userSettings } = useUserSettings()
 
   const tally: BlockTally = useMemo(
     () => calculateProjectTally(walls, makeupsById, openings, piers, pierMakeupsById),
-    [walls, makeupsById, openings, piers, pierMakeupsById]
+    // libVersion is the trigger — calc reaches into the live BLOCK_LIBRARY singleton
+    [walls, makeupsById, openings, piers, pierMakeupsById, libVersion]
   )
 
   const entries = useMemo(
@@ -82,7 +88,7 @@ export default function BlockTallyPanel({
             </div>
             <div className="text-xs opacity-85 mt-1">
               {walls.length} wall{walls.length === 1 ? '' : 's'} ·{' '}
-              {Math.round(totalLengthMm)} mm run
+              {formatLengthMm(totalLengthMm, userSettings.preferences.units)} run
             </div>
           </div>
 

@@ -1,15 +1,33 @@
 /**
- * The beme block library.
+ * The beme block library — user-editable.
  *
- * Source of truth for every masonry block code beme understands. Block sizes,
- * descriptions, and roles are taken from the Project Brief (`docs/beme - Project Brief.docx`).
+ * `DEFAULT_BLOCK_LIBRARY` is the seed (SEQ QLD codes from the project brief).
+ * `BLOCK_LIBRARY` is the **current** library — a stable singleton object whose
+ * contents change when the user edits their library via the BlockLibraryPanel.
+ *
+ * Reactivity: components that want to re-render when the library changes call
+ * `useBlockLibrary()`, which subscribes to the singleton and returns
+ * `{ library, version }`. Pass `version` into `useMemo` deps so dependent
+ * calcs re-run after edits.
+ *
+ * Persistence: changes are written to IndexedDB and reloaded on app startup
+ * via `initBlockLibrary()` (called from main.tsx). Until that resolves the
+ * default library is in place, so the app boots usefully even on first run.
  *
  * All dimensions are in mm and refer to the block face viewed from the wall front.
  */
 
+import { useEffect, useReducer } from 'react'
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
 
-export const BLOCK_LIBRARY: Record<BlockCode, Block> = {
+// ─── Seed library ───────────────────────────────────────────────────────────
+
+/**
+ * Default ("seed") library — SEQ QLD masonry codes per the project brief.
+ * Users in other regions can clone, rename, or delete these via the library
+ * panel; this constant is only the starting point for fresh installs.
+ */
+export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   '20.48': {
     code: '20.48',
     name: 'H Block',
@@ -175,10 +193,170 @@ export const BLOCK_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
-// ---------- Helpers ----------
+/** Codes from the seed library that should never be deletable — the calc engine depends on them. */
+export const PROTECTED_BLOCK_CODES = new Set<BlockCode>([
+  '20.48',
+  '20.01',
+  '20.03',
+  '20.45',
+  '50.45',
+  '20.02',
+  '20.22',
+  '20.71',
+  '20.140',
+])
+
+// ─── Mutable singleton ──────────────────────────────────────────────────────
+
+/**
+ * The current library. Same object reference is preserved across edits — only
+ * the keys / values inside change. This means existing imports (`BLOCK_LIBRARY`)
+ * keep working without any code changes; reactivity is opt-in via
+ * `useBlockLibrary()`.
+ */
+export const BLOCK_LIBRARY: Record<BlockCode, Block> = { ...DEFAULT_BLOCK_LIBRARY }
+
+let _version = 0
+const listeners = new Set<() => void>()
+
+function notifyChange() {
+  _version++
+  listeners.forEach((l) => l())
+}
+
+function replaceLibraryContents(next: Record<BlockCode, Block>) {
+  for (const key of Object.keys(BLOCK_LIBRARY)) {
+    delete BLOCK_LIBRARY[key]
+  }
+  Object.assign(BLOCK_LIBRARY, next)
+}
+
+/** Snapshot of the current library (for export / save). */
+export function getBlockLibrary(): Record<BlockCode, Block> {
+  return BLOCK_LIBRARY
+}
+
+/** Replace the entire library wholesale. Persists. */
+export function setBlockLibrary(next: Record<BlockCode, Block>): void {
+  replaceLibraryContents(next)
+  notifyChange()
+  void persistLibrary(BLOCK_LIBRARY)
+}
+
+/** Upsert a single block by code. Persists. */
+export function upsertBlock(block: Block): void {
+  BLOCK_LIBRARY[block.code] = block
+  notifyChange()
+  void persistLibrary(BLOCK_LIBRARY)
+}
+
+/** Remove a block from the library. No-op for protected codes. */
+export function removeBlock(code: BlockCode): void {
+  if (PROTECTED_BLOCK_CODES.has(code)) return
+  if (!(code in BLOCK_LIBRARY)) return
+  delete BLOCK_LIBRARY[code]
+  notifyChange()
+  void persistLibrary(BLOCK_LIBRARY)
+}
+
+/** Reset the library to the SEQ QLD defaults. Useful "start over" affordance. */
+export function resetBlockLibrary(): void {
+  setBlockLibrary({ ...DEFAULT_BLOCK_LIBRARY })
+}
+
+// ─── React hook ─────────────────────────────────────────────────────────────
+
+/**
+ * Subscribe to library changes. Returns the library (same stable reference)
+ * and a version number. Pass the version into `useMemo` deps where you want
+ * dependent calcs to re-run after the user edits the library.
+ */
+export function useBlockLibrary(): { library: Record<BlockCode, Block>; version: number } {
+  const [, force] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    listeners.add(force)
+    return () => {
+      listeners.delete(force)
+    }
+  }, [])
+  return { library: BLOCK_LIBRARY, version: _version }
+}
+
+// ─── Persistence (IndexedDB) ────────────────────────────────────────────────
+
+const DB_NAME = 'beme'
+const DB_VERSION = 2 // bumped from 1 to add the user-data store
+const USER_DATA_STORE = 'userData'
+const LIBRARY_KEY = 'blockLibrary'
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains('projects')) {
+        db.createObjectStore('projects', { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(USER_DATA_STORE)) {
+        db.createObjectStore(USER_DATA_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+async function loadLibrary(): Promise<Record<BlockCode, Block> | null> {
+  try {
+    const db = await openDb()
+    return await new Promise<Record<BlockCode, Block> | null>((resolve, reject) => {
+      const tx = db.transaction(USER_DATA_STORE, 'readonly')
+      const store = tx.objectStore(USER_DATA_STORE)
+      const req = store.get(LIBRARY_KEY)
+      req.onsuccess = () => resolve((req.result as Record<BlockCode, Block> | undefined) ?? null)
+      req.onerror = () => reject(req.error)
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to load block library from IndexedDB:', err)
+    return null
+  }
+}
+
+async function persistLibrary(lib: Record<BlockCode, Block>): Promise<void> {
+  try {
+    const db = await openDb()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(USER_DATA_STORE, 'readwrite')
+      const store = tx.objectStore(USER_DATA_STORE)
+      // Clone to a plain object (the singleton is plain, but be safe).
+      store.put({ ...lib }, LIBRARY_KEY)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to persist block library:', err)
+  }
+}
+
+/**
+ * Bootstrap the library from IndexedDB. Call once at app startup (main.tsx)
+ * BEFORE any components mount so the first paint already reflects the user's
+ * customisations.
+ */
+export async function initBlockLibrary(): Promise<void> {
+  const saved = await loadLibrary()
+  if (saved && Object.keys(saved).length > 0) {
+    replaceLibraryContents(saved)
+    notifyChange()
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** Look up a single block by code. */
-export function getBlock(code: BlockCode): Block {
+export function getBlock(code: BlockCode): Block | undefined {
   return BLOCK_LIBRARY[code]
 }
 

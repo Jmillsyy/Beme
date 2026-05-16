@@ -1,14 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Header from '../components/Header'
+import DonutChart from '../components/DonutChart'
+import LocalMigrationBanner from '../components/LocalMigrationBanner'
 import {
+  type ProjectOutcome,
   type ProjectStatus,
   type SavedProject,
   deleteProject,
   listProjects,
+  saveProject,
 } from '../lib/projectStorage'
+import { useAuth } from '../lib/auth'
+import { useUserSettings } from '../lib/userSettings'
 
-type Filter = 'all' | ProjectStatus
+type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
 
 function formatRelative(iso: string): string {
   const date = new Date(iso)
@@ -39,31 +45,54 @@ function statusBadge(status: ProjectStatus) {
   )
 }
 
+/** Cycle: undefined (pending) → 'won' → 'lost' → undefined */
+function nextOutcome(o: ProjectOutcome | undefined): ProjectOutcome | undefined {
+  if (o === undefined) return 'won'
+  if (o === 'won') return 'lost'
+  return undefined
+}
+
 export default function HomePage() {
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   const [loading, setLoading] = useState(true)
+  const { signedIn } = useAuth()
+  const { settings } = useUserSettings()
+  const primaryProjectType = settings.preferences.defaultProjectType
 
-  useEffect(() => {
+  const refreshProjects = useCallback(() => {
+    setLoading(true)
     listProjects()
       .then((list) => setProjects(list))
       .catch((err) => console.error('Failed to list projects', err))
       .finally(() => setLoading(false))
   }, [])
 
+  useEffect(() => {
+    refreshProjects()
+  }, [refreshProjects, signedIn])
+
+  // ---------- Derived stats ----------
+  const stats = useMemo(() => {
+    const total = projects.length
+    const inProgress = projects.filter((p) => p.status === 'in-progress').length
+    const completed = projects.filter((p) => p.status === 'completed').length
+    const won = projects.filter((p) => p.outcome === 'won').length
+    const lost = projects.filter((p) => p.outcome === 'lost').length
+    const pending = total - won - lost
+    const decided = won + lost
+    const winRate = decided === 0 ? null : Math.round((won / decided) * 100)
+    return { total, inProgress, completed, won, lost, pending, winRate }
+  }, [projects])
+
   const filtered = useMemo(() => {
     if (filter === 'all') return projects
-    return projects.filter((p) => p.status === filter)
+    if (filter === 'in-progress' || filter === 'completed')
+      return projects.filter((p) => p.status === filter)
+    if (filter === 'won') return projects.filter((p) => p.outcome === 'won')
+    if (filter === 'lost') return projects.filter((p) => p.outcome === 'lost')
+    return projects.filter((p) => !p.outcome) // pending
   }, [projects, filter])
-
-  const counts = useMemo(
-    () => ({
-      all: projects.length,
-      'in-progress': projects.filter((p) => p.status === 'in-progress').length,
-      completed: projects.filter((p) => p.status === 'completed').length,
-    }),
-    [projects]
-  )
 
   async function handleDelete(id: string) {
     if (!window.confirm('Delete this project? This cannot be undone.')) return
@@ -75,72 +104,171 @@ export default function HomePage() {
     }
   }
 
+  /**
+   * Cycle the outcome of a project: pending → won → lost → pending. Persists
+   * via saveProject() and updates local state optimistically.
+   */
+  async function handleCycleOutcome(project: SavedProject) {
+    const next = nextOutcome(project.outcome)
+    // Optimistic update.
+    setProjects((prev) =>
+      prev.map((p) => (p.id === project.id ? { ...p, outcome: next } : p))
+    )
+    try {
+      await saveProject({
+        ...project,
+        outcome: next,
+        updatedAt: new Date().toISOString(),
+      })
+    } catch (err) {
+      console.error('Failed to update outcome', err)
+      // Roll back on error.
+      setProjects((prev) =>
+        prev.map((p) => (p.id === project.id ? project : p))
+      )
+    }
+  }
+
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
 
-      <main className="max-w-[1500px] mx-auto px-6 py-16">
-        <h2 className="text-5xl font-extrabold tracking-tight mb-4 text-ink-50">
-          Welcome to Beme
-        </h2>
-        <p className="text-lg text-ink-300 max-w-2xl">
-          Import a building plan, draw or trace walls, and produce an itemised masonry takeoff in minutes.
-        </p>
+      <main className="max-w-[1500px] mx-auto px-6 py-12">
+        {signedIn && <LocalMigrationBanner onMigrated={refreshProjects} />}
 
-        {/* New estimate cards */}
-        <div className="mt-12">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-            Start a new estimate
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Link
-              to="/project/brick"
-              className="border border-ink-600 rounded-xl p-6 bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all group"
-            >
-              <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mb-1">Brick Estimate</h4>
-              <p className="text-sm text-ink-300">
-                Trace brick walls over a plan, set heights, subtract openings, auto-add lintels and ties.
-              </p>
-            </Link>
-
-            <Link
-              to="/project/block"
-              className="border border-ink-600 rounded-xl p-6 bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all group"
-            >
-              <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mb-1">Block Estimate</h4>
-              <p className="text-sm text-ink-300">
-                Define wall makeups, draw walls over a plan, auto-tally blocks by code with corners,
-                fractions, and openings.
-              </p>
-            </Link>
+        <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
+          <div>
+            <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">Dashboard</h2>
+            <p className="text-ink-300 text-sm mt-1">
+              Your estimates, win rate, and current jobs at a glance.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Primary button (orange) is the user's default project type — swap to match. */}
+            {primaryProjectType === 'brick' ? (
+              <>
+                <Link
+                  to="/project/block"
+                  className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
+                >
+                  + Block estimate
+                </Link>
+                <Link
+                  to="/project/brick"
+                  className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 transition-colors font-semibold"
+                >
+                  + Brick estimate
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link
+                  to="/project/brick"
+                  className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
+                >
+                  + Brick estimate
+                </Link>
+                <Link
+                  to="/project/block"
+                  className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 transition-colors font-semibold"
+                >
+                  + Block estimate
+                </Link>
+              </>
+            )}
           </div>
         </div>
 
-        {/* Saved projects */}
-        <div className="mt-16">
+        {/* ── Stats row ── */}
+        <section className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatTile label="Total projects" value={stats.total} />
+          <StatTile label="In progress" value={stats.inProgress} accent="beme" />
+          <StatTile label="Won" value={stats.won} accent="emerald" />
+          <StatTile
+            label="Win rate"
+            value={stats.winRate === null ? '—' : `${stats.winRate}%`}
+            sub={
+              stats.winRate === null
+                ? 'No outcomes yet'
+                : `${stats.won} won · ${stats.lost} lost`
+            }
+          />
+        </section>
+
+        {/* ── Donut + onboarding cards row ── */}
+        <section className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
+          {/* Donut card */}
+          <div className="lg:col-span-1 border border-ink-600 rounded-xl bg-ink-800 p-5 flex flex-col items-center justify-center gap-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 self-start">
+              Outcomes
+            </h3>
+            <DonutChart
+              size={180}
+              thickness={22}
+              centreLabel={stats.winRate === null ? undefined : 'Win rate'}
+              centreValue={stats.winRate === null ? undefined : `${stats.winRate}%`}
+              emptyHint="Mark a project Won or Lost to see your win rate."
+              slices={[
+                { label: 'Won', value: stats.won, color: 'var(--color-beme-500)' },
+                { label: 'Lost', value: stats.lost, color: 'var(--color-ink-500)' },
+                { label: 'Pending', value: stats.pending, color: 'var(--color-ink-600)' },
+              ]}
+            />
+          </div>
+
+          {/* Two onboarding "Start" cards */}
+          <Link
+            to="/project/brick"
+            className="lg:col-span-1 border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
+          >
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Start a new estimate
+            </div>
+            <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
+              Brick estimate
+            </h4>
+            <p className="text-sm text-ink-300">
+              Trace brick walls over a plan. Calculates area × bricks/m², plus ties, plascourse,
+              and lintels.
+            </p>
+            <div className="mt-auto pt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
+              Open the brick workspace →
+            </div>
+          </Link>
+
+          <Link
+            to="/project/block"
+            className="lg:col-span-1 border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
+          >
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Start a new estimate
+            </div>
+            <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
+              Block estimate
+            </h4>
+            <p className="text-sm text-ink-300">
+              Define wall and pier types, draw walls over a plan, auto-tally blocks by code
+              with corners and openings.
+            </p>
+            <div className="mt-auto pt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
+              Open the block workspace →
+            </div>
+          </Link>
+        </section>
+
+        {/* ── Projects list ── */}
+        <section className="mt-10">
           <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
             <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
               Projects
             </h3>
-            <div className="flex items-center gap-1 border border-ink-600 rounded-lg p-1 bg-ink-800">
-              <FilterTab
-                label="All"
-                count={counts.all}
-                active={filter === 'all'}
-                onClick={() => setFilter('all')}
-              />
-              <FilterTab
-                label="In progress"
-                count={counts['in-progress']}
-                active={filter === 'in-progress'}
-                onClick={() => setFilter('in-progress')}
-              />
-              <FilterTab
-                label="Completed"
-                count={counts.completed}
-                active={filter === 'completed'}
-                onClick={() => setFilter('completed')}
-              />
+            <div className="flex items-center gap-1 border border-ink-600 rounded-lg p-1 bg-ink-800 flex-wrap">
+              <FilterTab label="All" count={stats.total} active={filter === 'all'} onClick={() => setFilter('all')} />
+              <FilterTab label="In progress" count={stats.inProgress} active={filter === 'in-progress'} onClick={() => setFilter('in-progress')} />
+              <FilterTab label="Completed" count={stats.completed} active={filter === 'completed'} onClick={() => setFilter('completed')} />
+              <FilterTab label="Won" count={stats.won} active={filter === 'won'} onClick={() => setFilter('won')} />
+              <FilterTab label="Lost" count={stats.lost} active={filter === 'lost'} onClick={() => setFilter('lost')} />
+              <FilterTab label="Pending" count={stats.pending} active={filter === 'pending'} onClick={() => setFilter('pending')} />
             </div>
           </div>
 
@@ -150,11 +278,11 @@ export default function HomePage() {
             <div className="border border-dashed border-ink-600 rounded-xl p-12 text-center text-ink-400 bg-ink-800/50">
               {projects.length === 0 ? (
                 <span>
-                  No saved projects yet. Start a new estimate above — save it once you've added the
-                  PDF and project details.
+                  No saved projects yet. Click <strong>+ Block estimate</strong> or{' '}
+                  <strong>+ Brick estimate</strong> above to start one.
                 </span>
               ) : (
-                <span>No projects with this status.</span>
+                <span>No projects with this filter.</span>
               )}
             </div>
           )}
@@ -162,12 +290,49 @@ export default function HomePage() {
           {!loading && filtered.length > 0 && (
             <ul className="space-y-2">
               {filtered.map((p) => (
-                <ProjectRow key={p.id} project={p} onDelete={() => handleDelete(p.id)} />
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  onDelete={() => handleDelete(p.id)}
+                  onCycleOutcome={() => handleCycleOutcome(p)}
+                />
               ))}
             </ul>
           )}
-        </div>
+        </section>
       </main>
+    </div>
+  )
+}
+
+// ---------- Sub-components ----------
+
+function StatTile({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string
+  value: string | number
+  sub?: string
+  accent?: 'beme' | 'emerald'
+}) {
+  const accentClass =
+    accent === 'beme'
+      ? 'text-beme-300'
+      : accent === 'emerald'
+        ? 'text-emerald-300'
+        : 'text-ink-50'
+  return (
+    <div className="border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+        {label}
+      </div>
+      <div className={`text-3xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
+        {value}
+      </div>
+      {sub && <div className="text-xs text-ink-400 mt-0.5">{sub}</div>}
     </div>
   )
 }
@@ -197,12 +362,50 @@ function FilterTab({
   )
 }
 
+/**
+ * Clickable outcome pill: pending → won → lost → pending.
+ * Stops link navigation when clicked.
+ */
+function OutcomePill({
+  outcome,
+  onClick,
+}: {
+  outcome: ProjectOutcome | undefined
+  onClick: () => void
+}) {
+  let label = 'Mark won'
+  let className = 'bg-ink-700 text-ink-300 border-ink-600 hover:bg-ink-600'
+  if (outcome === 'won') {
+    label = 'Won'
+    className = 'bg-beme-500/15 text-beme-300 border-beme-500/40 hover:bg-beme-500/25'
+  } else if (outcome === 'lost') {
+    label = 'Lost'
+    className = 'bg-rose-500/15 text-rose-300 border-rose-500/40 hover:bg-rose-500/25'
+  }
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onClick()
+      }}
+      className={`text-[11px] px-2 py-0.5 rounded-full border font-medium transition-colors ${className}`}
+      title="Click to cycle: pending → won → lost"
+    >
+      {label}
+    </button>
+  )
+}
+
 function ProjectRow({
   project,
   onDelete,
+  onCycleOutcome,
 }: {
   project: SavedProject
   onDelete: () => void
+  onCycleOutcome: () => void
 }) {
   const name =
     project.projectDetails.projectName.trim() ||
@@ -226,6 +429,7 @@ function ProjectRow({
               {name}
             </span>
             {statusBadge(project.status)}
+            <OutcomePill outcome={project.outcome} onClick={onCycleOutcome} />
             <span className="text-[11px] px-2 py-0.5 rounded-full bg-ink-700 text-ink-200 border border-ink-600">
               {typeLabel}
             </span>

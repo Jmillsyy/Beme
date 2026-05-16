@@ -16,6 +16,7 @@ import type {
   Wall,
 } from '../types/walls'
 import { calculateBrickTally } from './brickCalc'
+import { downloadPdfFromHtml } from './pdfExport'
 
 interface ExportParams {
   projectDetails: ProjectDetails
@@ -23,6 +24,21 @@ interface ExportParams {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
+  /** Optional business identity (from user settings). Same shape as block export. */
+  business?: BusinessExportInfo
+}
+
+export interface BusinessExportInfo {
+  companyName?: string
+  abn?: string
+  phone?: string
+  website?: string
+  addressLine1?: string
+  addressLine2?: string
+  suburb?: string
+  state?: string
+  postcode?: string
+  logoUrl?: string
 }
 
 const DISCLAIMER_TEXT = [
@@ -137,8 +153,8 @@ function groupLintels(
   return { groups, oversizedCount, total }
 }
 
-export function exportBrickEstimate(params: ExportParams): void {
-  const { projectDetails, inclusions, walls, openings, settings } = params
+export async function exportBrickEstimate(params: ExportParams): Promise<void> {
+  const { projectDetails, inclusions, walls, openings, settings, business } = params
   const tally = calculateBrickTally(walls, openings, settings)
 
   const headerTitle =
@@ -162,12 +178,40 @@ export function exportBrickEstimate(params: ExportParams): void {
 
   // ---------- HTML pieces ----------
 
+  // Branded header — uses the user's business identity when provided.
+  const hasBusinessIdentity = !!business?.companyName?.trim()
+  const brandBlock = hasBusinessIdentity
+    ? `
+        ${business?.logoUrl ? `<img src="${escapeHtml(business.logoUrl)}" alt="Logo" class="brand-logo" />` : ''}
+        <div class="brand-name">${escapeHtml(business?.companyName ?? '')}</div>
+        <div class="brand-tag">
+          ${business?.abn ? `ABN ${escapeHtml(business.abn)}` : ''}
+          ${business?.phone ? ` · ${escapeHtml(business.phone)}` : ''}
+          ${business?.website ? ` · ${escapeHtml(business.website)}` : ''}
+        </div>
+        ${
+          business?.addressLine1
+            ? `<div class="brand-address">${[
+                business.addressLine1,
+                business.addressLine2,
+                [business.suburb, business.state, business.postcode]
+                  .filter(Boolean)
+                  .join(' '),
+              ]
+                .filter(Boolean)
+                .map((line) => escapeHtml(line ?? ''))
+                .join('<br/>')}</div>`
+            : ''
+        }
+      `
+    : `
+        <div class="brand-name">Beme</div>
+        <div class="brand-tag">Building Estimates Made Easy</div>
+      `
+
   const pageHeader = `
     <header class="page-header">
-      <div class="brand">
-        <div class="brand-name">Beme</div>
-        <div class="brand-tag">Brick and Block Estimates Made Easy</div>
-      </div>
+      <div class="brand">${brandBlock}</div>
       <div class="title-block">
         <div class="title-main">Brickwork Takeoff — Material Schedule</div>
         <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm</div>
@@ -334,6 +378,54 @@ export function exportBrickEstimate(params: ExportParams): void {
     font-size: 11px;
     margin-top: 2px;
   }
+  .brand-address {
+    color: #4B5563;
+    font-size: 11px;
+    margin-top: 4px;
+    line-height: 1.4;
+  }
+  .brand-logo {
+    max-height: 56px;
+    max-width: 180px;
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  /* "Built with Beme" credit footer on every page. */
+  .page { position: relative; padding-bottom: 50px; }
+  .beme-credit {
+    position: absolute;
+    left: 1.5cm;
+    right: 1.5cm;
+    bottom: 1cm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 10px;
+    color: #9CA3AF;
+    border-top: 1px solid #E5E7EB;
+    padding-top: 6px;
+  }
+  .beme-credit .beme-mark {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    background: #FF7A2D;
+    border-radius: 2px;
+    position: relative;
+  }
+  .beme-credit .beme-mark::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    background: #111111;
+    border-radius: 1px;
+  }
+  .beme-credit strong {
+    color: #1F2937;
+    font-weight: 700;
+  }
   .title-block { text-align: right; }
   .title-main {
     font-size: 18px;
@@ -431,21 +523,18 @@ export function exportBrickEstimate(params: ExportParams): void {
 </body>
 </html>`
 
-  // Use an anchor click on a blob URL — browsers treat this as a normal user-initiated
-  // navigation (no pop-up blocking), and the new tab inherits print/save-as-PDF behaviour.
-  const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
+  // "Built with Beme" credit on every page — injected before each section's
+  // closing tag so all pages (assumptions / area / lintels / disclaimer)
+  // carry the footer without touching the per-page builders.
+  const bemeFooter = `
+    <footer class="beme-credit">
+      <span class="beme-mark"></span>
+      <span>Built with <strong>Beme</strong> · building estimates made easy</span>
+    </footer>`
+  const htmlWithFooter = html.replace(/<\/section>/g, `${bemeFooter}</section>`)
 
-  const a = document.createElement('a')
-  a.href = url
-  a.target = '_blank'
-  a.rel = 'noopener noreferrer'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-
-  // Release the blob after the new tab has had a chance to load
-  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  // Direct one-click PDF download via html2pdf.js — no HTML preview tab.
+  await downloadPdfFromHtml({ html: htmlWithFooter, filename: docTitle })
 }
 
 export function createDefaultProjectDetails(): ProjectDetails {

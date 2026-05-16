@@ -7,6 +7,7 @@ import type {
   Wall,
 } from '../types/walls'
 import { exportBrickEstimate } from '../lib/brickExport'
+import { useUserSettings } from '../lib/userSettings'
 
 interface BrickExportPanelProps {
   projectDetails: ProjectDetails
@@ -28,22 +29,46 @@ export default function BrickExportPanel({
   // Collapsed by default in the rail — export is end-of-workflow so it shouldn't
   // take space while you're drawing.
   const [expanded, setExpanded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const { settings: userSettings } = useUserSettings()
 
   function patch(p: Partial<BrickExportInclusions>) {
     onChangeInclusions({ ...inclusions, ...p })
   }
 
-  function handleExport() {
-    exportBrickEstimate({
-      projectDetails,
-      inclusions,
-      walls,
-      openings,
-      settings,
-    })
+  async function handleExport() {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await exportBrickEstimate({
+        projectDetails,
+        inclusions,
+        walls,
+        openings,
+        settings,
+        business: {
+          companyName: userSettings.business.companyName,
+          abn: userSettings.business.abn,
+          phone: userSettings.business.phone,
+          website: userSettings.business.website,
+          addressLine1: userSettings.business.addressLine1,
+          addressLine2: userSettings.business.addressLine2,
+          suburb: userSettings.business.suburb,
+          state: userSettings.business.state,
+          postcode: userSettings.business.postcode,
+          logoUrl: userSettings.business.logoUrl,
+        },
+      })
+    } catch (e) {
+      setError((e as Error).message ?? 'Export failed')
+    } finally {
+      setBusy(false)
+    }
   }
 
-  const canExport = walls.length > 0
+  const canExport = walls.length > 0 && !busy
 
   return (
     <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
@@ -70,15 +95,16 @@ export default function BrickExportPanel({
           disabled={!canExport}
           className="w-full px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
         >
-          Export estimate →
+          {busy ? 'Opening print dialog…' : 'Save as PDF →'}
         </button>
       )}
 
       {expanded && (
         <>
       <p className="text-xs text-ink-400 mb-2">
-        Tick what you want in the document, then click Export. A printable page opens in a new
-        tab — use your browser's <em>Print → Save as PDF</em> to save it.
+        Tick what you want in the document, then click <em>Save as PDF</em>. The print
+        dialog opens with your estimate already loaded — pick <em>Save as PDF</em> as the
+        destination.
       </p>
 
       <div className="grid grid-cols-1 gap-1.5 text-sm mb-3">
@@ -123,11 +149,16 @@ export default function BrickExportPanel({
         disabled={!canExport}
         className="w-full px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
       >
-        Export estimate →
+        {busy ? 'Opening print dialog…' : 'Save as PDF →'}
       </button>
 
       {!canExport && (
         <p className="text-xs text-ink-400 mt-2">Draw at least one wall before exporting.</p>
+      )}
+      {error && (
+        <p className="text-xs text-rose-300 mt-2">
+          Couldn't build the PDF — {error}
+        </p>
       )}
         </>
       )}

@@ -6,12 +6,22 @@
  */
 
 /**
- * Every block code recognised by beme.
+ * Block codes are user-editable strings. Users in different regions / countries
+ * use different naming schemes (the SEQ QLD codes — 20.48, 20.01, etc. — are
+ * just the defaults seeded for new users). A user can rename built-ins, add
+ * new blocks, or remove ones they don't use.
  *
- * Codes match the masonry industry codes used in Australia (per the Project Brief).
- * If you add a new code here, also add it to BLOCK_LIBRARY.
+ * Code uniqueness is enforced at write time inside the library panel — two
+ * blocks can't share the same code.
  */
-export type BlockCode =
+export type BlockCode = string
+
+/**
+ * The built-in / "seed" codes shipped with the app. Used internally where the
+ * calc engine needs to reach for a specific block (e.g. height-makeup courses
+ * default to 20.71 / 20.140). End-user data is just `BlockCode` (string).
+ */
+export type BuiltInBlockCode =
   | '20.48' // H Block — main body
   | '20.01' // Standard Block — end terminations
   | '20.03' // Half Block — end terminations / 1/2 fraction

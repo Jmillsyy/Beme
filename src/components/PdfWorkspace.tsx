@@ -3,7 +3,9 @@ import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
+import BlockLibraryPanel from './BlockLibraryPanel'
 import BlockTallyPanel from './BlockTallyPanel'
+import BrickLibraryPanel from './BrickLibraryPanel'
 import PierTypesPanel from './PierTypesPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickSettingsPanel from './BrickSettingsPanel'
@@ -36,25 +38,35 @@ import {
   createDefaultTiedPierMakeup,
   createDefaultWallMakeup,
 } from '../lib/makeups'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
+import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
+import { getUserSettings } from '../lib/userSettings'
 
-/** Default brick-wall thickness (mm) — single skin. Could later be a BrickSettings field. */
+/** Fallback brick-wall thickness (mm) — single skin — used when no brick type is selected. */
 const DEFAULT_BRICK_WALL_THICKNESS_MM = 110
 
 /**
  * Per-wall physical thickness in mm. Block walls take their thickness from the makeup's
- * body-block depth; brick walls use a constant. Available outside React's render loop so
+ * body-block depth; brick walls use the active brick type's depth, falling back to
+ * single-skin 110mm if nothing's selected. Available outside React's render loop so
  * event handlers (wall-add, junction recompute) can use it before the next render lands.
  */
 function computeWallThicknessByWallId(
   walls: Wall[],
   makeupsById: Record<string, WallMakeup>,
-  mode: 'block' | 'brick' | undefined
+  mode: 'block' | 'brick' | undefined,
+  brickTypeCode?: string
 ): Record<string, number> {
+  // Look up the brick type's depth once per call. Falls back to single-skin
+  // 110mm when no type is set or it can't be resolved.
+  const brickThicknessMm =
+    (brickTypeCode && BRICK_LIBRARY[brickTypeCode]?.depthMm) ||
+    DEFAULT_BRICK_WALL_THICKNESS_MM
+
   const map: Record<string, number> = {}
   for (const w of walls) {
     if (mode === 'brick') {
-      map[w.id] = DEFAULT_BRICK_WALL_THICKNESS_MM
+      map[w.id] = brickThicknessMm
       continue
     }
     const makeup = makeupsById[w.makeupId]
@@ -187,10 +199,19 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     [makeups]
   )
 
-  // Brick-mode settings
-  const [brickSettings, setBrickSettings] = useState<BrickSettings>(() =>
-    createDefaultBrickSettings()
-  )
+  // Brick-mode settings — seeded with the user's defaults from settings, so a
+  // new project picks up their default wall height + preferred brick type.
+  const [brickSettings, setBrickSettings] = useState<BrickSettings>(() => {
+    const seed = createDefaultBrickSettings()
+    // getUserSettings() not useUserSettings() — we only want the value once,
+    // at init. Settings changes after that flow through the SettingsPage.
+    const us = getUserSettings()
+    return {
+      ...seed,
+      defaultWallHeightMm: us.defaults.defaultWallHeightMm,
+      brickTypeCode: us.defaults.defaultBrickTypeCode || seed.brickTypeCode,
+    }
+  })
 
   // Project details + export inclusion tickboxes (brick mode)
   const [projectDetails, setProjectDetails] = useState<ProjectDetails>(() =>
@@ -207,6 +228,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   /** ID of the currently-loaded saved project (null if this is a fresh, unsaved workspace). */
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(projectId ?? null)
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>('in-progress')
+  /** Outcome ('won' | 'lost' | undefined). Set from the dashboard, round-tripped here so saves preserve it. */
+  const [projectOutcome, setProjectOutcome] = useState<'won' | 'lost' | undefined>(undefined)
   const [projectCreatedAt, setProjectCreatedAt] = useState<string | null>(null)
   const [projectCompletedAt, setProjectCompletedAt] = useState<string | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
@@ -244,6 +267,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
         setCurrentProjectId(proj.id)
         setProjectStatus(proj.status)
+        setProjectOutcome(proj.outcome)
         setProjectCreatedAt(proj.createdAt)
         setProjectCompletedAt(proj.completedAt ?? null)
         setLastSavedAt(proj.updatedAt)
@@ -279,6 +303,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       createdAt: projectCreatedAt ?? now,
       updatedAt: now,
       completedAt: projectCompletedAt ?? undefined,
+      outcome: projectOutcome,
       projectDetails,
       // pdfBlob + pdfFileName are optional now — a project can be saved without a PDF
       ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
@@ -327,6 +352,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         createdAt: projectCreatedAt ?? now,
         updatedAt: now,
         completedAt: nextStatus === 'completed' ? now : projectCompletedAt ?? undefined,
+        outcome: projectOutcome,
         projectDetails,
         ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
         pagesData,
@@ -373,6 +399,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       await deleteProjectFromStore(currentProjectId)
       setCurrentProjectId(null)
       setProjectStatus('in-progress')
+      setProjectOutcome(undefined)
       setProjectCreatedAt(null)
       setProjectCompletedAt(null)
       setLastSavedAt(null)
@@ -438,9 +465,24 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    * block depth (e.g. 190mm for a 20.48). For brick walls, a default single-skin width.
    * Drives the rendered wall-rectangle thickness in WallDrawingLayer.
    */
+  // Subscribe to the block + brick libraries so wall thickness re-derives when
+  // the user edits a block's depth, swaps the active brick type, or changes a
+  // brick type's depth in the library panel.
+  const { version: blockLibraryVersion } = useBlockLibrary()
+  const { version: brickLibraryVersion } = useBrickLibrary()
   const wallThicknessByWallId = useMemo(
-    () => computeWallThicknessByWallId(allWalls, makeupsById, mode),
-    [allWalls, makeupsById, mode]
+    () =>
+      computeWallThicknessByWallId(allWalls, makeupsById, mode, brickSettings.brickTypeCode),
+    // Library versions are intentional: when the user edits library dimensions,
+    // the canvas wall thickness should reflect it immediately.
+    [
+      allWalls,
+      makeupsById,
+      mode,
+      brickSettings.brickTypeCode,
+      blockLibraryVersion,
+      brickLibraryVersion,
+    ]
   )
 
   const selectedWall = useMemo(
@@ -472,7 +514,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // directions: the new wall butting into an existing wall's body (T-junction on new),
     // AND an existing wall's free endpoint now lying on the new wall's body (T on existing).
     const newWalls = [...existing, rawWall]
-    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode)
+    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
 
     setWallsByPage((prev) => ({
@@ -510,7 +552,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
     const existing = wallsByPage[currentPage] ?? []
     const newWalls = [...existing, rawWall]
-    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode)
+    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
     setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
   }
@@ -582,7 +624,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // The two halves replace the original wall in the page's wall list.
     const remainingWalls = existing.filter((w) => w.id !== wallId)
     const newWalls = [...remainingWalls, firstHalf, secondHalf]
-    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode)
+    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
     setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
 
@@ -865,7 +907,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
         return { ...w, endX: newPositionMm.x, endY: newPositionMm.y }
       })
-      const thicknesses = computeWallThicknessByWallId(updated, makeupsById, mode)
+      const thicknesses = computeWallThicknessByWallId(updated, makeupsById, mode, brickSettings.brickTypeCode)
       return { ...prev, [currentPage]: recomputeAllJunctions(updated, thicknesses) }
     })
   }
@@ -874,7 +916,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setWallsByPage((prev) => {
       const pageWalls = prev[currentPage] ?? []
       const remaining = pageWalls.filter((w) => w.id !== wallId)
-      const thicknesses = computeWallThicknessByWallId(remaining, makeupsById, mode)
+      const thicknesses = computeWallThicknessByWallId(remaining, makeupsById, mode, brickSettings.brickTypeCode)
       return { ...prev, [currentPage]: recomputeAllJunctions(remaining, thicknesses) }
     })
     // Drop any tied piers that were attached to this wall — they're not meaningful
@@ -1371,6 +1413,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         />
 
         <div className="px-6 py-6">
+          <WorkspacePageHeading mode={mode} />
+
           <div className="flex flex-col lg:flex-row gap-4 items-start">
 
             {/* ── Left: drop zone + onboarding hints ── */}
@@ -1436,14 +1480,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                       3
                     </span>
                     <span>
-                      Draw walls over the plan — Beme handles corners, T-junctions, control joints, and openings automatically.
+                      {mode === 'block'
+                        ? 'Draw walls over the plan — Beme handles corners, T-junctions, control joints, and openings automatically.'
+                        : 'Trace brick walls over the plan and subtract openings — Beme calculates the brickwork area (length × height) from your dimensions.'}
                     </span>
                   </li>
                   <li className="flex gap-3">
                     <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
                       4
                     </span>
-                    <span>The block tally updates live in the side rail. Click <em>Export estimate</em> when you're ready to print.</span>
+                    <span>
+                      {mode === 'block'
+                        ? <>The block tally updates live in the side rail. Click <em>Export estimate</em> when you're ready to print.</>
+                        : <>Bricks (m² × bricks per m²), ties, plascourse, and lintels are tallied automatically. Click <em>Export estimate</em> to print.</>}
+                    </span>
                   </li>
                 </ol>
               </div>
@@ -1469,10 +1519,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     onUpdateMakeup={handleUpdatePierMakeup}
                     onDeleteMakeup={handleDeletePierMakeup}
                   />
+                  <BlockLibraryPanel />
                 </>
               )}
               {mode === 'brick' && (
-                <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+                <>
+                  <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+                  <BrickLibraryPanel />
+                </>
               )}
             </aside>
           </div>
@@ -1510,6 +1564,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       />
 
       <div className="px-6 py-6">
+
+      <WorkspacePageHeading mode={mode} />
 
       {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
       <div className="flex items-center mb-3 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
@@ -2532,9 +2588,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           />
         )}
 
-        {/* Brick settings panel (brick mode) */}
+        {/* Block library (block mode) — user-editable catalogue of every block */}
+        {mode === 'block' && <BlockLibraryPanel />}
+
+        {/* Brick settings + library (brick mode) */}
         {mode === 'brick' && (
-          <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+          <>
+            <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+            <BrickLibraryPanel />
+          </>
         )}
 
         {/* Block tally panel (block mode) */}
@@ -2586,4 +2648,33 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       </div>{/* End workspace padding wrapper */}
     </div>
   )
+}
+
+/**
+ * Page heading for the workspace — matches the Dashboard's typography on the
+ * home page. Sits below the ProjectBar so the user always knows whether
+ * they're in a brick or block workspace.
+ */
+function WorkspacePageHeading({ mode }: { mode: 'block' | 'brick' | undefined }) {
+  if (mode === 'brick') {
+    return (
+      <div className="mb-6">
+        <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">Brick estimate</h2>
+        <p className="text-ink-300 text-sm mt-1">
+          Trace brick walls over a plan — area × bricks/m² plus ties, plascourse, and lintels.
+        </p>
+      </div>
+    )
+  }
+  if (mode === 'block') {
+    return (
+      <div className="mb-6">
+        <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">Block estimate</h2>
+        <p className="text-ink-300 text-sm mt-1">
+          Walls, piers, openings — auto-tallied to a printable schedule.
+        </p>
+      </div>
+    )
+  }
+  return null
 }

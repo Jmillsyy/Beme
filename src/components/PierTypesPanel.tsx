@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { PierMakeup } from '../types/walls'
 import type { BlockCode } from '../types/blocks'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 
 interface PierTypesPanelProps {
   pierMakeups: PierMakeup[]
@@ -19,16 +19,6 @@ interface PierTypesPanelProps {
  */
 const PIER_PREFERRED: BlockCode[] = ['40.925', '20.01', '20.21', '20.48', '20.03']
 
-const ALL_BLOCKS: BlockCode[] = Object.values(BLOCK_LIBRARY)
-  .map((b) => b.code)
-  .filter((c) => c !== '50.45') // tile is not a pier block
-
-function sortedBlockOptions(): BlockCode[] {
-  const preferred = PIER_PREFERRED.filter((c) => ALL_BLOCKS.includes(c))
-  const rest = ALL_BLOCKS.filter((c) => !PIER_PREFERRED.includes(c)).sort()
-  return [...preferred, ...rest]
-}
-
 function blockLabel(code: BlockCode): string {
   const b = BLOCK_LIBRARY[code]
   return b ? `${code} — ${b.name}` : code
@@ -42,7 +32,16 @@ export default function PierTypesPanel({
   onDeleteMakeup,
 }: PierTypesPanelProps) {
   const [expanded, setExpanded] = useState(false)
-  const blockOptions = sortedBlockOptions()
+  // Re-derive when the library changes.
+  const { library } = useBlockLibrary()
+  const blockOptions = useMemo<BlockCode[]>(() => {
+    const allBlocks: BlockCode[] = Object.values(library)
+      .map((b) => b.code)
+      .filter((c) => c !== '50.45') // tile is not a pier block
+    const preferred = PIER_PREFERRED.filter((c) => allBlocks.includes(c))
+    const rest = allBlocks.filter((c) => !PIER_PREFERRED.includes(c)).sort()
+    return [...preferred, ...rest]
+  }, [library])
 
   function patch(makeup: PierMakeup, changes: Partial<PierMakeup>) {
     onUpdateMakeup({ ...makeup, ...changes })

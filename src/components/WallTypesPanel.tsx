@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { WallMakeup, BondType, CourseOverride } from '../types/walls'
 import type { BlockCode } from '../types/blocks'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -19,12 +19,6 @@ function generateMakeupId(): string {
   }
   return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
-
-/** All block codes available in dropdowns. Excludes the cleanout tile (it's only valid in the tile slot). */
-const SELECTABLE_BLOCKS: BlockCode[] = Object.values(BLOCK_LIBRARY)
-  .filter((b) => b.code !== '50.45')
-  .map((b) => b.code)
-  .sort()
 
 const TILE_BLOCKS: BlockCode[] = ['50.45']
 
@@ -183,6 +177,17 @@ interface WallTypeFormProps {
 }
 
 function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
+  // Re-derive the dropdown options each render so they reflect the user's
+  // current library (re-renders when the library changes via useBlockLibrary).
+  const { library } = useBlockLibrary()
+  const selectableBlocks = useMemo<BlockCode[]>(
+    () =>
+      Object.values(library)
+        .filter((b) => b.code !== '50.45')
+        .map((b) => b.code)
+        .sort(),
+    [library]
+  )
   const [name, setName] = useState(existing?.name ?? 'New wall type')
   const [bondType, setBondType] = useState<BondType>(existing?.bondType ?? 'stretcher')
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
@@ -329,7 +334,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
               onChange={(e) => setBaseCourseBlockCode(e.target.value as BlockCode)}
               className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
-              {SELECTABLE_BLOCKS.map((code) => (
+              {selectableBlocks.map((code) => (
                 <option key={code} value={code}>
                   {blockLabel(code)}
                 </option>
@@ -360,7 +365,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
               onChange={(e) => setBodyBlockCode(e.target.value as BlockCode)}
               className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
-              {SELECTABLE_BLOCKS.map((code) => (
+              {selectableBlocks.map((code) => (
                 <option key={code} value={code}>
                   {blockLabel(code)}
                 </option>
@@ -375,7 +380,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
               onChange={(e) => setTopCourseBlockCode(e.target.value as BlockCode)}
               className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
-              {SELECTABLE_BLOCKS.map((code) => (
+              {selectableBlocks.map((code) => (
                 <option key={code} value={code}>
                   {blockLabel(code)}
                 </option>
@@ -421,7 +426,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                   onChange={(e) => updateOverride(i, { blockCode: e.target.value as BlockCode })}
                   className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800"
                 >
-                  {SELECTABLE_BLOCKS.map((code) => (
+                  {selectableBlocks.map((code) => (
                     <option key={code} value={code}>
                       {blockLabel(code)}
                     </option>

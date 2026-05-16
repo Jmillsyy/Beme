@@ -1,0 +1,55 @@
+/**
+ * Supabase client — the single source of truth for cloud auth + project storage.
+ *
+ * Configuration comes from Vite environment variables:
+ *
+ *   VITE_SUPABASE_URL       — your project URL, e.g. https://xxxx.supabase.co
+ *   VITE_SUPABASE_ANON_KEY  — your project's anon (public) key
+ *
+ * Both live in `.env.local` (gitignored). See SETUP.md for full setup.
+ *
+ * The anon key is safe to ship to the browser — Row Level Security on the database
+ * is what actually protects user data. RLS policies ensure each user only ever
+ * reads / writes their own rows.
+ */
+
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+
+/**
+ * True iff env vars are present. The app falls back to the old IndexedDB-only
+ * mode when this is false, so dev still works before the user wires up Supabase.
+ */
+export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
+
+if (!isSupabaseConfigured && import.meta.env.DEV) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[beme] VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY not set — running in offline mode (IndexedDB only). See SETUP.md.'
+  )
+}
+
+/**
+ * Lazy-initialised so we don't blow up at module-load when env vars are missing.
+ * Throws when accessed without configuration — callers should check
+ * `isSupabaseConfigured` first.
+ */
+let _client: SupabaseClient | null = null
+export function supabase(): SupabaseClient {
+  if (_client) return _client
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error(
+      'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local.'
+    )
+  }
+  _client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true, // handle the #access_token= fragment after OAuth redirect
+    },
+  })
+  return _client
+}

@@ -301,7 +301,21 @@ export interface BlockExportInclusions {
 export interface BrickSettings {
   /** Height applied to newly drawn brick walls. Existing walls keep their `heightMmOverride`. */
   defaultWallHeightMm: number
-  /** Bricks per square metre of brickwork (typical Australian face brick ≈ 57). */
+  /**
+   * Active brick type for this project. References a code in the user's BrickLibrary.
+   * When set, `bricksPerSquareMetre` is auto-derived from this type unless the user
+   * has manually overridden the rate.
+   *
+   * Older saved projects (pre-brick-library) won't have this — they fall back to the
+   * manual `bricksPerSquareMetre` value.
+   */
+  brickTypeCode?: string
+  /**
+   * Bricks per square metre of brickwork. Either the auto-derived value from the
+   * active brick type, or a manual override.
+   *
+   * Typical Australian face brick ≈ 48–57 depending on the brick size.
+   */
   bricksPerSquareMetre: number
   /** Brick ties — added per m² of brickwork when enabled. */
   ties: {
