@@ -13,6 +13,8 @@ import type {
   BrickExportInclusions,
   BrickSettings,
   Opening,
+  Pier,
+  PierMakeup,
   ProjectDetails,
   Wall,
   WallMakeup,
@@ -43,12 +45,17 @@ export interface SavedProject {
   completedAt?: string
 
   projectDetails: ProjectDetails
-  pdfBlob: Blob
-  pdfFileName: string
+  /** Optional — projects can be saved before a PDF is uploaded. */
+  pdfBlob?: Blob
+  pdfFileName?: string
 
   pagesData: Record<number, SavedPageData>
   wallsByPage: Record<number, Wall[]>
   openingsByPage: Record<number, Opening[]>
+  /** Piers per page (block mode). Optional — older saved projects predate this field. */
+  piersByPage?: Record<number, Pier[]>
+  /** Pier makeups (block mode). Optional — older saved projects predate this field. */
+  pierMakeups?: PierMakeup[]
   /** Last-viewed page number. */
   currentPage: number
 

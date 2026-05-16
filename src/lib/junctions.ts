@@ -9,6 +9,7 @@
  */
 
 import type { JunctionType, Wall, WallJunction } from '../types/walls'
+import { isCurvedWall } from './curveGeom'
 
 interface Point {
   x: number
@@ -17,9 +18,103 @@ interface Point {
 
 /** mm tolerance for matching endpoint coordinates (after snap, they should be effectively identical). */
 const ENDPOINT_TOLERANCE_MM = 0.5
+/**
+ * Extra mm tolerance on top of the wall's halfThickness when testing "point on wall body".
+ * Allows a small margin for click imprecision around the face line.
+ */
+const FACE_TOLERANCE_MM = 5
 
 function pointsMatch(a: Point, b: Point): boolean {
   return Math.abs(a.x - b.x) < ENDPOINT_TOLERANCE_MM && Math.abs(a.y - b.y) < ENDPOINT_TOLERANCE_MM
+}
+
+
+/**
+ * Distance from point P to the BODY of a wall (the rectangle around the centreline AB,
+ * `halfThicknessMm` thick on each side). Returns 0 if P is inside the rectangle, the
+ * perpendicular shortfall if outside the long edges, or Infinity if P is COINCIDENT with
+ * either endpoint (those are corner candidates, not T-junctions).
+ *
+ * Note: we only treat P as "near an endpoint" if the candidate point itself is close to
+ * the endpoint, not just its projection. Otherwise the new "snap to centre of last block"
+ * behaviour — which puts a butting wall's endpoint at the perpendicular face directly
+ * opposite the through-wall's endpoint — would be excluded incorrectly.
+ */
+function distanceFromPointToWallBody(
+  p: Point,
+  a: Point,
+  b: Point,
+  halfThicknessMm: number
+): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const lengthSq = dx * dx + dy * dy
+  if (lengthSq < 0.001) return Infinity
+
+  const length = Math.sqrt(lengthSq)
+  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq
+  const distAlong = t * length
+
+  // Only exclude points that are TRULY coincident with an endpoint of A→B (which would be
+  // corner-detection candidates handled elsewhere). A point whose projection lands at the
+  // endpoint but whose perpendicular distance is large is a legitimate T-junction onto
+  // the wall's body and should NOT be excluded.
+  if (distAlong < ENDPOINT_TOLERANCE_MM) {
+    const dxToA = p.x - a.x
+    const dyToA = p.y - a.y
+    if (dxToA * dxToA + dyToA * dyToA < ENDPOINT_TOLERANCE_MM * ENDPOINT_TOLERANCE_MM) {
+      return Infinity
+    }
+  }
+  if (distAlong > length - ENDPOINT_TOLERANCE_MM) {
+    const dxToB = p.x - b.x
+    const dyToB = p.y - b.y
+    if (dxToB * dxToB + dyToB * dyToB < ENDPOINT_TOLERANCE_MM * ENDPOINT_TOLERANCE_MM) {
+      return Infinity
+    }
+  }
+  // Also exclude projections that fall completely outside the segment (the point is
+  // beyond either short end with no overlap with the wall body).
+  if (distAlong < -ENDPOINT_TOLERANCE_MM || distAlong > length + ENDPOINT_TOLERANCE_MM) {
+    return Infinity
+  }
+
+  const projX = a.x + t * dx
+  const projY = a.y + t * dy
+  const perpDist = Math.sqrt((p.x - projX) ** 2 + (p.y - projY) ** 2)
+  // 0 if inside the rectangle; otherwise the perpendicular shortfall to the nearest face.
+  return Math.max(0, perpDist - halfThicknessMm)
+}
+
+/**
+ * If `point` lies on (or near) the body of any wall in `walls`, return that wall's id.
+ * "On the body" means within the wall's rectangle (centreline ± halfThickness perpendicular,
+ * between start/end along the centreline) plus a small face tolerance. Curves are skipped.
+ */
+function findWallWhoseBodyContains(
+  point: Point,
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>,
+  excludeWallId?: string
+): string | null {
+  let bestId: string | null = null
+  let bestDist = FACE_TOLERANCE_MM
+  for (const wall of walls) {
+    if (wall.id === excludeWallId) continue
+    if (isCurvedWall(wall)) continue
+    const halfThickness = (thicknessByWallId[wall.id] ?? 190) / 2
+    const d = distanceFromPointToWallBody(
+      point,
+      { x: wall.startX, y: wall.startY },
+      { x: wall.endX, y: wall.endY },
+      halfThickness
+    )
+    if (d < bestDist) {
+      bestDist = d
+      bestId = wall.id
+    }
+  }
+  return bestId
 }
 
 function addConnection(junction: WallJunction, otherWallId: string): WallJunction {
@@ -38,7 +133,8 @@ function addConnection(junction: WallJunction, otherWallId: string): WallJunctio
  */
 export function detectJunctionsForNewWall(
   newWall: Wall,
-  existingWalls: Wall[]
+  existingWalls: Wall[],
+  thicknessByWallId: Record<string, number>
 ): { newWall: Wall; updatedExistingWalls: Wall[] } {
   let startJunction: WallJunction = { ...newWall.startJunction }
   let endJunction: WallJunction = { ...newWall.endJunction }
@@ -83,6 +179,21 @@ export function detectJunctionsForNewWall(
     }
   }
 
+  // T-junction pass on the new wall's free endpoints against existing wall bodies.
+  // (Corner detection has already run above, so only free endpoints reach this.)
+  if (startJunction.type === 'free') {
+    const through = findWallWhoseBodyContains(newStart, existingWalls, thicknessByWallId, newWall.id)
+    if (through) {
+      startJunction = { type: 't-junction', connectedWallIds: [through] }
+    }
+  }
+  if (endJunction.type === 'free') {
+    const through = findWallWhoseBodyContains(newEnd, existingWalls, thicknessByWallId, newWall.id)
+    if (through) {
+      endJunction = { type: 't-junction', connectedWallIds: [through] }
+    }
+  }
+
   return {
     newWall: { ...newWall, startJunction, endJunction },
     updatedExistingWalls: existingWalls.map((w) => updatedById.get(w.id) ?? w),
@@ -94,14 +205,54 @@ export function detectJunctionsForNewWall(
  *
  * Used after edits (moving an endpoint, deleting a wall) to make sure no stale 'corner'
  * tags remain — if the endpoints no longer coincide, the junctions revert to 'free'.
+ *
+ * Control-joint tags are PRESERVED through this recompute: a control joint is a logical
+ * marker chosen by the user (split a wall at this point) — the two halves' endpoints sit
+ * at the same coordinates, which would otherwise be detected as a corner. Preserving the
+ * tag lets the corner/T detection coexist with control-joint splits cleanly.
  */
-export function recomputeAllJunctions(walls: Wall[]): Wall[] {
+export function recomputeAllJunctions(
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>
+): Wall[] {
+  // Capture control-joint tags so they survive the reset-and-rederive cycle below.
+  // A control joint exists at a point where two halves of a previously-single wall meet
+  // — their endpoint coordinates are identical, so the naive corner pass would re-tag
+  // them as 'corner'. We restore the control-joint tag at the end.
+  const preservedControlJoints: Array<{
+    wallId: string
+    end: 'start' | 'end'
+    junction: WallJunction
+  }> = []
+  for (const w of walls) {
+    if (w.startJunction.type === 'control-joint') {
+      preservedControlJoints.push({
+        wallId: w.id,
+        end: 'start',
+        junction: { ...w.startJunction },
+      })
+    }
+    if (w.endJunction.type === 'control-joint') {
+      preservedControlJoints.push({
+        wallId: w.id,
+        end: 'end',
+        junction: { ...w.endJunction },
+      })
+    }
+  }
+
   // Reset everything to free first
   const reset: Wall[] = walls.map((w) => ({
     ...w,
     startJunction: { type: 'free' },
     endJunction: { type: 'free' },
   }))
+
+  // Set of (wallId|end) strings that should NOT participate in corner detection — these
+  // are endpoints that the user explicitly marked as control-joint splits.
+  const skipCornerKeys = new Set(
+    preservedControlJoints.map(({ wallId, end }) => `${wallId}|${end}`)
+  )
 
   // For every pair of walls, check all 4 endpoint combinations
   for (let i = 0; i < reset.length; i++) {
@@ -113,23 +264,138 @@ export function recomputeAllJunctions(walls: Wall[]): Wall[] {
       const bStart = { x: b.startX, y: b.startY }
       const bEnd = { x: b.endX, y: b.endY }
 
-      if (pointsMatch(aStart, bStart)) {
+      const aStartCJ = skipCornerKeys.has(`${a.id}|start`)
+      const aEndCJ = skipCornerKeys.has(`${a.id}|end`)
+      const bStartCJ = skipCornerKeys.has(`${b.id}|start`)
+      const bEndCJ = skipCornerKeys.has(`${b.id}|end`)
+
+      if (pointsMatch(aStart, bStart) && !aStartCJ && !bStartCJ) {
         a.startJunction = addConnection(a.startJunction, b.id)
         b.startJunction = addConnection(b.startJunction, a.id)
       }
-      if (pointsMatch(aStart, bEnd)) {
+      if (pointsMatch(aStart, bEnd) && !aStartCJ && !bEndCJ) {
         a.startJunction = addConnection(a.startJunction, b.id)
         b.endJunction = addConnection(b.endJunction, a.id)
       }
-      if (pointsMatch(aEnd, bStart)) {
+      if (pointsMatch(aEnd, bStart) && !aEndCJ && !bStartCJ) {
         a.endJunction = addConnection(a.endJunction, b.id)
         b.startJunction = addConnection(b.startJunction, a.id)
       }
-      if (pointsMatch(aEnd, bEnd)) {
+      if (pointsMatch(aEnd, bEnd) && !aEndCJ && !bEndCJ) {
         a.endJunction = addConnection(a.endJunction, b.id)
         b.endJunction = addConnection(b.endJunction, a.id)
       }
     }
+  }
+
+  // ----- T-junction pass -----
+  // For every endpoint still tagged 'free' after corner detection, check whether it lies
+  // on another wall's body. If so, tag it as a t-junction connected to that wall.
+  // Skip endpoints that are reserved as control joints.
+  for (const wall of reset) {
+    if (
+      wall.startJunction.type === 'free' &&
+      !skipCornerKeys.has(`${wall.id}|start`)
+    ) {
+      const throughWallId = findWallWhoseBodyContains(
+        { x: wall.startX, y: wall.startY },
+        reset,
+        thicknessByWallId,
+        wall.id
+      )
+      if (throughWallId) {
+        wall.startJunction = {
+          type: 't-junction',
+          connectedWallIds: [throughWallId],
+        }
+      }
+    }
+    if (
+      wall.endJunction.type === 'free' &&
+      !skipCornerKeys.has(`${wall.id}|end`)
+    ) {
+      const throughWallId = findWallWhoseBodyContains(
+        { x: wall.endX, y: wall.endY },
+        reset,
+        thicknessByWallId,
+        wall.id
+      )
+      if (throughWallId) {
+        wall.endJunction = {
+          type: 't-junction',
+          connectedWallIds: [throughWallId],
+        }
+      }
+    }
+  }
+
+  // ----- Mutual T-junction → corner re-tag -----
+  // If wall A's endpoint sits on wall B's body AND wall B's endpoint sits on wall A's
+  // body, that's not two T-junctions — it's a CORNER (each face-snapped onto the other).
+  // Re-tag both junctions as 'corner' so the mitred rendering and corner-aware tally fire.
+  //
+  // IMPORTANT: we deliberately do NOT move the endpoint coordinates. Wall lengths must
+  // stay exactly what the user drew (a 4600mm wall stays 4600mm). The mitre rendering
+  // works off the face-line geometry rather than the data endpoints, so the L tiles
+  // cleanly even when both walls' endpoints sit at face positions rather than at the
+  // centreline intersection.
+  for (let pass = 0; pass < 2; pass++) {
+    let changed = false
+    for (let i = 0; i < reset.length; i++) {
+      const a = reset[i]
+      if (isCurvedWall(a)) continue
+      for (const aEnd of ['start', 'end'] as const) {
+        const aJunc = aEnd === 'start' ? a.startJunction : a.endJunction
+        if (aJunc.type !== 't-junction') continue
+        const otherId = aJunc.connectedWallIds?.[0]
+        if (!otherId) continue
+        const b = reset.find((w) => w.id === otherId)
+        if (!b || isCurvedWall(b)) continue
+        // Is B's endpoint also t-junctioned onto A?
+        let bEnd: 'start' | 'end' | null = null
+        if (
+          b.startJunction.type === 't-junction' &&
+          b.startJunction.connectedWallIds?.includes(a.id)
+        ) {
+          bEnd = 'start'
+        } else if (
+          b.endJunction.type === 't-junction' &&
+          b.endJunction.connectedWallIds?.includes(a.id)
+        ) {
+          bEnd = 'end'
+        }
+        if (!bEnd) continue
+        // Mutual T-junction: re-tag both as 'corner'. Positions stay put.
+        if (aEnd === 'start') {
+          a.startJunction = { type: 'corner', connectedWallIds: [b.id] }
+        } else {
+          a.endJunction = { type: 'corner', connectedWallIds: [b.id] }
+        }
+        if (bEnd === 'start') {
+          b.startJunction = { type: 'corner', connectedWallIds: [a.id] }
+        } else {
+          b.endJunction = { type: 'corner', connectedWallIds: [a.id] }
+        }
+        changed = true
+      }
+    }
+    if (!changed) break
+  }
+
+  // ----- Restore preserved control-joint tags -----
+  // If the matching counterpart no longer exists (the other half was deleted), the tag
+  // falls back to 'free' so the now-orphaned endpoint behaves like a normal free end.
+  const byId = new Map(reset.map((w) => [w.id, w]))
+  for (const cj of preservedControlJoints) {
+    const wall = byId.get(cj.wallId)
+    if (!wall) continue
+    const otherId = cj.junction.connectedWallIds?.[0]
+    const otherExists = otherId ? byId.has(otherId) : false
+    const restored: WallJunction = otherExists
+      ? cj.junction
+      : { type: 'free' }
+    if (cj.end === 'start') wall.startJunction = restored
+    else wall.endJunction = restored
   }
 
   return reset
@@ -148,36 +414,100 @@ export interface CornerPoint {
   wallIds: string[]
 }
 
-function positionKey(x: number, y: number): string {
-  // Round to nearest 0.1mm for hashing (avoids floating-point near-misses)
-  return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`
-}
-
 /**
- * Collect every unique point where multiple walls meet at a corner.
+ * Collect every unique corner — each is a set of walls that share a corner column.
  *
- * A corner is detected when 2+ walls have a corner-tagged endpoint at the same position.
+ * A corner pair is identified via `junction.connectedWallIds` rather than spatial coincidence
+ * because the no-migration model has the two walls' corner endpoints at *different* positions
+ * (each at the other's face or snap-centre, not on top of each other). Mutual references in
+ * connectedWallIds tell us which walls are at the same physical corner.
+ *
  * Returned corners are the basis for project-level adjustments — e.g. subtracting the
  * over-counted corner column from the project tally.
+ *
+ * `x`/`y` on the returned CornerPoint are the centreline-centreline intersection of the
+ * first two walls in the corner group, useful for visualisation but not used by the dedup
+ * itself (which only cares about `wallIds`).
  */
 export function findCornerPoints(walls: Wall[]): CornerPoint[] {
-  const groups = new Map<string, CornerPoint>()
+  // Build a union-find-ish grouping. Each wall id can belong to one corner group keyed by
+  // a canonical (sorted) id-set. Walk every corner-tagged endpoint, follow its connections
+  // and merge into a single group.
+  const wallToGroup = new Map<string, Set<string>>()
 
-  function record(x: number, y: number, wallId: string, type: JunctionType) {
-    if (type !== 'corner') return
-    const key = positionKey(x, y)
-    let g = groups.get(key)
-    if (!g) {
-      g = { key, x, y, wallIds: [] }
-      groups.set(key, g)
+  function unite(a: string, b: string) {
+    const ga = wallToGroup.get(a)
+    const gb = wallToGroup.get(b)
+    if (ga && gb) {
+      if (ga === gb) return
+      // Merge gb into ga
+      for (const id of gb) {
+        ga.add(id)
+        wallToGroup.set(id, ga)
+      }
+    } else if (ga) {
+      ga.add(b)
+      wallToGroup.set(b, ga)
+    } else if (gb) {
+      gb.add(a)
+      wallToGroup.set(a, gb)
+    } else {
+      const fresh = new Set([a, b])
+      wallToGroup.set(a, fresh)
+      wallToGroup.set(b, fresh)
     }
-    if (!g.wallIds.includes(wallId)) g.wallIds.push(wallId)
   }
 
   for (const wall of walls) {
-    record(wall.startX, wall.startY, wall.id, wall.startJunction.type)
-    record(wall.endX, wall.endY, wall.id, wall.endJunction.type)
+    if (isCurvedWall(wall)) continue
+    for (const junction of [wall.startJunction, wall.endJunction]) {
+      if (junction.type !== 'corner') continue
+      const connected = junction.connectedWallIds ?? []
+      for (const otherId of connected) {
+        // Confirm the other wall actually exists and references back (mutual). Avoids
+        // stale connection ids hanging around if a wall was deleted.
+        const other = walls.find((w) => w.id === otherId)
+        if (!other || isCurvedWall(other)) continue
+        const mutual =
+          (other.startJunction.type === 'corner' &&
+            other.startJunction.connectedWallIds?.includes(wall.id)) ||
+          (other.endJunction.type === 'corner' &&
+            other.endJunction.connectedWallIds?.includes(wall.id))
+        if (!mutual) continue
+        unite(wall.id, otherId)
+      }
+    }
   }
 
-  return Array.from(groups.values()).filter((g) => g.wallIds.length >= 2)
+  // Deduplicate the groups (each Set was shared across all its members).
+  const seenSets = new Set<Set<string>>()
+  const result: CornerPoint[] = []
+  for (const group of wallToGroup.values()) {
+    if (seenSets.has(group)) continue
+    seenSets.add(group)
+    if (group.size < 2) continue
+    const wallIds = Array.from(group).sort()
+    // Pick a representative position: centreline-centreline intersection of the first two
+    // walls (used for visualisation / debugging only — dedup math doesn't care).
+    const a = walls.find((w) => w.id === wallIds[0])
+    const b = walls.find((w) => w.id === wallIds[1])
+    let x = a ? a.startX : 0
+    let y = a ? a.startY : 0
+    if (a && b) {
+      const adx = a.endX - a.startX
+      const ady = a.endY - a.startY
+      const bdx = b.endX - b.startX
+      const bdy = b.endY - b.startY
+      const det = adx * -bdy - ady * -bdx
+      if (Math.abs(det) > 1e-6) {
+        const sdx = b.startX - a.startX
+        const sdy = b.startY - a.startY
+        const s = (-bdy * sdx - -bdx * sdy) / det
+        x = a.startX + s * adx
+        y = a.startY + s * ady
+      }
+    }
+    result.push({ key: wallIds.join('|'), x, y, wallIds })
+  }
+  return result
 }

@@ -1,23 +1,128 @@
 @import "tailwindcss";
 
+/**
+ * Beme theme tokens — two themes, one set of utility classes.
+ *
+ * The default (`:root`) is Studio Black (dark). When `.light` is applied to
+ * `<html>`, the same `--color-ink-N` variables flip to their light-mode
+ * equivalents, so `bg-ink-800` / `text-ink-50` etc. respond to the theme
+ * without us rewriting any component.
+ *
+ * Brand orange stays the same in both themes — it's the load-bearing accent.
+ * Buttons that read `text-ink-900` for "dark text on orange" should use
+ * `text-black` instead so they don't flip in light mode (would fail WCAG).
+ */
+
 @theme {
+  /* Brand orange — same in both themes */
   --color-beme-50: #fff7ed;
   --color-beme-100: #ffedd5;
   --color-beme-200: #fed7aa;
   --color-beme-300: #fdba74;
   --color-beme-400: #fb923c;
-  --color-beme-500: #ed7d31;
-  --color-beme-600: #c5530a;
-  --color-beme-700: #9a3f08;
-  --color-beme-800: #7c2d12;
+  --color-beme-500: #ff7a2d;
+  --color-beme-600: #ed6d1a;
+  --color-beme-700: #c25411;
+  --color-beme-800: #9a3f08;
   --color-beme-900: #431407;
+
+  /* Warm ink scale — DEFAULTS to dark mode (Studio Black) */
+  --color-ink-50: #f3f3f4;
+  --color-ink-100: #d9d9dc;
+  --color-ink-200: #b4b4b9;
+  --color-ink-300: #9ca0a8;
+  --color-ink-400: #6d717a;
+  --color-ink-500: #4a4d54;
+  --color-ink-600: #2e3036;
+  --color-ink-700: #232328;
+  --color-ink-800: #18181c;
+  --color-ink-900: #0e0e10;
+
+  /* Paper canvas — light surface for the PDF + walls; same in both themes */
+  --color-paper-50: #fdfcf9;
+  --color-paper-100: #fafaf7;
+  --color-paper-200: #efece4;
+  --color-paper-300: #e5e2dc;
+
+  /* Font families */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
-html, body, #root {
+/* ── Light mode overrides ───────────────────────────────────────────────────
+   ink-50 = lightest in dark mode → becomes DARKEST in light mode (heading text)
+   ink-900 = darkest in dark mode → becomes LIGHTEST in light mode (page bg)
+   Effectively flips the scale end-to-end so the same `bg-ink-800` / `text-ink-50`
+   utilities resolve to the right values in either theme. */
+:root.light {
+  --color-ink-50: #0e0c0a;   /* strongest text / heading */
+  --color-ink-100: #1f1d1a;
+  --color-ink-200: #3d3b38;  /* body text */
+  --color-ink-300: #5c5a57;  /* secondary text */
+  --color-ink-400: #8a8782;  /* muted text */
+  --color-ink-500: #b8b4ac;  /* muted icons */
+  --color-ink-600: #e2dfd8;  /* subtle borders */
+  --color-ink-700: #f0ede5;  /* panel hover */
+  --color-ink-800: #ffffff;  /* panels / chrome */
+  --color-ink-900: #f7f4ec;  /* page background — warm off-white */
+}
+
+html,
+body,
+#root {
   height: 100%;
 }
 
 body {
-  background: white;
-  color: #1f2937;
+  background: var(--color-ink-900);
+  color: var(--color-ink-50);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Scroll feel inside panels — adapts to theme via the ink-600 token */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-ink-600);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-500);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* Keep PDF / canvas area light — these classes are applied to the workspace surface */
+.surface-paper {
+  background: var(--color-paper-100);
+  color: var(--color-ink-900);
+}
+
+/* Code-style helpers */
+.font-mono,
+code,
+kbd,
+.tabular-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/* Allow focused inputs to keep an orange ring on dark */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--color-beme-500);
+  outline-offset: 1px;
 }

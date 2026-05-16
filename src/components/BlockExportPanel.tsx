@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type {
   BlockExportInclusions,
   Opening,
+  Pier,
+  PierMakeup,
   ProjectDetails,
   Wall,
   WallMakeup,
@@ -15,6 +17,8 @@ interface BlockExportPanelProps {
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
+  piers?: Pier[]
+  pierMakeups?: PierMakeup[]
 }
 
 export default function BlockExportPanel({
@@ -24,6 +28,8 @@ export default function BlockExportPanel({
   walls,
   makeups,
   openings,
+  piers = [],
+  pierMakeups = [],
 }: BlockExportPanelProps) {
   // Collapsed by default in the rail — export is end-of-workflow.
   const [expanded, setExpanded] = useState(false)
@@ -39,25 +45,27 @@ export default function BlockExportPanel({
       walls,
       makeups,
       openings,
+      piers,
+      pierMakeups,
     })
   }
 
   const canExport = walls.length > 0
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-3">
+    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="w-full flex items-center gap-2 text-left group mb-2"
       >
-        <span className="text-neutral-400 group-hover:text-neutral-600 text-xs">
+        <span className="text-ink-500 group-hover:text-neutral-600 text-xs">
           {expanded ? '▾' : '▸'}
         </span>
-        <h3 className="text-sm font-semibold text-neutral-700 group-hover:text-beme-700">
+        <h3 className="text-sm font-semibold text-ink-50 group-hover:text-beme-300">
           Export estimate
         </h3>
         {!expanded && (
-          <span className="text-xs text-neutral-500 truncate">
+          <span className="text-xs text-ink-400 truncate">
             · {Object.values(inclusions).filter(Boolean).length} sections selected
           </span>
         )}
@@ -67,7 +75,7 @@ export default function BlockExportPanel({
         <button
           onClick={handleExport}
           disabled={!canExport}
-          className="w-full px-3 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+          className="w-full px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
         >
           Export estimate →
         </button>
@@ -75,7 +83,7 @@ export default function BlockExportPanel({
 
       {expanded && (
         <>
-          <p className="text-xs text-neutral-500 mb-2">
+          <p className="text-xs text-ink-400 mb-2">
             Tick what you want in the document, then click Export. A printable page opens in a
             new tab — use your browser's <em>Print → Save as PDF</em> to save it.
           </p>
@@ -115,13 +123,13 @@ export default function BlockExportPanel({
           <button
             onClick={handleExport}
             disabled={!canExport}
-            className="w-full px-3 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+            className="w-full px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
           >
             Export estimate →
           </button>
 
           {!canExport && (
-            <p className="text-xs text-neutral-500 mt-2">
+            <p className="text-xs text-ink-400 mt-2">
               Draw at least one wall before exporting.
             </p>
           )}

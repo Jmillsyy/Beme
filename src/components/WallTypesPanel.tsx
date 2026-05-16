@@ -52,19 +52,19 @@ export default function WallTypesPanel({
   const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-3">
+    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
       <div className="flex items-center justify-between mb-2 gap-2">
         <button
           onClick={() => setExpanded((v) => !v)}
           className="flex items-center gap-2 text-left flex-1 min-w-0 group"
         >
-          <span className="text-neutral-400 group-hover:text-neutral-600 text-xs">
+          <span className="text-ink-500 group-hover:text-ink-300 text-xs">
             {expanded ? '▾' : '▸'}
           </span>
-          <h3 className="text-sm font-semibold text-neutral-700 group-hover:text-beme-700">
+          <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300">
             Wall types
           </h3>
-          <span className="text-xs text-neutral-500 truncate">
+          <span className="text-xs text-ink-400 truncate">
             {!expanded && activeMakeup ? (
               <>· {activeMakeup.name}</>
             ) : (
@@ -75,7 +75,7 @@ export default function WallTypesPanel({
         {expanded && (
           <button
             onClick={() => setEditingId('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-600 text-white hover:bg-beme-700 transition-colors flex-shrink-0"
+            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
           >
             + Add
           </button>
@@ -95,33 +95,33 @@ export default function WallTypesPanel({
               onClick={() => onSetActive(m.id)}
               className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
                 isActive
-                  ? 'border-blue-500 ring-2 ring-blue-200 bg-blue-50'
-                  : 'border-neutral-200 hover:border-blue-300 bg-white'
+                  ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                  : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
               }`}
             >
               {isActive && (
-                <span className="absolute top-2 right-2 text-xs px-2 py-0.5 rounded bg-blue-600 text-white font-medium">
+                <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
                   Active
                 </span>
               )}
-              <div className="text-sm font-medium text-neutral-800 mb-1 pr-12 truncate">{m.name}</div>
-              <div className="text-xs text-neutral-500">
+              <div className="text-sm font-medium text-ink-100 mb-1 pr-12 truncate">{m.name}</div>
+              <div className="text-xs text-ink-400">
                 {m.bondType} bond · {m.heightMm}mm ·{' '}
                 {m.cornerBlockCode === '20.21' ? 'knockout corners' : 'standard corners'} ·{' '}
                 fractions {m.useFractions ? 'on' : 'off'}
               </div>
-              <div className="text-xs text-neutral-500 mt-1 font-mono">
+              <div className="text-xs text-ink-400 mt-1 font-mono">
                 Base {m.baseCourseBlockCode}
                 {m.baseCourseTileCode ? `+${m.baseCourseTileCode}` : ''} · Body {m.bodyBlockCode} · Top{' '}
                 {m.topCourseBlockCode}
               </div>
               {m.courseOverrides && m.courseOverrides.length > 0 && (
-                <div className="text-xs text-neutral-500 mt-1">
+                <div className="text-xs text-ink-400 mt-1">
                   {m.courseOverrides.length} course override
                   {m.courseOverrides.length === 1 ? '' : 's'}
                 </div>
               )}
-              <div className="text-xs text-neutral-400 mt-2">
+              <div className="text-xs text-ink-500 mt-2">
                 {wallCount} wall{wallCount === 1 ? '' : 's'} using this
               </div>
               <div className="flex gap-3 mt-2">
@@ -132,7 +132,7 @@ export default function WallTypesPanel({
                     e.stopPropagation()
                     setEditingId(m.id)
                   }}
-                  className="text-xs text-beme-600 hover:text-beme-700 hover:underline cursor-pointer"
+                  className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
                 >
                   Edit
                 </span>
@@ -146,7 +146,7 @@ export default function WallTypesPanel({
                         onDeleteMakeup(m.id)
                       }
                     }}
-                    className="text-xs text-red-600 hover:text-red-700 hover:underline cursor-pointer"
+                    className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                   >
                     Delete
                   </span>
@@ -243,36 +243,36 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const canSave = name.trim().length > 0 && heightMm >= 200
 
   return (
-    <div className="mt-4 p-4 border border-neutral-200 rounded-lg bg-neutral-50">
-      <h4 className="text-sm font-semibold mb-3 text-neutral-700">
+    <div className="mt-4 p-4 border border-ink-600 rounded-lg bg-ink-700/40">
+      <h4 className="text-sm font-semibold mb-3 text-ink-200">
         {existing ? `Edit "${existing.name}"` : 'New wall type'}
       </h4>
 
       <div className="grid grid-cols-1 gap-4">
         <label className="text-sm">
-          <span className="block text-neutral-600 mb-1">Name</span>
+          <span className="block text-ink-300 mb-1">Name</span>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm focus:outline-none focus:border-beme-500"
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400"
           />
         </label>
 
         <label className="text-sm">
-          <span className="block text-neutral-600 mb-1">Height (mm)</span>
+          <span className="block text-ink-300 mb-1">Height (mm)</span>
           <input
             type="number"
             min="200"
             step="50"
             value={heightMm}
             onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-            className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm focus:outline-none focus:border-beme-500"
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400"
           />
         </label>
 
         <div className="text-sm">
-          <span className="block text-neutral-600 mb-1">Bond type</span>
+          <span className="block text-ink-300 mb-1">Bond type</span>
           <div className="flex gap-3">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
@@ -294,7 +294,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         </div>
 
         <div className="text-sm">
-          <span className="block text-neutral-600 mb-1">Options</span>
+          <span className="block text-ink-300 mb-1">Options</span>
           <div className="flex flex-col gap-1">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
@@ -318,16 +318,16 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
 
       {/* Block composition */}
       <div className="mt-5">
-        <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500 mb-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-2">
           Block composition
         </div>
         <div className="grid grid-cols-1 gap-3">
           <label className="text-sm">
-            <span className="block text-neutral-600 mb-1">Base course block</span>
+            <span className="block text-ink-300 mb-1">Base course block</span>
             <select
               value={baseCourseBlockCode}
               onChange={(e) => setBaseCourseBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm bg-white focus:outline-none focus:border-beme-500"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
               {SELECTABLE_BLOCKS.map((code) => (
                 <option key={code} value={code}>
@@ -338,11 +338,11 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           </label>
 
           <label className="text-sm">
-            <span className="block text-neutral-600 mb-1">Base course tile (paired)</span>
+            <span className="block text-ink-300 mb-1">Base course tile (paired)</span>
             <select
               value={baseCourseTileCode}
               onChange={(e) => setBaseCourseTileCode(e.target.value as BlockCode | '')}
-              className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm bg-white focus:outline-none focus:border-beme-500"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
               <option value="">None</option>
               {TILE_BLOCKS.map((code) => (
@@ -354,11 +354,11 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           </label>
 
           <label className="text-sm">
-            <span className="block text-neutral-600 mb-1">Body course block</span>
+            <span className="block text-ink-300 mb-1">Body course block</span>
             <select
               value={bodyBlockCode}
               onChange={(e) => setBodyBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm bg-white focus:outline-none focus:border-beme-500"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
               {SELECTABLE_BLOCKS.map((code) => (
                 <option key={code} value={code}>
@@ -369,11 +369,11 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           </label>
 
           <label className="text-sm">
-            <span className="block text-neutral-600 mb-1">Top course block</span>
+            <span className="block text-ink-300 mb-1">Top course block</span>
             <select
               value={topCourseBlockCode}
               onChange={(e) => setTopCourseBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm bg-white focus:outline-none focus:border-beme-500"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
             >
               {SELECTABLE_BLOCKS.map((code) => (
                 <option key={code} value={code}>
@@ -389,23 +389,23 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       <div className="mt-5">
         <button
           onClick={() => setShowOverrides((v) => !v)}
-          className="text-sm text-beme-600 hover:text-beme-700 hover:underline"
+          className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
         >
           {showOverrides ? '−' : '+'} Customise specific courses
           {courseOverrides.length > 0 && ` (${courseOverrides.length})`}
         </button>
 
         {showOverrides && (
-          <div className="mt-2 p-3 border border-neutral-200 rounded-lg bg-white">
+          <div className="mt-2 p-3 border border-ink-600 rounded-lg bg-ink-800">
             {courseOverrides.length === 0 && (
-              <p className="text-xs text-neutral-500 mb-2">
+              <p className="text-xs text-ink-400 mb-2">
                 Override the block used on a specific course (e.g. a 20.140 row mid-wall for height makeup,
                 or an intermediate 20.20 bond beam).
               </p>
             )}
             {courseOverrides.map((override, i) => (
               <div key={i} className="flex items-center gap-2 mb-2 text-sm flex-wrap">
-                <span className="text-neutral-600">Course</span>
+                <span className="text-ink-300">Course</span>
                 <input
                   type="number"
                   min="1"
@@ -413,13 +413,13 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                   onChange={(e) =>
                     updateOverride(i, { courseNumber: parseInt(e.target.value || '1', 10) })
                   }
-                  className="w-16 px-2 py-1 border border-neutral-300 rounded text-sm"
+                  className="w-16 px-2 py-1 border border-ink-600 rounded text-sm"
                 />
-                <span className="text-neutral-600">uses block</span>
+                <span className="text-ink-300">uses block</span>
                 <select
                   value={override.blockCode}
                   onChange={(e) => updateOverride(i, { blockCode: e.target.value as BlockCode })}
-                  className="px-2 py-1 border border-neutral-300 rounded text-sm bg-white"
+                  className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800"
                 >
                   {SELECTABLE_BLOCKS.map((code) => (
                     <option key={code} value={code}>
@@ -429,7 +429,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                 </select>
                 <button
                   onClick={() => removeOverride(i)}
-                  className="text-red-600 hover:text-red-700 text-sm px-2"
+                  className="text-rose-400 hover:text-rose-300 text-sm px-2"
                   aria-label="Remove override"
                 >
                   ×
@@ -438,7 +438,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
             ))}
             <button
               onClick={addOverride}
-              className="text-sm text-beme-600 hover:text-beme-700 hover:underline"
+              className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
             >
               + Add course override
             </button>
@@ -456,7 +456,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         </button>
         <button
           onClick={onCancel}
-          className="px-4 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+          className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
         >
           Cancel
         </button>

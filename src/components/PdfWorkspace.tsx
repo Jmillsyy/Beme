@@ -4,6 +4,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import BlockTallyPanel from './BlockTallyPanel'
+import PierTypesPanel from './PierTypesPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickSettingsPanel from './BrickSettingsPanel'
 import BrickTallyPanel from './BrickTallyPanel'
@@ -24,18 +25,51 @@ import type {
   BrickExportInclusions,
   BrickSettings,
   Opening,
+  Pier,
+  PierMakeup,
   ProjectDetails,
   Wall,
   WallMakeup,
 } from '../types/walls'
-import { createDefaultWallMakeup } from '../lib/makeups'
+import {
+  createDefaultPierMakeups,
+  createDefaultTiedPierMakeup,
+  createDefaultWallMakeup,
+} from '../lib/makeups'
+import { BLOCK_LIBRARY } from '../data/blockLibrary'
+
+/** Default brick-wall thickness (mm) — single skin. Could later be a BrickSettings field. */
+const DEFAULT_BRICK_WALL_THICKNESS_MM = 110
+
+/**
+ * Per-wall physical thickness in mm. Block walls take their thickness from the makeup's
+ * body-block depth; brick walls use a constant. Available outside React's render loop so
+ * event handlers (wall-add, junction recompute) can use it before the next render lands.
+ */
+function computeWallThicknessByWallId(
+  walls: Wall[],
+  makeupsById: Record<string, WallMakeup>,
+  mode: 'block' | 'brick' | undefined
+): Record<string, number> {
+  const map: Record<string, number> = {}
+  for (const w of walls) {
+    if (mode === 'brick') {
+      map[w.id] = DEFAULT_BRICK_WALL_THICKNESS_MM
+      continue
+    }
+    const makeup = makeupsById[w.makeupId]
+    const block = makeup ? BLOCK_LIBRARY[makeup.bodyBlockCode] : undefined
+    map[w.id] = block?.dimensions.depthMm ?? 190
+  }
+  return map
+}
 import { createDefaultBrickSettings, selectBrickLintelSize } from '../lib/brickCalc'
 import {
   createDefaultExportInclusions,
   createDefaultProjectDetails,
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
-import { detectJunctionsForNewWall, recomputeAllJunctions } from '../lib/junctions'
+import { recomputeAllJunctions } from '../lib/junctions'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
@@ -94,8 +128,40 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Wall drawing state (block mode) ----------
   const [wallsByPage, setWallsByPage] = useState<Record<number, Wall[]>>({})
   const [drawingMode, setDrawingMode] = useState(false)
+  /** Curved wall drawing mode (3-click: pick wall A → pick wall B → pick midpoint). */
+  const [drawingCurveMode, setDrawingCurveMode] = useState(false)
   const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
   const drawingModeRef = useRef(false)
+
+  // ---------- Control-joint placement mode (block mode) ----------
+  // When active, clicking on a wall splits it into two halves at the click point. Each
+  // half gets its own end termination at the joint (junction.type = 'control-joint').
+  const [placingControlJoint, setPlacingControlJoint] = useState(false)
+  const placingControlJointRef = useRef(false)
+
+  // ---------- Pier state (block mode) ----------
+  const [piersByPage, setPiersByPage] = useState<Record<number, Pier[]>>({})
+  /** Library of pier makeups available in this project (seeded with two defaults). */
+  const [pierMakeups, setPierMakeups] = useState<PierMakeup[]>(() => createDefaultPierMakeups())
+  /** True while the user is choosing a wall to drop a tied pier onto. */
+  const [placingTiedPier, setPlacingTiedPier] = useState(false)
+  /** True while the user is choosing a point on the plan to drop a freestanding pier. */
+  const [placingFreestandingPier, setPlacingFreestandingPier] = useState(false)
+  /** Pier currently selected (for inspection / height / makeup edit). */
+  const [selectedPierId, setSelectedPierId] = useState<string | null>(null)
+  /** Default height (mm) for newly-placed freestanding piers — multiple of 200. */
+  const [freestandingPierHeightMm, setFreestandingPierHeightMm] = useState(2400)
+
+  const pierMakeupsById = useMemo(
+    () => Object.fromEntries(pierMakeups.map((m) => [m.id, m])),
+    [pierMakeups]
+  )
+
+  /** First pier makeup whose suggestedPlacement matches, or the first overall. */
+  function defaultPierMakeupId(placement: 'tied' | 'freestanding'): string | undefined {
+    const match = pierMakeups.find((m) => m.suggestedPlacement === placement)
+    return (match ?? pierMakeups[0])?.id
+  }
 
   // ---------- Opening state (block mode) ----------
   const [openingsByPage, setOpeningsByPage] = useState<Record<number, Opening[]>>({})
@@ -153,15 +219,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     getProject(projectId)
       .then((proj) => {
         if (cancelled || !proj) return
-        // Reconstruct File from saved Blob (react-pdf accepts either; using File keeps name)
-        const file = new File([proj.pdfBlob], proj.pdfFileName, {
-          type: proj.pdfBlob.type || 'application/pdf',
-        })
-        setPdfFile(file)
+        // Reconstruct File from saved Blob (only when a PDF was actually saved — projects
+        // can now be created and saved before a PDF is uploaded).
+        if (proj.pdfBlob && proj.pdfFileName) {
+          const file = new File([proj.pdfBlob], proj.pdfFileName, {
+            type: proj.pdfBlob.type || 'application/pdf',
+          })
+          setPdfFile(file)
+        }
         setProjectDetails(proj.projectDetails)
         setPagesData(proj.pagesData)
         setWallsByPage(proj.wallsByPage)
         setOpeningsByPage(proj.openingsByPage)
+        if (proj.piersByPage) setPiersByPage(proj.piersByPage)
+        if (proj.pierMakeups && proj.pierMakeups.length > 0) setPierMakeups(proj.pierMakeups)
         setCurrentPage(proj.currentPage || 1)
         if (proj.makeups && proj.makeups.length > 0) {
           setMakeups(proj.makeups)
@@ -186,18 +257,19 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
-  // Reasons save might be blocked, evaluated each render
+  // Reasons save might be blocked, evaluated each render. A PDF is NO LONGER required —
+  // users can save a project with just a name (and pre-configured wall / pier types),
+  // then upload the PDF later.
   const saveBlockedReason = useMemo<string | null>(() => {
-    if (!pdfFile) return 'Upload a PDF before saving.'
     if (!projectDetails.projectName.trim() && !projectDetails.siteAddress.trim()) {
       return 'Fill in a project name or site address in Project details before saving.'
     }
     return null
-  }, [pdfFile, projectDetails.projectName, projectDetails.siteAddress])
+  }, [projectDetails.projectName, projectDetails.siteAddress])
   const canSave = saveBlockedReason === null
 
   async function handleSaveProject() {
-    if (!pdfFile || !mode) return
+    if (!mode) return
     const now = new Date().toISOString()
     const id = currentProjectId ?? generateProjectId()
     const project: SavedProject = {
@@ -208,14 +280,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       updatedAt: now,
       completedAt: projectCompletedAt ?? undefined,
       projectDetails,
-      pdfBlob: pdfFile,
-      pdfFileName: pdfFile.name,
+      // pdfBlob + pdfFileName are optional now — a project can be saved without a PDF
+      ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
       pagesData,
       wallsByPage,
       openingsByPage,
+      piersByPage,
       currentPage,
       ...(mode === 'block'
-        ? { makeups, activeMakeupId, blockExportInclusions }
+        ? { makeups, activeMakeupId, blockExportInclusions, pierMakeups }
         : {}),
       ...(mode === 'brick' ? { brickSettings, exportInclusions } : {}),
     }
@@ -245,8 +318,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       projectStatus === 'completed' ? 'in-progress' : 'completed'
     setProjectStatus(nextStatus)
     if (nextStatus === 'completed') setProjectCompletedAt(now)
-    // Persist immediately
-    if (pdfFile && mode) {
+    // Persist immediately. PDF is optional now.
+    if (mode) {
       const project: SavedProject = {
         id: currentProjectId,
         type: mode,
@@ -255,13 +328,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         updatedAt: now,
         completedAt: nextStatus === 'completed' ? now : projectCompletedAt ?? undefined,
         projectDetails,
-        pdfBlob: pdfFile,
-        pdfFileName: pdfFile.name,
+        ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
         pagesData,
         wallsByPage,
         openingsByPage,
+        piersByPage,
         currentPage,
-        ...(mode === 'block' ? { makeups, activeMakeupId } : {}),
+        ...(mode === 'block' ? { makeups, activeMakeupId, pierMakeups } : {}),
         ...(mode === 'brick' ? { brickSettings, exportInclusions } : {}),
       }
       try {
@@ -272,6 +345,26 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       }
     }
   }
+
+  // Stable callbacks for WallDrawingLayer — wrapped in useCallback with empty deps so
+  // their reference doesn't change every render. Combined with WallDrawingLayer being
+  // memoised, this means the wall overlay doesn't re-render on every wheel-zoom tick.
+  const handleWallSelect = useCallback((id: string | null) => {
+    setSelectedWallId(id)
+    if (id) setSelectedOpeningId(null)
+  }, [])
+  const handleOpeningSelect = useCallback((id: string | null) => {
+    setSelectedOpeningId(id)
+    if (id) setSelectedWallId(null)
+  }, [])
+  const handleCancelDraw = useCallback(() => {
+    setDrawingMode(false)
+    setPlacingOpening(false)
+    setDrawingCurveMode(false)
+    setPlacingControlJoint(false)
+    setPlacingTiedPier(false)
+    setPlacingFreestandingPier(false)
+  }, [])
 
   async function handleDeleteProject() {
     if (!currentProjectId) return
@@ -302,10 +395,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     placingOpeningRef.current = placingOpening
   }, [placingOpening])
 
+  useEffect(() => {
+    placingControlJointRef.current = placingControlJoint
+  }, [placingControlJoint])
+
   const allWalls = useMemo(() => Object.values(wallsByPage).flat(), [wallsByPage])
   const currentPageWalls = wallsByPage[currentPage] ?? []
   const allOpenings = useMemo(() => Object.values(openingsByPage).flat(), [openingsByPage])
   const currentPageOpenings = openingsByPage[currentPage] ?? []
+  const allPiers = useMemo(() => Object.values(piersByPage).flat(), [piersByPage])
+  const currentPagePiers = piersByPage[currentPage] ?? []
+  const selectedPier = useMemo(
+    () => (selectedPierId ? currentPagePiers.find((p) => p.id === selectedPierId) : null),
+    [selectedPierId, currentPagePiers]
+  )
   const selectedOpening = useMemo(
     () => (selectedOpeningId ? currentPageOpenings.find((o) => o.id === selectedOpeningId) : null),
     [selectedOpeningId, currentPageOpenings]
@@ -320,6 +423,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     for (const w of allWalls) counts[w.makeupId] = (counts[w.makeupId] ?? 0) + 1
     return counts
   }, [allWalls])
+
+  const pierCountsByMakeupId = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const p of allPiers) {
+      if (!p.pierMakeupId) continue
+      counts[p.pierMakeupId] = (counts[p.pierMakeupId] ?? 0) + 1
+    }
+    return counts
+  }, [allPiers])
+
+  /**
+   * Per-wall physical thickness in mm. For block walls, derived from the makeup's body
+   * block depth (e.g. 190mm for a 20.48). For brick walls, a default single-skin width.
+   * Drives the rendered wall-rectangle thickness in WallDrawingLayer.
+   */
+  const wallThicknessByWallId = useMemo(
+    () => computeWallThicknessByWallId(allWalls, makeupsById, mode),
+    [allWalls, makeupsById, mode]
+  )
 
   const selectedWall = useMemo(
     () => (selectedWallId ? currentPageWalls.find((w) => w.id === selectedWallId) : null),
@@ -345,14 +467,159 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
 
     const existing = wallsByPage[currentPage] ?? []
-    // Junction detection only matters for block walls (corners affect tally). Brick mode
-    // doesn't need junctions, but running detection doesn't hurt and keeps state consistent.
-    const { newWall, updatedExistingWalls } = detectJunctionsForNewWall(rawWall, existing)
+    // Junction detection only matters for block walls (corners + T-junctions affect tally).
+    // We run a full recompute across all walls on the page so detection picks up both
+    // directions: the new wall butting into an existing wall's body (T-junction on new),
+    // AND an existing wall's free endpoint now lying on the new wall's body (T on existing).
+    const newWalls = [...existing, rawWall]
+    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode)
+    const recomputed = recomputeAllJunctions(newWalls, thicknesses)
 
     setWallsByPage((prev) => ({
       ...prev,
-      [currentPage]: [...updatedExistingWalls, newWall],
+      [currentPage]: recomputed,
     }))
+  }
+
+  /**
+   * Add a curved wall from three points (start, mid, end) anchored to two existing walls.
+   * Junction detection runs after so the curve's endpoints inherit corner-tagging from
+   * the walls it connects to.
+   */
+  function handleCurvedWallAdded(
+    startMm: { x: number; y: number },
+    midMm: { x: number; y: number },
+    endMm: { x: number; y: number }
+  ) {
+    if (mode !== 'block') return // Brick mode doesn't support curves yet
+    const rawWall: Wall = {
+      id:
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      makeupId: activeMakeupId,
+      startX: startMm.x,
+      startY: startMm.y,
+      endX: endMm.x,
+      endY: endMm.y,
+      startJunction: { type: 'free' },
+      endJunction: { type: 'free' },
+      kind: 'curved',
+      midX: midMm.x,
+      midY: midMm.y,
+    }
+    const existing = wallsByPage[currentPage] ?? []
+    const newWalls = [...existing, rawWall]
+    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode)
+    const recomputed = recomputeAllJunctions(newWalls, thicknesses)
+    setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
+  }
+
+  /**
+   * Split a wall at a click point along its centreline. Replaces the original wall with
+   * two halves, each carrying its own end terminations. The two halves share a
+   * 'control-joint' junction at the split point (with connectedWallIds pointing at each
+   * other).
+   *
+   * Openings on the original wall are reassigned to whichever half they sit on; an opening
+   * that straddles the split is dropped (it would otherwise be ambiguous).
+   *
+   * Curved walls are not split — control joints are a straight-wall concept here.
+   */
+  function handleControlJointPlaced(wallId: string, alongMm: number) {
+    if (mode !== 'block') return
+    const existing = wallsByPage[currentPage] ?? []
+    const wall = existing.find((w) => w.id === wallId)
+    if (!wall) return
+    if (wall.kind === 'curved') return // not supported for curves
+
+    // Compute the split point in mm. Clamp away from the very ends so we don't make a
+    // zero-length sliver.
+    const MIN_HALF_LENGTH_MM = 100
+    const dx = wall.endX - wall.startX
+    const dy = wall.endY - wall.startY
+    const fullLengthMm = Math.sqrt(dx * dx + dy * dy)
+    if (fullLengthMm < 2 * MIN_HALF_LENGTH_MM) return
+    const clampedAlong = Math.max(
+      MIN_HALF_LENGTH_MM,
+      Math.min(fullLengthMm - MIN_HALF_LENGTH_MM, alongMm)
+    )
+    const t = clampedAlong / fullLengthMm
+    const splitX = wall.startX + t * dx
+    const splitY = wall.startY + t * dy
+
+    function newId() {
+      return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    }
+
+    const firstId = newId()
+    const secondId = newId()
+
+    const firstHalf: Wall = {
+      ...wall,
+      id: firstId,
+      // First half keeps the original start point + start junction.
+      startX: wall.startX,
+      startY: wall.startY,
+      endX: splitX,
+      endY: splitY,
+      startJunction: { ...wall.startJunction },
+      endJunction: { type: 'control-joint', connectedWallIds: [secondId] },
+    }
+    const secondHalf: Wall = {
+      ...wall,
+      id: secondId,
+      startX: splitX,
+      startY: splitY,
+      endX: wall.endX,
+      endY: wall.endY,
+      startJunction: { type: 'control-joint', connectedWallIds: [firstId] },
+      endJunction: { ...wall.endJunction },
+    }
+
+    // The two halves replace the original wall in the page's wall list.
+    const remainingWalls = existing.filter((w) => w.id !== wallId)
+    const newWalls = [...remainingWalls, firstHalf, secondHalf]
+    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode)
+    const recomputed = recomputeAllJunctions(newWalls, thicknesses)
+    setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
+
+    // Re-bucket openings on the split wall: keep the ones fully on one side; drop any
+    // that straddle the split point.
+    setOpeningsByPage((prev) => {
+      const pageOpenings = prev[currentPage] ?? []
+      const updated: Opening[] = []
+      for (const op of pageOpenings) {
+        if (op.wallId !== wallId) {
+          updated.push(op)
+          continue
+        }
+        const opStart = op.startAlongWallMm
+        const opEnd = op.startAlongWallMm + op.widthMm
+        if (opEnd <= clampedAlong) {
+          // Fully on first half — keep position, just rebind to the new wall id.
+          updated.push({ ...op, wallId: firstId })
+        } else if (opStart >= clampedAlong) {
+          // Fully on second half — rebind and shift along.
+          updated.push({
+            ...op,
+            wallId: secondId,
+            startAlongWallMm: opStart - clampedAlong,
+          })
+        }
+        // Straddling openings are dropped (would otherwise be ambiguous).
+      }
+      return { ...prev, [currentPage]: updated }
+    })
+
+    // Selection: if the original wall was selected, switch to the first half so the user
+    // doesn't end up with a stale selectedWallId pointing at a deleted wall.
+    if (selectedWallId === wallId) setSelectedWallId(firstId)
+
+    // Exit the placement mode after a successful split — match how + Add opening works.
+    setPlacingControlJoint(false)
   }
 
   function handleWallHeightChange(wallId: string, heightMm: number) {
@@ -457,9 +724,132 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (allWalls.length === 0) return
     if (!window.confirm(`Delete all ${allWalls.length} walls in this project?`)) return
     setWallsByPage({})
+    setOpeningsByPage({})
+    setPiersByPage({})
     setDrawingMode(false)
     setSelectedWallId(null)
+    setSelectedPierId(null)
   }
+
+  // ---------- Pier placement handlers ----------
+
+  /** Place a tied pier on a wall at the click point along it. */
+  function handleTiedPierPlaced(wallId: string, alongMm: number) {
+    if (mode !== 'block') return
+    const wall = (wallsByPage[currentPage] ?? []).find((w) => w.id === wallId)
+    if (!wall) return
+    if (wall.kind === 'curved') return // piers only on straight walls for v1
+    const dx = wall.endX - wall.startX
+    const dy = wall.endY - wall.startY
+    const len = Math.sqrt(dx * dx + dy * dy)
+    if (len === 0) return
+    const clamped = Math.max(200, Math.min(len - 200, alongMm))
+    const pier: Pier = {
+      id:
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `p-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: 'tied',
+      wallId,
+      alongMm: clamped,
+      pierMakeupId: defaultPierMakeupId('tied'),
+    }
+    setPiersByPage((prev) => ({
+      ...prev,
+      [currentPage]: [...(prev[currentPage] ?? []), pier],
+    }))
+    setPlacingTiedPier(false)
+  }
+
+  /** Place a freestanding pier at the click coordinates. Inherits the current default height. */
+  function handleFreestandingPierPlaced(xMm: number, yMm: number) {
+    if (mode !== 'block') return
+    const pier: Pier = {
+      id:
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `p-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: 'freestanding',
+      x: xMm,
+      y: yMm,
+      heightMm: freestandingPierHeightMm,
+      pierMakeupId: defaultPierMakeupId('freestanding'),
+    }
+    setPiersByPage((prev) => ({
+      ...prev,
+      [currentPage]: [...(prev[currentPage] ?? []), pier],
+    }))
+    setPlacingFreestandingPier(false)
+  }
+
+  function handlePierSelect(pierId: string | null) {
+    setSelectedPierId(pierId)
+    if (pierId) {
+      setSelectedWallId(null)
+      setSelectedOpeningId(null)
+    }
+  }
+
+  function handleDeletePier(pierId: string) {
+    setPiersByPage((prev) => {
+      const pagePiers = prev[currentPage] ?? []
+      return { ...prev, [currentPage]: pagePiers.filter((p) => p.id !== pierId) }
+    })
+    if (selectedPierId === pierId) setSelectedPierId(null)
+  }
+
+  // ---------- Pier makeup CRUD ----------
+
+  function handleAddPierMakeup() {
+    const next = createDefaultTiedPierMakeup('New pier type')
+    setPierMakeups((prev) => [...prev, next])
+  }
+
+  function handleUpdatePierMakeup(updated: PierMakeup) {
+    setPierMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+  }
+
+  function handleDeletePierMakeup(id: string) {
+    setPierMakeups((prev) => {
+      if (prev.length <= 1) return prev // always keep at least one
+      const remaining = prev.filter((m) => m.id !== id)
+      // Re-assign any piers using the deleted makeup to the first remaining one of
+      // matching suggestedPlacement (or the first overall).
+      setPiersByPage((pp) => {
+        const next: Record<number, Pier[]> = {}
+        for (const [pageStr, piers] of Object.entries(pp)) {
+          const pageNum = Number(pageStr)
+          next[pageNum] = piers.map((pier) => {
+            if (pier.pierMakeupId !== id) return pier
+            const replacement =
+              remaining.find((m) => m.suggestedPlacement === pier.type) ?? remaining[0]
+            return { ...pier, pierMakeupId: replacement?.id }
+          })
+        }
+        return next
+      })
+      return remaining
+    })
+  }
+
+  function handleReassignPierMakeup(pierId: string, pierMakeupId: string) {
+    setPiersByPage((prev) => {
+      const pagePiers = prev[currentPage] ?? []
+      const updated = pagePiers.map((p) => (p.id === pierId ? { ...p, pierMakeupId } : p))
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
+  function handleUpdateFreestandingPierHeight(pierId: string, heightMm: number) {
+    setPiersByPage((prev) => {
+      const pagePiers = prev[currentPage] ?? []
+      const updated = pagePiers.map((p) =>
+        p.id === pierId && p.type === 'freestanding' ? { ...p, heightMm } : p
+      )
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
 
   function handleWallEndpointMoved(
     wallId: string,
@@ -475,7 +865,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
         return { ...w, endX: newPositionMm.x, endY: newPositionMm.y }
       })
-      return { ...prev, [currentPage]: recomputeAllJunctions(updated) }
+      const thicknesses = computeWallThicknessByWallId(updated, makeupsById, mode)
+      return { ...prev, [currentPage]: recomputeAllJunctions(updated, thicknesses) }
     })
   }
 
@@ -483,27 +874,44 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setWallsByPage((prev) => {
       const pageWalls = prev[currentPage] ?? []
       const remaining = pageWalls.filter((w) => w.id !== wallId)
-      return { ...prev, [currentPage]: recomputeAllJunctions(remaining) }
+      const thicknesses = computeWallThicknessByWallId(remaining, makeupsById, mode)
+      return { ...prev, [currentPage]: recomputeAllJunctions(remaining, thicknesses) }
+    })
+    // Drop any tied piers that were attached to this wall — they're not meaningful
+    // without their parent wall.
+    setPiersByPage((prev) => {
+      const pagePiers = prev[currentPage] ?? []
+      const filtered = pagePiers.filter((p) => !(p.type === 'tied' && p.wallId === wallId))
+      if (filtered.length === pagePiers.length) return prev
+      return { ...prev, [currentPage]: filtered }
+    })
+    // Drop any openings tied to this wall.
+    setOpeningsByPage((prev) => {
+      const pageOpenings = prev[currentPage] ?? []
+      const filtered = pageOpenings.filter((o) => o.wallId !== wallId)
+      if (filtered.length === pageOpenings.length) return prev
+      return { ...prev, [currentPage]: filtered }
     })
     setSelectedWallId(null)
   }
 
-  // Delete / Backspace removes the selected wall or selected opening
+  // Delete / Backspace removes the selected wall, opening, or pier
   useEffect(() => {
-    if (!selectedWallId && !selectedOpeningId) return
+    if (!selectedWallId && !selectedOpeningId && !selectedPierId) return
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const tgt = e.target as HTMLElement | null
         if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return
         e.preventDefault()
-        if (selectedOpeningId) handleOpeningDelete(selectedOpeningId)
+        if (selectedPierId) handleDeletePier(selectedPierId)
+        else if (selectedOpeningId) handleOpeningDelete(selectedOpeningId)
         else if (selectedWallId) handleWallDelete(selectedWallId)
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWallId, selectedOpeningId])
+  }, [selectedWallId, selectedOpeningId, selectedPierId])
 
   // Clear selection when leaving the page or replacing PDF
   useEffect(() => {
@@ -587,11 +995,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   // After the user stops zooming, re-rasterise the PDF at the new resolution
   // so the canvas is crisp instead of relying on the CSS transform upscale.
+  //
+  // The debounce is generous (300ms) so it doesn't fire mid-pinch — a re-raster mid-zoom
+  // causes a visible snap (blurry transformed canvas → crisp native canvas). We'd rather
+  // keep the canvas in CSS-transform mode for the whole gesture and snap once at the end.
   useEffect(() => {
     if (zoom === renderedZoom) return
     const timer = setTimeout(() => {
       setRenderedZoom(zoom)
-    }, 180)
+    }, 300)
     return () => clearTimeout(timer)
   }, [zoom, renderedZoom])
 
@@ -602,45 +1014,97 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }, [calPoint1, calPoint2])
 
   // ---------- Mouse wheel / trackpad zoom ----------
-  // Attaches a non-passive wheel listener so we can preventDefault().
-  // Re-runs when pdfFile changes so it reattaches after the workspace mounts.
+  //
+  // Wheel events get throttled to one update per animation frame via requestAnimationFrame.
+  // A trackpad pinch fires 60–120 wheel events/sec; without throttling each one triggers a
+  // full React re-render of the workspace (including every wall on the canvas), which blows
+  // the frame budget and feels jittery. Batching deltaY within a frame and applying once on
+  // the next rAF tick keeps it pinned to 60fps even with lots of walls on screen.
+  //
+  // Non-passive listener so we can preventDefault() and avoid the page also scrolling.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
-    const handler = (e: WheelEvent) => {
-      e.preventDefault()
+    let pendingDeltaY = 0
+    let pendingClientX = 0
+    let pendingClientY = 0
+    let pendingCtrlKey = false
+    let rafId: number | null = null
+
+    const applyZoom = () => {
+      rafId = null
+      const delta = pendingDeltaY
+      pendingDeltaY = 0
+      if (delta === 0) return
 
       const oldZoom = zoomRef.current
-      const sensitivity = e.ctrlKey ? 0.01 : 0.002
-      const factor = Math.exp(-e.deltaY * sensitivity)
+      const sensitivity = pendingCtrlKey ? 0.01 : 0.002
+      const factor = Math.exp(-delta * sensitivity)
       const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM)
       if (newZoom === oldZoom) return
 
-      // Zoom-to-cursor: keep the point under the cursor stationary
+      // Zoom-to-cursor: keep the point under the cursor stationary across the zoom change.
+      // We have to account for the `flex justify-center` wrapper: when the page is narrower
+      // than the container, the page is centred with a margin on each side. As we zoom in,
+      // the page grows and the margin shrinks (to 0 once the page exceeds the container).
+      // The cursor-anchor math has to work in PAGE coords (i.e. minus the centring margin),
+      // not raw scroll coords — otherwise the anchor drifts at low zoom levels where the
+      // margin is non-zero.
       const rect = container.getBoundingClientRect()
-      const cursorXInViewport = e.clientX - rect.left
-      const cursorYInViewport = e.clientY - rect.top
+      const cursorXInViewport = pendingClientX - rect.left
+      const cursorYInViewport = pendingClientY - rect.top
+
+      // The page wrapper is centred HORIZONTALLY by the `flex justify-center` wrapper when
+      // it's narrower than the container — so subtract that centring margin before scaling
+      // and add the new one back. Vertically, the page is top-aligned (flex's main axis is
+      // horizontal, no vertical centring), so there's no Y margin to deal with.
+      const containerW = container.clientWidth
+      const oldPageW = baseWidth * oldZoom
+      const newPageW = baseWidth * newZoom
+      const oldMarginX = Math.max(0, (containerW - oldPageW) / 2)
+      const newMarginX = Math.max(0, (containerW - newPageW) / 2)
 
       const scrollLeft = container.scrollLeft
       const scrollTop = container.scrollTop
 
-      const contentX = scrollLeft + cursorXInViewport
-      const contentY = scrollTop + cursorYInViewport
+      // Cursor position on the page itself (in current visual pixels).
+      const pageX = scrollLeft + cursorXInViewport - oldMarginX
+      const pageY = scrollTop + cursorYInViewport // top-aligned, no margin
 
       const ratio = newZoom / oldZoom
+      const newPageX = pageX * ratio
+      const newPageY = pageY * ratio
 
+      // Convert back to scrollable-content coords (with the new horizontal centring margin).
+      const newContentX = newPageX + newMarginX
+      const newContentY = newPageY
+
+      // Scroll can't go negative; if the page is still narrower than the container after
+      // zooming, the cursor anchor saturates at the page's edge.
       pendingScrollRef.current = {
-        x: contentX * ratio - cursorXInViewport,
-        y: contentY * ratio - cursorYInViewport,
+        x: Math.max(0, newContentX - cursorXInViewport),
+        y: Math.max(0, newContentY - cursorYInViewport),
       }
 
       setZoom(newZoom)
     }
 
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      pendingDeltaY += e.deltaY
+      pendingClientX = e.clientX
+      pendingClientY = e.clientY
+      pendingCtrlKey = e.ctrlKey
+      if (rafId === null) rafId = requestAnimationFrame(applyZoom)
+    }
+
     container.addEventListener('wheel', handler, { passive: false })
-    return () => container.removeEventListener('wheel', handler)
-  }, [pdfFile])
+    return () => {
+      container.removeEventListener('wheel', handler)
+      if (rafId !== null) cancelAnimationFrame(rafId)
+    }
+  }, [pdfFile, baseWidth])
 
   // ---------- Thumbnail sidebar: explicit wheel scroll ----------
   // Ensures mouse wheel scrolling works when hovering over thumbnails
@@ -819,8 +1283,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }
 
   function svgCoordsFromEvent(e: React.MouseEvent<SVGSVGElement>): Point {
+    // The SVG lives inside the CSS-scale-transformed wrapper. Its visual size on screen
+    // is rendered × visualScale, but its internal coordinate system goes 0..renderedPageWidth.
+    // To draw lines/circles at the click position, we need the internal coord — so divide
+    // the cursor-relative-to-element offset by visualScale to undo the parent's CSS scale.
     const rect = svgRef.current!.getBoundingClientRect()
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+    return {
+      x: (e.clientX - rect.left) / visualScale,
+      y: (e.clientY - rect.top) / visualScale,
+    }
   }
 
   function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
@@ -844,10 +1315,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (!calPoint1 || !calPoint2) return
     const mm = parseFloat(calInput)
     if (!Number.isFinite(mm) || mm <= 0) return
-    const pxAtCurrentZoom = distance(calPoint1, calPoint2)
-    if (pxAtCurrentZoom < 2) return
-    // Normalise to zoom = 1 so the scale is independent of how zoomed in we are
-    const pxPerMmAtZoom1 = pxAtCurrentZoom / mm / zoom
+    // Click points are now in the SVG's internal coord system (renderedZoom pixels — see
+    // svgCoordsFromEvent above). Normalise by renderedZoom to get px/mm at zoom = 1.
+    const pxAtRenderedZoom = distance(calPoint1, calPoint2)
+    if (pxAtRenderedZoom < 2) return
+    const pxPerMmAtZoom1 = pxAtRenderedZoom / mm / renderedZoom
     setPagesData((prev) => ({
       ...prev,
       [currentPage]: { ...prev[currentPage], scalePxPerMm: pxPerMmAtZoom1 },
@@ -873,28 +1345,138 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   if (!pdfFile) {
     return (
-      <div
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        className={`border-2 border-dashed rounded-xl p-16 text-center bg-neutral-50 transition-colors ${
-          isDragging ? 'border-beme-500 bg-beme-50' : 'border-neutral-300 hover:border-beme-400'
-        }`}
-      >
-        <p className="text-lg text-neutral-700 mb-2 font-medium">Drop your building plan PDF here</p>
-        <p className="text-sm text-neutral-500 mb-6">or</p>
-        <label className="inline-block px-6 py-3 bg-beme-600 text-white rounded-lg cursor-pointer hover:bg-beme-700 transition-colors font-medium">
-          Choose a PDF
-          <input
-            type="file"
-            accept="application/pdf"
-            className="hidden"
-            onChange={handleFileChange}
+      <div className="max-w-[1500px] mx-auto">
+        {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
+        {(mode === 'block' || mode === 'brick') && (
+          <ProjectBar
+            details={projectDetails}
+            isSaved={currentProjectId !== null}
+            status={projectStatus}
+            lastSavedAt={lastSavedAt}
+            canSave={canSave}
+            saveBlockedReason={saveBlockedReason}
+            onSave={handleSaveProject}
+            onToggleStatus={handleToggleProjectStatus}
+            onDelete={handleDeleteProject}
+            onOpenDetails={() => setDetailsDrawerOpen(true)}
           />
-        </label>
-        <p className="text-xs text-neutral-400 mt-6">
-          Multi-page plans are supported. Each page is calibrated separately.
-        </p>
+        )}
+
+        {/* Project details drawer (overlay) */}
+        <ProjectDetailsDrawer
+          open={detailsDrawerOpen}
+          details={projectDetails}
+          onChange={setProjectDetails}
+          onClose={() => setDetailsDrawerOpen(false)}
+        />
+
+        <div className="px-6 py-6">
+          <div className="flex flex-col lg:flex-row gap-4 items-start">
+
+            {/* ── Left: drop zone + onboarding hints ── */}
+            <div className="flex-1 min-w-0 w-full">
+              <div
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                className={`border-2 border-dashed rounded-xl p-12 text-center bg-ink-800 transition-colors ${
+                  isDragging
+                    ? 'border-beme-500 bg-beme-500/10'
+                    : 'border-ink-600 hover:border-beme-400'
+                }`}
+              >
+                <div className="mx-auto w-12 h-12 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4 text-2xl">
+                  📄
+                </div>
+                <p className="text-lg text-ink-100 mb-1 font-semibold">
+                  Drop your building plan PDF here
+                </p>
+                <p className="text-sm text-ink-400 mb-5">
+                  or upload a file to start drawing walls over the plan
+                </p>
+                <label className="inline-block px-6 py-2.5 bg-beme-500 text-black rounded-lg cursor-pointer hover:bg-beme-400 transition-colors font-semibold text-sm">
+                  Choose a PDF
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                </label>
+                <p className="text-xs text-ink-500 mt-5">
+                  Multi-page plans are supported. Each page is calibrated separately.
+                </p>
+              </div>
+
+              {/* Quick-start steps */}
+              <div className="mt-4 border border-ink-600 rounded-xl bg-ink-800 p-5">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+                  How a {mode === 'brick' ? 'brick' : 'block'} estimate works
+                </h3>
+                <ol className="space-y-3 text-sm text-ink-200">
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                      1
+                    </span>
+                    <span>
+                      {mode === 'block'
+                        ? 'Define wall types in the side rail — bond, height, body / corner blocks, fractions.'
+                        : 'Set defaults in the side rail — wall height, bricks per m², ties, plascourse.'}
+                      {' '}You can do this before uploading a plan.
+                    </span>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                      2
+                    </span>
+                    <span>Upload the building-plan PDF and calibrate the scale by clicking two points of a known dimension.</span>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                      3
+                    </span>
+                    <span>
+                      Draw walls over the plan — Beme handles corners, T-junctions, control joints, and openings automatically.
+                    </span>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                      4
+                    </span>
+                    <span>The block tally updates live in the side rail. Click <em>Export estimate</em> when you're ready to print.</span>
+                  </li>
+                </ol>
+              </div>
+            </div>
+
+            {/* ── Right: side rail (block: wall + pier types · brick: settings) ── */}
+            <aside className="w-full lg:w-[380px] lg:flex-shrink-0">
+              {mode === 'block' && (
+                <>
+                  <WallTypesPanel
+                    makeups={makeups}
+                    activeMakeupId={activeMakeupId}
+                    wallCountsByMakeupId={wallCountsByMakeupId}
+                    onSetActive={setActiveMakeupId}
+                    onAddMakeup={handleAddMakeup}
+                    onUpdateMakeup={handleUpdateMakeup}
+                    onDeleteMakeup={handleDeleteMakeup}
+                  />
+                  <PierTypesPanel
+                    pierMakeups={pierMakeups}
+                    pierCountsByMakeupId={pierCountsByMakeupId}
+                    onAddMakeup={handleAddPierMakeup}
+                    onUpdateMakeup={handleUpdatePierMakeup}
+                    onDeleteMakeup={handleDeletePierMakeup}
+                  />
+                </>
+              )}
+              {mode === 'brick' && (
+                <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+              )}
+            </aside>
+          </div>
+        </div>
       </div>
     )
   }
@@ -902,8 +1484,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Render: workspace ----------
 
   return (
-    <div>
-      {/* Slim project bar — replaces the old Project details + Save panels */}
+    <div className="max-w-[1500px] mx-auto">
+      {/* Slim project bar — Studio Black header */}
       {(mode === 'block' || mode === 'brick') && (
         <ProjectBar
           details={projectDetails}
@@ -927,11 +1509,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
+      <div className="px-6 py-6">
+
       {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
-      <div className="flex items-center mb-3 px-3 py-2 bg-neutral-50 border border-neutral-200 rounded-lg gap-4 flex-wrap">
+      <div className="flex items-center mb-3 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
         {/* PDF filename + Replace */}
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-medium text-neutral-700 truncate max-w-[16rem]">
+          <span className="text-sm font-medium text-ink-200 truncate max-w-[16rem]">
             {pdfFile.name}
           </span>
           <button
@@ -943,52 +1527,52 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               setZoom(1)
               cancelCalibration()
             }}
-            className="text-xs text-beme-600 hover:text-beme-700 hover:underline whitespace-nowrap"
+            className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
           >
             Replace
           </button>
         </div>
 
-        <div className="h-5 w-px bg-neutral-300" />
+        <div className="h-5 w-px bg-ink-600" />
 
         {/* Page nav */}
         <div className="flex items-center gap-1">
           <button
             onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
             disabled={currentPage <= 1}
-            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Previous page"
           >
             ←
           </button>
-          <span className="text-sm text-neutral-600 tabular-nums px-1 min-w-[5.5rem] text-center">
+          <span className="text-sm text-ink-300 tabular-nums px-1 min-w-[5.5rem] text-center">
             Page {currentPage} / {numPages || '…'}
           </span>
           <button
             onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
             disabled={currentPage >= numPages}
-            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Next page"
           >
             →
           </button>
         </div>
 
-        <div className="h-5 w-px bg-neutral-300" />
+        <div className="h-5 w-px bg-ink-600" />
 
         {/* Zoom */}
         <div className="flex items-center gap-1">
           <button
             onClick={zoomOutButton}
             disabled={zoom <= MIN_ZOOM + 0.001}
-            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Zoom out"
           >
             −
           </button>
           <button
             onClick={resetZoom}
-            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors min-w-[3.5rem] tabular-nums"
+            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 transition-colors min-w-[3.5rem] tabular-nums"
             title="Scroll to zoom · Click and drag to pan · Click to reset"
           >
             {Math.round(zoom * 100)}%
@@ -996,35 +1580,35 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           <button
             onClick={zoomInButton}
             disabled={zoom >= MAX_ZOOM - 0.001}
-            className="px-2 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Zoom in"
           >
             +
           </button>
         </div>
 
-        <div className="h-5 w-px bg-neutral-300" />
+        <div className="h-5 w-px bg-ink-600" />
 
         {/* Scale — collapsed inline when set, expanded controls when not */}
         {currentScale && !calibrating ? (
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-neutral-700">
+            <span className="text-ink-200">
               Scale:{' '}
               <span className="font-semibold tabular-nums">
                 {currentScale.toFixed(3)}
               </span>{' '}
-              <span className="text-neutral-500">px/mm</span>
+              <span className="text-ink-400">px/mm</span>
             </span>
             <button
               onClick={startCalibration}
-              className="text-xs text-beme-600 hover:text-beme-700 hover:underline whitespace-nowrap"
+              className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
             >
               Recalibrate
             </button>
           </div>
         ) : !calibrating ? (
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-neutral-500">No scale set.</span>
+            <span className="text-sm text-ink-400">No scale set.</span>
             <select
               value=""
               onChange={(e) => {
@@ -1034,7 +1618,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 e.target.value = ''
               }}
               disabled={!pageData?.pageWidthMm}
-              className="px-2 py-1 border border-neutral-300 rounded text-sm bg-white disabled:opacity-50 focus:outline-none focus:border-beme-500"
+              className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 disabled:opacity-50 focus:outline-none focus:border-beme-400"
             >
               <option value="">Ratio…</option>
               {RATIO_PRESETS.map((p) => (
@@ -1045,7 +1629,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             </select>
             <button
               onClick={startCalibration}
-              className="px-3 py-1 rounded bg-beme-600 text-white text-sm hover:bg-beme-700 transition-colors font-medium"
+              className="px-3 py-1 rounded bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium transition-colors font-medium"
             >
               Set by clicking
             </button>
@@ -1053,7 +1637,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         ) : (
           <button
             onClick={cancelCalibration}
-            className="px-3 py-1 rounded border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+            className="px-3 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
           >
             Cancel calibration
           </button>
@@ -1072,25 +1656,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       {/* Sticky action bar — keeps drawing controls + banners glued to the top of the
           viewport while the user scrolls, so they don't need to scroll up to start a new
           wall/opening. Wraps the wall-drawing toolbar and all contextual banners/forms. */}
-      <div className="sticky top-0 z-20 bg-white pt-2 pb-1 -mx-1 px-1 mb-2 shadow-[0_1px_0_rgba(0,0,0,0.06)]">
+      <div className="sticky top-0 z-20 bg-ink-900 pt-2 pb-1 -mx-1 px-1 mb-2 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
 
       {/* Wall drawing toolbar (block + brick modes) */}
       {(mode === 'block' || mode === 'brick') && (
-        <div className="flex items-center justify-between mb-3 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-lg flex-wrap gap-3">
+        <div className="flex items-center justify-between mb-3 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-3">
           <div className="text-sm">
             {currentScale ? (
-              <span className="text-neutral-700">
+              <span className="text-ink-200">
                 {currentPageWalls.length}{' '}
                 wall{currentPageWalls.length === 1 ? '' : 's'} on this page
                 {allWalls.length !== currentPageWalls.length && (
-                  <span className="text-neutral-500">
+                  <span className="text-ink-400">
                     {' '}
                     · {allWalls.length} total in project
                   </span>
                 )}
               </span>
             ) : (
-              <span className="text-neutral-500">
+              <span className="text-ink-400">
                 Calibrate the scale on this page before drawing walls.
               </span>
             )}
@@ -1100,24 +1684,62 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               onClick={() => {
                 setDrawingMode((v) => !v)
                 setPlacingOpening(false)
+                setDrawingCurveMode(false)
+                setPlacingControlJoint(false)
+                setPlacingTiedPier(false)
+                setPlacingFreestandingPier(false)
                 setSelectedWallId(null)
                 setSelectedOpeningId(null)
+                setSelectedPierId(null)
               }}
               disabled={!currentScale || calibrating}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 drawingMode
-                  ? 'bg-beme-700 text-white hover:bg-beme-800'
-                  : 'bg-beme-600 text-white hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed'
+                  ? 'bg-beme-400 text-black hover:bg-beme-300'
+                  : 'bg-beme-500 text-black hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed'
               }`}
             >
               {drawingMode ? 'Stop drawing' : 'Draw wall'}
             </button>
+            {mode === 'block' && (
+              <button
+                onClick={() => {
+                  setDrawingCurveMode((v) => !v)
+                  setDrawingMode(false)
+                  setPlacingOpening(false)
+                  setPlacingControlJoint(false)
+                  setPlacingTiedPier(false)
+                  setPlacingFreestandingPier(false)
+                  setSelectedWallId(null)
+                  setSelectedOpeningId(null)
+                  setSelectedPierId(null)
+                }}
+                disabled={!currentScale || calibrating || currentPageWalls.length < 2}
+                title={
+                  currentPageWalls.length < 2
+                    ? 'Draw two straight walls first — a curve goes between them'
+                    : undefined
+                }
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  drawingCurveMode
+                    ? 'bg-violet-700 text-white hover:bg-violet-800'
+                    : 'bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
+              >
+                {drawingCurveMode ? 'Cancel curve' : '↷ Curved wall'}
+              </button>
+            )}
             <button
               onClick={() => {
                 setPlacingOpening((v) => !v)
                 setDrawingMode(false)
+                setDrawingCurveMode(false)
+                setPlacingControlJoint(false)
+                setPlacingTiedPier(false)
+                setPlacingFreestandingPier(false)
                 setSelectedWallId(null)
                 setSelectedOpeningId(null)
+                setSelectedPierId(null)
               }}
               disabled={!currentScale || calibrating || currentPageWalls.length === 0}
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -1128,10 +1750,82 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             >
               {placingOpening ? 'Cancel opening' : '+ Add opening'}
             </button>
+            {mode === 'block' && (
+              <button
+                onClick={() => {
+                  setPlacingControlJoint((v) => !v)
+                  setDrawingMode(false)
+                  setDrawingCurveMode(false)
+                  setPlacingOpening(false)
+                  setPlacingTiedPier(false)
+                  setPlacingFreestandingPier(false)
+                  setSelectedWallId(null)
+                  setSelectedOpeningId(null)
+                  setSelectedPierId(null)
+                }}
+                disabled={!currentScale || calibrating || currentPageWalls.length === 0}
+                title="Click on a wall to split it at that point with a control joint"
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  placingControlJoint
+                    ? 'bg-rose-700 text-white hover:bg-rose-800'
+                    : 'bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
+              >
+                {placingControlJoint ? 'Cancel control joint' : '+ Control joint'}
+              </button>
+            )}
+            {mode === 'block' && (
+              <button
+                onClick={() => {
+                  setPlacingTiedPier((v) => !v)
+                  setDrawingMode(false)
+                  setDrawingCurveMode(false)
+                  setPlacingOpening(false)
+                  setPlacingControlJoint(false)
+                  setPlacingFreestandingPier(false)
+                  setSelectedWallId(null)
+                  setSelectedOpeningId(null)
+                  setSelectedPierId(null)
+                }}
+                disabled={!currentScale || calibrating || currentPageWalls.length === 0}
+                title="Click on a wall to place a tied pier (built into the wall)"
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  placingTiedPier
+                    ? 'bg-emerald-800 text-white hover:bg-emerald-900'
+                    : 'bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
+              >
+                {placingTiedPier ? 'Cancel tied pier' : '+ Tied pier'}
+              </button>
+            )}
+            {mode === 'block' && (
+              <button
+                onClick={() => {
+                  setPlacingFreestandingPier((v) => !v)
+                  setDrawingMode(false)
+                  setDrawingCurveMode(false)
+                  setPlacingOpening(false)
+                  setPlacingControlJoint(false)
+                  setPlacingTiedPier(false)
+                  setSelectedWallId(null)
+                  setSelectedOpeningId(null)
+                  setSelectedPierId(null)
+                }}
+                disabled={!currentScale || calibrating}
+                title="Click anywhere on the plan to place a freestanding pier"
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  placingFreestandingPier
+                    ? 'bg-teal-800 text-white hover:bg-teal-900'
+                    : 'bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
+              >
+                {placingFreestandingPier ? 'Cancel pier' : '+ Freestanding pier'}
+              </button>
+            )}
             {allWalls.length > 0 && (
               <button
                 onClick={clearAllWalls}
-                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
               >
                 Clear all walls
               </button>
@@ -1141,15 +1835,43 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       )}
 
       {drawingMode && (
-        <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg text-sm text-beme-700">
-          Click two points on the plan to draw a wall. Press <kbd className="px-1.5 py-0.5 rounded border border-beme-300 bg-white text-xs font-mono">Esc</kbd> to cancel.
+        <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg text-sm text-beme-200">
+          Click two points on the plan to draw a wall. Press <kbd className="px-1.5 py-0.5 rounded border border-beme-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
+      {drawingCurveMode && (
+        <div className="mb-3 px-4 py-3 bg-violet-500/10 border border-violet-500/40 rounded-lg text-sm text-violet-200">
+          Curved wall: click the <strong>first wall</strong>, then the <strong>second wall</strong>, then a <strong>midpoint</strong> on the arc between them. Press{' '}
+          <kbd className="px-1.5 py-0.5 rounded border border-violet-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
         </div>
       )}
 
       {placingOpening && (
-        <div className="mb-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-800">
+        <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
           Click two points along the same wall to define the opening. Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-amber-300 bg-white text-xs font-mono">Esc</kbd> to cancel.
+          <kbd className="px-1.5 py-0.5 rounded border border-amber-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
+      {placingControlJoint && (
+        <div className="mb-3 px-4 py-3 bg-rose-500/10 border border-rose-500/40 rounded-lg text-sm text-rose-200">
+          Click a wall where you want a <strong>control joint</strong>. The wall will be split into two walls there — each gets its own end termination. Press{' '}
+          <kbd className="px-1.5 py-0.5 rounded border border-rose-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
+      {placingTiedPier && (
+        <div className="mb-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-sm text-emerald-200">
+          Click a wall where you want a <strong>tied pier</strong>. The pier column alternates 40.925 and 20.01 by course over the wall height, and displaces a body block per course at that position. Press{' '}
+          <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
+      {placingFreestandingPier && (
+        <div className="mb-3 px-4 py-3 bg-teal-500/10 border border-teal-500/40 rounded-lg text-sm text-teal-200">
+          Click anywhere on the plan to drop a <strong>freestanding pier</strong> ({freestandingPierHeightMm}mm tall — change in the side panel after placing). Tally is 40.925 stacked every course. Press{' '}
+          <kbd className="px-1.5 py-0.5 rounded border border-teal-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
         </div>
       )}
 
@@ -1163,31 +1885,31 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           openingHeadHeightMm > 0 ? selectBlockLintel(openingHeadHeightMm).code : null
         const tooSmall = computedOpeningHeightMm < 100
         return (
-          <div className="mb-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-800">
+          <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
             <div className="font-medium mb-3">
               Opening on a {Math.round(wallHeightMm)}mm wall · {Math.round(pendingOpening.widthMm)}mm wide
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <label className="text-sm">
-                <span className="block text-amber-700 mb-1">Sill height (mm)</span>
+                <span className="block text-amber-200 mb-1">Sill height (mm)</span>
                 <input
                   type="number"
                   min="0"
                   step="50"
                   value={openingSillHeightMm}
                   onChange={(e) => setOpeningSillHeightMm(parseInt(e.target.value || '0', 10))}
-                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-white w-28 focus:outline-none focus:border-amber-500"
+                  className="px-3 py-1.5 border border-amber-500/40 rounded-lg text-sm bg-ink-900 text-ink-50 w-28 focus:outline-none focus:border-amber-400"
                 />
               </label>
               <label className="text-sm">
-                <span className="block text-amber-700 mb-1">Head height (mm)</span>
+                <span className="block text-amber-200 mb-1">Head height (mm)</span>
                 <input
                   type="number"
                   min="0"
                   step="50"
                   value={openingHeadHeightMm}
                   onChange={(e) => setOpeningHeadHeightMm(parseInt(e.target.value || '0', 10))}
-                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-white w-28 focus:outline-none focus:border-amber-500"
+                  className="px-3 py-1.5 border border-amber-500/40 rounded-lg text-sm bg-ink-900 text-ink-50 w-28 focus:outline-none focus:border-amber-400"
                 />
               </label>
               <button
@@ -1199,44 +1921,44 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               </button>
               <button
                 onClick={handleCancelPendingOpening}
-                className="px-4 py-1.5 rounded-lg border border-amber-300 text-sm hover:bg-amber-100 transition-colors"
+                className="px-4 py-1.5 rounded-lg border border-amber-500/40 text-sm text-amber-100 hover:bg-amber-500/15 transition-colors"
               >
                 Cancel
               </button>
             </div>
 
-            <div className="mt-3 px-3 py-2 bg-white border border-amber-200 rounded-lg text-xs">
-              <div className="font-mono text-amber-800 leading-relaxed">
+            <div className="mt-3 px-3 py-2 bg-ink-900/70 border border-amber-500/30 rounded-lg text-xs">
+              <div className="font-mono text-amber-100 leading-relaxed">
                 <div>
                   <span className="text-amber-500">└─</span> Head (above opening):{' '}
                   <span className="font-semibold">{Math.round(openingHeadHeightMm)}mm</span>{' '}
                   {lintelBlock ? (
-                    <span className="text-amber-600">→ Lintel {lintelBlock}</span>
+                    <span className="text-amber-300">→ Lintel {lintelBlock}</span>
                   ) : (
-                    <span className="text-red-600">→ no lintel</span>
+                    <span className="text-rose-400">→ no lintel</span>
                   )}
                 </div>
                 <div>
                   <span className="text-amber-500">│</span> Opening (computed):{' '}
-                  <span className={tooSmall ? 'text-red-600 font-semibold' : 'font-semibold'}>
+                  <span className={tooSmall ? 'text-rose-400 font-semibold' : 'font-semibold'}>
                     {Math.round(pendingOpening.widthMm)} × {Math.round(computedOpeningHeightMm)}mm
                   </span>
                 </div>
                 <div>
                   <span className="text-amber-500">└─</span> Sill (wall below):{' '}
                   <span className="font-semibold">{Math.round(openingSillHeightMm)}mm</span>{' '}
-                  <span className="text-amber-600">— from floor</span>
+                  <span className="text-amber-300">— from floor</span>
                 </div>
               </div>
               {tooSmall && (
-                <div className="mt-1 text-red-600">
+                <div className="mt-1 text-rose-400">
                   Sill + Head leave less than 100mm for the opening on a {Math.round(wallHeightMm)}mm wall.
                   Reduce one of them.
                 </div>
               )}
             </div>
 
-            <p className="text-xs text-amber-700 mt-2">
+            <p className="text-xs text-amber-200 mt-2">
               Typical door: sill <strong>0</strong>, head <strong>300</strong> (gives a 2100mm opening on a 2400mm
               wall). Typical window: sill <strong>900</strong>, head <strong>300</strong> (gives a 1200mm opening
               on a 2400mm wall).
@@ -1254,14 +1976,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const tooSmall = brickOpeningHeightMm < 100
         const tooTall = brickOpeningHeightMm > wallHeightMm
         return (
-          <div className="mb-3 px-4 py-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-800">
+          <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
             <div className="font-medium mb-3">
               Opening on a {Math.round(wallHeightMm)}mm wall ·{' '}
               {Math.round(pendingOpening.widthMm)}mm wide
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <label className="text-sm">
-                <span className="block text-amber-700 mb-1">Opening height (mm)</span>
+                <span className="block text-amber-200 mb-1">Opening height (mm)</span>
                 <input
                   type="number"
                   min="100"
@@ -1270,7 +1992,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   onChange={(e) =>
                     setBrickOpeningHeightMm(parseInt(e.target.value || '0', 10))
                   }
-                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-white w-32 focus:outline-none focus:border-amber-500"
+                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-ink-900 text-ink-50 w-32 focus:outline-none focus:border-amber-400"
                   autoFocus
                 />
               </label>
@@ -1283,13 +2005,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               </button>
               <button
                 onClick={handleCancelPendingOpening}
-                className="px-4 py-1.5 rounded-lg border border-amber-300 text-sm hover:bg-amber-100 transition-colors"
+                className="px-4 py-1.5 rounded-lg border border-amber-500/40 text-sm text-amber-100 hover:bg-amber-500/15 transition-colors"
               >
                 Cancel
               </button>
             </div>
 
-            <div className="mt-3 px-3 py-2 bg-white border border-amber-200 rounded-lg text-xs text-amber-800">
+            <div className="mt-3 px-3 py-2 bg-ink-900/70 border border-amber-500/30 rounded-lg text-xs text-amber-100">
               <div>
                 Opening{' '}
                 <span className="font-semibold">
@@ -1302,27 +2024,27 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 {(() => {
                   const sel = selectBrickLintelSize(lintelLength)
                   return sel ? (
-                    <span className="text-amber-600">
+                    <span className="text-amber-300">
                       → supply <span className="font-semibold">{sel.lengthMm}mm {sel.profile}</span>
                     </span>
                   ) : (
-                    <span className="text-red-600">
+                    <span className="text-rose-400">
                       → exceeds stock sizes (max 6000mm), custom needed
                     </span>
                   )
                 })()}
               </div>
               {tooSmall && (
-                <div className="mt-1 text-red-600">Opening height must be at least 100mm.</div>
+                <div className="mt-1 text-rose-400">Opening height must be at least 100mm.</div>
               )}
               {tooTall && (
-                <div className="mt-1 text-red-600">
+                <div className="mt-1 text-rose-400">
                   Opening height ({brickOpeningHeightMm}mm) exceeds the wall height ({Math.round(wallHeightMm)}mm).
                 </div>
               )}
             </div>
 
-            <p className="text-xs text-amber-700 mt-2">
+            <p className="text-xs text-amber-200 mt-2">
               Typical door <strong>2100mm</strong>, typical window <strong>1200mm</strong>.
             </p>
           </div>
@@ -1353,13 +2075,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               ? selectBrickLintelSize(brickLintelLength)
               : null
           return (
-            <div className="mb-3 px-4 py-3 bg-blue-50 border border-blue-300 rounded-lg text-sm text-blue-700 flex items-center justify-between flex-wrap gap-3">
+            <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-3">
               <div>
                 <div className="font-medium">
                   Opening: {Math.round(selectedOpening.widthMm)} ×{' '}
                   {Math.round(selectedOpening.heightMm)} mm
                 </div>
-                <div className="text-xs text-blue-600 mt-0.5">
+                <div className="text-xs text-sky-300 mt-0.5">
                   Sill {Math.round(selectedOpening.sillHeightMm)}mm · Head{' '}
                   {Math.round(selHead)}mm
                   {mode === 'block' && selBlockLintel && (
@@ -1376,15 +2098,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                           → <span className="font-semibold">{brickStockLintel.lengthMm}mm {brickStockLintel.profile}</span>
                         </span>
                       ) : (
-                        <span className="text-red-600"> → custom (exceeds 6000mm)</span>
+                        <span className="text-rose-400"> → custom (exceeds 6000mm)</span>
                       )}
                     </span>
                   )}{' '}
                   · on a {Math.round(selWallHeightMm)}mm wall
                 </div>
-                <div className="text-xs text-blue-600 mt-0.5">
+                <div className="text-xs text-sky-300 mt-0.5">
                   Press{' '}
-                  <kbd className="px-1.5 py-0.5 rounded border border-blue-300 bg-white text-xs font-mono">
+                  <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
                     Del
                   </kbd>{' '}
                   to remove.
@@ -1393,13 +2115,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => handleOpeningDelete(selectedOpening.id)}
-                  className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 transition-colors"
+                  className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
                 >
                   Delete opening
                 </button>
                 <button
                   onClick={() => setSelectedOpeningId(null)}
-                  className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+                  className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
                 >
                   Deselect
                 </button>
@@ -1408,20 +2130,92 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           )
         })()}
 
+      {mode === 'block' && selectedPier && !drawingMode && (() => {
+        const selPierMakeup = selectedPier.pierMakeupId
+          ? pierMakeupsById[selectedPier.pierMakeupId]
+          : undefined
+        const patternStr = selPierMakeup
+          ? selPierMakeup.coursePattern.join(' / ')
+          : selectedPier.type === 'tied'
+            ? '40.925 / 20.01'
+            : '40.925'
+        return (
+          <div className="mb-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-sm text-emerald-200 flex items-center justify-between flex-wrap gap-2">
+            <div>
+              {selectedPier.type === 'tied' ? (
+                <>1 <strong>tied pier</strong> selected — built into its wall, course pattern: <span className="font-mono">{patternStr}</span>.</>
+              ) : (
+                <>1 <strong>freestanding pier</strong> selected — course pattern: <span className="font-mono">{patternStr}</span>.</>
+              )}
+              <div className="text-xs text-emerald-200 mt-0.5">
+                Press <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="flex items-center gap-2 text-sm">
+                <span>Pier type:</span>
+                <select
+                  value={selectedPier.pierMakeupId ?? ''}
+                  onChange={(e) => handleReassignPierMakeup(selectedPier.id, e.target.value)}
+                  className="px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
+                >
+                  {pierMakeups.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedPier.type === 'freestanding' && (
+                <label className="flex items-center gap-2 text-sm">
+                  <span>Height:</span>
+                  <input
+                    type="number"
+                    min="200"
+                    step="200"
+                    value={selectedPier.heightMm}
+                    onChange={(e) =>
+                      handleUpdateFreestandingPierHeight(
+                        selectedPier.id,
+                        Math.max(200, parseInt(e.target.value || '0', 10))
+                      )
+                    }
+                    className="w-20 px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
+                  />
+                  <span className="text-xs text-emerald-200">mm</span>
+                </label>
+              )}
+              <button
+                onClick={() => handleDeletePier(selectedPier.id)}
+                className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+              >
+                Delete pier
+              </button>
+              <button
+                onClick={() => setSelectedPierId(null)}
+                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+              >
+                Deselect
+              </button>
+            </div>
+          </div>
+        )
+      })()}
+
       {(mode === 'block' || mode === 'brick') && selectedWall && !drawingMode && (
-        <div className="mb-3 px-4 py-3 bg-blue-50 border border-blue-300 rounded-lg text-sm text-blue-700 flex items-center justify-between flex-wrap gap-2">
+        <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-2">
           <span>
             1 wall selected. Drag its endpoints to reposition, or press{' '}
-            <kbd className="px-1.5 py-0.5 rounded border border-blue-300 bg-white text-xs font-mono">Del</kbd> to remove.
+            <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
           </span>
           <div className="flex items-center gap-2 flex-wrap">
             {mode === 'block' && (
-              <label className="flex items-center gap-2 text-sm text-blue-700">
+              <label className="flex items-center gap-2 text-sm text-sky-200">
                 <span>Wall type:</span>
                 <select
                   value={selectedWall.makeupId}
                   onChange={(e) => handleReassignWallMakeup(selectedWall.id, e.target.value)}
-                  className="px-2 py-1 border border-blue-300 rounded text-sm bg-white"
+                  className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50"
                 >
                   {makeups.map((m) => (
                     <option key={m.id} value={m.id}>
@@ -1432,7 +2226,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               </label>
             )}
             {mode === 'brick' && (
-              <label className="flex items-center gap-2 text-sm text-blue-700">
+              <label className="flex items-center gap-2 text-sm text-sky-200">
                 <span>Height:</span>
                 <input
                   type="number"
@@ -1445,20 +2239,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                       parseInt(e.target.value || '0', 10)
                     )
                   }
-                  className="px-2 py-1 border border-blue-300 rounded text-sm bg-white w-24"
+                  className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50 w-24"
                 />
                 <span>mm</span>
               </label>
             )}
             <button
               onClick={() => handleWallDelete(selectedWall.id)}
-              className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 transition-colors"
+              className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
             >
               Delete wall
             </button>
             <button
               onClick={() => setSelectedWallId(null)}
-              className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+              className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
             >
               Deselect
             </button>
@@ -1471,7 +2265,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       {/* Calibration instructions banner */}
       {calibrating && !(calPoint1 && calPoint2) && (
-        <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg text-sm text-beme-700">
+        <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg text-sm text-beme-200">
           {!calPoint1
             ? 'Click the first point along a known dimension on the plan. Zoom in for accuracy.'
             : 'Click the second point.'}
@@ -1480,7 +2274,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       {/* Calibration distance input */}
       {calibrating && calPoint1 && calPoint2 && (
-        <div className="mb-3 px-4 py-3 bg-beme-50 border border-beme-300 rounded-lg flex items-center gap-3 flex-wrap">
+        <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg flex items-center gap-3 flex-wrap">
           <span className="text-sm text-beme-700 font-medium">Real-world length of that line:</span>
           <input
             ref={inputRef}
@@ -1493,13 +2287,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               if (e.key === 'Escape') cancelCalibration()
             }}
             placeholder="e.g. 5000"
-            className="px-3 py-1.5 border border-beme-300 rounded-lg text-sm w-32 focus:outline-none focus:border-beme-500"
+            className="px-3 py-1.5 border border-beme-300 rounded-lg text-sm w-32 focus:outline-none focus:border-beme-400"
           />
           <span className="text-sm text-beme-700">mm</span>
           <button
             onClick={submitCalibration}
             disabled={!calInput || parseFloat(calInput) <= 0}
-            className="px-4 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+            className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
           >
             Save scale
           </button>
@@ -1510,7 +2304,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       <div className="flex gap-3">
         {/* Thumbnail sidebar (multi-page only) */}
         {numPages > 1 && (
-          <div ref={sidebarRef} className="w-40 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-white border border-neutral-200 rounded-xl p-2">
+          <div ref={sidebarRef} className="w-40 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2">
             <Document file={pdfFile} loading={null} error={null}>
               <div className="space-y-2">
                 {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
@@ -1522,12 +2316,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                       onClick={() => setCurrentPage(pageNum)}
                       className={`block w-full p-1 rounded-md transition-colors text-left ${
                         isCurrent
-                          ? 'ring-2 ring-beme-500 bg-beme-50'
-                          : 'ring-1 ring-neutral-200 hover:ring-beme-300 bg-white'
+                          ? 'ring-2 ring-beme-500 bg-beme-500/10'
+                          : 'ring-1 ring-ink-600 hover:ring-beme-500/60 bg-ink-700/40'
                       }`}
                     >
                       <div
-                        className="bg-neutral-50 flex justify-center overflow-hidden rounded-sm"
+                        className="bg-ink-800 flex justify-center overflow-hidden rounded-sm"
                         style={{ lineHeight: 0 }}
                       >
                         <Page
@@ -1539,11 +2333,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                       </div>
                       <div
                         className={`mt-1 text-xs flex items-center justify-between px-1 ${
-                          isCurrent ? 'text-beme-700 font-semibold' : 'text-neutral-600'
+                          isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
                         }`}
                       >
                         <span>Page {pageNum}</span>
-                        {hasScale && <span className="text-green-600" title="Scale set">✓</span>}
+                        {hasScale && <span className="text-emerald-300" title="Scale set">✓</span>}
                       </div>
                     </button>
                   )
@@ -1557,8 +2351,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className="flex-1 border border-neutral-200 rounded-xl overflow-auto bg-neutral-100 min-h-[400px] max-h-[80vh]"
-        style={{ cursor: calibrating || drawingMode || placingOpening ? 'crosshair' : 'grab' }}
+        className="flex-1 border border-ink-600 rounded-xl overflow-auto bg-ink-800 min-h-[400px] max-h-[80vh]"
+        style={{
+          cursor:
+            calibrating ||
+            drawingMode ||
+            placingOpening ||
+            placingControlJoint ||
+            placingTiedPier ||
+            placingFreestandingPier
+              ? 'crosshair'
+              : 'grab',
+        }}
       >
         <div className="flex justify-center" style={{ minWidth: 'max-content' }}>
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
@@ -1570,21 +2374,31 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               lineHeight: 0,
             }}
           >
-            {/* Inner wrapper is at the rendered (canvas) resolution and gets CSS-scaled. */}
+            {/* Inner wrapper is at the rendered (canvas) resolution and gets CSS-scaled.
+                The PDF canvas, calibration overlay, AND the Konva wall layer all live INSIDE
+                this transformed wrapper — they all scale together with one transform. The
+                Konva layer is sized at renderedPageWidth × renderedPageHeight (a stable size
+                across interactive zoom), so its props don't change on every wheel tick and
+                React skips re-rendering it. The CSS transform handles the visual scaling
+                "for free" between rasterisations. */}
             <div
               style={{
                 width: renderedPageWidth,
                 height: renderedPageHeight ?? undefined,
-                transform: visualScale !== 1 ? `scale(${visualScale})` : undefined,
+                position: 'relative',
+                // Always apply the transform (even at scale 1) so the element stays on its
+                // own GPU compositor layer across the whole gesture. Toggling the transform
+                // property on and off forces the compositor to rebuild the layer.
+                transform: `scale(${visualScale})`,
                 transformOrigin: '0 0',
-                willChange: visualScale !== 1 ? 'transform' : undefined,
+                willChange: 'transform',
               }}
             >
               <Document
                 file={pdfFile}
                 onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-                loading={<p className="text-neutral-500 p-12">Loading PDF…</p>}
-                error={<p className="text-red-600 p-12">Couldn't load that PDF. Is it a valid file?</p>}
+                loading={<p className="text-ink-400 p-12">Loading PDF…</p>}
+                error={<p className="text-rose-400 p-12">Couldn't load that PDF. Is it a valid file?</p>}
               >
                 <Page
                   pageNumber={currentPage}
@@ -1605,77 +2419,80 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   }}
                 />
               </Document>
+
+              {/* Calibration overlay — at renderedZoom resolution; scales with parent. */}
+              <svg
+                ref={svgRef}
+                className="absolute inset-0 w-full h-full"
+                style={{
+                  pointerEvents: calibrating ? 'auto' : 'none',
+                  cursor: calibrating ? 'crosshair' : 'default',
+                }}
+                onClick={handleSvgClick}
+                onMouseMove={handleSvgMouseMove}
+              >
+                {calibrating && calPoint1 && !calPoint2 && mousePos && (
+                  <line
+                    x1={calPoint1.x}
+                    y1={calPoint1.y}
+                    x2={mousePos.x}
+                    y2={mousePos.y}
+                    stroke="#ED7D31"
+                    strokeWidth="2"
+                    strokeDasharray="4 4"
+                  />
+                )}
+                {calPoint1 && calPoint2 && (
+                  <line
+                    x1={calPoint1.x}
+                    y1={calPoint1.y}
+                    x2={calPoint2.x}
+                    y2={calPoint2.y}
+                    stroke="#ED7D31"
+                    strokeWidth="3"
+                  />
+                )}
+                {calPoint1 && (
+                  <circle cx={calPoint1.x} cy={calPoint1.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
+                )}
+                {calPoint2 && (
+                  <circle cx={calPoint2.x} cy={calPoint2.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
+                )}
+              </svg>
+
+              {/* Wall drawing layer — at renderedZoom resolution; scales with parent. */}
+              {(mode === 'block' || mode === 'brick') && renderedPageHeight !== null && currentScale && (
+                <WallDrawingLayer
+                  walls={currentPageWalls}
+                  openings={currentPageOpenings}
+                  wallThicknessByWallId={wallThicknessByWallId}
+                  visualWidth={renderedPageWidth}
+                  visualHeight={renderedPageHeight}
+                  pxPerMmAtCurrentZoom={currentScale * renderedZoom}
+                  drawingMode={drawingMode}
+                  drawingCurveMode={drawingCurveMode}
+                  placingOpening={placingOpening}
+                  placingControlJoint={placingControlJoint}
+                  placingTiedPier={placingTiedPier}
+                  placingFreestandingPier={placingFreestandingPier}
+                  piers={currentPagePiers}
+                  selectedWallId={selectedWallId}
+                  selectedOpeningId={selectedOpeningId}
+                  selectedPierId={selectedPierId}
+                  onWallAdded={handleWallAdded}
+                  onCurvedWallAdded={handleCurvedWallAdded}
+                  onWallSelect={handleWallSelect}
+                  onWallEndpointMoved={handleWallEndpointMoved}
+                  onOpeningPlaced={handleOpeningPlaced}
+                  onOpeningSelect={handleOpeningSelect}
+                  onControlJointPlaced={handleControlJointPlaced}
+                  onTiedPierPlaced={handleTiedPierPlaced}
+                  onFreestandingPierPlaced={handleFreestandingPierPlaced}
+                  onPierSelect={handlePierSelect}
+                  onCancelDraw={handleCancelDraw}
+                />
+              )}
             </div>
-
-            {/* Calibration overlay — lives at visual scale so click coords map to visual pixels */}
-            <svg
-              ref={svgRef}
-              className="absolute inset-0 w-full h-full"
-              style={{
-                pointerEvents: calibrating ? 'auto' : 'none',
-                cursor: calibrating ? 'crosshair' : 'default',
-              }}
-              onClick={handleSvgClick}
-              onMouseMove={handleSvgMouseMove}
-            >
-              {calibrating && calPoint1 && !calPoint2 && mousePos && (
-                <line
-                  x1={calPoint1.x}
-                  y1={calPoint1.y}
-                  x2={mousePos.x}
-                  y2={mousePos.y}
-                  stroke="#ED7D31"
-                  strokeWidth="2"
-                  strokeDasharray="4 4"
-                />
-              )}
-              {calPoint1 && calPoint2 && (
-                <line
-                  x1={calPoint1.x}
-                  y1={calPoint1.y}
-                  x2={calPoint2.x}
-                  y2={calPoint2.y}
-                  stroke="#ED7D31"
-                  strokeWidth="3"
-                />
-              )}
-              {calPoint1 && (
-                <circle cx={calPoint1.x} cy={calPoint1.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
-              )}
-              {calPoint2 && (
-                <circle cx={calPoint2.x} cy={calPoint2.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
-              )}
-            </svg>
-
-            {/* Wall drawing layer (block + brick modes) */}
-            {(mode === 'block' || mode === 'brick') && visualPageHeight !== null && currentScale && (
-              <WallDrawingLayer
-                walls={currentPageWalls}
-                openings={currentPageOpenings}
-                visualWidth={visualPageWidth}
-                visualHeight={visualPageHeight}
-                pxPerMmAtCurrentZoom={currentScale * zoom}
-                drawingMode={drawingMode}
-                placingOpening={placingOpening}
-                selectedWallId={selectedWallId}
-                selectedOpeningId={selectedOpeningId}
-                onWallAdded={handleWallAdded}
-                onWallSelect={(id) => {
-                  setSelectedWallId(id)
-                  if (id) setSelectedOpeningId(null)
-                }}
-                onWallEndpointMoved={handleWallEndpointMoved}
-                onOpeningPlaced={handleOpeningPlaced}
-                onOpeningSelect={(id) => {
-                  setSelectedOpeningId(id)
-                  if (id) setSelectedWallId(null)
-                }}
-                onCancelDraw={() => {
-                  setDrawingMode(false)
-                  setPlacingOpening(false)
-                }}
-              />
-            )}
           </div>
         </div>
       </div>
@@ -1704,6 +2521,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           />
         )}
 
+        {/* Pier types management panel (block mode) */}
+        {mode === 'block' && (
+          <PierTypesPanel
+            pierMakeups={pierMakeups}
+            pierCountsByMakeupId={pierCountsByMakeupId}
+            onAddMakeup={handleAddPierMakeup}
+            onUpdateMakeup={handleUpdatePierMakeup}
+            onDeleteMakeup={handleDeletePierMakeup}
+          />
+        )}
+
         {/* Brick settings panel (brick mode) */}
         {mode === 'brick' && (
           <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
@@ -1711,7 +2539,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
         {/* Block tally panel (block mode) */}
         {mode === 'block' && (
-          <BlockTallyPanel walls={allWalls} makeupsById={makeupsById} openings={allOpenings} />
+          <BlockTallyPanel
+            walls={allWalls}
+            makeupsById={makeupsById}
+            openings={allOpenings}
+            piers={allPiers}
+            pierMakeupsById={pierMakeupsById}
+          />
         )}
 
         {/* Brick tally panel (brick mode) */}
@@ -1728,6 +2562,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             walls={allWalls}
             makeups={makeups}
             openings={allOpenings}
+            piers={allPiers}
+            pierMakeups={pierMakeups}
           />
         )}
 
@@ -1746,6 +2582,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       </div>
       {/* ─────────────────── End of two-column body ─────────────────── */}
+
+      </div>{/* End workspace padding wrapper */}
     </div>
   )
 }

@@ -3,7 +3,7 @@
  * straight from the Project Brief.
  */
 
-import type { WallMakeup, BondType } from '../types/walls'
+import type { WallMakeup, BondType, PierMakeup } from '../types/walls'
 
 /**
  * Generates a unique id. Uses crypto.randomUUID when available (modern browsers),
@@ -62,4 +62,40 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
     cornerBlockCode: knockoutCorners ? '20.21' : '20.01',
     useFractions,
   }
+}
+
+// ---------- Pier makeups ----------
+
+/**
+ * Default tied-pier makeup — alternating 40.925 (pier block) and 20.01 (full end block).
+ * Course 1 = 40.925, course 2 = 20.01, repeating up the wall height.
+ */
+export function createDefaultTiedPierMakeup(name = 'Tied pier (40.925 / 20.01)'): PierMakeup {
+  return {
+    id: uid(),
+    name,
+    coursePattern: ['40.925', '20.01'],
+    suggestedPlacement: 'tied',
+  }
+}
+
+/**
+ * Default freestanding-pier makeup — 40.925 stacked every course.
+ */
+export function createDefaultFreestandingPierMakeup(
+  name = 'Freestanding pier (40.925)'
+): PierMakeup {
+  return {
+    id: uid(),
+    name,
+    coursePattern: ['40.925'],
+    suggestedPlacement: 'freestanding',
+  }
+}
+
+/**
+ * Build the initial pair of pier makeups for a new project.
+ */
+export function createDefaultPierMakeups(): PierMakeup[] {
+  return [createDefaultTiedPierMakeup(), createDefaultFreestandingPierMakeup()]
 }

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Beme — style mockups</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:wght@700;800&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Inter', system-ui, sans-serif; background: #F7F4EE; color: #1E1410; padding: 40px 24px; }
+  h1 { font-family: 'Fraunces', Georgia, serif; font-weight: 800; font-size: 36px; letter-spacing: -0.02em; margin: 0 0 6px; max-width: 800px; }
+  .lede { color: #6B7280; max-width: 780px; margin: 0 0 28px; font-size: 15px; line-height: 1.55; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; max-width: 1280px; }
+  .card { background: white; border: 1.5px solid #E5E7EB; border-radius: 12px; padding: 22px; text-decoration: none; color: inherit; transition: all 0.15s; display: flex; flex-direction: column; gap: 8px; }
+  .card:hover { border-color: #ED7D31; transform: translateY(-2px); box-shadow: 0 8px 24px rgba(237,125,49,0.18); }
+  .card .num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #ED7D31; font-weight: 600; letter-spacing: 0.08em; }
+  .card h3 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+  .card p { color: #6B7280; font-size: 14px; line-height: 1.5; margin: 0; }
+  .card .palette { display: flex; gap: 6px; margin-top: 8px; }
+  .card .palette span { width: 26px; height: 26px; border-radius: 4px; }
+  .footer { color: #6B7280; font-size: 13px; max-width: 800px; margin: 36px 0 0; line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<h1>Beme — style mockups</h1>
+<p class="lede">
+  Four directions for the workspace screen, all within orange / white / black.
+  Open each in a new tab and compare. The same project (Foster Residence) is shown in
+  all four so the only thing that changes is the styling and layout.
+</p>
+
+<div class="grid">
+
+  <a class="card" href="01-bold-orange.html" target="_blank">
+    <div class="num">01</div>
+    <h3>Bold Orange</h3>
+    <p>Polished take on the current look. Black for chrome and emphasis, orange as the load-bearing brand colour, white panels with thick borders and "stacked" shadow blocks. Strong, confident, construction-toolish.</p>
+    <div class="palette">
+      <span style="background:#ED7D31"></span>
+      <span style="background:#15171A"></span>
+      <span style="background:#FFFFFF; border: 1px solid #E5E7EB"></span>
+      <span style="background:#FEF1E2"></span>
+    </div>
+  </a>
+
+  <a class="card" href="02-studio-black.html" target="_blank">
+    <div class="num">02</div>
+    <h3>Studio Black</h3>
+    <p>Dark chrome (header + side rails), warm white canvas in the middle. Feels like Figma / Linear: the app is the frame, your drawing is the focus. Orange used sparingly as accent + brand.</p>
+    <div class="palette">
+      <span style="background:#0E0E10"></span>
+      <span style="background:#18181C"></span>
+      <span style="background:#FF7A2D"></span>
+      <span style="background:#FAFAF7"></span>
+    </div>
+  </a>
+
+  <a class="card" href="03-workshop.html" target="_blank">
+    <div class="num">03</div>
+    <h3>Workshop</h3>
+    <p>Warm, hand-built feel. Cream paper background, serif headings for personality, rounded "pill" buttons, totals shown like a tradesman's docket. Less corporate, more "owned by a real estimator".</p>
+    <div class="palette">
+      <span style="background:#E65A1B"></span>
+      <span style="background:#1E1410"></span>
+      <span style="background:#FAF3E8"></span>
+      <span style="background:#FFF1E6"></span>
+    </div>
+  </a>
+
+  <a class="card" href="04-industrial-mono.html" target="_blank">
+    <div class="num">04</div>
+    <h3>Industrial Mono</h3>
+    <p>High-contrast, technical. Thick black borders and dividers, monospace for codes and dimensions, no rounded corners. Reads like a spec sheet or CAD ribbon. Orange used as accent + active state.</p>
+    <div class="palette">
+      <span style="background:#FF6B00"></span>
+      <span style="background:#000000"></span>
+      <span style="background:#FFFFFF; border: 1px solid #000"></span>
+      <span style="background:#EEEEEE"></span>
+    </div>
+  </a>
+
+</div>
+
+<p class="footer">
+  These are static visuals — none of the buttons or panels work. Once you've picked a
+  direction (or a mash-up of features from a few), tell me what you like / want to
+  tweak and I'll implement it in the real app.
+</p>
+
+</body>
+</html>

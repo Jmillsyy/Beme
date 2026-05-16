@@ -30,11 +30,12 @@ function formatRelativeTime(iso: string): string {
 }
 
 /**
- * Slim single-row strip at the top of an estimate page. Shows project name,
- * status badge, last-saved time, and Save / ⋯ menu actions. Editing the full
- * project details (client, estimator, date, notes) is hidden behind the
- * "Edit details" button which opens a drawer — these are filled in once and
- * rarely revisited, so they shouldn't take permanent vertical space.
+ * Compact dark top bar — the Studio Black theme header.
+ *
+ * Left: brand mark + breadcrumb-style project identity (clickable → edit details drawer).
+ * Right: save / status menu actions.
+ *
+ * Sits flush with the workspace below (no margin) and spans full width.
  */
 export default function ProjectBar({
   details,
@@ -74,79 +75,81 @@ export default function ProjectBar({
     details.projectName.trim() && details.siteAddress.trim() ? details.siteAddress : ''
 
   const statusBadge = !isSaved ? (
-    <span className="text-xs px-2 py-0.5 rounded-full border bg-neutral-100 text-neutral-600 border-neutral-300">
+    <span className="text-[11px] px-2 py-0.5 rounded-full bg-ink-700 text-ink-200 border border-ink-600 font-medium">
       Unsaved
     </span>
   ) : status === 'completed' ? (
-    <span className="text-xs px-2 py-0.5 rounded-full border bg-green-100 text-green-800 border-green-300 font-medium">
+    <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-medium">
       Completed
     </span>
   ) : (
-    <span className="text-xs px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-300 font-medium">
+    <span className="text-[11px] px-2 py-0.5 rounded-full bg-beme-500/15 text-beme-300 border border-beme-500/40 font-medium">
       In progress
     </span>
   )
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white px-4 py-2 flex items-center justify-between flex-wrap gap-3">
-      {/* Left: project identity */}
+    <div className="bg-ink-800/60 border-b border-ink-600 px-6 py-2.5 flex items-center gap-4 flex-wrap">
+      {/* Project identity */}
       <button
         onClick={onOpenDetails}
-        className="flex items-center gap-3 min-w-0 group text-left"
+        className="flex items-center gap-2.5 min-w-0 group text-left flex-1"
         title="Edit project details"
       >
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-base font-semibold text-neutral-800 group-hover:text-beme-700 truncate">
-              {displayName}
-            </span>
-            {statusBadge}
-          </div>
-          {(subtitle || lastSavedAt) && (
-            <div className="text-xs text-neutral-500 mt-0.5 truncate">
-              {subtitle}
-              {subtitle && lastSavedAt && ' · '}
-              {lastSavedAt && <>Saved {formatRelativeTime(lastSavedAt)}</>}
-            </div>
-          )}
-        </div>
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+          Project
+        </span>
+        <span className="font-semibold text-[15px] text-ink-50 group-hover:text-beme-300 truncate transition-colors">
+          {displayName}
+        </span>
+        {subtitle && (
+          <span className="text-ink-400 text-xs hidden md:inline truncate">
+            · {subtitle}
+          </span>
+        )}
+        {statusBadge}
+        {lastSavedAt && (
+          <span className="text-ink-500 text-xs hidden lg:inline">
+            · saved {formatRelativeTime(lastSavedAt)}
+          </span>
+        )}
       </button>
 
-      {/* Right: actions */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Action cell */}
+      <div className="flex items-center gap-2 flex-shrink-0">
         <button
           onClick={onOpenDetails}
-          className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+          className="px-3 py-1.5 rounded-md border border-ink-600 text-ink-200 text-[13px] hover:bg-ink-700 hover:text-ink-50 transition-colors"
         >
-          Edit details
+          Details
         </button>
         <button
           onClick={onSave}
           disabled={!canSave}
           title={canSave ? undefined : saveBlockedReason ?? 'Cannot save yet'}
-          className="px-4 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+          className="px-3 py-1.5 rounded-md bg-beme-500 text-black text-[13px] hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
         >
-          {isSaved ? 'Save changes' : 'Save project'}
+          {isSaved ? 'Save changes' : 'Save'}
         </button>
 
         {isSaved && (
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setMenuOpen((v) => !v)}
-              className="px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm hover:bg-neutral-100 transition-colors"
+              className="px-2 py-1.5 rounded-md border border-ink-600 text-ink-200 text-[13px] hover:bg-ink-700 hover:text-ink-50 transition-colors"
               aria-label="More project actions"
               aria-expanded={menuOpen}
             >
               ⋯
             </button>
             {menuOpen && (
-              <div className="absolute right-0 mt-1 w-56 rounded-lg border border-neutral-200 bg-white shadow-lg z-30 py-1 text-sm">
+              <div className="absolute right-0 mt-1 w-56 rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-30 py-1 text-[13px]">
                 <button
                   onClick={() => {
                     setMenuOpen(false)
                     onToggleStatus()
                   }}
-                  className="w-full text-left px-3 py-2 hover:bg-neutral-100 transition-colors"
+                  className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors"
                 >
                   {status === 'completed' ? 'Mark as in progress' : 'Mark as completed'}
                 </button>
@@ -155,7 +158,7 @@ export default function ProjectBar({
                     setMenuOpen(false)
                     onDelete()
                   }}
-                  className="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50 transition-colors"
+                  className="w-full text-left px-3 py-2 text-rose-400 hover:bg-rose-500/10 transition-colors"
                 >
                   Delete project
                 </button>
@@ -164,10 +167,6 @@ export default function ProjectBar({
           </div>
         )}
       </div>
-
-      {!canSave && saveBlockedReason && !isSaved && (
-        <p className="text-xs text-neutral-500 w-full -mt-1">⚠ {saveBlockedReason}</p>
-      )}
     </div>
   )
 }

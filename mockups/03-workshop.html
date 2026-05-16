@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Beme — Workshop</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --orange: #E65A1B;
+    --orange-bright: #FF8847;
+    --orange-cream: #FFF1E6;
+    --orange-deep: #9B3A0D;
+    --ink: #1E1410;
+    --ink-soft: #4A3A30;
+    --ink-mute: #856B5A;
+    --paper: #FAF3E8;
+    --paper-edge: #E8DCC6;
+    --line: #DDD0BB;
+    --rule: #2A1F18;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; color: var(--ink); background: var(--paper); font-size: 14px; }
+  body { min-height: 100vh; }
+
+  /* Header */
+  .head { background: var(--ink); color: var(--orange-cream); padding: 12px 28px; display: flex; align-items: center; gap: 20px; border-bottom: 4px solid var(--orange); }
+  .head .brand { font-family: 'Fraunces', Georgia, serif; font-weight: 800; font-size: 28px; letter-spacing: -0.02em; color: var(--orange); }
+  .head .tagline { color: #B8A99A; font-size: 13px; font-style: italic; }
+  .head .spacer { flex: 1; }
+  .head .h-btn { padding: 8px 16px; background: transparent; border: 1px solid #4A3A30; color: var(--orange-cream); border-radius: 4px; font-weight: 500; font-size: 13px; cursor: pointer; }
+  .head .h-btn.primary { background: var(--orange); border-color: var(--orange); color: var(--ink); font-weight: 700; }
+
+  /* Section header */
+  .project-head { padding: 26px 28px 18px; background: var(--paper); border-bottom: 1px solid var(--paper-edge); }
+  .project-head h1 { margin: 0 0 4px; font-family: 'Fraunces', Georgia, serif; font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+  .project-head .meta { color: var(--ink-mute); font-size: 14px; }
+  .project-head .meta strong { color: var(--ink); font-weight: 600; }
+
+  /* Toolbar — chunky rounded buttons */
+  .toolbar { padding: 16px 28px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--paper); border-bottom: 1px solid var(--paper-edge); }
+  .stat { color: var(--ink-mute); font-size: 14px; }
+  .stat strong { color: var(--ink); font-weight: 700; }
+  .toolbar .spacer { flex: 1; }
+  .btn { padding: 9px 16px; border-radius: 24px; font-weight: 600; font-size: 13px; cursor: pointer; border: 2px solid var(--ink); background: var(--paper); color: var(--ink); transition: all 0.1s; }
+  .btn:hover { background: var(--orange-cream); }
+  .btn.primary { background: var(--orange); border-color: var(--orange); color: white; }
+  .btn.primary:hover { background: var(--orange-deep); border-color: var(--orange-deep); }
+  .btn.ink { background: var(--ink); color: var(--orange-cream); }
+
+  /* Main */
+  .main { display: grid; grid-template-columns: 1fr 360px; gap: 24px; padding: 24px 28px; }
+
+  /* Canvas — paper feel */
+  .canvas-frame { background: var(--paper); border-radius: 8px; padding: 0; position: relative; }
+  .canvas-frame .frame-label { position: absolute; top: -10px; left: 24px; padding: 0 12px; background: var(--paper); font-family: 'Fraunces', Georgia, serif; font-style: italic; color: var(--ink-soft); font-size: 14px; }
+  .pdf { background-color: #FFFBF3; border: 1.5px solid var(--ink); border-radius: 6px;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(30,20,16,0.06) 0 1px, transparent 1px 50px),
+      repeating-linear-gradient(90deg, rgba(30,20,16,0.06) 0 1px, transparent 1px 50px);
+    height: 530px; position: relative; padding: 0;
+  }
+  .wall-h { position: absolute; height: 14px; background: rgba(230, 90, 27, 0.22); border: 1.5px solid var(--orange-deep); border-radius: 1px; }
+  .wall-v { position: absolute; width: 14px; background: rgba(230, 90, 27, 0.22); border: 1.5px solid var(--orange-deep); border-radius: 1px; }
+  .label { position: absolute; font-family: 'Fraunces', Georgia, serif; font-style: italic; font-size: 13px; color: var(--orange-deep); }
+  .marker { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: #10B981; border: 2px solid #FFFBF3; box-shadow: 0 0 0 1px #047857; }
+  .marker.tjct { background: #8B5CF6; border-radius: 2px; transform: rotate(45deg); box-shadow: 0 0 0 1px #6D28D9; }
+  .opening { position: absolute; height: 14px; background: rgba(254, 240, 138, 0.6); border: 1.5px dashed #92400E; }
+  .pier { position: absolute; width: 38px; height: 38px; background: rgba(16, 185, 129, 0.35); border: 1.5px solid #047857; border-radius: 4px; display: grid; place-items: center; font-family: 'Fraunces', serif; font-weight: 800; color: #064E3B; font-size: 15px; }
+
+  /* Side rail */
+  .rail { display: flex; flex-direction: column; gap: 20px; }
+  .card { background: white; border: 1.5px solid var(--paper-edge); border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(30, 20, 16, 0.04); }
+  .card-head { padding: 14px 18px; border-bottom: 1px solid var(--paper-edge); display: flex; align-items: baseline; gap: 8px; }
+  .card-head h3 { margin: 0; font-family: 'Fraunces', Georgia, serif; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+  .card-head .badge { color: var(--orange-deep); font-size: 13px; font-style: italic; }
+  .card-body { padding: 14px 18px; }
+
+  .total-hero { padding: 22px 18px; background: linear-gradient(180deg, var(--orange-cream), white); border-bottom: 1px solid var(--paper-edge); }
+  .total-hero .label { font-family: 'Fraunces', serif; font-style: italic; color: var(--orange-deep); font-size: 14px; }
+  .total-hero .big { font-family: 'Fraunces', serif; font-weight: 800; font-size: 44px; letter-spacing: -0.03em; color: var(--ink); line-height: 1; margin-top: 4px; }
+  .total-hero .sub { color: var(--ink-mute); font-size: 13px; margin-top: 6px; }
+
+  .row { display: grid; grid-template-columns: 60px 1fr auto; gap: 12px; align-items: center; padding: 9px 0; border-bottom: 1px dotted var(--line); font-size: 14px; }
+  .row:last-child { border-bottom: none; }
+  .row .code { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--orange-deep); font-weight: 500; }
+  .row .name { color: var(--ink-soft); }
+  .row .count { font-weight: 700; }
+
+  .makeup { padding: 12px 14px; border-radius: 8px; border: 1.5px solid var(--paper-edge); margin-bottom: 10px; cursor: pointer; transition: all 0.1s; }
+  .makeup:hover { border-color: var(--orange); }
+  .makeup.active { border-color: var(--orange); background: var(--orange-cream); }
+  .makeup .n { font-weight: 700; font-size: 14px; }
+  .makeup .d { color: var(--ink-mute); font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<header class="head">
+  <div class="brand">beme</div>
+  <span class="tagline">brick &amp; block estimates, made easy</span>
+  <div class="spacer"></div>
+  <button class="h-btn">Save</button>
+  <button class="h-btn primary">Export estimate</button>
+</header>
+
+<section class="project-head">
+  <h1>Foster Residence — Garage Extension</h1>
+  <div class="meta"><strong>17 Banksia Street</strong> · 480m² floor area · Stretcher bond throughout · saved 4 min ago</div>
+</section>
+
+<div class="toolbar">
+  <div class="stat"><strong>7 walls</strong> on this page · scale 1:50 set</div>
+  <div class="spacer"></div>
+  <button class="btn primary">+ Draw wall</button>
+  <button class="btn">↷ Curved wall</button>
+  <button class="btn">+ Opening</button>
+  <button class="btn">+ Control joint</button>
+  <button class="btn">+ Tied pier</button>
+  <button class="btn">+ Freestanding pier</button>
+  <button class="btn ink">Clear all</button>
+</div>
+
+<div class="main">
+  <div class="canvas-frame">
+    <span class="frame-label">workspace · page 1 of 2</span>
+    <div class="pdf">
+      <div class="wall-h" style="left:60px; top:80px; width:340px;"></div>
+      <div class="wall-v" style="left:60px; top:80px; height:280px;"></div>
+      <div class="wall-h" style="left:60px; top:360px; width:340px;"></div>
+      <div class="wall-v" style="left:386px; top:80px; height:280px;"></div>
+      <div class="wall-h" style="left:200px; top:200px; width:120px;"></div>
+
+      <span class="label" style="left:200px; top:60px;">4250</span>
+      <span class="label" style="left:30px; top:200px;">3100</span>
+      <span class="label" style="left:200px; top:340px;">4250</span>
+      <span class="label" style="left:430px; top:200px;">3100</span>
+      <span class="label" style="left:240px; top:180px;">1450</span>
+
+      <div class="marker" style="left:55px; top:75px;"></div>
+      <div class="marker" style="left:381px; top:75px;"></div>
+      <div class="marker" style="left:55px; top:355px;"></div>
+      <div class="marker" style="left:381px; top:355px;"></div>
+      <div class="marker tjct" style="left:194px; top:194px;"></div>
+
+      <div class="opening" style="left:200px; top:80px; width:120px;"></div>
+
+      <div class="pier" style="left:140px; top:68px;">T</div>
+      <div class="pier" style="left:300px; top:68px;">T</div>
+    </div>
+  </div>
+
+  <aside class="rail">
+    <div class="card">
+      <div class="total-hero">
+        <div class="label">Total blocks for this project</div>
+        <div class="big">682</div>
+        <div class="sub">7 walls · 28.4m run · openings &amp; piers accounted</div>
+      </div>
+      <div class="card-body">
+        <div class="row"><span class="code">20.48</span><span class="name">H block</span><span class="count">418</span></div>
+        <div class="row"><span class="code">20.01</span><span class="name">Full end</span><span class="count">112</span></div>
+        <div class="row"><span class="code">20.03</span><span class="name">Half end</span><span class="count">56</span></div>
+        <div class="row"><span class="code">20.02</span><span class="name">3/4 fraction</span><span class="count">22</span></div>
+        <div class="row"><span class="code">20.45</span><span class="name">Cleanout</span><span class="count">30</span></div>
+        <div class="row"><span class="code">50.45</span><span class="name">Tile</span><span class="count">30</span></div>
+        <div class="row"><span class="code">40.925</span><span class="name">Pier</span><span class="count">12</span></div>
+        <div class="row"><span class="code">20.20</span><span class="name">Bond beam</span><span class="count">2</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Wall types</h3>
+        <span class="badge">— 3 in use</span>
+      </div>
+      <div class="card-body">
+        <div class="makeup active">
+          <div class="n">External 3100mm Stretcher</div>
+          <div class="d">20.48 body · 20.01 corner · fractions on</div>
+        </div>
+        <div class="makeup">
+          <div class="n">Internal 2400mm Stretcher</div>
+          <div class="d">20.48 body · 20.01 corner</div>
+        </div>
+        <div class="makeup">
+          <div class="n">Top course bond beam</div>
+          <div class="d">20.20 top · 20.48 body</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Pier types</h3>
+        <span class="badge">— 2 defined</span>
+      </div>
+      <div class="card-body">
+        <div class="makeup active">
+          <div class="n">Tied pier (40.925 / 20.01)</div>
+          <div class="d">Alternating · displaces H on 40.925 courses</div>
+        </div>
+        <div class="makeup">
+          <div class="n">Freestanding pier (40.925)</div>
+          <div class="d">40.925 stacked every course</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+</body>
+</html>

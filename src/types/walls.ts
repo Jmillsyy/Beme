@@ -117,6 +117,11 @@ export interface WallJunction {
  *
  * Start/end coordinates are in real-world millimetres (after scale calibration),
  * not pixels. The calibration converts pixel clicks to mm.
+ *
+ * Straight walls (default) only use start* and end*. Curved walls additionally
+ * carry a midpoint that lies on the arc — start, mid, end together define a
+ * unique circle, and the wall renders/tallies as the arc through those three
+ * points. Existing saved walls without `kind` are treated as straight.
  */
 export interface Wall {
   id: string
@@ -134,8 +139,78 @@ export interface Wall {
   endJunction: WallJunction
   /** Optional per-wall height override (mm), otherwise inherits from makeup. */
   heightMmOverride?: number
-  /** Curve radius in mm (null/undefined for straight walls). */
-  curveRadiusMm?: number
+  /**
+   * Wall geometry kind. Defaults to 'straight' if missing (so old saved data still loads).
+   * 'curved' walls additionally have midX/midY defining a point on the arc between
+   * start and end.
+   */
+  kind?: 'straight' | 'curved'
+  /** Midpoint X for curved walls (a point on the arc, not the chord centre). */
+  midX?: number
+  /** Midpoint Y for curved walls. */
+  midY?: number
+}
+
+/**
+ * A pier on the plan.
+ *
+ * The PIER instance carries placement information (where it sits, and whether it's tied
+ * into a wall or freestanding). The block composition — which blocks make up the pier
+ * column and in what order — lives separately on a {@link PierMakeup}, referenced by id.
+ *
+ * - Tied: built into the wall at a specific point along it. Inherits the wall's height.
+ *   In the default tied makeup the pier column alternates 40.925 / 20.01 per course over
+ *   the wall's full course count. The pier also displaces one body block per course at
+ *   that position on the wall.
+ *
+ * - Freestanding: a standalone pier placed anywhere on the plan. Has its own height.
+ *   In the default freestanding makeup it's 40.925 stacked every course.
+ */
+export type Pier = TiedPier | FreestandingPier
+
+export interface TiedPier {
+  id: string
+  type: 'tied'
+  /** Wall this pier is built into. */
+  wallId: string
+  /** Distance from the wall's start (mm) where the pier sits. */
+  alongMm: number
+  /** Which pier makeup defines the course pattern. */
+  pierMakeupId?: string
+}
+
+export interface FreestandingPier {
+  id: string
+  type: 'freestanding'
+  /** Position in real-world mm. */
+  x: number
+  y: number
+  /** Pier height in mm. Must be a multiple of 200 (one course). */
+  heightMm: number
+  /** Which pier makeup defines the course pattern. */
+  pierMakeupId?: string
+}
+
+/**
+ * A pier makeup — the block-by-block course pattern used for a pier column.
+ *
+ * The pattern repeats up the pier: course i (1-indexed from the base) uses
+ * `coursePattern[(i - 1) % coursePattern.length]`. So a tied default of
+ * `['40.925', '20.01']` means course 1 = 40.925, course 2 = 20.01, course 3 = 40.925, …
+ *
+ * A freestanding default of `['40.925']` means every course is a 40.925.
+ *
+ * `suggestedPlacement` is only a hint — it controls which makeup is preselected when the
+ * user clicks the "+ Tied pier" or "+ Freestanding pier" toolbar buttons. A user can
+ * still re-assign any pier to any makeup after placement.
+ */
+export interface PierMakeup {
+  id: string
+  name: string
+  /** Block code per course, cycling. Length ≥ 1. */
+  coursePattern: BlockCode[]
+  /** Hint for which placement button picks this makeup as the default. */
+  suggestedPlacement: 'tied' | 'freestanding'
 }
 
 /**

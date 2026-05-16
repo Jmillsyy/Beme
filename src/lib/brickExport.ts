@@ -165,7 +165,7 @@ export function exportBrickEstimate(params: ExportParams): void {
   const pageHeader = `
     <header class="page-header">
       <div class="brand">
-        <div class="brand-name">beme</div>
+        <div class="brand-name">Beme</div>
         <div class="brand-tag">Brick and Block Estimates Made Easy</div>
       </div>
       <div class="title-block">

@@ -14,19 +14,19 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
   }
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white p-3">
+    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="w-full flex items-center gap-2 text-left group mb-2"
       >
-        <span className="text-neutral-400 group-hover:text-neutral-600 text-xs">
+        <span className="text-ink-500 group-hover:text-ink-300 text-xs">
           {expanded ? '▾' : '▸'}
         </span>
-        <h3 className="text-sm font-semibold text-neutral-700 group-hover:text-beme-700">
+        <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300">
           Brick settings
         </h3>
         {!expanded && (
-          <span className="text-xs text-neutral-500 truncate min-w-0">
+          <span className="text-xs text-ink-400 truncate min-w-0">
             · {settings.defaultWallHeightMm}mm · {settings.bricksPerSquareMetre}/m²
             {settings.ties.enabled && ` · ties`}
             {settings.plascourse.enabled && ` · plascourse`}
@@ -39,19 +39,19 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
       {/* General */}
       <div className="grid grid-cols-1 gap-3 mb-3">
         <label className="text-sm">
-          <span className="block text-neutral-600 mb-1">Default wall height (mm)</span>
+          <span className="block text-ink-300 mb-1">Default wall height (mm)</span>
           <input
             type="number"
             min="200"
             step="50"
             value={settings.defaultWallHeightMm}
             onChange={(e) => patch({ defaultWallHeightMm: parseInt(e.target.value || '0', 10) })}
-            className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm focus:outline-none focus:border-beme-500"
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400"
           />
         </label>
 
         <label className="text-sm">
-          <span className="block text-neutral-600 mb-1">Bricks per m²</span>
+          <span className="block text-ink-300 mb-1">Bricks per m²</span>
           <input
             type="number"
             min="1"
@@ -60,14 +60,14 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
             onChange={(e) =>
               patch({ bricksPerSquareMetre: parseFloat(e.target.value || '0') || 0 })
             }
-            className="w-full px-3 py-1.5 border border-neutral-300 rounded-lg text-sm focus:outline-none focus:border-beme-500"
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400"
           />
         </label>
       </div>
 
       {/* Brick ties */}
-      <div className="mb-4 p-3 border border-neutral-200 rounded-lg bg-neutral-50">
-        <label className="flex items-center gap-2 text-sm font-medium text-neutral-700 cursor-pointer">
+      <div className="mb-4 p-3 border border-ink-600 rounded-lg bg-ink-700/40">
+        <label className="flex items-center gap-2 text-sm font-medium text-ink-200 cursor-pointer">
           <input
             type="checkbox"
             checked={settings.ties.enabled}
@@ -80,7 +80,7 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
         {settings.ties.enabled && (
           <div className="mt-2 ml-6 flex items-center gap-2 text-sm">
             <label className="flex items-center gap-2">
-              <span className="text-neutral-600">Rate:</span>
+              <span className="text-ink-300">Rate:</span>
               <select
                 value={settings.ties.perSquareMetre}
                 onChange={(e) =>
@@ -91,7 +91,7 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
                     },
                   })
                 }
-                className="px-2 py-1 border border-neutral-300 rounded text-sm bg-white"
+                className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800"
               >
                 <option value={1}>1 per m²</option>
                 <option value={2}>2 per m²</option>
@@ -104,8 +104,8 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
       </div>
 
       {/* Plascourse */}
-      <div className="p-3 border border-neutral-200 rounded-lg bg-neutral-50">
-        <label className="flex items-center gap-2 text-sm font-medium text-neutral-700 cursor-pointer">
+      <div className="p-3 border border-ink-600 rounded-lg bg-ink-700/40">
+        <label className="flex items-center gap-2 text-sm font-medium text-ink-200 cursor-pointer">
           <input
             type="checkbox"
             checked={settings.plascourse.enabled}
@@ -119,7 +119,7 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
         </label>
         {settings.plascourse.enabled && (
           <div className="mt-2 ml-6 flex items-center gap-2 text-sm">
-            <span className="text-neutral-600">1 plascourse per</span>
+            <span className="text-ink-300">1 plascourse per</span>
             <input
               type="number"
               min="1"
@@ -133,9 +133,9 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
                   },
                 })
               }
-              className="px-2 py-1 border border-neutral-300 rounded text-sm bg-white w-20"
+              className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800 w-20"
             />
-            <span className="text-neutral-600">metres of brickwork</span>
+            <span className="text-ink-300">metres of brickwork</span>
           </div>
         )}
       </div>

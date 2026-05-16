@@ -59,7 +59,7 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
 
   if (walls.length === 0) {
     return (
-      <div className="my-4 border border-dashed border-neutral-300 rounded-xl p-6 text-center text-neutral-500 text-sm">
+      <div className="my-4 border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm">
         Draw your first wall to see the brick tally.
       </div>
     )
@@ -70,21 +70,21 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
   const lintelLengthM = tally.totalLintelLengthMm / 1000
 
   return (
-    <div className="my-4 border border-neutral-200 rounded-xl bg-white overflow-hidden">
+    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="w-full bg-beme-50 px-3 py-2 border-b border-beme-200 flex items-center justify-between gap-2 text-left group"
+        className="w-full bg-ink-700 px-3 py-2 border-b border-ink-600 flex items-center justify-between gap-2 text-left group"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-beme-500 group-hover:text-beme-700 text-xs">
+          <span className="text-beme-400 group-hover:text-beme-300 text-xs">
             {expanded ? '▾' : '▸'}
           </span>
-          <h3 className="text-sm font-bold text-beme-700">Brick tally</h3>
-          <span className="text-xs text-beme-600 tabular-nums truncate">
+          <h3 className="text-sm font-bold text-beme-300">Brick tally</h3>
+          <span className="text-xs text-beme-300 tabular-nums truncate">
             · {tally.brickCount.toLocaleString()} bricks
           </span>
         </div>
-        <span className="text-xs text-beme-600 tabular-nums flex-shrink-0">
+        <span className="text-xs text-beme-300 tabular-nums flex-shrink-0">
           {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
         </span>
       </button>
@@ -93,30 +93,30 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
         <>
           <table className="w-full text-sm">
             <tbody>
-              <tr className="border-b border-neutral-100">
-                <td className="px-3 py-1.5 text-neutral-600">Total length</td>
+              <tr className="border-b border-ink-700/60">
+                <td className="px-3 py-1.5 text-ink-300">Total length</td>
                 <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
                   {lengthM.toFixed(2)} m
                 </td>
               </tr>
-              <tr className="border-b border-neutral-100">
-                <td className="px-3 py-1.5 text-neutral-600">Brickwork area</td>
+              <tr className="border-b border-ink-700/60">
+                <td className="px-3 py-1.5 text-ink-300">Brickwork area</td>
                 <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
                   {areaSqM.toFixed(2)} m²
                 </td>
               </tr>
-              <tr className="border-b border-neutral-100 bg-beme-50/30">
-                <td className="px-3 py-1.5 text-neutral-700 font-medium">
-                  Bricks <span className="text-xs text-neutral-500">({settings.bricksPerSquareMetre}/m²)</span>
+              <tr className="border-b border-ink-700/60 bg-ink-700/30">
+                <td className="px-3 py-1.5 text-ink-200 font-medium">
+                  Bricks <span className="text-xs text-ink-400">({settings.bricksPerSquareMetre}/m²)</span>
                 </td>
-                <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-700">
+                <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-300">
                   {tally.brickCount.toLocaleString()}
                 </td>
               </tr>
               {settings.ties.enabled && (
-                <tr className="border-b border-neutral-100">
-                  <td className="px-3 py-1.5 text-neutral-600">
-                    Brick ties <span className="text-xs text-neutral-500">({settings.ties.perSquareMetre}/m²)</span>
+                <tr className="border-b border-ink-700/60">
+                  <td className="px-3 py-1.5 text-ink-300">
+                    Brick ties <span className="text-xs text-ink-400">({settings.ties.perSquareMetre}/m²)</span>
                   </td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
                     {tally.tiesCount.toLocaleString()}
@@ -124,9 +124,9 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
                 </tr>
               )}
               {settings.plascourse.enabled && (
-                <tr className="border-b border-neutral-100">
-                  <td className="px-3 py-1.5 text-neutral-600">
-                    Plascourse <span className="text-xs text-neutral-500">(1/{settings.plascourse.metresPerUnit}m)</span>
+                <tr className="border-b border-ink-700/60">
+                  <td className="px-3 py-1.5 text-ink-300">
+                    Plascourse <span className="text-xs text-ink-400">(1/{settings.plascourse.metresPerUnit}m)</span>
                   </td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
                     {tally.plascourseCount}
@@ -134,8 +134,8 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
                 </tr>
               )}
               {tally.lintels.length > 0 && (
-                <tr className="border-b border-neutral-100">
-                  <td className="px-3 py-1.5 text-neutral-600">Total lintel length</td>
+                <tr className="border-b border-ink-700/60">
+                  <td className="px-3 py-1.5 text-ink-300">Total lintel length</td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
                     {lintelLengthM.toFixed(2)} m
                   </td>
@@ -146,12 +146,12 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
 
           {/* Lintel order summary */}
           {lintelGroups.length > 0 && (
-            <div className="border-t border-neutral-200">
-              <div className="px-3 py-1.5 bg-neutral-50 text-xs uppercase text-neutral-500 font-semibold">
+            <div className="border-t border-ink-600">
+              <div className="px-3 py-1.5 bg-ink-700/40 text-xs uppercase text-ink-400 font-semibold">
                 Lintels to order
               </div>
               <table className="w-full text-sm">
-                <thead className="text-xs uppercase text-neutral-500 bg-neutral-50">
+                <thead className="text-xs uppercase text-ink-400 bg-ink-700/40">
                   <tr>
                     <th className="text-left px-3 py-1 w-10">Qty</th>
                     <th className="text-left px-2 py-1">Lintel</th>
@@ -160,13 +160,13 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
                 </thead>
                 <tbody>
                   {lintelGroups.map((g) => (
-                    <tr key={g.key} className="border-t border-neutral-100">
+                    <tr key={g.key} className="border-t border-ink-700/60">
                       <td className="px-3 py-1 font-semibold tabular-nums">{g.count}</td>
                       <td className="px-2 py-1 text-xs">
                         <span className="font-medium">{g.lengthMm}mm</span>{' '}
-                        <span className="text-neutral-500">{g.profile}</span>
+                        <span className="text-ink-400">{g.profile}</span>
                       </td>
-                      <td className="px-3 py-1 text-right text-neutral-500 text-[10px]">
+                      <td className="px-3 py-1 text-right text-ink-400 text-[10px]">
                         {g.openings.map((n) => `#${n}`).join(', ')}
                       </td>
                     </tr>
@@ -178,11 +178,11 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
 
           {/* Custom lintels (oversized openings) */}
           {oversized.length > 0 && (
-            <div className="border-t border-neutral-200 bg-red-50">
-              <div className="px-3 py-1.5 text-xs uppercase text-red-700 font-semibold">
+            <div className="border-t border-ink-600 bg-rose-500/10">
+              <div className="px-3 py-1.5 text-xs uppercase text-rose-300 font-semibold">
                 Custom lintels required
               </div>
-              <ul className="px-3 pb-2 text-xs text-red-700 space-y-1">
+              <ul className="px-3 pb-2 text-xs text-rose-300 space-y-1">
                 {oversized.map(({ entry, index }) => (
                   <li key={entry.openingId}>
                     #{index}: {Math.round(entry.openingWidthMm)}mm wide → need{' '}
@@ -195,17 +195,17 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
 
           {/* Per-opening detail — collapsed by default in the rail (it's secondary) */}
           {tally.lintels.length > 0 && (
-            <div className="border-t border-neutral-200">
+            <div className="border-t border-ink-600">
               <button
                 onClick={() => setDetailExpanded((v) => !v)}
-                className="w-full px-3 py-1.5 bg-neutral-50 text-xs uppercase text-neutral-500 font-semibold flex items-center gap-1.5 hover:text-neutral-700 transition-colors text-left"
+                className="w-full px-3 py-1.5 bg-ink-700/40 text-xs uppercase text-ink-400 font-semibold flex items-center gap-1.5 hover:text-ink-200 transition-colors text-left"
               >
                 <span className="text-[10px]">{detailExpanded ? '▾' : '▸'}</span>
                 Per-opening detail
               </button>
               {detailExpanded && (
                 <table className="w-full text-sm">
-                  <thead className="text-xs uppercase text-neutral-500 bg-neutral-50">
+                  <thead className="text-xs uppercase text-ink-400 bg-ink-700/40">
                     <tr>
                       <th className="text-left px-3 py-1 w-8">#</th>
                       <th className="text-left px-2 py-1">Need</th>
@@ -214,9 +214,9 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
                   </thead>
                   <tbody>
                     {tally.lintels.map((l, i) => (
-                      <tr key={l.openingId} className="border-t border-neutral-100">
-                        <td className="px-3 py-1 text-neutral-500 text-xs">#{i + 1}</td>
-                        <td className="px-2 py-1 text-xs text-neutral-700 tabular-nums">
+                      <tr key={l.openingId} className="border-t border-ink-700/60">
+                        <td className="px-3 py-1 text-ink-400 text-xs">#{i + 1}</td>
+                        <td className="px-2 py-1 text-xs text-ink-200 tabular-nums">
                           {Math.round(l.openingWidthMm)} → {Math.round(l.requiredLengthMm)} mm
                         </td>
                         <td className="px-3 py-1 text-right text-xs">
@@ -225,12 +225,12 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
                               <span className="font-semibold tabular-nums">
                                 {l.selectedLintel.lengthMm}mm
                               </span>
-                              <span className="text-neutral-500 ml-1">
+                              <span className="text-ink-400 ml-1">
                                 {l.selectedLintel.profile}
                               </span>
                             </span>
                           ) : (
-                            <span className="text-red-600">custom</span>
+                            <span className="text-rose-400">custom</span>
                           )}
                         </td>
                       </tr>

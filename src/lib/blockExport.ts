@@ -20,6 +20,8 @@ import type {
   BlockExportInclusions,
   BlockTally,
   Opening,
+  Pier,
+  PierMakeup,
   ProjectDetails,
   Wall,
   WallMakeup,
@@ -37,6 +39,8 @@ interface ExportParams {
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
+  piers?: Pier[]
+  pierMakeups?: PierMakeup[]
 }
 
 const DISCLAIMER_TEXT = [
@@ -91,7 +95,8 @@ function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
 function buildAssumptions(
   inclusions: BlockExportInclusions,
   hasOpenings: boolean,
-  customNotes: string
+  customNotes: string,
+  pierCounts: { tied: number; freestanding: number } = { tied: 0, freestanding: 0 }
 ): string[] {
   if (!inclusions.assumptions) return []
 
@@ -100,12 +105,28 @@ function buildAssumptions(
     'Wall heights are taken from the wall-type definitions used in this project unless overridden per wall.',
     'Wall lengths are measured from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
     'Corners between walls are deduplicated so the shared corner column is only counted once.',
+    'T-junctions are treated as two completely separate walls. The stem wall has its own complete end termination at the junction (same as a free end — alternating 20.01 / 20.03 in stretcher bond) and stops at the through wall’s face; the through wall is unaffected.',
+    'Height-makeup courses (20.71 and 20.140) extend across the full course length. The height-makeup block is cut to the size of any end block (20.01 / 20.03) and any fraction block on that course, so we supply enough 20.71 / 20.140 to cover the entire row; no separate end or fraction blocks are counted for those courses.',
+    'Walls shorter than 800mm are built without body blocks. Both ends use the makeup’s full end block (20.01 / 20.21) on every course — no alternating in stretcher bond — and the gap between is filled from 20.03, 20.02, and 20.22 (up to two fill blocks) chosen to minimise overshoot. If the bare two end blocks already exceed the wall length, no fill is added.',
+    'Wall stubs shorter than 400mm can’t fit two end blocks, so they’re built as one block per course — the block whose face width is closest to the drawn wall length, picked from 20.03 (190mm), 20.02 (290mm), 20.22 (340mm), or 20.01 (390mm).',
+    'Curved walls use 20.03CW (wedge-shaped half block, 190mm front × 140mm rear) up to ~7500mm centreline radius — the geometric point at which a standard 390mm body block stops fitting around the curve without rear overlap. Above ~7500mm we revert to the makeup’s standard body block with slightly compressed rear mortar joints. Below ~665mm centreline radius the 20.03CW itself can no longer absorb the curve and custom-cut blocks would be required.',
   ]
 
   if (hasOpenings) {
     items.push('Openings (doors, windows) have been deducted from the gross block count.')
     items.push(
       'Lintels are stood-up lintel blocks chosen by head height: 20.13 for heads under 200mm, 20.25 for 200–299mm, 20.18 for 300mm and above.'
+    )
+  }
+
+  if (pierCounts.tied > 0) {
+    items.push(
+      'Tied piers (built into the wall) use a per-makeup block-by-block course pattern that repeats up the wall height. The default tied makeup alternates 40.925 and 20.01 by course. A tied pier only displaces a wall body block (H block) on courses where its block is deeper than the wall — e.g. the 40.925 sticks out past the wall face — so the 40.925 courses displace H blocks, but the 20.01 courses sit perpendicular and add without subtracting.'
+    )
+  }
+  if (pierCounts.freestanding > 0) {
+    items.push(
+      'Freestanding piers are standalone columns using a per-makeup block-by-block course pattern repeated up the pier’s height. The default freestanding makeup is 40.925 stacked every course.'
     )
   }
 
@@ -124,12 +145,38 @@ function buildAssumptions(
 // ---------- Main entry point ----------
 
 export function exportBlockEstimate(params: ExportParams): void {
-  const { projectDetails, inclusions, walls, makeups, openings } = params
+  const {
+    projectDetails,
+    inclusions,
+    walls,
+    makeups,
+    openings,
+    piers = [],
+    pierMakeups = [],
+  } = params
 
   const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
-  const tally: BlockTally = calculateProjectTally(walls, makeupsById, openings)
+  const pierMakeupsById = Object.fromEntries(pierMakeups.map((m) => [m.id, m]))
+  const tally: BlockTally = calculateProjectTally(
+    walls,
+    makeupsById,
+    openings,
+    piers,
+    pierMakeupsById
+  )
   const entries = tallyEntries(tally)
   const totalBlocks = entries.reduce((sum, [, c]) => sum + c, 0)
+
+  // Per-wall thickness + lookup so wallLengthMm returns outer-edge length consistently
+  // (only the wall whose endpoint sits INSIDE the other wall gets the extension).
+  const thicknessByWallId: Record<string, number> = {}
+  const wallsById: Record<string, Wall> = {}
+  for (const w of walls) {
+    const makeup = makeupsById[w.makeupId]
+    const block = makeup ? BLOCK_LIBRARY[makeup.bodyBlockCode] : undefined
+    thicknessByWallId[w.id] = block?.dimensions.depthMm ?? 190
+    wallsById[w.id] = w
+  }
 
   // Per-makeup breakdown: re-run calculateWallTally for walls of each makeup
   // (without corner dedup so the table is interpretable). Corner dedup only matters
@@ -139,7 +186,7 @@ export function exportBlockEstimate(params: ExportParams): void {
     const merged: BlockTally = {}
     for (const w of wallsOfMakeup) {
       const openingsForWall = openings.filter((o) => o.wallId === w.id)
-      const wallTally = calculateWallTally(w, m, openingsForWall)
+      const wallTally = calculateWallTally(w, m, openingsForWall, thicknessByWallId, wallsById)
       for (const [code, count] of Object.entries(wallTally) as Array<[BlockCode, number]>) {
         if (!count) continue
         merged[code] = (merged[code] ?? 0) + count
@@ -148,7 +195,10 @@ export function exportBlockEstimate(params: ExportParams): void {
     return {
       makeup: m,
       wallCount: wallsOfMakeup.length,
-      lengthMm: wallsOfMakeup.reduce((s, w) => s + wallLengthMm(w), 0),
+      lengthMm: wallsOfMakeup.reduce(
+        (s, w) => s + wallLengthMm(w, thicknessByWallId, wallsById),
+        0
+      ),
       tally: merged,
     }
   })
@@ -179,10 +229,14 @@ export function exportBlockEstimate(params: ExportParams): void {
   const docTitle =
     `${projectDetails.projectName.trim() || projectDetails.siteAddress.trim() || 'Block Takeoff'} — Block Takeoff`
 
+  const tiedPierCount = piers.filter((p) => p.type === 'tied').length
+  const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length
+
   const assumptions = buildAssumptions(
     inclusions,
     openings.length > 0,
-    projectDetails.notes
+    projectDetails.notes,
+    { tied: tiedPierCount, freestanding: freestandingPierCount }
   )
 
   // ---------- HTML pieces ----------
@@ -190,7 +244,7 @@ export function exportBlockEstimate(params: ExportParams): void {
   const pageHeader = `
     <header class="page-header">
       <div class="brand">
-        <div class="brand-name">beme</div>
+        <div class="brand-name">Beme</div>
         <div class="brand-tag">Brick and Block Estimates Made Easy</div>
       </div>
       <div class="title-block">

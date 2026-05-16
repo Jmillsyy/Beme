@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Beme — Industrial Mono</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --orange: #FF6B00;
+    --orange-fill: rgba(255, 107, 0, 0.12);
+    --orange-soft: rgba(255, 107, 0, 0.05);
+    --ink: #000;
+    --paper: #FFF;
+    --line: #000;
+    --line-soft: #D5D5D5;
+    --line-soft-2: #EEE;
+    --text: #000;
+    --text-mute: #707070;
+    --green: #00A86B;
+    --rose: #E40046;
+    --teal: #008B8B;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; color: var(--text); background: var(--paper); font-size: 13px; }
+  body { min-height: 100vh; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* Top */
+  .topbar { display: flex; align-items: stretch; border-bottom: 2px solid var(--ink); }
+  .topbar .brand-cell { padding: 14px 22px; border-right: 2px solid var(--ink); display: flex; align-items: center; gap: 10px; background: var(--ink); color: var(--paper); }
+  .topbar .brand-cell .logo { width: 18px; height: 18px; background: var(--orange); border-radius: 2px; }
+  .topbar .brand-cell .name { font-weight: 800; font-size: 16px; letter-spacing: -0.01em; }
+  .topbar .project-cell { padding: 14px 22px; flex: 1; display: flex; align-items: center; gap: 14px; }
+  .topbar .project-cell .label { color: var(--text-mute); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .topbar .project-cell .name { font-weight: 700; font-size: 15px; }
+  .topbar .actions-cell { display: flex; align-items: stretch; border-left: 2px solid var(--ink); }
+  .topbar .actions-cell button { padding: 14px 22px; background: white; border: none; border-left: 1px solid var(--line-soft); font-weight: 600; font-size: 13px; cursor: pointer; }
+  .topbar .actions-cell button:first-child { border-left: none; }
+  .topbar .actions-cell button:hover { background: var(--orange-soft); }
+  .topbar .actions-cell button.primary { background: var(--orange); color: white; }
+  .topbar .actions-cell button.primary:hover { background: #E55F00; }
+
+  /* Mode bar */
+  .modebar { display: flex; align-items: center; border-bottom: 1px solid var(--line-soft); padding: 0 22px; gap: 0; }
+  .modebar .mode { padding: 12px 16px; font-weight: 600; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-mute); border-bottom: 2px solid transparent; cursor: pointer; margin-bottom: -1px; }
+  .modebar .mode.active { color: var(--text); border-bottom-color: var(--orange); }
+  .modebar .spacer { flex: 1; }
+  .modebar .status { color: var(--text-mute); font-size: 12px; padding: 12px 0; }
+  .modebar .status strong { color: var(--text); font-weight: 700; }
+
+  /* Toolbar */
+  .toolbar { display: flex; align-items: center; padding: 14px 22px; gap: 1px; background: var(--ink); }
+  .toolbar .tool { padding: 8px 14px; background: var(--paper); color: var(--ink); border: 0; font-weight: 600; font-size: 12px; letter-spacing: 0.02em; cursor: pointer; }
+  .toolbar .tool:hover { background: var(--orange); color: var(--ink); }
+  .toolbar .tool.active { background: var(--orange); color: var(--ink); }
+  .toolbar .tool.danger { color: var(--rose); }
+  .toolbar .tool.green { color: var(--green); }
+  .toolbar .tool.teal { color: var(--teal); }
+  .toolbar .spacer { flex: 1; background: var(--ink); }
+  .toolbar .ghost { background: transparent; color: white; padding: 8px 14px; }
+
+  /* Body */
+  .body { display: grid; grid-template-columns: 1fr 380px; gap: 0; }
+
+  .canvas-cell { border-right: 1px solid var(--line-soft); padding: 20px; background: var(--paper); }
+  .canvas-frame { border: 2px solid var(--ink); position: relative; }
+  .canvas-frame .corner { position: absolute; width: 14px; height: 14px; background: var(--orange); }
+  .canvas-frame .corner.tl { top: -2px; left: -2px; }
+  .canvas-frame .corner.tr { top: -2px; right: -2px; }
+  .canvas-frame .corner.bl { bottom: -2px; left: -2px; }
+  .canvas-frame .corner.br { bottom: -2px; right: -2px; }
+  .canvas-frame .header { padding: 8px 14px; background: var(--ink); color: var(--paper); display: flex; justify-content: space-between; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .pdf { padding: 0; height: 520px; position: relative; background-color: white;
+    background-image:
+      repeating-linear-gradient(0deg, var(--line-soft-2) 0 1px, transparent 1px 50px),
+      repeating-linear-gradient(90deg, var(--line-soft-2) 0 1px, transparent 1px 50px);
+  }
+
+  .wall-h { position: absolute; height: 14px; background: var(--orange-fill); border-top: 2px solid var(--orange); border-bottom: 2px solid var(--orange); }
+  .wall-v { position: absolute; width: 14px; background: var(--orange-fill); border-left: 2px solid var(--orange); border-right: 2px solid var(--orange); }
+  .label { position: absolute; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: var(--ink); background: white; padding: 0 3px; }
+  .marker { position: absolute; width: 12px; height: 12px; background: var(--green); border: 2px solid white; box-shadow: 0 0 0 1px var(--green); }
+  .marker.tjct { background: #8B5CF6; transform: rotate(45deg); box-shadow: 0 0 0 1px #6D28D9; }
+  .opening { position: absolute; height: 14px; background: #FFF7C2; border: 2px dashed #92400E; }
+  .pier { position: absolute; width: 36px; height: 36px; background: rgba(0, 168, 107, 0.25); border: 1.5px solid var(--green); display: grid; place-items: center; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--green); font-size: 13px; }
+
+  /* Right rail */
+  .rail { display: flex; flex-direction: column; }
+  .panel { border-bottom: 1px solid var(--line-soft); background: var(--paper); }
+  .panel-head { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; background: var(--paper); border-bottom: 1px solid var(--line-soft); }
+  .panel-head .label { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700; }
+  .panel-head .count { color: var(--text-mute); font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .panel-body { padding: 14px 18px; }
+
+  .total-block { padding: 22px 18px; background: var(--orange); color: var(--ink); display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 2px solid var(--ink); }
+  .total-block .l { font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700; line-height: 1.2; }
+  .total-block .big { font-weight: 800; font-size: 44px; letter-spacing: -0.04em; line-height: 0.95; font-family: 'Inter', sans-serif; }
+
+  .row { display: grid; grid-template-columns: 70px 1fr 50px; gap: 12px; align-items: center; padding: 9px 0; font-size: 13px; border-bottom: 1px solid var(--line-soft-2); }
+  .row:last-child { border-bottom: none; }
+  .row .code { font-family: 'JetBrains Mono', monospace; color: var(--orange); font-weight: 600; }
+  .row .name { color: var(--text-mute); }
+  .row .count { text-align: right; font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--ink); }
+
+  .makeup { padding: 12px; border: 1.5px solid var(--line-soft); margin-bottom: 8px; cursor: pointer; }
+  .makeup:hover { border-color: var(--ink); }
+  .makeup.active { border-color: var(--orange); border-left-width: 4px; padding-left: 9px; }
+  .makeup .n { font-weight: 700; font-size: 13px; }
+  .makeup .d { color: var(--text-mute); font-size: 11px; font-family: 'JetBrains Mono', monospace; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand-cell">
+    <div class="logo"></div>
+    <div class="name">BEME</div>
+  </div>
+  <div class="project-cell">
+    <span class="label">Project</span>
+    <span class="name">Foster Residence — Garage Extension</span>
+  </div>
+  <div class="actions-cell">
+    <button>Save</button>
+    <button>Details</button>
+    <button class="primary">Export</button>
+  </div>
+</header>
+
+<nav class="modebar">
+  <div class="mode active">Block</div>
+  <div class="mode">Brick</div>
+  <div class="spacer"></div>
+  <div class="status"><strong>7 walls</strong> · scale 1:50 set</div>
+</nav>
+
+<div class="toolbar">
+  <button class="tool active">Draw wall</button>
+  <button class="tool">Curved wall</button>
+  <button class="tool">+ Opening</button>
+  <button class="tool danger">+ Control joint</button>
+  <button class="tool green">+ Tied pier</button>
+  <button class="tool teal">+ Freestanding pier</button>
+  <div class="spacer"></div>
+  <button class="ghost">Clear all</button>
+</div>
+
+<div class="body">
+  <div class="canvas-cell">
+    <div class="canvas-frame">
+      <div class="corner tl"></div><div class="corner tr"></div>
+      <div class="corner bl"></div><div class="corner br"></div>
+      <div class="header">
+        <span>workspace · page 1 / 2 · scale 1:50</span>
+        <span>cursor 1240, 920 mm</span>
+      </div>
+      <div class="pdf">
+        <div class="wall-h" style="left:60px; top:80px; width:340px;"></div>
+        <div class="wall-v" style="left:60px; top:80px; height:280px;"></div>
+        <div class="wall-h" style="left:60px; top:360px; width:340px;"></div>
+        <div class="wall-v" style="left:386px; top:80px; height:280px;"></div>
+        <div class="wall-h" style="left:200px; top:200px; width:120px;"></div>
+
+        <span class="label" style="left:200px; top:62px;">4250</span>
+        <span class="label" style="left:30px; top:198px;">3100</span>
+        <span class="label" style="left:200px; top:342px;">4250</span>
+        <span class="label" style="left:430px; top:198px;">3100</span>
+        <span class="label" style="left:240px; top:182px;">1450</span>
+
+        <div class="marker" style="left:55px; top:75px;"></div>
+        <div class="marker" style="left:381px; top:75px;"></div>
+        <div class="marker" style="left:55px; top:355px;"></div>
+        <div class="marker" style="left:381px; top:355px;"></div>
+        <div class="marker tjct" style="left:194px; top:194px;"></div>
+
+        <div class="opening" style="left:200px; top:80px; width:120px;"></div>
+
+        <div class="pier" style="left:140px; top:70px;">T</div>
+        <div class="pier" style="left:300px; top:70px;">T</div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="rail">
+    <div class="total-block">
+      <div class="l">Total<br/>blocks</div>
+      <div class="big">682</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="label">Block schedule</span>
+        <span class="count">8 codes</span>
+      </div>
+      <div class="panel-body">
+        <div class="row"><span class="code">20.48</span><span class="name">H block</span><span class="count">418</span></div>
+        <div class="row"><span class="code">20.01</span><span class="name">Full end</span><span class="count">112</span></div>
+        <div class="row"><span class="code">20.03</span><span class="name">Half end</span><span class="count">56</span></div>
+        <div class="row"><span class="code">20.02</span><span class="name">Frac 3/4</span><span class="count">22</span></div>
+        <div class="row"><span class="code">20.45</span><span class="name">Cleanout</span><span class="count">30</span></div>
+        <div class="row"><span class="code">50.45</span><span class="name">Tile</span><span class="count">30</span></div>
+        <div class="row"><span class="code">40.925</span><span class="name">Pier</span><span class="count">12</span></div>
+        <div class="row"><span class="code">20.20</span><span class="name">Bond beam</span><span class="count">2</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="label">Wall types</span>
+        <span class="count">3 active</span>
+      </div>
+      <div class="panel-body">
+        <div class="makeup active">
+          <div class="n">External 3100mm Stretcher</div>
+          <div class="d">20.48 / 20.01 / fractions on</div>
+        </div>
+        <div class="makeup">
+          <div class="n">Internal 2400mm Stretcher</div>
+          <div class="d">20.48 / 20.01</div>
+        </div>
+        <div class="makeup">
+          <div class="n">Top course bond beam</div>
+          <div class="d">20.20 top / 20.48 body</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="label">Pier types</span>
+        <span class="count">2 defined</span>
+      </div>
+      <div class="panel-body">
+        <div class="makeup active">
+          <div class="n">Tied pier</div>
+          <div class="d">[40.925, 20.01] alternating</div>
+        </div>
+        <div class="makeup">
+          <div class="n">Freestanding pier</div>
+          <div class="d">[40.925] stack</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+</body>
+</html>

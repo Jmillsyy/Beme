@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
-import type { Opening, Wall } from '../types/walls'
+import type { Opening, Pier, Wall } from '../types/walls'
+import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
 
 interface Point {
   x: number
@@ -12,19 +13,39 @@ interface WallDrawingLayerProps {
   walls: Wall[]
   /** Openings on the current page (across all walls). */
   openings: Opening[]
+  /**
+   * Physical wall thickness per wall id (mm). For block walls this comes from the makeup's
+   * body block depth (e.g. 190mm for 20.48); for brick walls it's the configured brick wall
+   * thickness (110mm default). Drives the rendered rectangle width.
+   */
+  wallThicknessByWallId: Record<string, number>
   visualWidth: number
   visualHeight: number
   /** Visual pixels per mm at the current zoom. */
   pxPerMmAtCurrentZoom: number
   /** Whether drawing-wall mode is active. */
   drawingMode: boolean
+  /** Whether 3-click curved-wall drawing mode is active. */
+  drawingCurveMode: boolean
   /** Whether placing-opening mode is active. */
   placingOpening: boolean
+  /** Whether placing-control-joint mode is active. Clicking on a wall splits it. */
+  placingControlJoint?: boolean
+  /** Whether placing-tied-pier mode is active. Click a wall to add a tied pier. */
+  placingTiedPier?: boolean
+  /** Whether placing-freestanding-pier mode is active. Click anywhere on the canvas. */
+  placingFreestandingPier?: boolean
+  /** Piers on the current page. */
+  piers?: Pier[]
   /** Currently selected wall id (null = nothing selected). */
   selectedWallId: string | null
   /** Currently selected opening id (null = nothing selected). */
   selectedOpeningId: string | null
+  /** Currently selected pier id (null = nothing selected). */
+  selectedPierId?: string | null
   onWallAdded: (startMm: Point, endMm: Point) => void
+  /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
+  onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
   onWallSelect: (wallId: string | null) => void
   onWallEndpointMoved: (
     wallId: string,
@@ -38,11 +59,20 @@ interface WallDrawingLayerProps {
     widthMm: number
   ) => void
   onOpeningSelect: (openingId: string | null) => void
+  /** Called when a control-joint click on a wall is confirmed. The wall is split at alongMm. */
+  onControlJointPlaced?: (wallId: string, alongMm: number) => void
+  /** Called when a tied pier is placed on a wall at alongMm. */
+  onTiedPierPlaced?: (wallId: string, alongMm: number) => void
+  /** Called when a freestanding pier is placed at a real-world (x, y) in mm. */
+  onFreestandingPierPlaced?: (xMm: number, yMm: number) => void
+  onPierSelect?: (pierId: string | null) => void
   onCancelDraw?: () => void
 }
 
+/** Pixel radius for snapping to an existing wall's endpoint (corner candidate). */
 const SNAP_THRESHOLD_PX = 12
-/** Max distance from a click to a wall line for opening-placement projection to snap to that wall. */
+/** Pixel radius for snapping perpendicular to an existing wall's body (T-junction candidate)
+ *  or for projecting an opening click onto a wall. Endpoint snap wins if both are in range. */
 const WALL_SNAP_THRESHOLD_PX = 20
 
 interface EndpointPixel {
@@ -50,7 +80,15 @@ interface EndpointPixel {
   y: number
   wallId: string
   end: 'start' | 'end'
+  /** Per-endpoint snap radius in px. Larger for thick walls so the user can land
+   *  anywhere in the end-block area and the snap fires. */
+  snapRadiusPx: number
 }
+
+/** Result of snapping the cursor to an existing wall — either its endpoint, or a point on its body. */
+type SnapResult =
+  | { kind: 'endpoint'; x: number; y: number; wallId: string; end: 'start' | 'end' }
+  | { kind: 'body'; x: number; y: number; wallId: string }
 
 interface WallProjection {
   wallId: string
@@ -75,23 +113,369 @@ function wallLengthMmOf(wall: Wall) {
 }
 
 /**
+ * Compute the four corner points (px) of a straight wall's physical rectangle, given the
+ * (possibly trimmed) centreline endpoints in mm. Width is `thicknessMm`, perpendicular to
+ * the segment, centred on the centreline. Returns a flat `[x1, y1, x2, y2, x3, y3, x4, y4]`
+ * array for a closed Konva Line.
+ */
+function rectanglePxForSegment(
+  startMm: Point,
+  endMm: Point,
+  thicknessMm: number,
+  mmToPx: (mm: number) => number
+): number[] {
+  const dx = endMm.x - startMm.x
+  const dy = endMm.y - startMm.y
+  const len = Math.sqrt(dx * dx + dy * dy)
+  if (len === 0) return []
+  const ux = dx / len
+  const uy = dy / len
+  // Perpendicular (rotated 90° CCW): (-uy, ux)
+  const nx = -uy
+  const ny = ux
+  const half = thicknessMm / 2
+  return [
+    mmToPx(startMm.x + nx * half), mmToPx(startMm.y + ny * half),
+    mmToPx(endMm.x + nx * half), mmToPx(endMm.y + ny * half),
+    mmToPx(endMm.x - nx * half), mmToPx(endMm.y - ny * half),
+    mmToPx(startMm.x - nx * half), mmToPx(startMm.y - ny * half),
+  ]
+}
+
+/** A 2D line in point-and-direction form. */
+interface LineMm {
+  px: number
+  py: number
+  dx: number
+  dy: number
+}
+
+/**
+ * Intersection point of two lines (each given as a point + direction). Returns null if
+ * the lines are parallel (no unique intersection).
+ */
+function intersectLinesMm(l1: LineMm, l2: LineMm): Point | null {
+  const det = l1.dx * -l2.dy - l1.dy * -l2.dx
+  if (Math.abs(det) < 1e-6) return null
+  const dx = l2.px - l1.px
+  const dy = l2.py - l1.py
+  const s = (-l2.dy * dx - -l2.dx * dy) / det
+  return { x: l1.px + s * l1.dx, y: l1.py + s * l1.dy }
+}
+
+/**
+ * Compute the two long face lines of a straight wall (each as a LineMm).
+ * - posFace is on the +N side (perpendicular rotated 90° CCW from wall direction).
+ * - negFace is on the -N side.
+ */
+function wallFaceLines(wall: Wall, thicknessMm: number): { posFace: LineMm; negFace: LineMm } | null {
+  const dx = wall.endX - wall.startX
+  const dy = wall.endY - wall.startY
+  const len = Math.sqrt(dx * dx + dy * dy)
+  if (len === 0) return null
+  const ux = dx / len
+  const uy = dy / len
+  const nx = -uy
+  const ny = ux
+  const half = thicknessMm / 2
+  return {
+    posFace: { px: wall.startX + nx * half, py: wall.startY + ny * half, dx: ux, dy: uy },
+    negFace: { px: wall.startX - nx * half, py: wall.startY - ny * half, dx: ux, dy: uy },
+  }
+}
+
+/**
+ * For a wall endpoint, return either:
+ *   - 'skip' if this wall should NOT render an endpoint marker here (because the connected
+ *     wall at the same corner is the "primary" — has the alphabetically lower id — and is
+ *     responsible for rendering the single shared corner marker)
+ *   - a Point (in pixels) where the marker should render. For corner endpoints, this is
+ *     the centreline-centreline intersection of the two cornered walls (the geometric
+ *     centre of the L corner). For free or T-junction endpoints, this is the wall's
+ *     data endpoint as before.
+ */
+function cornerMarkerPosOrSkip(
+  wall: Wall,
+  end: 'start' | 'end',
+  isCornerJunction: boolean,
+  walls: Wall[],
+  mmToPx: (mm: number) => number,
+  fallback: Point
+): Point | 'skip' {
+  if (!isCornerJunction) return fallback
+  const junction = end === 'start' ? wall.startJunction : wall.endJunction
+  const otherId = junction.connectedWallIds?.[0]
+  if (!otherId) return fallback
+  // Only the alphabetically-lower id wall renders the shared corner marker.
+  if (wall.id > otherId) return 'skip'
+  const other = walls.find((w) => w.id === otherId)
+  if (!other || isCurvedWall(other)) return fallback
+  const intersection = intersectLinesMm(
+    {
+      px: wall.startX,
+      py: wall.startY,
+      dx: wall.endX - wall.startX,
+      dy: wall.endY - wall.startY,
+    },
+    {
+      px: other.startX,
+      py: other.startY,
+      dx: other.endX - other.startX,
+      dy: other.endY - other.startY,
+    }
+  )
+  if (!intersection) return fallback
+  return { x: mmToPx(intersection.x), y: mmToPx(intersection.y) }
+}
+
+/**
+ * For a wall with a 'corner' junction endpoint, compute the two mitred polygon-corner
+ * points so the wall tiles cleanly into an L with the connected wall:
+ *   - posCorner: where THIS wall's +N face line meets the appropriate face of the OTHER wall
+ *   - negCorner: where THIS wall's -N face line meets the appropriate face of the OTHER wall
+ *
+ * "Appropriate" face is decided by the angle bisector at the corner — the inner face of each
+ * wall meets the inner face of the other (= L's inner corner), outer meets outer (= L's outer
+ * corner). The result is two points forming a diagonal across the wall at the corner end,
+ * which both walls' polygons share — giving a perfectly tiled L.
+ *
+ * Returns null if the geometry is degenerate (no connected wall, parallel walls, etc.).
+ */
+function mitredCornerPointsMm(
+  wall: Wall,
+  end: 'start' | 'end',
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>
+): { posCorner: Point; negCorner: Point } | null {
+  const junction = end === 'start' ? wall.startJunction : wall.endJunction
+  if (junction.type !== 'corner') return null
+  const otherId = junction.connectedWallIds?.[0]
+  if (!otherId) return null
+  const other = walls.find((w) => w.id === otherId)
+  if (!other || isCurvedWall(other)) return null
+
+  const wallThickness = thicknessByWallId[wall.id] ?? 190
+  const otherThickness = thicknessByWallId[otherId] ?? 190
+  const wallFaces = wallFaceLines(wall, wallThickness)
+  const otherFaces = wallFaceLines(other, otherThickness)
+  if (!wallFaces || !otherFaces) return null
+
+  // Intersections of all 4 face combinations.
+  const i_pp = intersectLinesMm(wallFaces.posFace, otherFaces.posFace)
+  const i_pn = intersectLinesMm(wallFaces.posFace, otherFaces.negFace)
+  const i_np = intersectLinesMm(wallFaces.negFace, otherFaces.posFace)
+  const i_nn = intersectLinesMm(wallFaces.negFace, otherFaces.negFace)
+  if (!i_pp || !i_pn || !i_np || !i_nn) return null
+
+  // Determine which end of OTHER is the corner end by following the connectedWallIds back
+  // to THIS wall (NOT by comparing positions — with the new "preserve wall length" model
+  // the two corner endpoints sit at different positions on each other's faces, so a
+  // position check would pick the wrong end).
+  const otherStartIsCornerHere =
+    other.startJunction.type === 'corner' &&
+    (other.startJunction.connectedWallIds?.includes(wall.id) ?? false)
+  const otherEndIsCornerHere =
+    other.endJunction.type === 'corner' &&
+    (other.endJunction.connectedWallIds?.includes(wall.id) ?? false)
+  if (!otherStartIsCornerHere && !otherEndIsCornerHere) return null
+  // OTHER's "far" direction = from the corner end toward the OPPOSITE end. Use the wall's
+  // own start/end coords directly (no offset issues from non-coincident endpoints).
+  const otherDirX = otherStartIsCornerHere
+    ? other.endX - other.startX
+    : other.startX - other.endX
+  const otherDirY = otherStartIsCornerHere
+    ? other.endY - other.startY
+    : other.startY - other.endY
+  const otherDirLen = Math.sqrt(otherDirX * otherDirX + otherDirY * otherDirY)
+  if (otherDirLen === 0) return null
+  const ubX = otherDirX / otherDirLen
+  const ubY = otherDirY / otherDirLen
+
+  // u_a: from this corner end toward this wall's far end.
+  const wallDirX = end === 'start' ? wall.endX - wall.startX : wall.startX - wall.endX
+  const wallDirY = end === 'start' ? wall.endY - wall.startY : wall.startY - wall.endY
+  const wallDirLen = Math.sqrt(wallDirX * wallDirX + wallDirY * wallDirY)
+  if (wallDirLen === 0) return null
+  const uaX = wallDirX / wallDirLen
+  const uaY = wallDirY / wallDirLen
+
+  // Angle bisector — direction the inner-of-L points.
+  const bisectorX = uaX + ubX
+  const bisectorY = uaY + ubY
+  const bLen = Math.sqrt(bisectorX * bisectorX + bisectorY * bisectorY)
+  if (bLen < 1e-6) return null // walls are anti-parallel — no L
+  const bX = bisectorX / bLen
+  const bY = bisectorY / bLen
+
+  // For each wall, +N is "inner" if it points along the bisector.
+  const wdx = wall.endX - wall.startX
+  const wdy = wall.endY - wall.startY
+  const wlen = Math.sqrt(wdx * wdx + wdy * wdy)
+  const wnx = -wdy / wlen
+  const wny = wdx / wlen
+  const odx = other.endX - other.startX
+  const ody = other.endY - other.startY
+  const olen = Math.sqrt(odx * odx + ody * ody)
+  const onx = -ody / olen
+  const ony = odx / olen
+  const wallPosIsInner = wnx * bX + wny * bY > 0
+  const otherPosIsInner = onx * bX + ony * bY > 0
+
+  // Inner corner = intersection of inner faces. Outer corner = intersection of outer faces.
+  const innerCorner = wallPosIsInner
+    ? otherPosIsInner
+      ? i_pp
+      : i_pn
+    : otherPosIsInner
+      ? i_np
+      : i_nn
+  const outerCorner = wallPosIsInner
+    ? otherPosIsInner
+      ? i_nn
+      : i_np
+    : otherPosIsInner
+      ? i_pn
+      : i_pp
+
+  return wallPosIsInner
+    ? { posCorner: innerCorner, negCorner: outerCorner }
+    : { posCorner: outerCorner, negCorner: innerCorner }
+}
+
+/**
+ * For a stem wall with a t-junction endpoint, find where the stem's centreline crosses
+ * the through-wall's NEAR FACE — that's where the rendered rectangle should end. Works
+ * for both legacy data (endpoint at the through-wall's centreline) and new data (endpoint
+ * already snapped to the face) — in either case we clip to the face line.
+ *
+ * Geometry: parameterise the stem as `farEnd + s × (original − farEnd)` for s ∈ [0, 1].
+ * Solve `(stemPoint − facePoint) · throughNormal = 0` for s. Clamp to [0, 1] so we
+ * never extend past the original endpoint or wrap back beyond the stem's far end.
+ */
+function trimmedEndpointMm(
+  wall: Wall,
+  end: 'start' | 'end',
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>
+): Point {
+  const original: Point =
+    end === 'start'
+      ? { x: wall.startX, y: wall.startY }
+      : { x: wall.endX, y: wall.endY }
+  const junction = end === 'start' ? wall.startJunction : wall.endJunction
+  if (junction.type !== 't-junction') return original
+  const throughId = junction.connectedWallIds?.[0]
+  if (!throughId) return original
+  const through = walls.find((w) => w.id === throughId)
+  if (!through || isCurvedWall(through)) return original
+
+  const farEnd: Point =
+    end === 'start'
+      ? { x: wall.endX, y: wall.endY }
+      : { x: wall.startX, y: wall.startY }
+
+  // Through-wall direction & normal.
+  const tdx = through.endX - through.startX
+  const tdy = through.endY - through.startY
+  const tLen = Math.sqrt(tdx * tdx + tdy * tdy)
+  if (tLen === 0) return original
+  const nDirX = -tdy / tLen
+  const nDirY = tdx / tLen
+
+  // Determine which side of the through-wall the stem sits on (using the FAR endpoint as
+  // a reference point that's safely off the wall).
+  const signedPerp =
+    (farEnd.x - through.startX) * nDirX + (farEnd.y - through.startY) * nDirY
+  const side = signedPerp >= 0 ? 1 : -1
+
+  const throughHalfThickness = (thicknessByWallId[throughId] ?? 190) / 2
+
+  // A point on the through-wall's near face (the face on the stem's side).
+  const facePtX = through.startX + side * throughHalfThickness * nDirX
+  const facePtY = through.startY + side * throughHalfThickness * nDirY
+
+  // Find s where the stem's centreline crosses the face line:
+  //   alpha + s × beta = 0, where
+  //   alpha = (farEnd − facePt) · N,  beta = (original − farEnd) · N
+  const alpha = (farEnd.x - facePtX) * nDirX + (farEnd.y - facePtY) * nDirY
+  const beta = (original.x - farEnd.x) * nDirX + (original.y - farEnd.y) * nDirY
+  if (Math.abs(beta) < 0.001) return original // stem parallel to through-wall
+
+  const s = Math.max(0, Math.min(1, -alpha / beta))
+  return {
+    x: farEnd.x + s * (original.x - farEnd.x),
+    y: farEnd.y + s * (original.y - farEnd.y),
+  }
+}
+
+/**
+ * Compute the outline of a curved wall's physical band: the outer arc forward followed by
+ * the inner arc reversed, closing into a polygon. `thicknessMm` is the band width.
+ */
+function bandPxForCurvedWall(
+  wall: Wall,
+  thicknessMm: number,
+  mmToPx: (mm: number) => number
+): number[] {
+  if (wall.midX === undefined || wall.midY === undefined) return []
+  const geom = arcFromThreePoints(
+    { x: wall.startX, y: wall.startY },
+    { x: wall.midX, y: wall.midY },
+    { x: wall.endX, y: wall.endY }
+  )
+  if (!geom) return []
+  const half = thicknessMm / 2
+  const outerR = geom.radiusMm + half
+  const innerR = Math.max(0.01, geom.radiusMm - half)
+  const samples = 48
+  const out: number[] = []
+  // Outer arc (start → end).
+  for (let i = 0; i < samples; i++) {
+    const t = i / (samples - 1)
+    const a = geom.startAngle + t * geom.sweepAngle
+    out.push(mmToPx(geom.centerX + outerR * Math.cos(a)))
+    out.push(mmToPx(geom.centerY + outerR * Math.sin(a)))
+  }
+  // Inner arc (end → start), to close the band.
+  for (let i = samples - 1; i >= 0; i--) {
+    const t = i / (samples - 1)
+    const a = geom.startAngle + t * geom.sweepAngle
+    out.push(mmToPx(geom.centerX + innerR * Math.cos(a)))
+    out.push(mmToPx(geom.centerY + innerR * Math.sin(a)))
+  }
+  return out
+}
+
+/**
  * Konva overlay for drawing/selecting/editing walls + placing/displaying openings.
  */
-export default function WallDrawingLayer({
+function WallDrawingLayerInner({
   walls,
   openings,
+  wallThicknessByWallId,
   visualWidth,
   visualHeight,
   pxPerMmAtCurrentZoom,
   drawingMode,
+  drawingCurveMode,
   placingOpening,
+  placingControlJoint = false,
+  placingTiedPier = false,
+  placingFreestandingPier = false,
+  piers = [],
   selectedWallId,
   selectedOpeningId,
+  selectedPierId = null,
   onWallAdded,
+  onCurvedWallAdded,
   onWallSelect,
   onWallEndpointMoved,
   onOpeningPlaced,
   onOpeningSelect,
+  onControlJointPlaced,
+  onTiedPierPlaced,
+  onFreestandingPierPlaced,
+  onPierSelect,
   onCancelDraw,
 }: WallDrawingLayerProps) {
   const pxToMm = (px: number) => px / pxPerMmAtCurrentZoom
@@ -104,8 +488,24 @@ export default function WallDrawingLayer({
    */
   const [startMm, setStartMm] = useState<Point | null>(null)
   const [cursorMm, setCursorMm] = useState<Point | null>(null)
-  const [snapTarget, setSnapTarget] = useState<EndpointPixel | null>(null)
+  const [snapTarget, setSnapTarget] = useState<SnapResult | null>(null)
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null)
+
+  /** Anchor selections for curve drawing. Each anchor pins to a specific endpoint of an existing wall. */
+  const [curveAnchorA, setCurveAnchorA] = useState<{
+    wallId: string
+    end: 'start' | 'end'
+    xMm: number
+    yMm: number
+  } | null>(null)
+  const [curveAnchorB, setCurveAnchorB] = useState<{
+    wallId: string
+    end: 'start' | 'end'
+    xMm: number
+    yMm: number
+  } | null>(null)
+  /** Live cursor position during curve-midpoint hover, in MM. */
+  const [curveCursorMm, setCurveCursorMm] = useState<Point | null>(null)
   const [dragPreviewMm, setDragPreviewMm] = useState<{
     wallId: string
     which: 'start' | 'end'
@@ -119,6 +519,12 @@ export default function WallDrawingLayer({
   } | null>(null)
   /** Live projection while placing an opening (hover preview). */
   const [openingHoverProjection, setOpeningHoverProjection] = useState<WallProjection | null>(null)
+  /** Live projection while placing a control joint (hover preview marker). */
+  const [controlJointHover, setControlJointHover] = useState<WallProjection | null>(null)
+  /** Live projection while placing a tied pier (hover preview). */
+  const [tiedPierHover, setTiedPierHover] = useState<WallProjection | null>(null)
+  /** Live cursor in mm while placing a freestanding pier. */
+  const [freestandingPierHoverMm, setFreestandingPierHoverMm] = useState<Point | null>(null)
 
   // Derive current pixel positions from mm state — these recompute automatically on zoom.
   const startPx: Point | null = startMm ? { x: mmToPx(startMm.x), y: mmToPx(startMm.y) } : null
@@ -131,15 +537,97 @@ export default function WallDrawingLayer({
       }
     : null
 
-  const endpointsPx: EndpointPixel[] = useMemo(
-    () =>
-      walls.flatMap((w) => [
-        { x: mmToPx(w.startX), y: mmToPx(w.startY), wallId: w.id, end: 'start' as const },
-        { x: mmToPx(w.endX), y: mmToPx(w.endY), wallId: w.id, end: 'end' as const },
-      ]),
+  /**
+   * Snap target positions for each wall endpoint. The target depends on the junction:
+   *
+   * - **Corner**: at the centreline-centreline intersection of the two cornered walls
+   *   (the geometric centre of the L corner area = the centre of the corner block for
+   *   equal-thickness 90° L's).
+   *
+   * - **Free**: at the centre of the wall's LAST BLOCK — halfThickness IN from the wall's
+   *   data endpoint, along the wall direction toward the body. Matches masonry practice:
+   *   when you draw a new wall to corner with an existing one, you align with the centre
+   *   of the existing wall's corner block, not its very end.
+   *
+   * - **T-junction**: at the data endpoint (which is already at a face).
+   *
+   * The snap radius is enlarged for thick walls so the user can point anywhere in the
+   * end-block area and the snap still fires.
+   */
+  const endpointsPx: EndpointPixel[] = useMemo(() => {
+    const result: EndpointPixel[] = []
+    for (const w of walls) {
+      for (const end of ['start', 'end'] as const) {
+        const junction = end === 'start' ? w.startJunction : w.endJunction
+        const dataX = end === 'start' ? w.startX : w.endX
+        const dataY = end === 'start' ? w.startY : w.endY
+
+        let snapX = dataX
+        let snapY = dataY
+
+        const thickness = wallThicknessByWallId[w.id] ?? 190
+        const halfThicknessPx = mmToPx(thickness / 2)
+
+        if (junction.type === 'corner') {
+          const otherId = junction.connectedWallIds?.[0]
+          if (otherId) {
+            const other = walls.find((o) => o.id === otherId)
+            if (other && !isCurvedWall(other)) {
+              const intersection = intersectLinesMm(
+                {
+                  px: w.startX,
+                  py: w.startY,
+                  dx: w.endX - w.startX,
+                  dy: w.endY - w.startY,
+                },
+                {
+                  px: other.startX,
+                  py: other.startY,
+                  dx: other.endX - other.startX,
+                  dy: other.endY - other.startY,
+                }
+              )
+              if (intersection) {
+                snapX = intersection.x
+                snapY = intersection.y
+              }
+            }
+          }
+        } else if (junction.type === 'free') {
+          // Pull the snap target halfThickness in from the data endpoint along the wall
+          // direction, into the body — that's where the centre of the corner block sits
+          // for clean masonry alignment.
+          const farX = end === 'start' ? w.endX : w.startX
+          const farY = end === 'start' ? w.endY : w.startY
+          const dx = dataX - farX
+          const dy = dataY - farY
+          const len = Math.sqrt(dx * dx + dy * dy)
+          if (len > 0) {
+            const offset = Math.min(thickness / 2, len)
+            const ux = dx / len
+            const uy = dy / len
+            snapX = dataX - ux * offset
+            snapY = dataY - uy * offset
+          }
+        }
+
+        // Snap radius: large enough to catch the cursor anywhere in the end-block area.
+        // halfThickness covers from the snap target out to either the wall's end face or
+        // its inner edge, plus a small buffer.
+        const snapRadiusPx = Math.max(SNAP_THRESHOLD_PX, halfThicknessPx)
+
+        result.push({
+          x: mmToPx(snapX),
+          y: mmToPx(snapY),
+          wallId: w.id,
+          end,
+          snapRadiusPx,
+        })
+      }
+    }
+    return result
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [walls, pxPerMmAtCurrentZoom]
-  )
+  }, [walls, pxPerMmAtCurrentZoom, wallThicknessByWallId])
 
   // ---------- Wall geometry helpers ----------
 
@@ -189,18 +677,90 @@ export default function WallDrawingLayer({
     return { x: sx + t * (ex - sx), y: sy + t * (ey - sy) }
   }
 
-  function findSnap(cursor: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): EndpointPixel | null {
-    let closest: EndpointPixel | null = null
-    let closestDist = SNAP_THRESHOLD_PX
+  function findSnap(
+    cursor: Point,
+    excludeWallId?: string,
+    excludeEnd?: 'start' | 'end'
+  ): SnapResult | null {
+    // 1. Endpoint snap (corner candidate) — preferred when in range.
+    let closestEp: EndpointPixel | null = null
+    // Each endpoint carries its own snap radius (larger for thick walls so the user can
+    // land anywhere in the end-block area). closestEpDist starts at Infinity so any
+    // endpoint within its own radius is a candidate.
+    let closestEpDist = Infinity
     for (const ep of endpointsPx) {
       if (ep.wallId === excludeWallId && ep.end === excludeEnd) continue
       const d = distance(cursor, ep)
-      if (d < closestDist) {
-        closest = ep
-        closestDist = d
+      if (d < ep.snapRadiusPx && d < closestEpDist) {
+        closestEp = ep
+        closestEpDist = d
       }
     }
-    return closest
+    if (closestEp) {
+      return {
+        kind: 'endpoint',
+        x: closestEp.x,
+        y: closestEp.y,
+        wallId: closestEp.wallId,
+        end: closestEp.end,
+      }
+    }
+
+    // 2. Wall-FACE snap (T-junction candidate). With thick walls, the right snap target is
+    // the nearest face — not the centreline. The user clicks somewhere near or inside the
+    // wall body; we snap to the closest face point so the new wall's endpoint lands at the
+    // through-wall's edge. Endpoint dead-zone still applies along the wall length.
+    let closestBody: { x: number; y: number; wallId: string; distPx: number } | null = null
+    for (const wall of walls) {
+      if (wall.id === excludeWallId) continue
+      if (isCurvedWall(wall)) continue // curves only connect at endpoints
+      const proj = projectOntoWall(cursor, wall)
+      if (!proj) continue
+      const wallLenMm = wallLengthMmOf(wall)
+      if (wallLenMm === 0) continue
+      const wallLenPx = mmToPx(wallLenMm)
+      const alongPx = (proj.alongMm / wallLenMm) * wallLenPx
+      if (alongPx < SNAP_THRESHOLD_PX || alongPx > wallLenPx - SNAP_THRESHOLD_PX) continue
+
+      // Half-thickness in pixels. Convert via mmToPx so it scales with the current zoom.
+      const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+      const halfThicknessPx = mmToPx(thicknessMm / 2)
+
+      // Cursor's perpendicular offset from the centreline projection.
+      const perpX = cursor.x - proj.px.x
+      const perpY = cursor.y - proj.px.y
+      const perpDist = Math.sqrt(perpX * perpX + perpY * perpY)
+
+      // Distance from cursor to the nearest face line. Inside the wall: halfThickness−perp.
+      // Outside the wall: perp−halfThickness. Either way: |perp − halfThickness|.
+      const distToFace = Math.abs(perpDist - halfThicknessPx)
+      if (distToFace > WALL_SNAP_THRESHOLD_PX) continue
+
+      // Snap target is the face point: centreline projection + perpendicular_dir × halfThickness.
+      // If perp is near zero (cursor sits ON the centreline), default to one side arbitrarily.
+      let dirX = 0
+      let dirY = 1
+      if (perpDist > 0.01) {
+        dirX = perpX / perpDist
+        dirY = perpY / perpDist
+      }
+      const faceX = proj.px.x + dirX * halfThicknessPx
+      const faceY = proj.px.y + dirY * halfThicknessPx
+
+      if (!closestBody || distToFace < closestBody.distPx) {
+        closestBody = { x: faceX, y: faceY, wallId: wall.id, distPx: distToFace }
+      }
+    }
+    if (closestBody) {
+      return {
+        kind: 'body',
+        x: closestBody.x,
+        y: closestBody.y,
+        wallId: closestBody.wallId,
+      }
+    }
+
+    return null
   }
 
   // ---------- Cleanup on mode toggle ----------
@@ -220,6 +780,26 @@ export default function WallDrawingLayer({
   }, [placingOpening])
 
   useEffect(() => {
+    if (!placingControlJoint) setControlJointHover(null)
+  }, [placingControlJoint])
+
+  useEffect(() => {
+    if (!placingTiedPier) setTiedPierHover(null)
+  }, [placingTiedPier])
+
+  useEffect(() => {
+    if (!placingFreestandingPier) setFreestandingPierHoverMm(null)
+  }, [placingFreestandingPier])
+
+  useEffect(() => {
+    if (!drawingCurveMode) {
+      setCurveAnchorA(null)
+      setCurveAnchorB(null)
+      setCurveCursorMm(null)
+    }
+  }, [drawingCurveMode])
+
+  useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         if (drawingMode) {
@@ -227,9 +807,23 @@ export default function WallDrawingLayer({
           setCursorMm(null)
           setSnapTarget(null)
           onCancelDraw?.()
+        } else if (drawingCurveMode) {
+          setCurveAnchorA(null)
+          setCurveAnchorB(null)
+          setCurveCursorMm(null)
+          onCancelDraw?.()
         } else if (placingOpening) {
           setOpeningPlacementStart(null)
           setOpeningHoverProjection(null)
+          onCancelDraw?.()
+        } else if (placingControlJoint) {
+          setControlJointHover(null)
+          onCancelDraw?.()
+        } else if (placingTiedPier) {
+          setTiedPierHover(null)
+          onCancelDraw?.()
+        } else if (placingFreestandingPier) {
+          setFreestandingPierHoverMm(null)
           onCancelDraw?.()
         } else if (selectedWallId) {
           onWallSelect(null)
@@ -240,7 +834,7 @@ export default function WallDrawingLayer({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, placingOpening, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -295,11 +889,75 @@ export default function WallDrawingLayer({
       return
     }
 
+    if (placingControlJoint) {
+      const proj = findClosestWallProjection(raw)
+      if (!proj) return
+      // Curved walls aren't splittable here.
+      const wall = walls.find((w) => w.id === proj.wallId)
+      if (!wall || isCurvedWall(wall)) return
+      onControlJointPlaced?.(proj.wallId, proj.alongMm)
+      setControlJointHover(null)
+      return
+    }
+
+    if (placingTiedPier) {
+      const proj = findClosestWallProjection(raw)
+      if (!proj) return
+      const wall = walls.find((w) => w.id === proj.wallId)
+      if (!wall || isCurvedWall(wall)) return
+      onTiedPierPlaced?.(proj.wallId, proj.alongMm)
+      setTiedPierHover(null)
+      return
+    }
+
+    if (placingFreestandingPier) {
+      // Drop the pier wherever the user clicked — in real-world mm.
+      const xMm = pxToMm(raw.x)
+      const yMm = pxToMm(raw.y)
+      onFreestandingPierPlaced?.(xMm, yMm)
+      setFreestandingPierHoverMm(null)
+      return
+    }
+
+    if (drawingCurveMode) {
+      // Clicks 1 & 2: pick a wall by clicking near it; anchor = its endpoint closer to the click.
+      if (!curveAnchorA || !curveAnchorB) {
+        const proj = findClosestWallProjection(raw)
+        if (!proj) return // ignored — user clicked too far from any wall
+        const wall = walls.find((w) => w.id === proj.wallId)
+        if (!wall) return
+        // Pick the endpoint closer to the click position.
+        const length = wallLengthMmOf(wall)
+        const useStart = proj.alongMm < length / 2
+        const xMm = useStart ? wall.startX : wall.endX
+        const yMm = useStart ? wall.startY : wall.endY
+        const anchor = { wallId: wall.id, end: (useStart ? 'start' : 'end') as 'start' | 'end', xMm, yMm }
+        if (!curveAnchorA) {
+          setCurveAnchorA(anchor)
+        } else if (anchor.wallId !== curveAnchorA.wallId) {
+          setCurveAnchorB(anchor)
+        }
+        return
+      }
+      // Click 3: midpoint of the arc (free position, no snap to existing walls).
+      const midMm: Point = { x: pxToMm(raw.x), y: pxToMm(raw.y) }
+      onCurvedWallAdded(
+        { x: curveAnchorA.xMm, y: curveAnchorA.yMm },
+        midMm,
+        { x: curveAnchorB.xMm, y: curveAnchorB.yMm }
+      )
+      setCurveAnchorA(null)
+      setCurveAnchorB(null)
+      setCurveCursorMm(null)
+      return
+    }
+
     // View mode: clicking on empty stage area deselects. Konva only fires onClick when
     // there's no significant drag, so a click+drag (pan) won't trigger deselect.
     if (e.target === e.target.getStage()) {
       if (selectedWallId) onWallSelect(null)
       if (selectedOpeningId) onOpeningSelect(null)
+      if (selectedPierId && onPierSelect) onPierSelect(null)
     }
   }
 
@@ -313,10 +971,37 @@ export default function WallDrawingLayer({
       setSnapTarget(findSnap(raw))
       const resolved = resolveSnap(raw)
       setCursorMm({ x: pxToMm(resolved.x), y: pxToMm(resolved.y) })
+    } else if (drawingCurveMode && curveAnchorA && curveAnchorB) {
+      // After both anchors are picked, follow the cursor so we can preview the arc
+      // through anchorA → cursor → anchorB.
+      setCurveCursorMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
       const proj = findClosestWallProjection(raw, onlyWall)
       setOpeningHoverProjection(proj)
+    } else if (placingControlJoint) {
+      const proj = findClosestWallProjection(raw)
+      // Don't preview splits on curved walls — control joints only apply to straight walls.
+      if (proj) {
+        const wall = walls.find((w) => w.id === proj.wallId)
+        if (wall && isCurvedWall(wall)) {
+          setControlJointHover(null)
+          return
+        }
+      }
+      setControlJointHover(proj)
+    } else if (placingTiedPier) {
+      const proj = findClosestWallProjection(raw)
+      if (proj) {
+        const wall = walls.find((w) => w.id === proj.wallId)
+        if (wall && isCurvedWall(wall)) {
+          setTiedPierHover(null)
+          return
+        }
+      }
+      setTiedPierHover(proj)
+    } else if (placingFreestandingPier) {
+      setFreestandingPierHoverMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
     }
   }
 
@@ -372,7 +1057,15 @@ export default function WallDrawingLayer({
 
   const wallsById = useMemo(() => new Map(walls.map((w) => [w.id, w])), [walls])
 
-  const containerCursor = drawingMode || placingOpening ? 'crosshair' : 'inherit'
+  const containerCursor =
+    drawingMode ||
+    placingOpening ||
+    drawingCurveMode ||
+    placingControlJoint ||
+    placingTiedPier ||
+    placingFreestandingPier
+      ? 'crosshair'
+      : 'inherit'
 
   return (
     <Stage
@@ -394,41 +1087,219 @@ export default function WallDrawingLayer({
         {walls.map((wall) => {
           const start = effectiveEndpoint(wall, 'start')
           const end = effectiveEndpoint(wall, 'end')
-          const len = distance(
-            { x: pxToMm(start.x), y: pxToMm(start.y) },
-            { x: pxToMm(end.x), y: pxToMm(end.y) }
-          )
-          const midX = (start.x + end.x) / 2
-          const midY = (start.y + end.y) / 2
+
+          // Each wall renders as a closed polygon at its physical thickness:
+          //   - free / t-junction endpoints: perpendicular cut at the (possibly trimmed) centreline
+          //   - corner endpoints: MITRED — the polygon's two corners at that end are the L's outer
+          //     and inner corner points, so the two walls tile cleanly into the L
+          //   - curved walls: thick arc band (no junction-aware trim — curves connect at endpoints)
+          const isCurved = isCurvedWall(wall)
+          const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+          const polygonPx: number[] = (() => {
+            if (isCurved) {
+              return bandPxForCurvedWall(wall, thicknessMm, mmToPx)
+            }
+
+            // Compute the four polygon corners in mm:
+            //   startPos / startNeg = at the start end, on +N / -N side
+            //   endPos / endNeg     = at the end end, on +N / -N side
+            const dx = wall.endX - wall.startX
+            const dy = wall.endY - wall.startY
+            const wlen = Math.sqrt(dx * dx + dy * dy)
+            if (wlen === 0) return []
+            const nx = -dy / wlen
+            const ny = dx / wlen
+            const half = thicknessMm / 2
+
+            // ── start end ──
+            let startPos: Point
+            let startNeg: Point
+            if (wall.startJunction.type === 'corner') {
+              const m = mitredCornerPointsMm(wall, 'start', walls, wallThicknessByWallId)
+              if (m) {
+                startPos = m.posCorner
+                startNeg = m.negCorner
+              } else {
+                startPos = { x: wall.startX + nx * half, y: wall.startY + ny * half }
+                startNeg = { x: wall.startX - nx * half, y: wall.startY - ny * half }
+              }
+            } else {
+              const trim =
+                wall.startJunction.type === 't-junction'
+                  ? trimmedEndpointMm(wall, 'start', walls, wallThicknessByWallId)
+                  : { x: wall.startX, y: wall.startY }
+              startPos = { x: trim.x + nx * half, y: trim.y + ny * half }
+              startNeg = { x: trim.x - nx * half, y: trim.y - ny * half }
+            }
+
+            // ── end end ──
+            let endPos: Point
+            let endNeg: Point
+            if (wall.endJunction.type === 'corner') {
+              const m = mitredCornerPointsMm(wall, 'end', walls, wallThicknessByWallId)
+              if (m) {
+                endPos = m.posCorner
+                endNeg = m.negCorner
+              } else {
+                endPos = { x: wall.endX + nx * half, y: wall.endY + ny * half }
+                endNeg = { x: wall.endX - nx * half, y: wall.endY - ny * half }
+              }
+            } else {
+              const trim =
+                wall.endJunction.type === 't-junction'
+                  ? trimmedEndpointMm(wall, 'end', walls, wallThicknessByWallId)
+                  : { x: wall.endX, y: wall.endY }
+              endPos = { x: trim.x + nx * half, y: trim.y + ny * half }
+              endNeg = { x: trim.x - nx * half, y: trim.y - ny * half }
+            }
+
+            // Walk the polygon counter-clockwise (start+N → end+N → end-N → start-N).
+            return [
+              mmToPx(startPos.x), mmToPx(startPos.y),
+              mmToPx(endPos.x), mmToPx(endPos.y),
+              mmToPx(endNeg.x), mmToPx(endNeg.y),
+              mmToPx(startNeg.x), mmToPx(startNeg.y),
+            ]
+          })()
+
+          // Wall length displayed in the label = OUTER-EDGE length, not centreline.
+          //   - For corner-tagged ends, the polygon mitre extends the outer face past the
+          //     centreline endpoint to the L's outer corner — that adds halfThickness of
+          //     the connected wall to the wall's "as-measured-on-the-outside" length.
+          //   - For free / t-junction ends, no extension.
+          //   - Curved walls use arc length (no mitre concept).
+          //
+          // This matches what users measure with a tape on the outside of the wall.
+          const len = isCurved
+            ? (arcFromThreePoints(
+                { x: wall.startX, y: wall.startY },
+                { x: wall.midX ?? 0, y: wall.midY ?? 0 },
+                { x: wall.endX, y: wall.endY }
+              )?.arcLengthMm ?? 0)
+            : (() => {
+                const centrelineLen = distance(
+                  { x: pxToMm(start.x), y: pxToMm(start.y) },
+                  { x: pxToMm(end.x), y: pxToMm(end.y) }
+                )
+                // Per-end adjustment:
+                //   - CORNER: + overlap (outer-edge extension)
+                //   - T-JUNCTION: − overlap (face-aligned length, stem is a separate wall)
+                // overlap = max(0, halfThickness_other − perpDist to other's centreline)
+                let adjust = 0
+                for (const which of ['start', 'end'] as const) {
+                  const j = which === 'start' ? wall.startJunction : wall.endJunction
+                  if (j.type !== 'corner' && j.type !== 't-junction') continue
+                  const otherId = j.connectedWallIds?.[0]
+                  if (!otherId) continue
+                  const otherThickness = wallThicknessByWallId[otherId]
+                  if (!otherThickness) continue
+                  const other = walls.find((w) => w.id === otherId)
+                  if (!other) continue
+                  const dataX = which === 'start' ? wall.startX : wall.endX
+                  const dataY = which === 'start' ? wall.startY : wall.endY
+                  const odx = other.endX - other.startX
+                  const ody = other.endY - other.startY
+                  const oLen = Math.sqrt(odx * odx + ody * ody)
+                  if (oLen === 0) continue
+                  const onx = -ody / oLen
+                  const ony = odx / oLen
+                  const perpDist = Math.abs(
+                    (dataX - other.startX) * onx + (dataY - other.startY) * ony
+                  )
+                  const overlap = Math.max(0, otherThickness / 2 - perpDist)
+                  adjust += j.type === 'corner' ? overlap : -overlap
+                }
+                return Math.max(0, centrelineLen + adjust)
+              })()
+
+          // Label position: chord midpoint for straight, the user-clicked midpoint for curved.
+          const midX = isCurved
+            ? mmToPx(wall.midX ?? (wall.startX + wall.endX) / 2)
+            : (start.x + end.x) / 2
+          const midY = isCurved
+            ? mmToPx(wall.midY ?? (wall.startY + wall.endY) / 2)
+            : (start.y + end.y) / 2
 
           const isSelected = wall.id === selectedWallId
-          const isHovered = wall.id === hoveredWallId && !drawingMode && !placingOpening
-          const strokeColor = isSelected ? '#3b82f6' : '#ED7D31'
-          const strokeWidth = isSelected ? 5 : isHovered ? 5 : 4
+          const isHovered =
+            wall.id === hoveredWallId &&
+            !drawingMode &&
+            !placingOpening &&
+            !drawingCurveMode &&
+            !placingControlJoint &&
+            !placingTiedPier &&
+            !placingFreestandingPier
+          const isCurveAnchor =
+            drawingCurveMode &&
+            (curveAnchorA?.wallId === wall.id || curveAnchorB?.wallId === wall.id)
+          const strokeColor = isCurveAnchor
+            ? '#8b5cf6'
+            : isSelected
+              ? '#3b82f6'
+              : '#ED7D31'
+          const strokeWidth = isSelected || isCurveAnchor ? 5 : isHovered ? 5 : 4
           const startIsCorner = wall.startJunction.type === 'corner'
           const endIsCorner = wall.endJunction.type === 'corner'
+          const startIsTjunction = wall.startJunction.type === 't-junction'
+          const endIsTjunction = wall.endJunction.type === 't-junction'
+          const startIsControlJoint = wall.startJunction.type === 'control-joint'
+          const endIsControlJoint = wall.endJunction.type === 'control-joint'
 
           return (
             <Group
               key={wall.id}
               onClick={(e) => {
-                if (drawingMode || placingOpening) return
+                // Curve / control-joint / pier modes: clicks bubble up to the stage handler
+                // (which picks anchors / splits / drops piers). Selection is suppressed.
+                if (
+                  drawingMode ||
+                  placingOpening ||
+                  drawingCurveMode ||
+                  placingControlJoint ||
+                  placingTiedPier ||
+                  placingFreestandingPier
+                ) return
                 onWallSelect(wall.id)
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
-                if (drawingMode || placingOpening) return
+                if (
+                  drawingMode ||
+                  placingOpening ||
+                  drawingCurveMode ||
+                  placingControlJoint ||
+                  placingTiedPier ||
+                  placingFreestandingPier
+                ) return
                 e.evt.stopPropagation()
               }}
             >
               <Line
-                points={[start.x, start.y, end.x, end.y]}
+                points={polygonPx}
+                closed
+                fill={
+                  isSelected
+                    ? 'rgba(59, 130, 246, 0.22)'
+                    : isCurveAnchor
+                      ? 'rgba(139, 92, 246, 0.22)'
+                      : 'rgba(237, 125, 49, 0.20)'
+                }
                 stroke={strokeColor}
-                strokeWidth={strokeWidth}
-                hitStrokeWidth={14}
+                strokeWidth={isSelected || isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
+                hitStrokeWidth={8}
+                lineJoin="miter"
                 onMouseEnter={(e) => {
-                  if (!drawingMode && !placingOpening) {
+                  if (
+                    !drawingMode &&
+                    !placingOpening &&
+                    !drawingCurveMode &&
+                    !placingControlJoint &&
+                    !placingTiedPier &&
+                    !placingFreestandingPier
+                  ) {
                     setHoveredWallId(wall.id)
+                    setCursor(e.target.getStage(), 'pointer')
+                  } else if (drawingCurveMode || placingControlJoint || placingTiedPier) {
                     setCursor(e.target.getStage(), 'pointer')
                   }
                 }}
@@ -438,27 +1309,61 @@ export default function WallDrawingLayer({
                 }}
               />
 
-              {renderEndpointMarker({
-                pos: start,
-                isCorner: startIsCorner,
-                isSelected,
-                draggable: isSelected,
-                onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'start'),
-                onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'start'),
-                onMouseEnterStage: (ev) => setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
-                onMouseLeaveStage: (ev) => setCursor(ev.target.getStage(), containerCursor),
-              })}
+              {/* Endpoint markers. For corner-tagged endpoints, render ONE marker per
+                  corner pair at the centreline-centreline intersection (the geometric
+                  centre of the L). The "primary" wall — the one with the lower id —
+                  renders the marker; the other wall skips it to avoid duplicates. */}
+              {(() => {
+                const result = cornerMarkerPosOrSkip(
+                  wall,
+                  'start',
+                  startIsCorner,
+                  walls,
+                  mmToPx,
+                  start
+                )
+                if (result === 'skip') return null
+                return renderEndpointMarker({
+                  pos: result,
+                  isCorner: startIsCorner,
+                  isTjunction: startIsTjunction,
+                  isControlJoint: startIsControlJoint,
+                  isSelected,
+                  draggable: isSelected && !startIsCorner && !startIsControlJoint,
+                  onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'start'),
+                  onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'start'),
+                  onMouseEnterStage: (ev) =>
+                    setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
+                  onMouseLeaveStage: (ev) =>
+                    setCursor(ev.target.getStage(), containerCursor),
+                })
+              })()}
 
-              {renderEndpointMarker({
-                pos: end,
-                isCorner: endIsCorner,
-                isSelected,
-                draggable: isSelected,
-                onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'end'),
-                onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'end'),
-                onMouseEnterStage: (ev) => setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
-                onMouseLeaveStage: (ev) => setCursor(ev.target.getStage(), containerCursor),
-              })}
+              {(() => {
+                const result = cornerMarkerPosOrSkip(
+                  wall,
+                  'end',
+                  endIsCorner,
+                  walls,
+                  mmToPx,
+                  end
+                )
+                if (result === 'skip') return null
+                return renderEndpointMarker({
+                  pos: result,
+                  isCorner: endIsCorner,
+                  isTjunction: endIsTjunction,
+                  isControlJoint: endIsControlJoint,
+                  isSelected,
+                  draggable: isSelected && !endIsCorner && !endIsControlJoint,
+                  onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'end'),
+                  onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'end'),
+                  onMouseEnterStage: (ev) =>
+                    setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
+                  onMouseLeaveStage: (ev) =>
+                    setCursor(ev.target.getStage(), containerCursor),
+                })
+              })()}
 
               <Text
                 x={midX + 8}
@@ -487,12 +1392,24 @@ export default function WallDrawingLayer({
             <Group
               key={opening.id}
               onClick={(e) => {
-                if (drawingMode || placingOpening) return
+                if (
+                  drawingMode ||
+                  placingOpening ||
+                  placingControlJoint ||
+                  placingTiedPier ||
+                  placingFreestandingPier
+                ) return
                 onOpeningSelect(opening.id)
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
-                if (drawingMode || placingOpening) return
+                if (
+                  drawingMode ||
+                  placingOpening ||
+                  placingControlJoint ||
+                  placingTiedPier ||
+                  placingFreestandingPier
+                ) return
                 e.evt.stopPropagation()
               }}
             >
@@ -579,6 +1496,168 @@ export default function WallDrawingLayer({
           />
         )}
 
+        {/* Piers — rendered above wall polygons. Tied piers as 390×390 squares on the wall;
+            freestanding piers as standalone 390×390 squares at their (x, y). */}
+        {piers.map((pier) => {
+          const isSelected = pier.id === selectedPierId
+          // Pier face size: 390mm × 390mm (block 40.925 footprint).
+          const sizeMm = 390
+          let cxPx = 0
+          let cyPx = 0
+          let rotationDeg = 0
+
+          if (pier.type === 'tied') {
+            const wall = wallsById.get(pier.wallId)
+            if (!wall || isCurvedWall(wall)) return null
+            const pos = pointAlongWallPx(wall, pier.alongMm)
+            cxPx = pos.x
+            cyPx = pos.y
+            const dx = wall.endX - wall.startX
+            const dy = wall.endY - wall.startY
+            rotationDeg = (Math.atan2(dy, dx) * 180) / Math.PI
+          } else {
+            cxPx = mmToPx(pier.x)
+            cyPx = mmToPx(pier.y)
+          }
+
+          const sizePx = mmToPx(sizeMm)
+          const fillColor = pier.type === 'tied'
+            ? (isSelected ? 'rgba(5, 150, 105, 0.45)' : 'rgba(16, 185, 129, 0.35)')
+            : (isSelected ? 'rgba(13, 148, 136, 0.45)' : 'rgba(20, 184, 166, 0.35)')
+          const strokeColor = pier.type === 'tied' ? '#065f46' : '#0f766e'
+
+          return (
+            <Group
+              key={pier.id}
+              onClick={(e) => {
+                if (
+                  drawingMode ||
+                  placingOpening ||
+                  drawingCurveMode ||
+                  placingControlJoint ||
+                  placingTiedPier ||
+                  placingFreestandingPier
+                ) return
+                if (onPierSelect) onPierSelect(pier.id)
+                e.cancelBubble = true
+              }}
+              onMouseDown={(e) => {
+                if (
+                  drawingMode ||
+                  placingOpening ||
+                  drawingCurveMode ||
+                  placingControlJoint ||
+                  placingTiedPier ||
+                  placingFreestandingPier
+                ) return
+                e.evt.stopPropagation()
+              }}
+            >
+              <Rect
+                x={cxPx}
+                y={cyPx}
+                width={sizePx}
+                height={sizePx}
+                offsetX={sizePx / 2}
+                offsetY={sizePx / 2}
+                rotation={rotationDeg}
+                fill={fillColor}
+                stroke={strokeColor}
+                strokeWidth={isSelected ? 2.5 : 1.5}
+                hitStrokeWidth={6}
+              />
+              <Text
+                x={cxPx - 14}
+                y={cyPx - 6}
+                text={pier.type === 'tied' ? 'T' : 'P'}
+                fontSize={13}
+                fill={strokeColor}
+                fontStyle="bold"
+                listening={false}
+              />
+            </Group>
+          )
+        })}
+
+        {/* Tied pier hover preview — square at the wall projection. */}
+        {placingTiedPier && tiedPierHover && (() => {
+          const wall = walls.find((w) => w.id === tiedPierHover.wallId)
+          if (!wall || isCurvedWall(wall)) return null
+          const dx = wall.endX - wall.startX
+          const dy = wall.endY - wall.startY
+          const rotationDeg = (Math.atan2(dy, dx) * 180) / Math.PI
+          const sizePx = mmToPx(390)
+          return (
+            <Rect
+              x={tiedPierHover.px.x}
+              y={tiedPierHover.px.y}
+              width={sizePx}
+              height={sizePx}
+              offsetX={sizePx / 2}
+              offsetY={sizePx / 2}
+              rotation={rotationDeg}
+              fill="rgba(16, 185, 129, 0.25)"
+              stroke="#065f46"
+              strokeWidth={2}
+              dash={[6, 4]}
+              listening={false}
+            />
+          )
+        })()}
+
+        {/* Freestanding pier hover preview — axis-aligned 390×390 square at the cursor. */}
+        {placingFreestandingPier && freestandingPierHoverMm && (() => {
+          const cxPx = mmToPx(freestandingPierHoverMm.x)
+          const cyPx = mmToPx(freestandingPierHoverMm.y)
+          const sizePx = mmToPx(390)
+          return (
+            <Rect
+              x={cxPx}
+              y={cyPx}
+              width={sizePx}
+              height={sizePx}
+              offsetX={sizePx / 2}
+              offsetY={sizePx / 2}
+              fill="rgba(20, 184, 166, 0.25)"
+              stroke="#0f766e"
+              strokeWidth={2}
+              dash={[6, 4]}
+              listening={false}
+            />
+          )
+        })()}
+
+        {/* Control-joint hover preview — show where the click would split the wall. */}
+        {placingControlJoint && controlJointHover && (() => {
+          const wall = walls.find((w) => w.id === controlJointHover.wallId)
+          if (!wall || isCurvedWall(wall)) return null
+          const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+          // Perpendicular tick across the wall thickness at the projected point.
+          const dx = wall.endX - wall.startX
+          const dy = wall.endY - wall.startY
+          const wlen = Math.sqrt(dx * dx + dy * dy)
+          if (wlen === 0) return null
+          const nx = -dy / wlen
+          const ny = dx / wlen
+          const half = thicknessMm / 2 + 30 // mm — overhang a touch outside the wall for visibility
+          const cx = controlJointHover.px.x
+          const cy = controlJointHover.px.y
+          const tx = mmToPx(nx * half)
+          const ty = mmToPx(ny * half)
+          return (
+            <Group listening={false}>
+              <Line
+                points={[cx - tx, cy - ty, cx + tx, cy + ty]}
+                stroke="#e11d48"
+                strokeWidth={2}
+                dash={[6, 4]}
+              />
+              <Circle x={cx} y={cy} radius={7} stroke="#e11d48" strokeWidth={2} fill="white" />
+              <Circle x={cx} y={cy} radius={2.5} fill="#e11d48" />
+            </Group>
+          )
+        })()}
+
         {/* Wall drawing preview */}
         {drawingMode && startPx && (
           <Group listening={false}>
@@ -609,15 +1688,92 @@ export default function WallDrawingLayer({
           </Group>
         )}
 
-        {/* Snap indicator */}
+        {/* Curve drawing preview */}
+        {drawingCurveMode && (
+          <Group listening={false}>
+            {curveAnchorA && (
+              <Circle
+                x={mmToPx(curveAnchorA.xMm)}
+                y={mmToPx(curveAnchorA.yMm)}
+                radius={7}
+                fill="#8b5cf6"
+                stroke="white"
+                strokeWidth={2}
+              />
+            )}
+            {curveAnchorB && (
+              <Circle
+                x={mmToPx(curveAnchorB.xMm)}
+                y={mmToPx(curveAnchorB.yMm)}
+                radius={7}
+                fill="#8b5cf6"
+                stroke="white"
+                strokeWidth={2}
+              />
+            )}
+            {/* Arc preview through anchor A → cursor → anchor B */}
+            {curveAnchorA && curveAnchorB && curveCursorMm && (() => {
+              const geom = arcFromThreePoints(
+                { x: curveAnchorA.xMm, y: curveAnchorA.yMm },
+                curveCursorMm,
+                { x: curveAnchorB.xMm, y: curveAnchorB.yMm }
+              )
+              if (!geom) {
+                // Collinear — show a dashed straight line as a fallback hint.
+                return (
+                  <Line
+                    points={[
+                      mmToPx(curveAnchorA.xMm),
+                      mmToPx(curveAnchorA.yMm),
+                      mmToPx(curveAnchorB.xMm),
+                      mmToPx(curveAnchorB.yMm),
+                    ]}
+                    stroke="#8b5cf6"
+                    strokeWidth={2}
+                    dash={[6, 4]}
+                  />
+                )
+              }
+              const pts = sampleArc(geom, 48)
+              const flat: number[] = []
+              for (const p of pts) flat.push(mmToPx(p.x), mmToPx(p.y))
+              return (
+                <>
+                  <Line
+                    points={flat}
+                    stroke="#8b5cf6"
+                    strokeWidth={3}
+                    dash={[8, 4]}
+                    lineCap="round"
+                    lineJoin="round"
+                  />
+                  <Text
+                    x={mmToPx(curveCursorMm.x) + 10}
+                    y={mmToPx(curveCursorMm.y) - 22}
+                    text={`R ${Math.round(geom.radiusMm)} · arc ${Math.round(geom.arcLengthMm)}mm`}
+                    fontSize={13}
+                    fill="#6d28d9"
+                    fontStyle="bold"
+                  />
+                </>
+              )
+            })()}
+          </Group>
+        )}
+
+        {/* Snap indicator — green ring = endpoint (corner), purple ring = body (T-junction) */}
         {snapTarget && (
           <Circle
             x={snapTarget.x}
             y={snapTarget.y}
             radius={10}
-            stroke="#10b981"
+            stroke={snapTarget.kind === 'body' ? '#8b5cf6' : '#10b981'}
             strokeWidth={2.5}
-            fill="rgba(16, 185, 129, 0.18)"
+            fill={
+              snapTarget.kind === 'body'
+                ? 'rgba(139, 92, 246, 0.18)'
+                : 'rgba(16, 185, 129, 0.18)'
+            }
             listening={false}
           />
         )}
@@ -626,9 +1782,20 @@ export default function WallDrawingLayer({
   )
 }
 
+/**
+ * Memoised export — re-renders only when props change by shallow-compare. Combined with
+ * stable useCallback handlers and renderedZoom-based dimensions in the parent, this means
+ * the wall overlay does NOT re-render on every wheel-zoom tick. The visual scaling happens
+ * via the parent's CSS transform instead.
+ */
+const WallDrawingLayer = memo(WallDrawingLayerInner)
+export default WallDrawingLayer
+
 interface EndpointMarkerProps {
   pos: Point
   isCorner: boolean
+  isTjunction: boolean
+  isControlJoint?: boolean
   isSelected: boolean
   draggable: boolean
   onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => void
@@ -640,6 +1807,8 @@ interface EndpointMarkerProps {
 function renderEndpointMarker({
   pos,
   isCorner,
+  isTjunction,
+  isControlJoint = false,
   isSelected,
   draggable,
   onDragMove,
@@ -648,7 +1817,69 @@ function renderEndpointMarker({
   onMouseLeaveStage,
 }: EndpointMarkerProps) {
   const radius = isSelected ? 7 : 5
-  const fill = isSelected ? '#3b82f6' : isCorner ? '#10b981' : '#ED7D31'
+  const fill = isSelected
+    ? '#3b82f6'
+    : isCorner
+    ? '#10b981' // green = corner
+    : isTjunction
+    ? '#8b5cf6' // purple = T-junction
+    : isControlJoint
+    ? '#e11d48' // rose = control joint
+    : '#ED7D31' // orange = free
+
+  // Control joint: rose ring with a small dot at the centre — visually reads as a "split
+  // here" pin distinct from the other end markers. Both halves' endpoints overlap at the
+  // joint coordinates, so the two pins draw on top of each other (no dedup needed).
+  if (isControlJoint && !isSelected) {
+    return (
+      <>
+        <Circle
+          x={pos.x}
+          y={pos.y}
+          radius={7}
+          stroke={fill}
+          strokeWidth={2}
+          fill="white"
+          listening={false}
+        />
+        <Circle
+          x={pos.x}
+          y={pos.y}
+          radius={2.5}
+          fill={fill}
+          listening={false}
+        />
+      </>
+    )
+  }
+
+  // T-junction: purple diamond (square rotated 45°). Visually distinct from corners
+  // without being noisy.
+  if (isTjunction && !isSelected) {
+    const size = 12
+    return (
+      <Rect
+        x={pos.x}
+        y={pos.y}
+        width={size}
+        height={size}
+        offsetX={size / 2}
+        offsetY={size / 2}
+        rotation={45}
+        fill={fill}
+        stroke="white"
+        strokeWidth={2}
+        draggable={draggable}
+        onDragMove={onDragMove}
+        onDragEnd={onDragEnd}
+        onMouseDown={(e) => {
+          if (draggable) e.evt.stopPropagation()
+        }}
+        onMouseEnter={onMouseEnterStage}
+        onMouseLeave={onMouseLeaveStage}
+      />
+    )
+  }
 
   if (isCorner && !isSelected) {
     const size = 12
