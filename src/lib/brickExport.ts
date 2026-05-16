@@ -533,7 +533,9 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     </footer>`
   const htmlWithFooter = html.replace(/<\/section>/g, `${bemeFooter}</section>`)
 
-  // Direct one-click PDF download via html2pdf.js — no HTML preview tab.
+  // Hand the styled HTML to the print-to-PDF helper, which opens the export in
+  // a fresh tab and auto-triggers the browser's print dialog. The user picks
+  // "Save as PDF" and the tab closes itself afterwards.
   await downloadPdfFromHtml({ html: htmlWithFooter, filename: docTitle })
 }
 
