@@ -50,6 +50,18 @@ export type ProjectOutcome = 'won' | 'lost'
 
 /** What we save per page about the PDF (e.g. scale calibration). */
 export interface SavedPageData {
+  /**
+   * Real-world-mm per page-mm (e.g. 100 for a 1:100 plan). Window-independent —
+   * the canvas pixel scale is derived at render time from this ratio + the PDF's
+   * intrinsic `pageWidthMm` + the current canvas width. This is the canonical
+   * scale field going forward.
+   */
+  pageScaleRatio?: number
+  /**
+   * @deprecated Pre-fix scale (canvas-pixel-relative). Retained so projects
+   * saved before the page-ratio refactor still load — the workspace migrates
+   * them to `pageScaleRatio` on first open and stops writing this field.
+   */
   scalePxPerMm?: number
   pageWidthMm?: number
   pageHeightMm?: number

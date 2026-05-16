@@ -90,7 +90,31 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 type Point = { x: number; y: number }
 
 type PageData = {
-  scalePxPerMm?: number // px per mm at zoom = 1 (canonical form, zoom-independent)
+  /**
+   * Page scale ratio — e.g. 100 means 1:100 (one mm on the printed page
+   * represents 100 mm in the real world).
+   *
+   * This is the canonical scale invariant for a project. It's *window-
+   * independent* — the canvas pixel scale used by the wall layer is derived
+   * at render time from this ratio + the PDF's intrinsic `pageWidthMm` +
+   * the current canvas width (`baseWidth`).
+   *
+   * Storing px-per-mm directly (as the older `scalePxPerMm` field below
+   * did) coupled the saved scale to the canvas pixel width at the moment
+   * of calibration. If the browser was a different size on the next load
+   * — different display, devtools opened, sidebar widened — the saved
+   * scale no longer matched the rendered PDF and walls drifted relative
+   * to the plan underneath them. Storing the ratio fixes that: walls are
+   * always anchored to the PDF, regardless of viewport size.
+   */
+  pageScaleRatio?: number
+  /**
+   * @deprecated Pre-fix scale (px per mm at zoom = 1, canvas-pixel-relative).
+   * Still read for projects saved before the page-ratio refactor — on first
+   * load we derive `pageScaleRatio` from this value + the current `baseWidth`
+   * and save it back. Once migrated, this field is no longer written.
+   */
+  scalePxPerMm?: number
   pageWidthMm?: number // intrinsic page width in mm (from PDF metadata)
   pageHeightMm?: number
 }
@@ -1008,7 +1032,19 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const calibratingRef = useRef(calibrating)
 
   const pageData = pagesData[currentPage]
-  const currentScale = pageData?.scalePxPerMm
+  /**
+   * Canvas-pixels per real-world-mm at zoom = 1.
+   *
+   * Derived from the page ratio + the PDF's intrinsic page width + the
+   * current canvas width, so it adapts automatically when the browser is
+   * resized. Falls back to the legacy `scalePxPerMm` for projects saved
+   * before the page-ratio refactor (until the migration in the PDF
+   * onLoadSuccess handler converts them).
+   */
+  const currentScale =
+    pageData?.pageWidthMm && pageData?.pageScaleRatio
+      ? baseWidth / (pageData.pageWidthMm * pageData.pageScaleRatio)
+      : pageData?.scalePxPerMm
 
   // Aspect ratio (constant per page) — used to compute rendered height ahead of canvas re-render
   const aspectRatio =
@@ -1357,14 +1393,30 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (!calPoint1 || !calPoint2) return
     const mm = parseFloat(calInput)
     if (!Number.isFinite(mm) || mm <= 0) return
-    // Click points are now in the SVG's internal coord system (renderedZoom pixels — see
-    // svgCoordsFromEvent above). Normalise by renderedZoom to get px/mm at zoom = 1.
+    // Click points are in the SVG's internal coord system, which spans
+    // 0..renderedPageWidth (= baseWidth × renderedZoom). The full PDF page
+    // is `pageWidthMm` mm wide on paper, so each canvas pixel represents
+    //   pageWidthMm / (baseWidth × renderedZoom)
+    // mm on the page. The user has told us the click-to-click distance is
+    // `mm` mm in the *real world*, so the ratio (real-world mm per page mm)
+    // is straightforward to derive — and it's window-independent, which is
+    // the whole point of storing the ratio instead of px/mm.
+    const pageWidthMm = pagesData[currentPage]?.pageWidthMm
+    if (!pageWidthMm) return
     const pxAtRenderedZoom = distance(calPoint1, calPoint2)
     if (pxAtRenderedZoom < 2) return
-    const pxPerMmAtZoom1 = pxAtRenderedZoom / mm / renderedZoom
+    const pageMmBetweenClicks =
+      (pxAtRenderedZoom * pageWidthMm) / (baseWidth * renderedZoom)
+    const ratio = mm / pageMmBetweenClicks
     setPagesData((prev) => ({
       ...prev,
-      [currentPage]: { ...prev[currentPage], scalePxPerMm: pxPerMmAtZoom1 },
+      [currentPage]: {
+        ...prev[currentPage],
+        pageScaleRatio: ratio,
+        // Drop the legacy field so it can't shadow the new ratio. Mixing
+        // both is what caused walls to drift on reload in the first place.
+        scalePxPerMm: undefined,
+      },
     }))
     cancelCalibration()
   }
@@ -1375,10 +1427,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (!Number.isFinite(ratio) || ratio <= 0) return
     const data = pagesData[currentPage]
     if (!data?.pageWidthMm) return
-    const pxPerMm = baseWidth / (data.pageWidthMm * ratio)
+    // Ratio (e.g. 100 for 1:100) IS the canonical scale invariant — write it
+    // straight through. The canvas-pixel scale is derived at render time
+    // from this ratio + pageWidthMm + the current `baseWidth`.
     setPagesData((prev) => ({
       ...prev,
-      [currentPage]: { ...prev[currentPage], scalePxPerMm: pxPerMm },
+      [currentPage]: {
+        ...prev[currentPage],
+        pageScaleRatio: ratio,
+        scalePxPerMm: undefined,
+      },
     }))
     cancelCalibration()
   }
@@ -1645,15 +1703,26 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
         <div className="h-5 w-px bg-ink-600" />
 
-        {/* Scale — collapsed inline when set, expanded controls when not */}
+        {/* Scale — collapsed inline when set, expanded controls when not.
+            Prefer the page ratio (e.g. "1:100") because that's how plans are
+            actually labelled; fall back to px/mm for the brief moment a
+            legacy project's migration hasn't run yet. */}
         {currentScale && !calibrating ? (
           <div className="flex items-center gap-2 text-sm">
             <span className="text-ink-200">
               Scale:{' '}
-              <span className="font-semibold tabular-nums">
-                {currentScale.toFixed(3)}
-              </span>{' '}
-              <span className="text-ink-400">px/mm</span>
+              {pageData?.pageScaleRatio ? (
+                <span className="font-semibold tabular-nums">
+                  1:{Math.round(pageData.pageScaleRatio)}
+                </span>
+              ) : (
+                <>
+                  <span className="font-semibold tabular-nums">
+                    {currentScale.toFixed(3)}
+                  </span>{' '}
+                  <span className="text-ink-400">px/mm</span>
+                </>
+              )}
             </span>
             <button
               onClick={startCalibration}
@@ -2365,7 +2434,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               <div className="space-y-2">
                 {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
                   const isCurrent = pageNum === currentPage
-                  const hasScale = !!pagesData[pageNum]?.scalePxPerMm
+                  // Page is "scaled" if EITHER the new page-ratio is set
+                  // (post-fix projects) or the legacy px/mm field is present
+                  // (legacy projects, until migration runs on PDF load).
+                  const hasScale =
+                    !!pagesData[pageNum]?.pageScaleRatio ||
+                    !!pagesData[pageNum]?.scalePxPerMm
                   return (
                     <button
                       key={pageNum}
@@ -2464,14 +2538,36 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   onLoadSuccess={(page) => {
                     const widthMm = (page.originalWidth / POINTS_PER_INCH) * MM_PER_INCH
                     const heightMm = (page.originalHeight / POINTS_PER_INCH) * MM_PER_INCH
-                    setPagesData((prev) => ({
-                      ...prev,
-                      [currentPage]: {
-                        ...prev[currentPage],
-                        pageWidthMm: widthMm,
-                        pageHeightMm: heightMm,
-                      },
-                    }))
+                    setPagesData((prev) => {
+                      const existing = prev[currentPage] ?? {}
+                      // Migration for projects saved before the page-ratio
+                      // refactor: convert the legacy canvas-pixel-relative
+                      // `scalePxPerMm` into the window-independent
+                      // `pageScaleRatio` now that we know the PDF's true
+                      // `pageWidthMm`. Best-effort — it assumes the current
+                      // baseWidth roughly matches the one at save time. After
+                      // this migration the ratio is the source of truth and
+                      // subsequent reloads are stable regardless of viewport
+                      // size.
+                      const needsMigration =
+                        existing.scalePxPerMm !== undefined &&
+                        existing.pageScaleRatio === undefined
+                      const migratedRatio = needsMigration
+                        ? baseWidth / (widthMm * existing.scalePxPerMm!)
+                        : existing.pageScaleRatio
+                      return {
+                        ...prev,
+                        [currentPage]: {
+                          ...existing,
+                          pageWidthMm: widthMm,
+                          pageHeightMm: heightMm,
+                          pageScaleRatio: migratedRatio,
+                          // Clear the legacy field once migrated so future
+                          // saves don't carry the now-stale value forward.
+                          scalePxPerMm: needsMigration ? undefined : existing.scalePxPerMm,
+                        },
+                      }
+                    })
                   }}
                 />
               </Document>
