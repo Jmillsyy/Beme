@@ -756,46 +756,86 @@ function WallDrawingLayerInner({
   /**
    * Compute where a curve anchor would land for a given raw cursor position.
    *
-   * The anchor lands on the wall's SIDE FACE — i.e. the centreline projection at
-   * the click's along-wall position, offset halfThickness perpendicular to the
-   * wall on the side the cursor is on. Curves run off the edge of a wall in real
-   * masonry, not its centre, so the geometry that comes out of this matches the
-   * physical block layout. Endpoint detection isn't a special case any more: a
-   * click near a wall's end just lands at the side-face point right at the end,
-   * which is exactly where a curve terminates in a corner anyway.
+   * Two anchor styles depending on where the cursor sits relative to the wall:
+   *
+   *   - **Side face** (cursor *alongside* the wall): the centreline projection
+   *     at the cursor's along-wall position, offset half-thickness perpendicular
+   *     toward the cursor's side. Used when the user is hugging the long edge
+   *     of a wall — most curves that wrap around a corner.
+   *
+   *   - **End face** (cursor *past* either tip of the wall): the wall's
+   *     centreline endpoint, no perpendicular offset. Lets the user extend a
+   *     wall straight off its end with a curve, which is the natural move
+   *     when continuing a wall around a curved corner of the building.
+   *
+   * The threshold here is more generous than the regular wall-snap radius —
+   * curves are usually started a noticeable distance away from the wall,
+   * unlike straight-wall snaps where the click sits right on the face.
    *
    * Returns null if the cursor is too far from any wall.
    */
   function resolveCurveAnchorAtCursor(
     cursorPx: Point
   ): { wallId: string; xMm: number; yMm: number } | null {
-    const proj = findClosestWallProjection(cursorPx)
-    if (!proj) return null
-    const wall = walls.find((w) => w.id === proj.wallId)
+    // Generous threshold so the curve can be anchored well past the end of a
+    // wall — that's the common case for end-face anchoring, where the user's
+    // cursor is in empty space beyond the wall's tip.
+    const CURVE_ANCHOR_THRESHOLD_PX = 60
+
+    let best: { wallId: string; distPx: number; tUnclamped: number } | null = null
+    for (const wall of walls) {
+      const sx = mmToPx(wall.startX)
+      const sy = mmToPx(wall.startY)
+      const ex = mmToPx(wall.endX)
+      const ey = mmToPx(wall.endY)
+      const dx = ex - sx
+      const dy = ey - sy
+      const lenSq = dx * dx + dy * dy
+      if (lenSq === 0) continue
+      const tUnclamped = ((cursorPx.x - sx) * dx + (cursorPx.y - sy) * dy) / lenSq
+      const tClamped = Math.max(0, Math.min(1, tUnclamped))
+      const projX = sx + tClamped * dx
+      const projY = sy + tClamped * dy
+      const distPx = Math.hypot(cursorPx.x - projX, cursorPx.y - projY)
+      if (distPx > CURVE_ANCHOR_THRESHOLD_PX) continue
+      if (!best || distPx < best.distPx) {
+        best = { wallId: wall.id, distPx, tUnclamped }
+      }
+    }
+    if (!best) return null
+
+    const wall = walls.find((w) => w.id === best!.wallId)
     if (!wall) return null
     const lengthMm = wallLengthMmOf(wall)
     if (lengthMm <= 0) return null
 
-    // Centreline projection point (in mm).
-    const t = proj.alongMm / lengthMm
-    const projXmm = wall.startX + t * (wall.endX - wall.startX)
-    const projYmm = wall.startY + t * (wall.endY - wall.startY)
+    // End-face anchors: cursor is past the wall's tip in the wall's own
+    // direction. Anchor sits on the centreline endpoint with no perpendicular
+    // offset, so a curve drawn from here visually continues off the end of
+    // the wall rather than peeling off one of its sides.
+    if (best.tUnclamped > 1) {
+      return { wallId: wall.id, xMm: wall.endX, yMm: wall.endY }
+    }
+    if (best.tUnclamped < 0) {
+      return { wallId: wall.id, xMm: wall.startX, yMm: wall.startY }
+    }
 
-    // Wall direction + normal (in mm). For curved walls we approximate using the
-    // chord; faithful curved-on-curved anchoring would need a tangent at proj.
-    const dirXmm = (wall.endX - wall.startX) / lengthMm
-    const dirYmm = (wall.endY - wall.startY) / lengthMm
-    const normXmm = -dirYmm
-    const normYmm = dirXmm
-
-    // Sign = which side of the wall the cursor sits on, computed in mm space so
-    // px/zoom doesn't bias the result.
+    // Side-face anchor: existing behaviour for cursor alongside the wall.
+    // The anchor sits on the cursor's side of the wall, half-thickness off
+    // the centreline projection.
     const cursorXmm = pxToMm(cursorPx.x)
     const cursorYmm = pxToMm(cursorPx.y)
+    const dxMm = wall.endX - wall.startX
+    const dyMm = wall.endY - wall.startY
+    const projXmm = wall.startX + best.tUnclamped * dxMm
+    const projYmm = wall.startY + best.tUnclamped * dyMm
+    const dirXmm = dxMm / lengthMm
+    const dirYmm = dyMm / lengthMm
+    const normXmm = -dirYmm
+    const normYmm = dirXmm
     const dot =
       (cursorXmm - projXmm) * normXmm + (cursorYmm - projYmm) * normYmm
     const sign = dot >= 0 ? 1 : -1
-
     const halfTmm = (wallThicknessByWallId[wall.id] ?? 190) / 2
     return {
       wallId: wall.id,
