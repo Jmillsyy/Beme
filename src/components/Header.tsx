@@ -57,24 +57,42 @@ export default function Header() {
     authUser: user,
   })
 
+  // When the user is inside an org, the top-left brand area shows the org's
+  // name (white-label feel — the supplier sees "ABC Building Products" not
+  // "Beme" all over their tool). The Beme wordmark drops down to a small
+  // "powered by Beme" line so the product still gets a footprint. In
+  // personal mode the header reads as the original Beme branding.
+  const brandPrimary = currentOrg?.name ?? 'Beme'
+  const brandSecondary = currentOrg
+    ? 'Estimates · powered by Beme'
+    : 'Building estimates made easy'
+
   return (
     <header className="bg-ink-800 border-b border-ink-600">
       <div className="max-w-[1600px] mx-auto px-6 py-5 flex items-center justify-between gap-6">
-        <Link to="/" className="flex items-center gap-3 group">
-          <div className="relative w-[26px] h-[26px] rounded-[5px] bg-beme-500 group-hover:bg-beme-400 transition-colors">
+        <Link to="/" className="flex items-center gap-3 group min-w-0">
+          <div className="relative w-[26px] h-[26px] rounded-[5px] bg-beme-500 group-hover:bg-beme-400 transition-colors shrink-0">
             <div className="absolute inset-[5px] bg-ink-900 rounded-[2px]" />
           </div>
-          <div className="leading-tight">
-            <div className="text-2xl font-extrabold tracking-tight text-ink-50">Beme</div>
-            <div className="text-[12px] text-ink-300">Building estimates made easy</div>
+          <div className="leading-tight min-w-0">
+            <div
+              className="text-2xl font-extrabold tracking-tight text-ink-50 truncate"
+              title={brandPrimary}
+            >
+              {brandPrimary}
+            </div>
+            <div className="text-[12px] text-ink-300 truncate" title={brandSecondary}>
+              {brandSecondary}
+            </div>
           </div>
         </Link>
 
         <div className="flex items-center gap-3">
-          {/* Org switcher — appears only when the user is signed in and
-              belongs to at least one org. Single-org users see a static
-              "ORG NAME" pill; multi-org users get a dropdown to switch. */}
-          {signedIn && organisations.length > 0 && (
+          {/* Org switcher — only shown when the user belongs to *multiple*
+              orgs. With a single org, the org name already lives in the
+              top-left brand area (above), so a redundant pill on the right
+              would just be noise. */}
+          {signedIn && organisations.length > 1 && (
             <OrgSwitcher
               organisations={organisations}
               currentOrg={currentOrg}
@@ -83,9 +101,9 @@ export default function Header() {
           )}
 
           {/* Personalised tag — only shown when the user is NOT inside an
-              org context (the org switcher already labels the workspace for
-              org users). For single-user / personal mode it shows the
-              company / profile / OAuth name when any of those are set. */}
+              org context (the org name in the top-left already labels the
+              workspace for org users). For single-user / personal mode it
+              shows the company / profile / OAuth name when any of those are set. */}
           {!currentOrg && personalisedName && (
             <p
               className="text-[11px] text-ink-400 uppercase tracking-wider hidden md:block max-w-[260px] truncate"
