@@ -57,27 +57,67 @@ const MORTAR_MM = DEFAULT_MORTAR_JOINT_MM
 const HALF_BLOCK_DEPTH_MM = (dims: BlockDimensions) => dims.depthMm / 2
 
 /**
- * Centreline-radius cutoff (mm) above which we switch from 20.03CW to the makeup's standard
- * body block on a curve. Derived from the standard body block's dimensions: at this radius
- * the rear mortar joint of a 20.48 reaches zero — any tighter and adjacent rectangular
- * blocks physically overlap at the rear. Above this radius standard blocks fit fine (with
- * slightly compressed rear mortar), so the wedge isn't needed.
+ * Three radius bands govern how a curve is built. The numbers below the
+ * constants come straight from the rectangular-block mortar formula
+ *   m_rear = m_front − w_face × (w_face + m_front) / r_outer
+ * applied to the stock 20.48 (390 × 190 × 190 + 10 mortar), plus the wedge
+ * 20.03CW geometry (190 × 190 × 190, rear 140) where the same idea is run
+ * with the wedge's wider front-to-rear differential absorbing the curve.
  *
- * For the stock 20.48 (390 × 190 × 190): r_outer = 190 × 400 / 10 = 7600 mm, centreline ≈ 7505 mm.
+ *   r ≥ NO_CUT (~6000mm centreline)
+ *       Stock 20.48 fits with slightly compressed rear mortar. No cutting.
+ *
+ *   WEDGE ≤ r < NO_CUT  (~1500mm – 6000mm)
+ *       Stock 20.48 used (so the curve inherits the makeup's body block,
+ *       same as the walls it extends from), but each block needs a small
+ *       saw-cut on its rear corners to remove the overlap that would
+ *       otherwise occur. Cut amount per block roughly:
+ *         R = 6000 → ~3mm
+ *         R = 3500 → ~11mm
+ *         R = 2000 → ~26mm
+ *
+ *   MIN_FEASIBLE ≤ r < WEDGE  (~665mm – 1500mm)
+ *       20.03CW wedge block (190 front × 140 rear) — its taper is
+ *       designed for this band. Above 1500mm the wedge gives absurdly
+ *       fat rear mortar (~40mm+) so cut 20.48s are the better answer.
+ *
+ *   r < MIN_FEASIBLE (~665mm centreline)
+ *       Even the wedge runs out — custom blocks required. Beme reports
+ *       this as a warning rather than tallying a generic block.
  */
-export const CURVED_WALL_BLOCK_THRESHOLD_RADIUS_MM = (() => {
-  const body = BLOCK_LIBRARY['20.48'].dimensions
-  const rOuter = (body.depthMm * (body.widthMm + MORTAR_MM)) / MORTAR_MM
-  return Math.round(rOuter - HALF_BLOCK_DEPTH_MM(body))
-})()
 
 /**
- * Centreline radius (mm) below which even the 20.03CW wedge can't absorb the curve — the
- * block's rear face would need to be narrower than its actual 140mm. Curves tighter than
- * this need custom-cut blocks. Derived from 20.03CW geometry: r_outer = d × (w_f + m) / (w_f − w_r).
+ * Above this centreline radius (mm) stock body blocks fit without
+ * meaningful cutting — the rear mortar joint compresses from 10 mm down
+ * to a couple of mm but stays positive, so the bricklayer doesn't need
+ * to saw anything off the back of the blocks.
  *
- * For the stock 20.03CW (190 × 190 × 190, rear 140): r_outer = 190 × 200 / 50 = 760 mm,
- * centreline ≈ 665 mm.
+ * Rounded to 6000mm; at this centreline the 20.48 rear mortar is about
+ * 2.7 mm of overlap which a bricklayer can absorb by tightening the
+ * joint a touch — anything tighter (smaller radius) and the cut starts
+ * to be visible.
+ */
+export const CURVED_WALL_NO_CUT_RADIUS_MM = 6000
+
+/**
+ * Below this centreline radius (mm) the 20.03CW wedge is the right
+ * answer; above it, cut stock body blocks fit better. The wedge has a
+ * 50 mm front-to-rear taper which gives perfect 10 mm mortar around
+ * R_outer ≈ 760 mm, but at larger radii the same taper produces
+ * comically fat rear mortar (e.g. 49 mm at R = 3500 mm). Setting the
+ * boundary at 1500 mm keeps the wedge's rear mortar under ~40 mm,
+ * which is the practical limit for pourable joints.
+ */
+export const CURVED_WALL_WEDGE_RADIUS_MM = 1500
+
+/**
+ * Centreline radius (mm) below which even the 20.03CW wedge can't absorb
+ * the curve — the block's rear face would need to be narrower than its
+ * actual 140mm. Curves tighter than this need custom-cut blocks. Derived
+ * from 20.03CW geometry: r_outer = d × (w_f + m) / (w_f − w_r).
+ *
+ * For the stock 20.03CW (190 × 190 × 190, rear 140):
+ * r_outer = 190 × 200 / 50 = 760 mm, centreline ≈ 665 mm.
  */
 export const CURVED_WALL_MIN_FEASIBLE_RADIUS_MM = (() => {
   const block = BLOCK_LIBRARY['20.03CW'].dimensions
@@ -87,6 +127,17 @@ export const CURVED_WALL_MIN_FEASIBLE_RADIUS_MM = (() => {
   const rOuter = (block.depthMm * (block.widthMm + MORTAR_MM)) / diff
   return Math.round(rOuter - HALF_BLOCK_DEPTH_MM(block))
 })()
+
+/** Curve build zone for a given centreline radius. Drives both the tally
+ *  (which block to use) and the export assumption (whether to mention cuts). */
+export type CurveZone = 'standard' | 'cut' | 'wedge' | 'custom'
+
+export function curveZoneForRadius(radiusMm: number): CurveZone {
+  if (radiusMm >= CURVED_WALL_NO_CUT_RADIUS_MM) return 'standard'
+  if (radiusMm >= CURVED_WALL_WEDGE_RADIUS_MM) return 'cut'
+  if (radiusMm >= CURVED_WALL_MIN_FEASIBLE_RADIUS_MM) return 'wedge'
+  return 'custom'
+}
 
 // ---------- Modular constants (block face + mortar joint) ----------
 
@@ -981,11 +1032,19 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   const courseCount = Math.round(heightMm / COURSE_MODULE_MM)
   if (courseCount <= 0) return {}
 
-  // Pick body block by radius.
-  const useCurvedBlock = geom.radiusMm < CURVED_WALL_BLOCK_THRESHOLD_RADIUS_MM
-  const bodyCode: BlockCode = useCurvedBlock ? '20.03CW' : makeup.bodyBlockCode
-  // Modular face width: 20.03CW front face is 190mm + 10mm mortar = 200; standard body 390+10=400.
-  const bodyModularMm = useCurvedBlock ? 200 : BODY_BLOCK_MODULE_MM
+  // Pick body block by radius zone. Curves at moderate radii (cut zone)
+  // inherit the makeup's body block so the curve uses the same material
+  // as the straight walls it extends from — the bricklayer just saws a
+  // few mm off the rear corners. The export's assumption page notes that
+  // cuts are required so the supplier doesn't see "20.48" on a curve and
+  // assume zero modification.
+  const zone = curveZoneForRadius(geom.radiusMm)
+  const useWedge = zone === 'wedge'
+  const bodyCode: BlockCode = useWedge ? '20.03CW' : makeup.bodyBlockCode
+  // Modular face width: 20.03CW front face is 190 + 10 mortar = 200;
+  // standard body block is 390 + 10 = 400. For the cut zone the block
+  // face stays 390mm — only the back is shaved — so still 400 modular.
+  const bodyModularMm = useWedge ? 200 : BODY_BLOCK_MODULE_MM
 
   // Body blocks per course along the arc — ceil, leaves a touch of overshoot for safety.
   const blocksPerCourse = Math.max(1, Math.ceil(geom.arcLengthMm / bodyModularMm))

@@ -29,8 +29,10 @@ import type {
 import {
   calculateProjectTally,
   calculateWallTally,
+  curveZoneForRadius,
   wallLengthMm,
 } from './blockCalc'
+import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
 
@@ -116,7 +118,12 @@ function buildAssumptions(
   inclusions: BlockExportInclusions,
   hasOpenings: boolean,
   customNotes: string,
-  pierCounts: { tied: number; freestanding: number } = { tied: 0, freestanding: 0 }
+  pierCounts: { tied: number; freestanding: number } = { tied: 0, freestanding: 0 },
+  curvePresence: { hasCutCurves: boolean; hasWedgeCurves: boolean; hasCustomCurves: boolean } = {
+    hasCutCurves: false,
+    hasWedgeCurves: false,
+    hasCustomCurves: false,
+  }
 ): string[] {
   if (!inclusions.assumptions) return []
 
@@ -129,8 +136,19 @@ function buildAssumptions(
     'Height-makeup courses (20.71 and 20.140) extend across the full course length. The height-makeup block is cut to the size of any end block (20.01 / 20.03) and any fraction block on that course, so we supply enough 20.71 / 20.140 to cover the entire row; no separate end or fraction blocks are counted for those courses.',
     'Walls shorter than 800mm are built without body blocks. Both ends use the makeup’s full end block (20.01 / 20.21) on every course — no alternating in stretcher bond — and the gap between is filled from 20.03, 20.02, and 20.22 (up to two fill blocks) chosen to minimise overshoot. If the bare two end blocks already exceed the wall length, no fill is added.',
     'Wall stubs shorter than 400mm can’t fit two end blocks, so they’re built as one block per course — the block whose face width is closest to the drawn wall length, picked from 20.03 (190mm), 20.02 (290mm), 20.22 (340mm), or 20.01 (390mm).',
-    'Curved walls use 20.03CW (wedge-shaped half block, 190mm front × 140mm rear) up to ~7500mm centreline radius — the geometric point at which a standard 390mm body block stops fitting around the curve without rear overlap. Above ~7500mm we revert to the makeup’s standard body block with slightly compressed rear mortar joints. Below ~665mm centreline radius the 20.03CW itself can no longer absorb the curve and custom-cut blocks would be required.',
+    'Curved walls are built in three radius bands. Above ~6000mm centreline radius the makeup’s standard body block fits with slightly compressed rear mortar — no cutting required. Between ~1500mm and ~6000mm we still use the makeup’s standard body block (so the curve uses the same material as the walls it extends from), but each block needs a small saw-cut on its rear corners to remove the rear-face overlap that the curvature creates. Below ~1500mm the 20.03CW wedge (190mm front × 140mm rear) is supplied instead — its 50mm front-to-rear taper absorbs the curvature without cutting. Below ~665mm even the wedge runs out and custom blocks are required.',
   ]
+
+  if (curvePresence.hasCutCurves) {
+    items.push(
+      'One or more curved walls on this project fall in the “cut to radius” band (~1500–6000mm centreline). The block tally on those curves uses the makeup’s standard body block; the bricklayer is expected to make a small saw-cut on the rear corners of each block to absorb the curvature (a few mm at 6000mm radius, up to ~30mm at 1700mm radius). No allowance for the cut material has been added to the count.'
+    )
+  }
+  if (curvePresence.hasCustomCurves) {
+    items.push(
+      'One or more curved walls fall below the ~665mm minimum-feasible radius. The 20.03CW wedge can’t absorb a curve this tight without overlap; custom-cut blocks would need to be supplied. The tally counts the wedge for these courses as a placeholder — confirm the build method with the bricklayer.'
+    )
+  }
 
   if (hasOpenings) {
     items.push('Openings (doors, windows) have been deducted from the gross block count.')
@@ -253,11 +271,33 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   const tiedPierCount = piers.filter((p) => p.type === 'tied').length
   const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length
 
+  // Walk the curved walls once and bucket each by its build zone, so the
+  // assumption page can conditionally tell the bricklayer / supplier whether
+  // any block-cutting is required. A curve whose geometry can't be derived
+  // (degenerate three-point arc) is ignored — those don't tally anything.
+  let hasCutCurves = false
+  let hasWedgeCurves = false
+  let hasCustomCurves = false
+  for (const w of walls) {
+    if (!isCurvedWall(w) || w.midX === undefined || w.midY === undefined) continue
+    const geom = arcFromThreePoints(
+      { x: w.startX, y: w.startY },
+      { x: w.midX, y: w.midY },
+      { x: w.endX, y: w.endY }
+    )
+    if (!geom) continue
+    const zone = curveZoneForRadius(geom.radiusMm)
+    if (zone === 'cut') hasCutCurves = true
+    else if (zone === 'wedge') hasWedgeCurves = true
+    else if (zone === 'custom') hasCustomCurves = true
+  }
+
   const assumptions = buildAssumptions(
     inclusions,
     openings.length > 0,
     projectDetails.notes,
-    { tied: tiedPierCount, freestanding: freestandingPierCount }
+    { tied: tiedPierCount, freestanding: freestandingPierCount },
+    { hasCutCurves, hasWedgeCurves, hasCustomCurves }
   )
 
   // ---------- HTML pieces ----------
