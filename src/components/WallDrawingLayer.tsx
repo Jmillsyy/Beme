@@ -1492,6 +1492,17 @@ function WallDrawingLayerInner({
     <Stage
       width={visualWidth}
       height={visualHeight}
+      // listening=false during zoom turns off Konva's hit-detection entirely.
+      // Each pointer-position change otherwise costs O(walls) — Konva runs a
+      // hit test against every shape on the layer to figure out which one
+      // owns the pointer for enter/leave dispatch. The cursor doesn't move on
+      // screen during a wheel zoom but its position in stage coords does,
+      // which fires that hit test on every tick. With many walls and a thin
+      // brick wall geometry, that work is the visible stutter. Disabling
+      // listening while zooming makes the gesture's per-frame work constant
+      // regardless of wall count; it flips back on the moment the gesture
+      // ends so clicks / hover work normally again.
+      listening={!isZooming}
       style={{
         position: 'absolute',
         top: 0,
