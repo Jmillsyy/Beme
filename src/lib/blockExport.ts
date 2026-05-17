@@ -365,7 +365,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
       <section class="page">
         ${pageHeader}
         ${metaBlock}
-        <h2>Assumptions</h2>
+        <h2 class="section-title">Assumptions</h2>
         <ol class="assumptions">
           ${assumptions.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
         </ol>
@@ -376,7 +376,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   // Page 2: Block Schedule (full code-by-code tally)
   const scheduleTable = inclusions.blockSchedule && entries.length > 0
     ? `
-      <h2>Block Schedule</h2>
+      <h2 class="section-title">Block Schedule</h2>
       <table>
         <thead>
           <tr>
@@ -474,7 +474,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     ? `
       <section class="page">
         ${pageHeader}
-        <h2>Breakdown by Wall Type</h2>
+        <h2 class="section-title">Breakdown by Wall Type</h2>
         <p class="page-intro">Block counts per wall makeup (pre-deduplication of shared corners).</p>
         ${breakdownTables}
         <div class="wall-type-section">
@@ -508,7 +508,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   // Page 4: Openings + lintels
   const openingsTable = inclusions.openingsList && openings.length > 0
     ? `
-      <h2>Openings &amp; Lintels</h2>
+      <h2 class="section-title">Openings &amp; Lintels</h2>
       <p class="page-intro">
         ${openings.length} opening${openings.length === 1 ? '' : 's'}
         · Lintels selected by head height (see Assumptions)
@@ -770,13 +770,35 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   .disclaimer p:last-child { margin-bottom: 0; }
 
   @media print {
-    .page { padding: 1.5cm; min-height: auto; }
-    /* Landscape A4 because the block schedule and wall-type breakdown
-       tables are wide — the code / block-name / count / per-makeup
-       columns don't fit comfortably in portrait without wrapping the
-       block names mid-row. The preview page also lays out landscape so
-       what you see in the tab is what you get in the PDF. */
-    @page { margin: 0; size: A4 landscape; }
+    .page { padding: 0.4cm 1.5cm 1.5cm 1.5cm; min-height: auto; }
+    /* Landscape A4 with a 1.1cm top margin reserved for the running header
+       in @top-center. The .page padding-top is reduced to 0.4cm in print
+       to compensate so the body content doesn't end up double-padded. */
+    @page {
+      margin: 1.1cm 0 0 0;
+      size: A4 landscape;
+      /* Running header — picks up the current section's title from the
+         CSS named string 'sectionTitle' (set via the section-title class
+         on each <h2>). Chrome propagates the most recent value of a named
+         string across continuation pages, so when a section overflows
+         onto a second page the same heading still appears at the top.
+         On the section's first page, the in-flow h2 sits below this
+         running version — slight redundancy that reads as 'page subtitle
+         + section heading', which is the standard report layout. */
+      @top-center {
+        content: string(sectionTitle);
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-size: 10pt;
+        color: #6b7280;
+        font-style: italic;
+        padding-top: 4mm;
+      }
+    }
+    /* Each section's h2 sets the named string so any continuation pages
+       of that section inherit the title in the running header. */
+    h2.section-title {
+      string-set: sectionTitle content();
+    }
 
     /* ── Page-break hygiene ──────────────────────────────────────────
        Keep individual rows from being sliced in half across pages, and

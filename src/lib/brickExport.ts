@@ -238,7 +238,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
       <section class="page">
         ${pageHeader}
         ${metaBlock}
-        <h2>Assumptions</h2>
+        <h2 class="section-title">Assumptions</h2>
         <ol class="assumptions">
           ${assumptions.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
         </ol>
@@ -253,7 +253,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
 
   const summaryTable = inclusions.brickAreaSummary
     ? `
-      <h2>Brick Area Summary</h2>
+      <h2 class="section-title">Brick Area Summary</h2>
       <table>
         <thead>
           <tr><th>Description</th><th class="right">Area (m²)</th></tr>
@@ -269,7 +269,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
 
   const lintelsTable = inclusions.lintels && (lintelGroups.length > 0 || oversizedCount > 0)
     ? `
-      <h2>Lintels</h2>
+      <h2 class="section-title">Lintels</h2>
       <table>
         <thead>
           <tr><th>Lintel Size</th><th class="right">Quantity</th></tr>
@@ -304,7 +304,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
 
   const accessoriesTable = accessoriesRows.length > 0
     ? `
-      <h2>Accessories</h2>
+      <h2 class="section-title">Accessories</h2>
       <table>
         <thead><tr><th>Item</th><th class="right">Quantity</th></tr></thead>
         <tbody>${accessoriesRows.join('')}</tbody>
@@ -511,10 +511,26 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   .disclaimer p:last-child { margin-bottom: 0; }
 
   @media print {
-    .page { padding: 1.5cm; min-height: auto; }
-    /* Landscape A4 to match the preview (which lays out landscape) and
-       to give the tally + lintel-order tables breathing room. */
-    @page { margin: 0; size: A4 landscape; }
+    .page { padding: 0.4cm 1.5cm 1.5cm 1.5cm; min-height: auto; }
+    /* Landscape A4 with a 1.1cm top margin reserved for the running
+       header in @top-center. The .page padding-top is reduced to 0.4cm
+       in print to compensate. */
+    @page {
+      margin: 1.1cm 0 0 0;
+      size: A4 landscape;
+      /* Running header — see blockExport.ts for the full explainer. */
+      @top-center {
+        content: string(sectionTitle);
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-size: 10pt;
+        color: #6b7280;
+        font-style: italic;
+        padding-top: 4mm;
+      }
+    }
+    h2.section-title {
+      string-set: sectionTitle content();
+    }
 
     /* Page-break hygiene — see blockExport.ts for the rationale. Keep
        table rows atomic, repeat thead/tfoot on continuation pages,
