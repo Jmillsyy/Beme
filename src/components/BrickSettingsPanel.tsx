@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { BrickSettings } from '../types/walls'
 import { bricksPerSquareMetreOf } from '../types/bricks'
 import { useBrickLibrary } from '../data/brickLibrary'
@@ -8,7 +8,13 @@ interface BrickSettingsPanelProps {
   onChange: (settings: BrickSettings) => void
 }
 
-export default function BrickSettingsPanel({ settings, onChange }: BrickSettingsPanelProps) {
+/**
+ * Memoised so that re-renders of PdfWorkspace driven by zoom or pan don't
+ * trigger a re-render here. The panel's content only changes when the user
+ * edits brick settings or the brick library, neither of which fires during
+ * a zoom gesture.
+ */
+function BrickSettingsPanelImpl({ settings, onChange }: BrickSettingsPanelProps) {
   const [expanded, setExpanded] = useState(true)
   const { library: brickLibrary } = useBrickLibrary()
 
@@ -212,3 +218,6 @@ export default function BrickSettingsPanel({ settings, onChange }: BrickSettings
     </div>
   )
 }
+
+const BrickSettingsPanel = memo(BrickSettingsPanelImpl)
+export default BrickSettingsPanel

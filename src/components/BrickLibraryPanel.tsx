@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import {
@@ -14,8 +14,12 @@ import {
  *
  * The bricks-per-m² figure on each row is auto-derived from the face dimensions
  * + mortar joint, unless the user has set a manual override on the type.
+ *
+ * Memoised so zoom/pan re-renders of PdfWorkspace don't ripple here. The
+ * component takes no props so once mounted it only re-renders when the brick
+ * library singleton emits a change (via useBrickLibrary's listener set).
  */
-export default function BrickLibraryPanel() {
+function BrickLibraryPanelImpl() {
   const { library } = useBrickLibrary()
   const [expanded, setExpanded] = useState(false)
   const [editingCode, setEditingCode] = useState<BrickCode | 'new' | null>(null)
@@ -99,6 +103,9 @@ export default function BrickLibraryPanel() {
     </div>
   )
 }
+
+const BrickLibraryPanel = memo(BrickLibraryPanelImpl)
+export default BrickLibraryPanel
 
 // ─── Row ────────────────────────────────────────────────────────────────────
 

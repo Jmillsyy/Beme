@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type {
   BrickExportInclusions,
   BrickSettings,
@@ -18,7 +18,12 @@ interface BrickExportPanelProps {
   openings: Opening[]
 }
 
-export default function BrickExportPanel({
+/**
+ * Memoised: only re-renders when its props change. Zoom/pan in the workspace
+ * doesn't touch any of its props, so this drops out of the per-frame render
+ * path entirely.
+ */
+function BrickExportPanelImpl({
   projectDetails,
   inclusions,
   onChangeInclusions,
@@ -165,6 +170,9 @@ export default function BrickExportPanel({
     </div>
   )
 }
+
+const BrickExportPanel = memo(BrickExportPanelImpl)
+export default BrickExportPanel
 
 function Toggle({
   label,

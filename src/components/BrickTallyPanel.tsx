@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
 
@@ -16,7 +16,13 @@ interface LintelGroup {
   openings: number[]
 }
 
-export default function BrickTallyPanel({ walls, openings, settings }: BrickTallyPanelProps) {
+/**
+ * Memoised so that re-renders of PdfWorkspace driven by zoom or pan don't
+ * trigger a tally recompute. The tally itself only changes when walls,
+ * openings, or brick settings change — none of which happen during a zoom
+ * gesture.
+ */
+function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
   const [detailExpanded, setDetailExpanded] = useState(false)
 
@@ -245,3 +251,6 @@ export default function BrickTallyPanel({ walls, openings, settings }: BrickTall
     </div>
   )
 }
+
+const BrickTallyPanel = memo(BrickTallyPanelImpl)
+export default BrickTallyPanel
