@@ -1813,10 +1813,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
         <div className="h-5 w-px bg-ink-600" />
 
-        {/* Scale — collapsed inline when set, expanded controls when not.
-            Prefer the page ratio (e.g. "1:100") because that's how plans are
-            actually labelled; fall back to px/mm for the brief moment a
-            legacy project's migration hasn't run yet. */}
+        {/* Scale — collapsed inline when set, expanded controls when not OR
+            when the user has hit Recalibrate. Showing the ratio dropdown
+            *and* the two-click button during recalibration is important:
+            most users want to swap "this is 1:100 not 1:50" with a single
+            click, not click two points and type a number. The dropdown
+            applies instantly; the click flow remains for cases where the
+            plan's ratio isn't a standard preset (e.g. a printed copy at
+            an oddball scale). */}
         {currentScale && !calibrating ? (
           <div className="flex items-center gap-2 text-sm">
             <span className="text-ink-200">
@@ -1841,9 +1845,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               Recalibrate
             </button>
           </div>
-        ) : !calibrating ? (
+        ) : (
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm text-ink-400">No scale set.</span>
+            <span className="text-sm text-ink-400">
+              {currentScale ? 'Recalibrating —' : 'No scale set.'}
+            </span>
             <select
               value=""
               onChange={(e) => {
@@ -1855,27 +1861,30 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               disabled={!pageData?.pageWidthMm}
               className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 disabled:opacity-50 focus:outline-none focus:border-beme-400"
             >
-              <option value="">Ratio…</option>
+              <option value="">Pick a ratio…</option>
               {RATIO_PRESETS.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
               ))}
             </select>
+            <span className="text-xs text-ink-400">or</span>
             <button
               onClick={startCalibration}
-              className="px-3 py-1 rounded bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium transition-colors font-medium"
+              disabled={calibrating}
+              className="px-3 py-1 rounded bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
-              Set by clicking
+              {calibrating ? 'Click two points on the plan…' : 'Set by clicking'}
             </button>
+            {calibrating && (
+              <button
+                onClick={cancelCalibration}
+                className="px-2 py-1 rounded border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
+              >
+                Cancel
+              </button>
+            )}
           </div>
-        ) : (
-          <button
-            onClick={cancelCalibration}
-            className="px-3 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-          >
-            Cancel calibration
-          </button>
         )}
       </div>
 
