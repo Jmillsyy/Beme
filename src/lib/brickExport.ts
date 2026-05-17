@@ -517,12 +517,21 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     @page { margin: 0; size: A4 landscape; }
 
     /* Page-break hygiene — see blockExport.ts for the rationale. Keep
-       table rows atomic, repeat thead/tfoot on continuation pages, and
-       avoid orphaning headings at the bottom of a page. */
+       table rows atomic, repeat thead/tfoot on continuation pages,
+       glue subtotal/total rows to the rows above them so they don't
+       orphan, and avoid splitting tables when they fit on a page. */
     thead { display: table-header-group; }
     tfoot { display: table-footer-group; }
     tr, .beme-credit { page-break-inside: avoid; break-inside: avoid; }
     .disclaimer, .meta, .section-group {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    tr.bold {
+      page-break-before: avoid;
+      break-before: avoid-page;
+    }
+    table {
       page-break-inside: avoid;
       break-inside: avoid;
     }

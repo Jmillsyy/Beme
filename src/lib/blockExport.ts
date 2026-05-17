@@ -477,28 +477,30 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
         <h2>Breakdown by Wall Type</h2>
         <p class="page-intro">Block counts per wall makeup (pre-deduplication of shared corners).</p>
         ${breakdownTables}
-        <h3 class="wall-type-name">Grand total per block type</h3>
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 100px">Code</th>
-              <th>Block</th>
-              <th class="right" style="width: 100px">Quantity</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${combinedEntries
-              .map(
-                ([code, count]) =>
-                  `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right tabular">${formatNumber(count)}</td></tr>`
-              )
-              .join('')}
-            <tr class="bold">
-              <td colspan="2">Total</td>
-              <td class="right tabular">${formatNumber(breakdownGrandTotal)}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="wall-type-section">
+          <h3 class="wall-type-name">Grand total per block type</h3>
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 100px">Code</th>
+                <th>Block</th>
+                <th class="right" style="width: 100px">Quantity</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${combinedEntries
+                .map(
+                  ([code, count]) =>
+                    `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right tabular">${formatNumber(count)}</td></tr>`
+                )
+                .join('')}
+              <tr class="bold">
+                <td colspan="2">Total</td>
+                <td class="right tabular">${formatNumber(breakdownGrandTotal)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     `
     : ''
@@ -788,6 +790,24 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     tfoot { display: table-footer-group; }
     tr, .beme-credit { page-break-inside: avoid; break-inside: avoid; }
     .wall-type-section, .disclaimer, .meta {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    /* Don't let the bold subtotal/total rows orphan at the top of a
+       new page — they have to stay glued to the row above. Without
+       this, a tall table whose last few data rows fit on one page
+       can push its Total summary onto a near-empty next page, which
+       is what looked janky in the v1 export. */
+    tr.bold {
+      page-break-before: avoid;
+      break-before: avoid-page;
+    }
+    /* Tables are preferred-together when they fit on a page. If a
+       table is genuinely longer than a page, the browser ignores this
+       hint and falls back to splitting between rows — which is fine
+       because thead reprints and the row-atomic rule keeps each row
+       intact. */
+    table {
       page-break-inside: avoid;
       break-inside: avoid;
     }
