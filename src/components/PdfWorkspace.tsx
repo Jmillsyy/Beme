@@ -1362,8 +1362,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       const oldMarginX = Math.max(0, (containerW - oldPageW) / 2)
       const newMarginX = Math.max(0, (containerW - newPageW) / 2)
 
-      const scrollLeft = container.scrollLeft
-      const scrollTop = container.scrollTop
+      // CRITICAL: on fast scrolls, the wheel fires faster than React can
+      // commit zoom state changes — so the DOM's scrollLeft hasn't yet
+      // caught up to the previous tick's pendingScrollRef target. Reading
+      // container.scrollLeft directly would feed stale data into the
+      // cursor-anchor math, which is what causes the "cursor jumps around"
+      // feel when wheeling rapidly. Prefer the most recently *intended*
+      // scroll target (set by a previous tick of this same handler) when
+      // there is one; fall back to the DOM's current scroll otherwise.
+      const scrollLeft = pendingScrollRef.current?.x ?? container.scrollLeft
+      const scrollTop = pendingScrollRef.current?.y ?? container.scrollTop
 
       // Cursor position on the page itself (in current visual pixels).
       const pageX = scrollLeft + cursorXInViewport - oldMarginX
@@ -1384,6 +1392,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         y: Math.max(0, newContentY - cursorYInViewport),
       }
 
+      // Synchronously bump the zoom ref so the NEXT wheel tick (which might
+      // fire before React commits this update) reads our new zoom, not the
+      // stale committed one. Without this, multiple wheel events in flight
+      // all compute against the same `oldZoom` and the zoom levels stack
+      // up wrong — another source of the "jumps around" behaviour.
+      zoomRef.current = newZoom
       setZoom(newZoom)
     }
 
