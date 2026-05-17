@@ -527,6 +527,13 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
         font-style: italic;
         padding-top: 4mm;
       }
+      /* Blank the other margin boxes so the browser's built-in print
+         chrome (date / URL / page title) is suppressed where supported. */
+      @top-left { content: ""; }
+      @top-right { content: ""; }
+      @bottom-left { content: ""; }
+      @bottom-center { content: ""; }
+      @bottom-right { content: ""; }
     }
     h2.section-title {
       string-set: sectionTitle content();

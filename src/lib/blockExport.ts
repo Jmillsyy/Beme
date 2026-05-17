@@ -127,48 +127,53 @@ function buildAssumptions(
 ): string[] {
   if (!inclusions.assumptions) return []
 
+  // Tighter prose so the whole list comfortably fits on one landscape A4
+  // page. The previous wording was longer-form / explanatory; this version
+  // keeps the substance but cuts hedging and parenthetical asides. Anything
+  // a reader needs that's NOT in this list lives in the per-section pages
+  // (block schedule, breakdown, openings) anyway.
   const items: string[] = [
-    'All block dimensions are nominal and include a 10mm mortar joint (200mm modular face, 200mm modular course height).',
-    'Wall heights are taken from the wall-type definitions used in this project unless overridden per wall.',
-    'Wall lengths are measured from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
-    'Corners between walls are deduplicated so the shared corner column is only counted once.',
-    'T-junctions are treated as two completely separate walls. The stem wall has its own complete end termination at the junction (same as a free end — alternating 20.01 / 20.03 in stretcher bond) and stops at the through wall’s face; the through wall is unaffected.',
-    'Height-makeup courses (20.71 and 20.140) extend across the full course length. The height-makeup block is cut to the size of any end block (20.01 / 20.03) and any fraction block on that course, so we supply enough 20.71 / 20.140 to cover the entire row; no separate end or fraction blocks are counted for those courses.',
-    'Walls shorter than 800mm are built without body blocks. Both ends use the makeup’s full end block (20.01 / 20.21) on every course — no alternating in stretcher bond — and the gap between is filled from 20.03, 20.02, and 20.22 (up to two fill blocks) chosen to minimise overshoot. If the bare two end blocks already exceed the wall length, no fill is added.',
-    'Wall stubs shorter than 400mm can’t fit two end blocks, so they’re built as one block per course — the block whose face width is closest to the drawn wall length, picked from 20.03 (190mm), 20.02 (290mm), 20.22 (340mm), or 20.01 (390mm).',
-    'Curved walls are built in three radius bands. Above ~6000mm centreline radius the makeup’s standard body block fits with slightly compressed rear mortar — no cutting required. Between ~1500mm and ~6000mm we still use the makeup’s standard body block (so the curve uses the same material as the walls it extends from), but each block needs a small saw-cut on its rear corners to remove the rear-face overlap that the curvature creates. Below ~1500mm the 20.03CW wedge (190mm front × 140mm rear) is supplied instead — its 50mm front-to-rear taper absorbs the curvature without cutting. Below ~665mm even the wedge runs out and custom blocks are required.',
+    'All block sizes are nominal and include a 10 mm mortar joint (200 mm modular face and 200 mm modular course).',
+    'Wall heights come from the wall-type definitions unless overridden per wall.',
+    'Wall lengths are measured from the drawings supplied. All dimensions in millimetres.',
+    'Corner columns shared between two walls are counted once.',
+    'T-junctions are treated as two separate walls. The stem terminates against the through-wall face with its own end column (alternating 20.01 / 20.03 in stretcher bond); the through-wall is unaffected.',
+    'Height-makeup courses (20.71 / 20.140) span the full course length — end and fraction blocks are not counted separately on those rows.',
+    'Walls under 800 mm use end blocks only (20.01 / 20.21) on every course, with up to two fill blocks (20.03 / 20.02 / 20.22) chosen to minimise overshoot.',
+    'Wall stubs under 400 mm use a single block per course — the closest face width from 20.03 (190 mm), 20.02 (290 mm), 20.22 (340 mm), or 20.01 (390 mm).',
+    'Curved walls: ≥ 6000 mm radius uses stock body blocks with compressed rear mortar. 1500–6000 mm uses stock blocks with a small saw cut on the rear corners. < 1500 mm uses the 20.03CW wedge. < 665 mm requires custom blocks.',
   ]
 
   if (curvePresence.hasCutCurves) {
     items.push(
-      'One or more curved walls on this project fall in the “cut to radius” band (~1500–6000mm centreline). The block tally on those curves uses the makeup’s standard body block; the bricklayer is expected to make a small saw-cut on the rear corners of each block to absorb the curvature (a few mm at 6000mm radius, up to ~30mm at 1700mm radius). No allowance for the cut material has been added to the count.'
+      'One or more curves fall in the 1500–6000 mm "cut to radius" band — stock body blocks are supplied; the bricklayer saws a few mm to ~30 mm off the rear corners to absorb the curvature. No cut allowance is added to the count.'
     )
   }
   if (curvePresence.hasCustomCurves) {
     items.push(
-      'One or more curved walls fall below the ~665mm minimum-feasible radius. The 20.03CW wedge can’t absorb a curve this tight without overlap; custom-cut blocks would need to be supplied. The tally counts the wedge for these courses as a placeholder — confirm the build method with the bricklayer.'
+      'One or more curves fall below the 665 mm minimum-feasible radius. The wedge can’t absorb a curve this tight — custom blocks need to be supplied. The wedge is counted as a placeholder; confirm the build with the bricklayer.'
     )
   }
 
   if (hasOpenings) {
-    items.push('Openings (doors, windows) have been deducted from the gross block count.')
+    items.push('Openings (doors, windows) are deducted from the gross block count.')
     items.push(
-      'Lintels are stood-up lintel blocks chosen by head height: 20.13 for heads under 200mm, 20.25 for 200–299mm, 20.18 for 300mm and above.'
+      'Lintels are stood-up lintel blocks by head height: 20.13 under 200 mm, 20.25 for 200–299 mm, 20.18 at 300 mm and above.'
     )
   }
 
   if (pierCounts.tied > 0) {
     items.push(
-      'Tied piers (built into the wall) use a per-makeup block-by-block course pattern that repeats up the wall height. The default tied makeup alternates 40.925 and 20.01 by course. A tied pier only displaces a wall body block (H block) on courses where its block is deeper than the wall — e.g. the 40.925 sticks out past the wall face — so the 40.925 courses displace H blocks, but the 20.01 courses sit perpendicular and add without subtracting.'
+      'Tied piers use a per-makeup course pattern repeated up the wall height (default: 40.925 / 20.01 alternating). A pier only displaces a body block on courses where its block is deeper than the wall.'
     )
   }
   if (pierCounts.freestanding > 0) {
     items.push(
-      'Freestanding piers are standalone columns using a per-makeup block-by-block course pattern repeated up the pier’s height. The default freestanding makeup is 40.925 stacked every course.'
+      'Freestanding piers use a per-makeup course pattern repeated up the pier height (default: 40.925 stacked every course).'
     )
   }
 
-  items.push('No waste allowance has been applied. Quantities are net as measured.')
+  items.push('No waste allowance applied — quantities are net as measured.')
 
   // Custom notes from the user — split on newlines, ignore blank lines
   const customLines = customNotes
@@ -727,11 +732,20 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     margin: 0 0 12px;
   }
 
-  ol.assumptions { padding-left: 24px; margin: 0; }
+  ol.assumptions { padding-left: 22px; margin: 0; }
   ol.assumptions li {
-    padding: 6px 0;
-    font-size: 13px;
-    line-height: 1.5;
+    padding: 3px 0;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  /* Keep the whole list together so it doesn't split across pages —
+     reading half the assumptions on each of two sheets reads worse than
+     a slightly tight single page. The shortened item text above is
+     sized so even the longest combination (curves + cut + openings +
+     piers + waste) still fits in landscape A4. */
+  ol.assumptions {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
 
   table {
@@ -802,6 +816,19 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
         font-style: italic;
         padding-top: 4mm;
       }
+      /* Explicitly blank out the other margin boxes so the browser's
+         built-in 'Headers and footers' chrome (date / URL / page title)
+         doesn't get to draw there. Per the CSS Paged Media spec, when
+         these boxes have content defined the user-agent's default
+         content is replaced. Chrome's print dialog 'Headers and footers'
+         option may still override this — that's a print-dialog setting,
+         not a CSS rule — but the empty boxes are the most we can do
+         from the document side. */
+      @top-left { content: ""; }
+      @top-right { content: ""; }
+      @bottom-left { content: ""; }
+      @bottom-center { content: ""; }
+      @bottom-right { content: ""; }
     }
     /* Each section's h2 sets the named string so any continuation pages
        of that section inherit the title in the running header. */
