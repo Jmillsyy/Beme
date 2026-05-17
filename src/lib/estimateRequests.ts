@@ -186,6 +186,27 @@ export async function listEstimateRequests(
   return (data as RequestRow[]).map(rowToRequest)
 }
 
+/**
+ * Look up the estimate request that produced a given project, if any.
+ * Used by the project workspace to surface a "← Request from {customer}"
+ * breadcrumb so the estimator can flip back to the spec without losing
+ * their place. Returns null for personal projects or any project not
+ * created via the pick-up flow.
+ */
+export async function getEstimateRequestByProjectId(
+  projectId: string
+): Promise<EstimateRequest | null> {
+  if (!isSupabaseConfigured) return null
+  const client = supabase()
+  const { data, error } = await client
+    .from('estimate_requests')
+    .select('*')
+    .eq('project_id', projectId)
+    .maybeSingle()
+  if (error || !data) return null
+  return rowToRequest(data as RequestRow)
+}
+
 /** Single-request fetch. Used by the request detail / claim page. */
 export async function getEstimateRequest(
   id: string

@@ -83,6 +83,9 @@ import {
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions, snapEndpointToThroughWallFace } from '../lib/junctions'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
+import { getEstimateRequestByProjectId } from '../lib/estimateRequests'
+import type { EstimateRequest } from '../types/estimateRequests'
+import { Link } from 'react-router-dom'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
@@ -277,6 +280,32 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [projectCompletedAt, setProjectCompletedAt] = useState<string | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false)
+
+  /**
+   * Source request — set when this project was created via the "pick up"
+   * flow on an estimate request. Drives the breadcrumb at the top of the
+   * workspace ("← Request from {customer}") so the estimator can flip back
+   * to the spec without losing their place. Null for personal projects or
+   * any project not originating from a request.
+   */
+  const [sourceRequest, setSourceRequest] = useState<EstimateRequest | null>(null)
+
+  // Look up the request that produced this project (if any) so we can show
+  // the breadcrumb. Best-effort: failures are silent because the breadcrumb
+  // is a nice-to-have, not load-blocking.
+  useEffect(() => {
+    if (!currentProjectId) {
+      setSourceRequest(null)
+      return
+    }
+    let cancelled = false
+    getEstimateRequestByProjectId(currentProjectId).then((req) => {
+      if (!cancelled) setSourceRequest(req)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [currentProjectId])
 
   // Load a saved project on mount if projectId was provided
   useEffect(() => {
@@ -1524,7 +1553,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   if (!pdfFile) {
     return (
-      <div className="max-w-[1500px] mx-auto">
+      <div className="max-w-[1200px] mx-auto">
+        {sourceRequest && <RequestBreadcrumb request={sourceRequest} />}
         {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
         {(mode === 'block' || mode === 'brick') && (
           <ProjectBar
@@ -1675,7 +1705,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Render: workspace ----------
 
   return (
-    <div className="max-w-[1500px] mx-auto">
+    <div className="max-w-[1200px] mx-auto">
+      {sourceRequest && <RequestBreadcrumb request={sourceRequest} />}
       {/* Slim project bar — Studio Black header */}
       {(mode === 'block' || mode === 'brick') && (
         <ProjectBar
@@ -2821,6 +2852,33 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       {/* ─────────────────── End of two-column body ─────────────────── */}
 
       </div>{/* End workspace padding wrapper */}
+    </div>
+  )
+}
+
+/**
+ * Slim breadcrumb shown above the ProjectBar when the current project was
+ * created from an estimate request. Lets the estimator pop back to the
+ * request page to re-read the sales spec or check the customer's notes
+ * without losing their place in the workspace (the router-link preserves
+ * the project in the back history).
+ */
+function RequestBreadcrumb({ request }: { request: EstimateRequest }) {
+  return (
+    <div className="px-6 pt-4">
+      <Link
+        to={`/requests/${request.id}`}
+        className="inline-flex items-center gap-2 text-xs text-ink-300 hover:text-beme-300 transition-colors"
+      >
+        <span>←</span>
+        <span>
+          Request from{' '}
+          <span className="text-ink-100 font-medium">{request.customerName}</span>
+          {request.customerCompany && (
+            <span className="text-ink-400"> · {request.customerCompany}</span>
+          )}
+        </span>
+      </Link>
     </div>
   )
 }

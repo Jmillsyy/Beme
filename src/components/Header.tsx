@@ -59,7 +59,7 @@ export default function Header() {
 
   return (
     <header className="bg-ink-800 border-b border-ink-600">
-      <div className="max-w-[1500px] mx-auto px-6 py-5 flex items-center justify-between gap-6">
+      <div className="max-w-[1200px] mx-auto px-6 py-5 flex items-center justify-between gap-6">
         <Link to="/" className="flex items-center gap-3 group">
           <div className="relative w-[26px] h-[26px] rounded-[5px] bg-beme-500 group-hover:bg-beme-400 transition-colors">
             <div className="absolute inset-[5px] bg-ink-900 rounded-[2px]" />
