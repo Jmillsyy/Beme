@@ -3,24 +3,29 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useTheme } from '../lib/theme'
 import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
+import type { Organisation } from '../types/organisations'
 
 /**
  * Resolve the personalised name shown in the header, in order of preference:
  *
- *   1. Organisation name — for org accounts (future)
- *   2. Business / company name from settings
- *   3. User's display name from settings
- *   4. User's signed-in name (from Microsoft OAuth metadata)
+ *   1. Current organisation name — when the user is acting inside an org.
+ *   2. Business / company name from settings (personal/single-user mode).
+ *   3. User's display name from settings.
+ *   4. User's signed-in name (from Microsoft OAuth metadata).
  *
  * Returns `null` when nothing's set — caller decides whether to render
  * anything. We deliberately don't fall back to a placeholder string; the
  * header looks cleaner with nothing there until the user types their name.
  */
 function resolvePersonalisedName(opts: {
+  currentOrg: Organisation | null
   business: { companyName: string }
   profile: { displayName: string }
   authUser: import('@supabase/supabase-js').User | null
 }): string | null {
+  // Org accounts: the org name is always the right thing to surface.
+  if (opts.currentOrg) return opts.currentOrg.name
   const company = opts.business.companyName.trim()
   if (company) return company
   const profile = opts.profile.displayName.trim()
@@ -42,9 +47,11 @@ export default function Header() {
   const [theme, setTheme] = useTheme()
   const { user, signedIn } = useAuth()
   const { settings } = useUserSettings()
+  const { organisations, currentOrg, setCurrentOrg } = useOrganisations()
   const isLight = theme === 'light'
 
   const personalisedName = resolvePersonalisedName({
+    currentOrg,
     business: settings.business,
     profile: settings.profile,
     authUser: user,
@@ -64,10 +71,22 @@ export default function Header() {
         </Link>
 
         <div className="flex items-center gap-3">
-          {/* Personalised tag — shows the company / profile / OAuth name
-              when any of those are set. Stays hidden on first-run so the
-              header doesn't read as a placeholder. */}
-          {personalisedName && (
+          {/* Org switcher — appears only when the user is signed in and
+              belongs to at least one org. Single-org users see a static
+              "ORG NAME" pill; multi-org users get a dropdown to switch. */}
+          {signedIn && organisations.length > 0 && (
+            <OrgSwitcher
+              organisations={organisations}
+              currentOrg={currentOrg}
+              onSwitch={setCurrentOrg}
+            />
+          )}
+
+          {/* Personalised tag — only shown when the user is NOT inside an
+              org context (the org switcher already labels the workspace for
+              org users). For single-user / personal mode it shows the
+              company / profile / OAuth name when any of those are set. */}
+          {!currentOrg && personalisedName && (
             <p
               className="text-[11px] text-ink-400 uppercase tracking-wider hidden md:block max-w-[260px] truncate"
               title={personalisedName}
@@ -94,6 +113,109 @@ export default function Header() {
         </div>
       </div>
     </header>
+  )
+}
+
+/**
+ * Compact org pill in the header. Single-org users see a non-interactive
+ * label; multi-org users get a dropdown so they can flip between (e.g.) the
+ * supplier they work for and a personal sandbox org for testing.
+ */
+function OrgSwitcher({
+  organisations,
+  currentOrg,
+  onSwitch,
+}: {
+  organisations: Organisation[]
+  currentOrg: Organisation | null
+  onSwitch: (orgId: string | null) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+  const isMulti = organisations.length > 1
+
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  const label = currentOrg?.name ?? 'Personal'
+
+  if (!isMulti) {
+    // One org → just show its name in a static pill. Saves a click and tells
+    // the user where they are without offering a menu they don't need.
+    return (
+      <span
+        className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-ink-600 bg-ink-700/40 text-xs text-ink-100 max-w-[220px] truncate"
+        title={label}
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-beme-500" />
+        {label}
+      </span>
+    )
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-ink-600 hover:bg-ink-700 text-xs text-ink-100 max-w-[220px]"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title={label}
+      >
+        <span className="w-1.5 h-1.5 rounded-full bg-beme-500" />
+        <span className="truncate">{label}</span>
+        <span className="text-ink-400">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-64 rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-30 py-1 text-sm">
+          <div className="px-3 py-2 text-[11px] text-ink-400 uppercase tracking-wider">
+            Organisations
+          </div>
+          {organisations.map((org) => (
+            <button
+              key={org.id}
+              type="button"
+              onClick={() => {
+                onSwitch(org.id)
+                setOpen(false)
+              }}
+              className={`w-full text-left px-4 py-2 hover:bg-ink-700 transition-colors flex items-center justify-between ${
+                org.id === currentOrg?.id ? 'text-beme-300 font-medium' : 'text-ink-100'
+              }`}
+            >
+              <span className="truncate">{org.name}</span>
+              {org.id === currentOrg?.id && <span className="text-beme-300">✓</span>}
+            </button>
+          ))}
+          <div className="border-t border-ink-600 my-1" />
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              navigate('/settings')
+            }}
+            className="w-full text-left px-4 py-2 text-ink-100 hover:bg-ink-700 transition-colors text-xs"
+          >
+            Manage organisations →
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 

@@ -7,6 +7,7 @@ import { initTheme } from './lib/theme'
 import { initBlockLibrary } from './data/blockLibrary'
 import { initBrickLibrary } from './data/brickLibrary'
 import { initUserSettings } from './lib/userSettings'
+import { initOrganisations } from './lib/organisations'
 
 // Apply the persisted theme (dark / light) before first render so there's no
 // flash of the wrong colour scheme.
@@ -19,6 +20,10 @@ initTheme()
 void initBlockLibrary()
 void initBrickLibrary()
 void initUserSettings()
+// Organisations are cloud-only: the singleton starts empty and fills in once
+// Supabase returns the user's memberships. The init also wires an
+// onAuthStateChange listener so the org list updates on sign-in / sign-out.
+initOrganisations()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

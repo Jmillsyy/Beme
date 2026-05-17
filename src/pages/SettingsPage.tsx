@@ -11,6 +11,10 @@ import { signOut, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
+import { useOrganisations, listOrgMembers, isCurrentUserOrgAdmin } from '../lib/organisations'
+import { useEffect } from 'react'
+import type { OrgMember } from '../types/organisations'
+import { orgRoleLabel } from '../types/organisations'
 import {
   bricksPerSquareMetreOf,
   type BrickType,
@@ -26,12 +30,14 @@ import type {
   Units,
 } from '../types/userSettings'
 
-type TabKey = 'profile' | 'business' | 'preferences' | 'defaults' | 'account'
+type TabKey = 'profile' | 'business' | 'preferences' | 'defaults' | 'organisation' | 'account'
 
 interface Tab {
   key: TabKey
   label: string
   description: string
+  /** When set, the tab is hidden unless this predicate returns true. */
+  showWhen?: (ctx: { hasOrg: boolean }) => boolean
 }
 
 const TABS: Tab[] = [
@@ -39,6 +45,14 @@ const TABS: Tab[] = [
   { key: 'business', label: 'Business', description: 'Used on every quote you export' },
   { key: 'preferences', label: 'Preferences', description: 'Units, currency, date, theme' },
   { key: 'defaults', label: 'Defaults', description: 'Starting values for new estimates' },
+  {
+    key: 'organisation',
+    label: 'Organisation',
+    description: 'Members and roles in your team',
+    // Only render the tab for users who actually belong to an org. Personal
+    // single-user accounts (supply-and-lay bricklayers) don't need it.
+    showWhen: ({ hasOrg }) => hasOrg,
+  },
   { key: 'account', label: 'Account', description: 'Sign out, reset, danger zone' },
 ]
 
@@ -48,7 +62,14 @@ const TABS: Tab[] = [
  */
 export default function SettingsPage() {
   const { settings } = useUserSettings()
+  const { currentOrg } = useOrganisations()
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
+
+  // Filter tabs by membership context — the Organisation tab disappears for
+  // personal-only users so the rail doesn't show empty / inapplicable sections.
+  const visibleTabs = TABS.filter(
+    (t) => !t.showWhen || t.showWhen({ hasOrg: !!currentOrg })
+  )
 
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
@@ -76,7 +97,7 @@ export default function SettingsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-6 items-start">
           {/* ── Tab rail ── */}
           <nav className="border border-ink-600 rounded-xl bg-ink-800 p-1.5 flex flex-col gap-0.5 sticky top-6">
-            {TABS.map((t) => {
+            {visibleTabs.map((t) => {
               const active = t.key === activeTab
               return (
                 <button
@@ -112,6 +133,7 @@ export default function SettingsPage() {
             {activeTab === 'defaults' && (
               <DefaultsTab defaults={settings.defaults} />
             )}
+            {activeTab === 'organisation' && <OrganisationTab />}
             {activeTab === 'account' && <AccountTab />}
           </section>
         </div>
@@ -581,6 +603,149 @@ function DefaultsTab({ defaults }: { defaults: EstimatingDefaults }) {
         </FieldGroup>
       </PanelCard>
 
+    </div>
+  )
+}
+
+// ─── Organisation ─────────────────────────────────────────────────────────
+
+/**
+ * Members and (eventually) settings for the user's current organisation.
+ *
+ * Reads the org context for the active org id, then fetches the live members
+ * list from Supabase on mount. The fetch is intentionally not cached in the
+ * org singleton — there isn't much value in keeping a copy around between
+ * settings visits, and it stays fresh each time the user opens the tab.
+ *
+ * Adding / removing members from the UI is not wired up yet — that comes in
+ * a follow-up. For now the page surfaces who's in the org and what role
+ * they have, plus an "invite by email" hint pointing at the SETUP.md
+ * provisioning steps (until self-serve invites are built).
+ */
+function OrganisationTab() {
+  const { currentOrg } = useOrganisations()
+  const [members, setMembers] = useState<OrgMember[]>([])
+  const [loading, setLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!currentOrg) return
+    setLoading(true)
+    Promise.all([
+      listOrgMembers(currentOrg.id),
+      isCurrentUserOrgAdmin(currentOrg.id),
+    ])
+      .then(([memberList, admin]) => {
+        if (cancelled) return
+        setMembers(memberList)
+        setIsAdmin(admin)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentOrg])
+
+  if (!currentOrg) {
+    return (
+      <PanelCard title="Organisation">
+        <p className="text-sm text-ink-400">
+          You're not signed in to an organisation. Personal projects live under your
+          own account; nothing to manage here.
+        </p>
+      </PanelCard>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <PanelCard
+        title={currentOrg.name}
+        subtitle="The workspace you and your teammates share. Estimate requests, projects, and branding all live here."
+      >
+        <FieldGroup>
+          <Field label="Organisation name">
+            <TextInput value={currentOrg.name} onChange={() => {}} disabled />
+          </Field>
+          <Field label="URL slug">
+            <TextInput value={currentOrg.slug} onChange={() => {}} disabled />
+          </Field>
+        </FieldGroup>
+        <p className="text-xs text-ink-400 mt-2">
+          Renaming your organisation isn't available from the app yet. Ping the
+          admin if you need it changed.
+        </p>
+      </PanelCard>
+
+      <PanelCard
+        title="Members"
+        subtitle={`${members.length} ${members.length === 1 ? 'person' : 'people'} in ${currentOrg.name}.`}
+      >
+        {loading ? (
+          <p className="text-sm text-ink-400">Loading members…</p>
+        ) : members.length === 0 ? (
+          <p className="text-sm text-ink-400">
+            No members yet — that's unusual since you're seeing this page. Try
+            refreshing.
+          </p>
+        ) : (
+          <div className="border border-ink-600 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-ink-700/40">
+                <tr className="text-left text-xs uppercase tracking-wider text-ink-400">
+                  <th className="px-3 py-2 font-semibold">Name</th>
+                  <th className="px-3 py-2 font-semibold">Role</th>
+                  <th className="px-3 py-2 font-semibold">Joined</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((m) => (
+                  <tr
+                    key={m.id}
+                    className="border-t border-ink-600 text-ink-100"
+                  >
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-ink-50">
+                        {m.displayName || m.email || (
+                          <span className="text-ink-400 italic">Member</span>
+                        )}
+                      </div>
+                      {m.email && (
+                        <div className="text-xs text-ink-400">{m.email}</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                          m.role === 'admin'
+                            ? 'bg-beme-500/15 text-beme-300 border border-beme-500/40'
+                            : 'bg-ink-700 text-ink-200 border border-ink-600'
+                        }`}
+                      >
+                        {orgRoleLabel(m.role)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-ink-400">
+                      {new Date(m.createdAt).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="mt-4 p-3 rounded-lg border border-ink-600 bg-ink-700/30 text-xs text-ink-300">
+          <strong className="text-ink-100">Adding teammates:</strong> self-serve
+          invites aren't built yet. {isAdmin
+            ? 'As an admin you can add members directly via the Supabase dashboard — see Section 8 of SETUP.md for the SQL.'
+            : 'Ask an admin to add new members from the Supabase dashboard (see SETUP.md).'}
+        </div>
+      </PanelCard>
     </div>
   )
 }

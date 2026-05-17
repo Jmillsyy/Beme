@@ -227,3 +227,238 @@ When you deploy to a real domain:
    (step 3.3).
 3. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in your hosting
    provider's env vars (Vercel, Netlify, Cloudflare Pages, etc.).
+
+---
+
+## 7. (Organisations) Org accounts, members, estimate requests
+
+Run this once on top of the original schema to add organisational accounts —
+the multi-user shape needed for sales reps assigning estimates to estimators.
+Single-user / personal projects keep working exactly as before; the org layer
+is additive.
+
+In **SQL Editor → New query**, paste and run:
+
+```sql
+-- ─── organisations ──────────────────────────────────────────────────────────
+create table public.organisations (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null,
+  slug        text not null unique,
+  logo_url    text,
+  created_at  timestamptz not null default now()
+);
+
+create table public.organisation_members (
+  id              uuid primary key default gen_random_uuid(),
+  organisation_id uuid not null references public.organisations(id) on delete cascade,
+  user_id         uuid not null references auth.users(id) on delete cascade,
+  role            text not null check (role in ('admin', 'sales', 'estimator')),
+  created_at      timestamptz not null default now(),
+  unique (organisation_id, user_id)
+);
+
+create index org_members_user_idx on public.organisation_members(user_id);
+create index org_members_org_idx on public.organisation_members(organisation_id);
+
+-- Helpers used by RLS policies. `security definer` so they bypass RLS on the
+-- members table itself (otherwise the membership check would recurse).
+create or replace function public.is_org_member(target_org_id uuid)
+returns boolean
+language sql security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.organisation_members
+    where organisation_id = target_org_id
+      and user_id = auth.uid()
+  );
+$$;
+
+create or replace function public.is_org_admin(target_org_id uuid)
+returns boolean
+language sql security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.organisation_members
+    where organisation_id = target_org_id
+      and user_id = auth.uid()
+      and role = 'admin'
+  );
+$$;
+
+alter table public.organisations enable row level security;
+alter table public.organisation_members enable row level security;
+
+create policy "Members select own org"
+  on public.organisations for select
+  using (public.is_org_member(id));
+
+create policy "Admins update own org"
+  on public.organisations for update
+  using (public.is_org_admin(id));
+
+create policy "Members see members"
+  on public.organisation_members for select
+  using (public.is_org_member(organisation_id));
+
+create policy "Admins insert members"
+  on public.organisation_members for insert
+  with check (public.is_org_admin(organisation_id));
+
+create policy "Admins update members"
+  on public.organisation_members for update
+  using (public.is_org_admin(organisation_id));
+
+create policy "Admins delete members"
+  on public.organisation_members for delete
+  using (public.is_org_admin(organisation_id));
+
+-- ─── projects: optional org ownership ──────────────────────────────────────
+alter table public.projects
+  add column if not exists organisation_id uuid
+    references public.organisations(id) on delete set null;
+
+create index if not exists projects_org_updated_idx
+  on public.projects (organisation_id, updated_at desc)
+  where organisation_id is not null;
+
+-- Replace the user-only policies with policies that also let org members in.
+drop policy if exists "Users select own projects" on public.projects;
+drop policy if exists "Users update own projects" on public.projects;
+drop policy if exists "Users delete own projects" on public.projects;
+
+create policy "Owner or org member select project"
+  on public.projects for select
+  using (
+    user_id = auth.uid()
+    or (organisation_id is not null and public.is_org_member(organisation_id))
+  );
+
+create policy "Owner or org member update project"
+  on public.projects for update
+  using (
+    user_id = auth.uid()
+    or (organisation_id is not null and public.is_org_member(organisation_id))
+  );
+
+create policy "Owner or org admin delete project"
+  on public.projects for delete
+  using (
+    user_id = auth.uid()
+    or (organisation_id is not null and public.is_org_admin(organisation_id))
+  );
+
+-- ─── estimate_requests ──────────────────────────────────────────────────────
+create table public.estimate_requests (
+  id                     uuid primary key default gen_random_uuid(),
+  organisation_id        uuid not null references public.organisations(id) on delete cascade,
+  created_by_user_id     uuid not null references auth.users(id) on delete restrict,
+  assigned_to_user_id    uuid references auth.users(id) on delete set null,
+  project_id             uuid references public.projects(id) on delete set null,
+  type                   text not null check (type in ('block', 'brick')),
+  status                 text not null default 'pending'
+                         check (status in ('pending', 'in_progress', 'completed', 'cancelled')),
+  customer_name          text not null,
+  customer_email         text,
+  customer_phone         text,
+  customer_company       text,
+  inclusion_notes        text,
+  plan_pdf_path          text,
+  plan_pdf_file_name     text,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now(),
+  completed_at           timestamptz
+);
+
+create index estimate_requests_org_status_idx
+  on public.estimate_requests (organisation_id, status, updated_at desc);
+create index estimate_requests_assignee_idx
+  on public.estimate_requests (assigned_to_user_id, status)
+  where assigned_to_user_id is not null;
+
+alter table public.estimate_requests enable row level security;
+
+create policy "Org members read requests"
+  on public.estimate_requests for select
+  using (public.is_org_member(organisation_id));
+
+create policy "Org members insert requests"
+  on public.estimate_requests for insert
+  with check (
+    public.is_org_member(organisation_id)
+    and created_by_user_id = auth.uid()
+  );
+
+create policy "Org members update requests"
+  on public.estimate_requests for update
+  using (public.is_org_member(organisation_id));
+
+create policy "Admins delete requests"
+  on public.estimate_requests for delete
+  using (public.is_org_admin(organisation_id));
+
+-- ─── estimate-request-plans storage ─────────────────────────────────────────
+insert into storage.buckets (id, name, public)
+values ('estimate-request-plans', 'estimate-request-plans', false)
+on conflict (id) do nothing;
+
+-- Path layout: <organisation_id>/<request_id>.pdf
+create policy "Org members read request plans"
+  on storage.objects for select
+  using (
+    bucket_id = 'estimate-request-plans'
+    and public.is_org_member(((storage.foldername(name))[1])::uuid)
+  );
+
+create policy "Org members upload request plans"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'estimate-request-plans'
+    and public.is_org_member(((storage.foldername(name))[1])::uuid)
+  );
+
+create policy "Org members update request plans"
+  on storage.objects for update
+  using (
+    bucket_id = 'estimate-request-plans'
+    and public.is_org_member(((storage.foldername(name))[1])::uuid)
+  );
+
+create policy "Admins delete request plans"
+  on storage.objects for delete
+  using (
+    bucket_id = 'estimate-request-plans'
+    and public.is_org_admin(((storage.foldername(name))[1])::uuid)
+  );
+```
+
+---
+
+## 8. Seed your first organisation
+
+Self-serve org signup isn't built yet — we provision orgs by hand in the
+Supabase dashboard until the company is ready for it. To get ABC (or
+whatever your first org is) up:
+
+1. **Authentication → Users** — find your own user id (the UUID in the
+   `ID` column) and copy it. Same for any teammates you want to add.
+2. **SQL Editor → New query** — run:
+
+   ```sql
+   -- 1) Create the org
+   insert into public.organisations (name, slug)
+     values ('ABC Building Products', 'abc')
+     returning id;
+   -- copy the returned id
+
+   -- 2) Add yourself as admin (replace both UUIDs)
+   insert into public.organisation_members (organisation_id, user_id, role)
+     values ('<ORG-ID>', '<YOUR-USER-ID>', 'admin');
+
+   -- 3) Add any teammates with their role
+   insert into public.organisation_members (organisation_id, user_id, role)
+     values ('<ORG-ID>', '<TEAMMATE-USER-ID>', 'sales');
+   ```
+
+3. Refresh Beme — your org name shows in the header next to the user menu,
+   and the Settings → Organisation tab lists every member.
