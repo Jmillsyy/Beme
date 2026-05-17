@@ -97,7 +97,7 @@ export default function RequestsPage() {
     return (
       <div className="min-h-screen bg-ink-900 text-ink-50">
         <Header />
-        <main className="max-w-[1200px] mx-auto px-6 py-10">
+        <main className="max-w-[1600px] mx-auto px-6 py-10">
           <h2 className="text-3xl font-extrabold tracking-tight mb-2">
             Estimate requests
           </h2>
@@ -121,7 +121,7 @@ export default function RequestsPage() {
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
 
-      <main className="max-w-[1200px] mx-auto px-6 py-10">
+      <main className="max-w-[1600px] mx-auto px-6 py-10">
         <div className="flex items-end justify-between flex-wrap gap-4 mb-6">
           <div>
             <Link

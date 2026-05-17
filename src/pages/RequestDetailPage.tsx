@@ -59,7 +59,7 @@ export default function RequestDetailPage() {
     return (
       <div className="min-h-screen bg-ink-900 text-ink-50">
         <Header />
-        <main className="max-w-[900px] mx-auto px-6 py-10">
+        <main className="max-w-[1600px] mx-auto px-6 py-10">
           <p className="text-sm text-ink-400">Loading request…</p>
         </main>
       </div>
@@ -69,7 +69,7 @@ export default function RequestDetailPage() {
     return (
       <div className="min-h-screen bg-ink-900 text-ink-50">
         <Header />
-        <main className="max-w-[900px] mx-auto px-6 py-10">
+        <main className="max-w-[1600px] mx-auto px-6 py-10">
           <h2 className="text-3xl font-extrabold tracking-tight mb-2">
             Request not found
           </h2>
@@ -165,7 +165,7 @@ export default function RequestDetailPage() {
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
 
-      <main className="max-w-[900px] mx-auto px-6 py-10">
+      <main className="max-w-[1600px] mx-auto px-6 py-10">
         <Link
           to="/requests"
           className="text-xs text-ink-400 hover:text-ink-100 transition-colors"

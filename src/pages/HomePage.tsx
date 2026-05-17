@@ -74,7 +74,7 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
-      <main className="max-w-[1200px] mx-auto px-6 py-12">
+      <main className="max-w-[1600px] mx-auto px-6 py-12">
         {signedIn && <LocalMigrationBanner />}
         {currentOrg ? (
           <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
