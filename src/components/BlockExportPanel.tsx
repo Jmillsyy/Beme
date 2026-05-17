@@ -10,6 +10,7 @@ import type {
 } from '../types/walls'
 import { exportBlockEstimate } from '../lib/blockExport'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
 
 interface BlockExportPanelProps {
   projectDetails: ProjectDetails
@@ -37,6 +38,7 @@ export default function BlockExportPanel({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { settings: userSettings } = useUserSettings()
+  const { currentOrg } = useOrganisations()
 
   function patch(p: Partial<BlockExportInclusions>) {
     onChangeInclusions({ ...inclusions, ...p })
@@ -56,8 +58,15 @@ export default function BlockExportPanel({
         piers,
         pierMakeups,
         // Pass the user's business identity through so exports become branded.
+        // When the user is signed in to an organisation, the org's name takes
+        // precedence over the personal business.companyName field — that way
+        // estimates exported from inside ABC always read 'ABC Building Products'
+        // in the top-left, regardless of what the user has typed into their
+        // personal Settings → Business tab. Other fields (ABN, phone, address,
+        // logo) still come from personal settings, on the assumption that the
+        // sales rep / estimator is using their own contact details.
         business: {
-          companyName: userSettings.business.companyName,
+          companyName: currentOrg?.name || userSettings.business.companyName,
           abn: userSettings.business.abn,
           phone: userSettings.business.phone,
           website: userSettings.business.website,
@@ -66,7 +75,7 @@ export default function BlockExportPanel({
           suburb: userSettings.business.suburb,
           state: userSettings.business.state,
           postcode: userSettings.business.postcode,
-          logoUrl: userSettings.business.logoUrl,
+          logoUrl: currentOrg?.logoUrl || userSettings.business.logoUrl,
         },
       })
     } catch (e) {

@@ -8,6 +8,7 @@ import type {
 } from '../types/walls'
 import { exportBrickEstimate } from '../lib/brickExport'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
 
 interface BrickExportPanelProps {
   projectDetails: ProjectDetails
@@ -37,6 +38,7 @@ function BrickExportPanelImpl({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { settings: userSettings } = useUserSettings()
+  const { currentOrg } = useOrganisations()
 
   function patch(p: Partial<BrickExportInclusions>) {
     onChangeInclusions({ ...inclusions, ...p })
@@ -53,8 +55,12 @@ function BrickExportPanelImpl({
         walls,
         openings,
         settings,
+        // When the user is inside an org, the org name takes precedence over
+        // the personal business.companyName so the export top-left always
+        // reads as the supplier the user is acting for. Other contact fields
+        // come from the user's personal Business settings.
         business: {
-          companyName: userSettings.business.companyName,
+          companyName: currentOrg?.name || userSettings.business.companyName,
           abn: userSettings.business.abn,
           phone: userSettings.business.phone,
           website: userSettings.business.website,
@@ -63,7 +69,7 @@ function BrickExportPanelImpl({
           suburb: userSettings.business.suburb,
           state: userSettings.business.state,
           postcode: userSettings.business.postcode,
-          logoUrl: userSettings.business.logoUrl,
+          logoUrl: currentOrg?.logoUrl || userSettings.business.logoUrl,
         },
       })
     } catch (e) {
