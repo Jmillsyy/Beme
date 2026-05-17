@@ -411,52 +411,6 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     : ''
 
   // Page 3: Wall-type breakdown
-  const breakdownTables = inclusions.wallTypeBreakdown && perMakeup.some((p) => p.wallCount > 0)
-    ? perMakeup
-        .filter((p) => p.wallCount > 0)
-        .map((p) => {
-          const subEntries = tallyEntries(p.tally)
-          const subTotal = subEntries.reduce((s, [, c]) => s + c, 0)
-          // .wall-type-section wraps the heading + table so the print
-          // page-break rules can keep them together (see @media print
-          // block in the style sheet).
-          return `
-            <div class="wall-type-section">
-              <h3 class="wall-type-name">
-                ${escapeHtml(p.makeup.name)}
-                <span class="wall-type-meta">
-                  · ${p.wallCount} wall${p.wallCount === 1 ? '' : 's'}
-                  · ${formatNumber(p.lengthMm / 1000, 2)} m
-                  · ${p.makeup.heightMm}mm high
-                </span>
-              </h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th style="width: 100px">Code</th>
-                    <th>Block</th>
-                    <th class="right" style="width: 100px">Quantity</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${subEntries
-                    .map(
-                      ([code, count]) =>
-                        `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td></tr>`
-                    )
-                    .join('')}
-                  <tr class="bold">
-                    <td colspan="2">Subtotal</td>
-                    <td class="right">${formatNumber(subTotal)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          `
-        })
-        .join('')
-    : ''
-
   // Combined totals per block code across all makeups — pre-corner-dedup, so these are the
   // sums you'd get from adding up every sub-table above. The Block Schedule on its own page
   // shows the dedup'd numbers; the diff = corner blocks shared between adjacent walls.
@@ -470,39 +424,94 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   const combinedEntries = tallyEntries(combinedPerCode)
   const breakdownGrandTotal = combinedEntries.reduce((s, [, c]) => s + c, 0)
 
-  const breakdownPage = breakdownTables
-    ? `
-      <section class="page">
-        ${pageHeader}
-        <h2 class="section-title">Breakdown by Wall Type</h2>
-        <p class="page-intro">Block counts per wall makeup (pre-deduplication of shared corners).</p>
-        ${breakdownTables}
-        <div class="wall-type-section">
-          <h3 class="wall-type-name">Grand total per block type</h3>
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 100px">Code</th>
-                <th>Block</th>
-                <th class="right" style="width: 100px">Quantity</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${combinedEntries
-                .map(
-                  ([code, count]) =>
-                    `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right tabular">${formatNumber(count)}</td></tr>`
-                )
-                .join('')}
-              <tr class="bold">
-                <td colspan="2">Total</td>
-                <td class="right tabular">${formatNumber(breakdownGrandTotal)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-    `
+  // Each wall-type breakdown gets its own .page section so every page reliably
+  // carries the full pageHeader (ABC Building Products / Block Takeoff —
+  // Material Schedule) and the "Breakdown by Wall Type" subtitle. Trying to
+  // pack multiple wall types onto one page would have left continuation pages
+  // headerless because the first .page section's pageHeader only renders once
+  // at the section's start. Per-wall-type pages is more pages but every page
+  // reads as a complete, self-labelled sheet.
+  const breakdownPages = inclusions.wallTypeBreakdown && perMakeup.some((p) => p.wallCount > 0)
+    ? (() => {
+        const wallTypePages = perMakeup
+          .filter((p) => p.wallCount > 0)
+          .map((p) => {
+            const subEntries = tallyEntries(p.tally)
+            const subTotal = subEntries.reduce((s, [, c]) => s + c, 0)
+            return `
+              <section class="page">
+                ${pageHeader}
+                <h2 class="section-title">Breakdown by Wall Type</h2>
+                <p class="page-intro">Block counts per wall makeup (pre-deduplication of shared corners).</p>
+                <div class="wall-type-section">
+                  <h3 class="wall-type-name">
+                    ${escapeHtml(p.makeup.name)}
+                    <span class="wall-type-meta">
+                      · ${p.wallCount} wall${p.wallCount === 1 ? '' : 's'}
+                      · ${formatNumber(p.lengthMm / 1000, 2)} m
+                      · ${p.makeup.heightMm}mm high
+                    </span>
+                  </h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style="width: 100px">Code</th>
+                        <th>Block</th>
+                        <th class="right" style="width: 100px">Quantity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${subEntries
+                        .map(
+                          ([code, count]) =>
+                            `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td></tr>`
+                        )
+                        .join('')}
+                      <tr class="bold">
+                        <td colspan="2">Subtotal</td>
+                        <td class="right">${formatNumber(subTotal)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            `
+          })
+          .join('')
+
+        const grandTotalPage = `
+          <section class="page">
+            ${pageHeader}
+            <h2 class="section-title">Grand Total per Block Type</h2>
+            <p class="page-intro">Combined block counts across every wall makeup (pre-deduplication of shared corners).</p>
+            <div class="wall-type-section">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width: 100px">Code</th>
+                    <th>Block</th>
+                    <th class="right" style="width: 100px">Quantity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${combinedEntries
+                    .map(
+                      ([code, count]) =>
+                        `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right tabular">${formatNumber(count)}</td></tr>`
+                    )
+                    .join('')}
+                  <tr class="bold">
+                    <td colspan="2">Total</td>
+                    <td class="right tabular">${formatNumber(breakdownGrandTotal)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        `
+
+        return wallTypePages + grandTotalPage
+      })()
     : ''
 
   // Page 4: Openings + lintels
@@ -845,7 +854,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 <body>
   ${assumptionsPage}
   ${schedulePage}
-  ${breakdownPage}
+  ${breakdownPages}
   ${openingsPage}
   ${disclaimerPage}
 </body>

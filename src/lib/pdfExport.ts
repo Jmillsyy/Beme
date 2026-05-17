@@ -88,6 +88,8 @@ export async function downloadPdfFromHtml({ html, filename }: PdfDownloadOptions
         font-size: 11px;
         color: #6d717a;
         text-align: right;
+        max-width: 200px;
+        line-height: 1.4;
       }
       @media print {
         .beme-print-cta, .beme-print-hint { display: none !important; }
@@ -98,7 +100,13 @@ export async function downloadPdfFromHtml({ html, filename }: PdfDownloadOptions
     <button class="beme-print-cta" onclick="window.print()">
       Print / Save as PDF
     </button>
-    <div class="beme-print-hint">or press Cmd&nbsp;+&nbsp;P / Ctrl&nbsp;+&nbsp;P</div>
+    <div class="beme-print-hint">
+      or press Cmd&nbsp;+&nbsp;P / Ctrl&nbsp;+&nbsp;P<br/>
+      <span style="font-size: 10px; opacity: 0.85;">
+        In the print dialog, uncheck&nbsp;<em>Headers&nbsp;and&nbsp;footers</em>
+        for the cleanest output.
+      </span>
+    </div>
   `
   const finalHtml = withTitle
     .replace(/<\/head>/i, `${printButtonHtml}</head>`)
