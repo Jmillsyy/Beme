@@ -14,7 +14,12 @@ import type {
   EstimateRequestDraft,
   EstimateRequestStatus,
 } from '../types/estimateRequests'
-import type { ProjectType } from './projectStorage'
+import type { ProjectType, SavedProject } from './projectStorage'
+import { generateProjectId, saveProject } from './projectStorage'
+import { createDefaultProjectDetails, createDefaultExportInclusions } from './brickExport'
+import { createDefaultBlockExportInclusions } from './blockExport'
+import { createDefaultBrickSettings } from './brickCalc'
+import { createDefaultWallMakeup, createDefaultPierMakeups } from './makeups'
 import { isSupabaseConfigured, supabase } from './supabase'
 
 const PLANS_BUCKET = 'estimate-request-plans'
@@ -271,4 +276,92 @@ export async function downloadRequestPlan(
     return null
   }
   return data ?? null
+}
+
+/**
+ * Pick up an estimate request and turn it into a Project the estimator can
+ * work on inside the existing PdfWorkspace.
+ *
+ * Atomic from the user's POV — a single button click; underneath it:
+ *
+ *   1. Downloads the customer's plan PDF from the estimate-request-plans
+ *      bucket (if there is one).
+ *   2. Builds a fresh SavedProject seeded with the customer's name (so the
+ *      project bar shows useful context), the PDF blob, and the org id.
+ *   3. Saves the project (which uploads the PDF to project-pdfs and inserts
+ *      the row scoped to the org via RLS).
+ *   4. Updates the request to status='in_progress' and links it to the new
+ *      project id.
+ *
+ * Returns the new project id so the caller can navigate the estimator
+ * straight into the workspace.
+ */
+export async function pickUpEstimateRequest(request: EstimateRequest): Promise<string> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Estimate requests require Supabase to be configured.')
+  }
+
+  // Download the plan PDF first — without it the estimator opens an empty
+  // workspace, which is fine for requests that came in without an attachment.
+  let planBlob: Blob | null = null
+  if (request.planPdfPath) {
+    planBlob = await downloadRequestPlan(request)
+  }
+
+  const projectId = generateProjectId()
+  const nowIso = new Date().toISOString()
+
+  // Seed the project with the customer's name so the dashboard and project
+  // bar immediately show useful context — the estimator doesn't have to
+  // retype "Smith Construction — 14 Mothership Drive" before they start.
+  const projectDetails = createDefaultProjectDetails()
+  projectDetails.projectName = request.customerCompany || request.customerName
+  if (request.customerName && request.customerCompany) {
+    projectDetails.clientName = request.customerName
+  }
+
+  const baseProject: SavedProject = {
+    id: projectId,
+    type: request.type,
+    status: 'in-progress',
+    organisationId: request.organisationId,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    projectDetails,
+    pdfBlob: planBlob
+      ? new File(
+          [planBlob],
+          request.planPdfFileName || `${request.customerName}.pdf`,
+          { type: 'application/pdf' }
+        )
+      : undefined,
+    pdfFileName: request.planPdfFileName,
+    pagesData: {},
+    wallsByPage: {},
+    openingsByPage: {},
+    piersByPage: {},
+    pierMakeups: createDefaultPierMakeups(),
+    currentPage: 1,
+    ...(request.type === 'block'
+      ? {
+          makeups: [createDefaultWallMakeup({ name: 'External 2400mm stretcher' })],
+          blockExportInclusions: createDefaultBlockExportInclusions(),
+        }
+      : {
+          brickSettings: createDefaultBrickSettings(),
+          exportInclusions: createDefaultExportInclusions(),
+        }),
+  }
+
+  // saveProject takes care of uploading the PDF to project-pdfs and inserting
+  // the row. RLS allows org members to insert rows for projects they own.
+  await saveProject(baseProject)
+
+  // Link the request to the new project + flip status.
+  await updateEstimateRequest(request.id, {
+    status: 'in_progress',
+    projectId,
+  })
+
+  return projectId
 }

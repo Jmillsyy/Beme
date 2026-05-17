@@ -13,6 +13,7 @@ import {
 } from '../lib/projectStorage'
 import { useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
 
 type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
 
@@ -58,6 +59,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true)
   const { signedIn } = useAuth()
   const { settings } = useUserSettings()
+  const { currentOrg } = useOrganisations()
   const primaryProjectType = settings.preferences.defaultProjectType
 
   const refreshProjects = useCallback(() => {
@@ -143,7 +145,17 @@ export default function HomePage() {
               Your estimates, win rate, and current jobs at a glance.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Requests inbox — only shown for org users. Personal accounts
+                don't have requests, so the link would be a dead end. */}
+            {currentOrg && (
+              <Link
+                to="/requests"
+                className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
+              >
+                Requests →
+              </Link>
+            )}
             {/* Primary button (orange) is the user's default project type — swap to match. */}
             {primaryProjectType === 'brick' ? (
               <>

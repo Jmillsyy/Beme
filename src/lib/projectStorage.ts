@@ -74,6 +74,13 @@ export interface SavedProject {
   id: string
   type: ProjectType
   status: ProjectStatus
+  /**
+   * Organisation that owns this project. Null/undefined for personal
+   * (single-user) projects. When set, RLS permits any member of the org
+   * to see/edit the project, which is how estimate-request work gets
+   * shared between sales and estimators inside the same org.
+   */
+  organisationId?: string
   /** ISO datetime — when the project was first saved. */
   createdAt: string
   /** ISO datetime — most recent save. */
@@ -186,6 +193,7 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
     id,
     type,
     status,
+    organisationId,
     createdAt,
     updatedAt,
     completedAt,
@@ -197,6 +205,7 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
   return {
     id,
     user_id: userId,
+    organisation_id: organisationId ?? null,
     type,
     status,
     created_at: createdAt,
@@ -211,6 +220,7 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
 interface CloudProjectRow {
   id: string
   user_id: string
+  organisation_id: string | null
   type: ProjectType
   status: ProjectStatus
   created_at: string
@@ -218,7 +228,15 @@ interface CloudProjectRow {
   completed_at: string | null
   data: Omit<
     SavedProject,
-    'id' | 'type' | 'status' | 'createdAt' | 'updatedAt' | 'completedAt' | 'pdfBlob' | 'pdfFileName'
+    | 'id'
+    | 'type'
+    | 'status'
+    | 'organisationId'
+    | 'createdAt'
+    | 'updatedAt'
+    | 'completedAt'
+    | 'pdfBlob'
+    | 'pdfFileName'
   >
   pdf_path: string | null
   pdf_file_name: string | null
@@ -230,6 +248,7 @@ function rowToProjectMeta(row: CloudProjectRow): SavedProject {
     id: row.id,
     type: row.type,
     status: row.status,
+    organisationId: row.organisation_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at ?? undefined,
