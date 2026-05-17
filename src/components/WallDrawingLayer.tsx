@@ -1557,6 +1557,11 @@ function WallDrawingLayerInner({
           const endIsTjunction = wall.endJunction.type === 't-junction'
           const startIsControlJoint = wall.startJunction.type === 'control-joint'
           const endIsControlJoint = wall.endJunction.type === 'control-joint'
+          // Pixel thickness of this wall at the current zoom — feeds the
+          // endpoint marker so brick walls (thin) get tighter markers than
+          // block walls (chunky).
+          const wallThicknessPx =
+            (wallThicknessByWallId[wall.id] ?? 190) * pxPerMmAtCurrentZoom
 
           return (
             <Group
@@ -1665,6 +1670,7 @@ function WallDrawingLayerInner({
                   isControlJoint: startIsControlJoint,
                   isSelected,
                   draggable: isSelected && !startIsCorner && !startIsControlJoint,
+                  wallThicknessPx,
                   onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'start'),
                   onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'start'),
                   onMouseEnterStage: (ev) =>
@@ -1691,6 +1697,7 @@ function WallDrawingLayerInner({
                   isControlJoint: endIsControlJoint,
                   isSelected,
                   draggable: isSelected && !endIsCorner && !endIsControlJoint,
+                  wallThicknessPx,
                   onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'end'),
                   onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'end'),
                   onMouseEnterStage: (ev) =>
@@ -2154,6 +2161,15 @@ interface EndpointMarkerProps {
   isControlJoint?: boolean
   isSelected: boolean
   draggable: boolean
+  /**
+   * Wall thickness in pixels at the current zoom. The marker is sized to
+   * roughly match the wall's on-screen thickness so it doesn't visually
+   * overflow a thin brick wall (110mm ≈ 5–7 px at typical residential
+   * scales), while still being clickable on chunky 190 mm block walls and
+   * at low zoom. Clamped to [4, 12] px so it never gets too small to click
+   * or so big it obscures the plan.
+   */
+  wallThicknessPx: number
   onDragMove: (e: Konva.KonvaEventObject<DragEvent>) => void
   onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => void
   onMouseEnterStage: (e: Konva.KonvaEventObject<MouseEvent>) => void
@@ -2167,16 +2183,25 @@ function renderEndpointMarker({
   isControlJoint = false,
   isSelected,
   draggable,
+  wallThicknessPx,
   onDragMove,
   onDragEnd,
   onMouseEnterStage,
   onMouseLeaveStage,
 }: EndpointMarkerProps) {
-  // Marker sizes are kept modest so they don't obscure the underlying plan when
-  // the user is trying to click precisely (e.g. picking a corner exactly on a
-  // wall intersection in the PDF). Selected markers get a slight bump so the
-  // active drag handle is easy to find without re-introducing the obscuring.
-  const radius = isSelected ? 6 : 4
+  // Marker sizes are derived from the wall's on-screen thickness so brick
+  // walls (thin) get correspondingly small markers and block walls (chunky)
+  // get larger ones. Clamped to [4, 12] px so a wall that's effectively
+  // invisible at low zoom still gets a clickable marker, and so a wall at
+  // 4× zoom doesn't end up with a marker the size of a coin obscuring the
+  // PDF underneath. Selected markers get a slight bump so the drag handle
+  // is easy to find without obscuring the plan.
+  const baseSize = Math.max(4, Math.min(12, wallThicknessPx * 0.95))
+  const radius = (isSelected ? baseSize * 1.3 : baseSize) / 2
+  const cornerSquareSize = isSelected ? Math.min(12, baseSize * 1.2) : baseSize
+  const tjunctionDiamondSize = cornerSquareSize
+  const controlJointOuterRadius = baseSize * 0.6
+  const controlJointInnerRadius = Math.max(1.25, baseSize * 0.22)
   const fill = isSelected
     ? '#3b82f6'
     : isCorner
@@ -2196,7 +2221,7 @@ function renderEndpointMarker({
         <Circle
           x={pos.x}
           y={pos.y}
-          radius={6}
+          radius={controlJointOuterRadius}
           stroke={fill}
           strokeWidth={1.5}
           fill="white"
@@ -2205,7 +2230,7 @@ function renderEndpointMarker({
         <Circle
           x={pos.x}
           y={pos.y}
-          radius={2}
+          radius={controlJointInnerRadius}
           fill={fill}
           listening={false}
         />
@@ -2216,7 +2241,7 @@ function renderEndpointMarker({
   // T-junction: purple diamond (square rotated 45°). Visually distinct from corners
   // without being noisy.
   if (isTjunction && !isSelected) {
-    const size = 10
+    const size = tjunctionDiamondSize
     return (
       <Rect
         x={pos.x}
@@ -2242,7 +2267,7 @@ function renderEndpointMarker({
   }
 
   if (isCorner && !isSelected) {
-    const size = 10
+    const size = cornerSquareSize
     return (
       <Rect
         x={pos.x - size / 2}
