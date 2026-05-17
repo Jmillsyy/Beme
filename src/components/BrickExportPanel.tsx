@@ -100,16 +100,17 @@ function BrickExportPanelImpl({
           disabled={!canExport}
           className="w-full px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
         >
-          {busy ? 'Opening print dialog…' : 'Save as PDF →'}
+          {busy ? 'Opening preview…' : 'Open print preview →'}
         </button>
       )}
 
       {expanded && (
         <>
       <p className="text-xs text-ink-400 mb-2">
-        Tick what you want in the document, then click <em>Save as PDF</em>. The print
-        dialog opens with your estimate already loaded — pick <em>Save as PDF</em> as the
-        destination.
+        Tick what you want in the document, then click <em>Open print preview</em>. Your
+        estimate opens in a new tab — hit the orange <em>Print / Save as PDF</em> button at
+        the top of that tab (or Cmd&nbsp;+&nbsp;P) and pick <em>Save as PDF</em> in the
+        browser's print dialog.
       </p>
 
       <div className="grid grid-cols-1 gap-1.5 text-sm mb-3">
@@ -154,7 +155,7 @@ function BrickExportPanelImpl({
         disabled={!canExport}
         className="w-full px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
       >
-        {busy ? 'Opening print dialog…' : 'Save as PDF →'}
+        {busy ? 'Opening preview…' : 'Open print preview →'}
       </button>
 
       {!canExport && (

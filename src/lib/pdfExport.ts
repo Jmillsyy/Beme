@@ -1,24 +1,27 @@
 /**
  * HTML → PDF download helper.
  *
- * Uses the browser's native print engine via `window.print()` after opening
- * the styled export HTML in a new tab. Three attempts at html2pdf.js +
- * html2canvas all produced either blank pages or unstyled text dumps — the
- * library can't read computed styles consistently across iframes / scoped
- * stylesheets, and rasterised output makes block codes uncopyable anyway.
+ * Opens the styled export HTML in a new tab. A small floating button at the
+ * top of the page triggers `window.print()` so the user gets the browser's
+ * native print dialog where they can pick "Save as PDF" (or send to a real
+ * printer). The button is `@media print { display: none }`-d so it doesn't
+ * end up in the output.
  *
- * The print-engine path is rock solid:
+ * This is intentionally a two-step flow rather than an auto-print:
  *
- *   - Browser renders the HTML with its real layout engine. Every CSS rule
- *     applies exactly the way it did in the preview, including the orange
- *     brand colours, page breaks, mm-based padding, the works.
- *   - Output is a true vector PDF with selectable text.
- *   - Filename comes from the document title — we set that to the project
- *     name so "Save as PDF" defaults to a sensible name.
- *   - Works identically in Chrome, Safari, Firefox, Edge.
+ *   - The user can scroll through the preview and confirm everything looks
+ *     right before committing to a print.
+ *   - The tab stays open after printing — useful for re-printing, copying
+ *     numbers out of the schedule, or sharing the URL during a phone call.
+ *   - No race between page-render-ready and auto-trigger-print (which
+ *     previously caused fonts to fall back to system defaults on Chrome).
  *
- * Trade-off: one extra click in the print dialog vs a true one-click download.
- * We accept this for the reliability + selectable text wins.
+ * Why not html2pdf.js / jsPDF? Three earlier attempts produced either blank
+ * pages or unstyled text dumps. Those libraries can't read computed styles
+ * consistently across iframes / scoped stylesheets, and rasterised output
+ * makes block codes uncopyable. The browser's native print engine produces
+ * a true vector PDF with selectable text and identical layout to the
+ * preview — that's worth the extra click.
  */
 
 export interface PdfDownloadOptions {
@@ -32,12 +35,13 @@ export interface PdfDownloadOptions {
 }
 
 /**
- * Open the styled HTML in a new tab and auto-trigger the print dialog.
- * Resolves once the new window has been written; rejects if a pop-up blocker
- * stops the open.
+ * Open the styled HTML in a new tab. The page renders with a small "Print
+ * / Save as PDF" button floating in the top right corner; clicking it (or
+ * pressing Cmd+P / Ctrl+P) triggers the browser's print dialog. The tab
+ * stays open after printing so the user can re-print or close it manually.
  *
- * The user then picks "Save as PDF" (or any other print destination) in the
- * native print dialog.
+ * Resolves once the new window has been written; rejects if a pop-up
+ * blocker stops the open.
  */
 export async function downloadPdfFromHtml({ html, filename }: PdfDownloadOptions): Promise<void> {
   const baseName = filename.replace(/\.pdf$/i, '')
@@ -47,43 +51,61 @@ export async function downloadPdfFromHtml({ html, filename }: PdfDownloadOptions
     throw new Error('Pop-up blocked — allow pop-ups for this site and try again.')
   }
 
-  // Inject the project title, an auto-print script, and an auto-close hook
-  // just before </body>. The 200ms delay gives fonts and any images a moment
-  // to load before the print dialog opens; without it Chrome sometimes prints
-  // with system-font fallbacks instead of Inter.
-  //
-  // window.onafterprint fires after the user either saves or cancels — we
-  // close the tab so the user isn't left with the preview hanging around.
-  // Browsers only allow window.close() on tabs that were opened by script,
-  // which this one was, so it works in Chrome / Edge / Firefox. Safari
-  // ignores it but no harm done — user closes the tab themselves.
+  // Inject:
+  //   - the project title (becomes the print dialog's default filename)
+  //   - a small fixed-position print button + the @media-print CSS to hide
+  //     it from the printed output
+  //   - a Cmd+P keyboard hint so the user knows they don't have to use the
+  //     button if they don't want to
   const withTitle = ensureTitle(html, baseName)
-  const withAutoPrint = withTitle.replace(
-    /<\/body>/i,
-    `
-    <script>
-      (function () {
-        function go() {
-          window.focus();
-          window.print();
-        }
-        window.addEventListener('afterprint', function () {
-          // Slight delay so the save flow finishes before we yank the tab.
-          setTimeout(function () { window.close(); }, 100);
-        });
-        // Wait for fonts (best effort) + a short delay so layout has settled.
-        if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === 'function') {
-          document.fonts.ready.then(function () { setTimeout(go, 200); });
-        } else {
-          window.addEventListener('load', function () { setTimeout(go, 200); });
-        }
-      })();
-    </script>
-    </body>`
-  )
+  const printButtonHtml = `
+    <style>
+      .beme-print-cta {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 9999;
+        background: #ff7a2d;
+        color: #0e0e10;
+        font-family: Inter, system-ui, sans-serif;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 10px 16px;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      }
+      .beme-print-cta:hover {
+        background: #ed6d1a;
+      }
+      .beme-print-hint {
+        position: fixed;
+        top: 60px;
+        right: 16px;
+        z-index: 9999;
+        font-family: Inter, system-ui, sans-serif;
+        font-size: 11px;
+        color: #6d717a;
+        text-align: right;
+      }
+      @media print {
+        .beme-print-cta, .beme-print-hint { display: none !important; }
+      }
+    </style>
+  `
+  const printButtonScript = `
+    <button class="beme-print-cta" onclick="window.print()">
+      Print / Save as PDF
+    </button>
+    <div class="beme-print-hint">or press Cmd&nbsp;+&nbsp;P / Ctrl&nbsp;+&nbsp;P</div>
+  `
+  const finalHtml = withTitle
+    .replace(/<\/head>/i, `${printButtonHtml}</head>`)
+    .replace(/<body([^>]*)>/i, `<body$1>${printButtonScript}`)
 
   win.document.open()
-  win.document.write(withAutoPrint)
+  win.document.write(finalHtml)
   win.document.close()
 }
 
