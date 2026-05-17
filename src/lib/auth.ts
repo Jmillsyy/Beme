@@ -99,6 +99,36 @@ export async function signInWithMicrosoft(): Promise<{ error: Error | null }> {
 }
 
 /**
+ * Send a one-time magic-link sign-in to the given email address.
+ *
+ * Supabase emails the user a link; clicking it lands them back at the app
+ * origin with an active session attached. No password required, no separate
+ * sign-up step — the first time a given email signs in, Supabase creates
+ * an auth.users row for them automatically.
+ *
+ * This is the lowest-friction sign-in path; useful for dogfooding and for
+ * users whose company hasn't registered a Microsoft Entra app for Beme yet.
+ * Sits alongside `signInWithMicrosoft` rather than replacing it.
+ */
+export async function signInWithMagicLink(
+  email: string
+): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    return {
+      error: new Error('Supabase is not configured. See SETUP.md.'),
+    }
+  }
+  const { error } = await supabase().auth.signInWithOtp({
+    email: email.trim(),
+    options: {
+      emailRedirectTo: `${window.location.origin}/`,
+      shouldCreateUser: true,
+    },
+  })
+  return { error }
+}
+
+/**
  * Sign the user out everywhere. Clears the Supabase session and forces a
  * re-render of components subscribed to `useAuth`.
  */
