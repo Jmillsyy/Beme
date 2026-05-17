@@ -201,17 +201,22 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [selectedWallIds, _setSelectedWallIds] = useState<Set<string>>(new Set())
   const selectedWallId =
     selectedWallIds.size === 1 ? Array.from(selectedWallIds)[0]! : null
-  function setSelectedWallId(id: string | null) {
+  // useCallback-wrapped so the reference is stable across PdfWorkspace
+  // re-renders. Critical for the memoised WallDrawingLayer to skip
+  // re-renders during zoom — without this, every rAF tick of the zoom
+  // gesture creates a new function reference, the memo sees "different"
+  // props, and Konva re-rasterises the whole layer.
+  const setSelectedWallId = useCallback((id: string | null) => {
     _setSelectedWallIds(id ? new Set([id]) : new Set())
-  }
-  function toggleSelectedWallId(id: string) {
+  }, [])
+  const toggleSelectedWallId = useCallback((id: string) => {
     _setSelectedWallIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
   const drawingModeRef = useRef(false)
 
   // ---------- Control-joint placement mode (block mode) ----------
@@ -232,17 +237,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [selectedPierIds, _setSelectedPierIds] = useState<Set<string>>(new Set())
   const selectedPierId =
     selectedPierIds.size === 1 ? Array.from(selectedPierIds)[0]! : null
-  function setSelectedPierId(id: string | null) {
+  const setSelectedPierId = useCallback((id: string | null) => {
     _setSelectedPierIds(id ? new Set([id]) : new Set())
-  }
-  function toggleSelectedPierId(id: string) {
+  }, [])
+  const toggleSelectedPierId = useCallback((id: string) => {
     _setSelectedPierIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
   /** Default height (mm) for newly-placed freestanding piers — multiple of 200. */
   const [freestandingPierHeightMm, setFreestandingPierHeightMm] = useState(2400)
 
@@ -263,17 +268,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [selectedOpeningIds, _setSelectedOpeningIds] = useState<Set<string>>(new Set())
   const selectedOpeningId =
     selectedOpeningIds.size === 1 ? Array.from(selectedOpeningIds)[0]! : null
-  function setSelectedOpeningId(id: string | null) {
+  const setSelectedOpeningId = useCallback((id: string | null) => {
     _setSelectedOpeningIds(id ? new Set([id]) : new Set())
-  }
-  function toggleSelectedOpeningId(id: string) {
+  }, [])
+  const toggleSelectedOpeningId = useCallback((id: string) => {
     _setSelectedOpeningIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
   const [pendingOpening, setPendingOpening] = useState<{
     wallId: string
     startAlongWallMm: number
@@ -611,7 +616,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     [selectedWallId, currentPageWalls]
   )
 
-  function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
+  // useCallback wrappers around the wall-layer event handlers. During a zoom
+  // gesture none of the dependency values change, so the callback references
+  // stay stable and the memoised WallDrawingLayer can skip re-renders. Without
+  // these, every rAF tick of the zoom gesture creates new function refs and
+  // the layer rasterises afresh — felt smooth on light projects but visible
+  // on anything with many walls. The deps are deliberately broad so the
+  // behaviour is identical to the previous plain-function form when the
+  // underlying state DOES change (adding walls, switching modes, etc.).
+  const handleWallAdded = useCallback(function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
     const isBrick = mode === 'brick'
     const existing = wallsByPage[currentPage] ?? []
 
@@ -672,14 +685,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       ...prev,
       [currentPage]: recomputed,
     }))
-  }
+  }, [wallsByPage, currentPage, makeupsById, mode, brickSettings, activeMakeupId])
 
   /**
    * Add a curved wall from three points (start, mid, end) anchored to two existing walls.
    * Junction detection runs after so the curve's endpoints inherit corner-tagging from
    * the walls it connects to.
    */
-  function handleCurvedWallAdded(
+  const handleCurvedWallAdded = useCallback(function handleCurvedWallAdded(
     startMm: { x: number; y: number },
     midMm: { x: number; y: number },
     endMm: { x: number; y: number }
@@ -706,7 +719,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
     setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
-  }
+  }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, activeMakeupId])
 
   /**
    * Split a wall at a click point along its centreline. Replaces the original wall with
@@ -719,7 +732,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    *
    * Curved walls are not split — control joints are a straight-wall concept here.
    */
-  function handleControlJointPlaced(wallId: string, alongMm: number) {
+  const handleControlJointPlaced = useCallback(function handleControlJointPlaced(wallId: string, alongMm: number) {
     if (mode !== 'block') return
     const existing = wallsByPage[currentPage] ?? []
     const wall = existing.find((w) => w.id === wallId)
@@ -813,7 +826,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
     // Exit the placement mode after a successful split — match how + Add opening works.
     setPlacingControlJoint(false)
-  }
+  }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, selectedWallId, setSelectedWallId])
 
   function handleWallHeightChange(wallId: string, heightMm: number) {
     setWallsByPage((prev) => {
@@ -883,10 +896,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   // ---------- Opening handlers ----------
 
-  function handleOpeningPlaced(wallId: string, startAlongWallMm: number, widthMm: number) {
+  const handleOpeningPlaced = useCallback((wallId: string, startAlongWallMm: number, widthMm: number) => {
     setPendingOpening({ wallId, startAlongWallMm, widthMm })
     setPlacingOpening(false)
-  }
+  }, [])
 
   function handleSavePendingOpening() {
     if (!pendingOpening) return
@@ -955,7 +968,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Pier placement handlers ----------
 
   /** Place a tied pier on a wall at the click point along it. */
-  function handleTiedPierPlaced(wallId: string, alongMm: number) {
+  const handleTiedPierPlaced = useCallback(function handleTiedPierPlaced(wallId: string, alongMm: number) {
     if (mode !== 'block') return
     const wall = (wallsByPage[currentPage] ?? []).find((w) => w.id === wallId)
     if (!wall) return
@@ -980,10 +993,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       [currentPage]: [...(prev[currentPage] ?? []), pier],
     }))
     setPlacingTiedPier(false)
-  }
+  }, [mode, wallsByPage, currentPage, pierMakeups])
 
   /** Place a freestanding pier at the click coordinates. Inherits the current default height. */
-  function handleFreestandingPierPlaced(xMm: number, yMm: number) {
+  const handleFreestandingPierPlaced = useCallback(function handleFreestandingPierPlaced(xMm: number, yMm: number) {
     if (mode !== 'block') return
     const pier: Pier = {
       id:
@@ -1001,15 +1014,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       [currentPage]: [...(prev[currentPage] ?? []), pier],
     }))
     setPlacingFreestandingPier(false)
-  }
+  }, [mode, currentPage, freestandingPierHeightMm, pierMakeups])
 
-  function handlePierSelect(pierId: string | null) {
-    setSelectedPierId(pierId)
-    if (pierId) {
-      setSelectedWallId(null)
-      setSelectedOpeningId(null)
-    }
-  }
+  const handlePierSelect = useCallback(
+    (pierId: string | null) => {
+      setSelectedPierId(pierId)
+      if (pierId) {
+        setSelectedWallId(null)
+        setSelectedOpeningId(null)
+      }
+    },
+    [setSelectedPierId, setSelectedWallId, setSelectedOpeningId]
+  )
 
   function handleDeletePier(pierId: string) {
     setPiersByPage((prev) => {
@@ -1072,7 +1088,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }
 
 
-  function handleWallEndpointMoved(
+  const handleWallEndpointMoved = useCallback(function handleWallEndpointMoved(
     wallId: string,
     which: 'start' | 'end',
     newPositionMm: { x: number; y: number }
@@ -1115,7 +1131,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       const thicknesses = computeWallThicknessByWallId(updated, makeupsById, mode, brickSettings.brickTypeCode)
       return { ...prev, [currentPage]: recomputeAllJunctions(updated, thicknesses) }
     })
-  }
+  }, [currentPage, makeupsById, mode, brickSettings])
 
   function handleWallDelete(wallId: string) {
     setWallsByPage((prev) => {
