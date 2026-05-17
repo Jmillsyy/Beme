@@ -512,7 +512,9 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
 
   @media print {
     .page { padding: 1.5cm; min-height: auto; }
-    @page { margin: 0; size: A4; }
+    /* Landscape A4 to match the preview (which lays out landscape) and
+       to give the tally + lintel-order tables breathing room. */
+    @page { margin: 0; size: A4 landscape; }
   }
 </style>
 </head>

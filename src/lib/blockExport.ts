@@ -764,7 +764,12 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 
   @media print {
     .page { padding: 1.5cm; min-height: auto; }
-    @page { margin: 0; size: A4; }
+    /* Landscape A4 because the block schedule and wall-type breakdown
+       tables are wide — the code / block-name / count / per-makeup
+       columns don't fit comfortably in portrait without wrapping the
+       block names mid-row. The preview page also lays out landscape so
+       what you see in the tab is what you get in the PDF. */
+    @page { margin: 0; size: A4 landscape; }
   }
 </style>
 </head>
