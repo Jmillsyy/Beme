@@ -1,6 +1,25 @@
 @import "tailwindcss";
 
 /**
+ * Custom Tailwind variant: `light:` matches when the `.light` class is on
+ * <html> (or any ancestor). Use it to apply a different utility in light
+ * mode without writing parallel components.
+ *
+ * The default `dark:` variant in Tailwind v4 keys off `prefers-color-scheme`,
+ * which is the OS-level preference — we manage theme via an explicit toggle
+ * stored in localStorage, so we need our own variant pointing at the same
+ * class the theme hook applies.
+ *
+ *   Example:
+ *     <span className="text-blue-200 light:text-blue-800
+ *                      bg-blue-500/15 light:bg-blue-100">
+ *
+ * Dark mode (default) reads text-blue-200 / bg-blue-500/15; in light mode
+ * the same span resolves to text-blue-800 / bg-blue-100.
+ */
+@custom-variant light (&:where(.light, .light *));
+
+/**
  * Beme theme tokens — two themes, one set of utility classes.
  *
  * The default (`:root`) is Studio Black (dark). When `.light` is applied to
@@ -65,6 +84,71 @@
   --color-ink-700: #f0ede5;  /* panel hover */
   --color-ink-800: #ffffff;  /* panels / chrome */
   --color-ink-900: #f7f4ec;  /* page background — warm off-white */
+}
+
+/* ── Accent colour overrides for light mode ─────────────────────────────────
+   The status badges and action buttons across the app use a "subtle dark"
+   pattern that's tuned for dark backgrounds:
+     bg-{colour}-500/15  +  text-{colour}-200  +  border-{colour}-500/40
+   In dark mode this reads as light text on a faintly-tinted dark surface.
+   In light mode the same light text sits on a faintly-tinted *white* surface
+   and effectively disappears.
+   Rather than rewriting every component with `light:` variants, we override
+   the specific Tailwind utility classes when the theme is light. The colour
+   ramps below shift to a "subtle dark text on pale surface" pattern that
+   reads cleanly on the off-white page bg.
+   Each rule has higher specificity than the Tailwind utility (`:root.light`
+   prefix), so the override applies wherever the class is used. */
+:root.light {
+  /* Blue — used for "in progress" state */
+  .bg-blue-500\/10,
+  .bg-blue-500\/15,
+  .bg-blue-500\/20 { background-color: #dbeafe; /* blue-100 */ }
+  .text-blue-100,
+  .text-blue-200,
+  .text-blue-300 { color: #1e40af; /* blue-800 */ }
+  .border-blue-500\/40 { border-color: #93c5fd; /* blue-300 */ }
+
+  /* Emerald — used for "completed" state, win-rate accents */
+  .bg-emerald-500\/10,
+  .bg-emerald-500\/15,
+  .bg-emerald-500\/20 { background-color: #d1fae5; /* emerald-100 */ }
+  .text-emerald-100,
+  .text-emerald-200,
+  .text-emerald-300 { color: #065f46; /* emerald-800 */ }
+  .border-emerald-500\/40 { border-color: #6ee7b7; /* emerald-300 */ }
+  .hover\:bg-emerald-500\/20:hover { background-color: #a7f3d0; /* emerald-200 */ }
+
+  /* Amber — used for "pending" state, calibration banners */
+  .bg-amber-500\/10,
+  .bg-amber-500\/15,
+  .bg-amber-500\/20 { background-color: #fef3c7; /* amber-100 */ }
+  .text-amber-100,
+  .text-amber-200,
+  .text-amber-300 { color: #92400e; /* amber-800 */ }
+  .border-amber-500\/40 { border-color: #fcd34d; /* amber-300 */ }
+  .hover\:bg-amber-500\/20:hover { background-color: #fde68a; /* amber-200 */ }
+
+  /* Rose — used for "cancelled" state, danger buttons */
+  .bg-rose-500\/10,
+  .bg-rose-500\/15,
+  .bg-rose-500\/20 { background-color: #ffe4e6; /* rose-100 */ }
+  .text-rose-100,
+  .text-rose-200,
+  .text-rose-300,
+  .text-rose-400 { color: #9f1239; /* rose-800 */ }
+  .border-rose-500\/40 { border-color: #fda4af; /* rose-300 */ }
+  .hover\:bg-rose-500\/10:hover { background-color: #fecdd3; /* rose-200 */ }
+  .hover\:bg-rose-500\/20:hover { background-color: #fecdd3; /* rose-200 */ }
+
+  /* beme orange — main brand accent. The /15 tint on light-mode white reads
+     as anaemic; bump it to a more saturated pale so the "active" pill
+     selection stays obvious. */
+  .bg-beme-500\/10,
+  .bg-beme-500\/15 { background-color: #ffedd5; /* beme-100 */ }
+  .text-beme-300,
+  .text-beme-400 { color: #9a3f08; /* beme-800 */ }
+  .border-beme-500\/40 { border-color: #fdba74; /* beme-300 */ }
 }
 
 html,
