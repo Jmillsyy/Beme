@@ -417,36 +417,41 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
         .map((p) => {
           const subEntries = tallyEntries(p.tally)
           const subTotal = subEntries.reduce((s, [, c]) => s + c, 0)
+          // .wall-type-section wraps the heading + table so the print
+          // page-break rules can keep them together (see @media print
+          // block in the style sheet).
           return `
-            <h3 class="wall-type-name">
-              ${escapeHtml(p.makeup.name)}
-              <span class="wall-type-meta">
-                · ${p.wallCount} wall${p.wallCount === 1 ? '' : 's'}
-                · ${formatNumber(p.lengthMm / 1000, 2)} m
-                · ${p.makeup.heightMm}mm high
-              </span>
-            </h3>
-            <table>
-              <thead>
-                <tr>
-                  <th style="width: 100px">Code</th>
-                  <th>Block</th>
-                  <th class="right" style="width: 100px">Quantity</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${subEntries
-                  .map(
-                    ([code, count]) =>
-                      `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td></tr>`
-                  )
-                  .join('')}
-                <tr class="bold">
-                  <td colspan="2">Subtotal</td>
-                  <td class="right">${formatNumber(subTotal)}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="wall-type-section">
+              <h3 class="wall-type-name">
+                ${escapeHtml(p.makeup.name)}
+                <span class="wall-type-meta">
+                  · ${p.wallCount} wall${p.wallCount === 1 ? '' : 's'}
+                  · ${formatNumber(p.lengthMm / 1000, 2)} m
+                  · ${p.makeup.heightMm}mm high
+                </span>
+              </h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width: 100px">Code</th>
+                    <th>Block</th>
+                    <th class="right" style="width: 100px">Quantity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${subEntries
+                    .map(
+                      ([code, count]) =>
+                        `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td></tr>`
+                    )
+                    .join('')}
+                  <tr class="bold">
+                    <td colspan="2">Subtotal</td>
+                    <td class="right">${formatNumber(subTotal)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           `
         })
         .join('')
@@ -770,6 +775,28 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
        block names mid-row. The preview page also lays out landscape so
        what you see in the tab is what you get in the PDF. */
     @page { margin: 0; size: A4 landscape; }
+
+    /* ── Page-break hygiene ──────────────────────────────────────────
+       Keep individual rows from being sliced in half across pages, and
+       repeat each table's header at the top of every continuation page
+       so a long schedule still reads cleanly. Each wall-type subsection
+       (heading + its table) is kept together when it fits on a single
+       page — break-inside: avoid is a hint, so a section that's too
+       big for a page will still break, but the rows inside it stay
+       atomic and the header reprints. */
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr, .beme-credit { page-break-inside: avoid; break-inside: avoid; }
+    .wall-type-section, .disclaimer, .meta {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    /* Don't strand a heading at the bottom of a page — let the heading
+       drag onto the next page with its content. */
+    h2, h3 {
+      page-break-after: avoid;
+      break-after: avoid-page;
+    }
   }
 </style>
 </head>

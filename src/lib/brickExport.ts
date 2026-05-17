@@ -515,6 +515,21 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     /* Landscape A4 to match the preview (which lays out landscape) and
        to give the tally + lintel-order tables breathing room. */
     @page { margin: 0; size: A4 landscape; }
+
+    /* Page-break hygiene — see blockExport.ts for the rationale. Keep
+       table rows atomic, repeat thead/tfoot on continuation pages, and
+       avoid orphaning headings at the bottom of a page. */
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr, .beme-credit { page-break-inside: avoid; break-inside: avoid; }
+    .disclaimer, .meta, .section-group {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    h2, h3 {
+      page-break-after: avoid;
+      break-after: avoid-page;
+    }
   }
 </style>
 </head>
