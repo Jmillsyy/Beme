@@ -100,25 +100,23 @@ export function arcFromThreePoints(start: Point, mid: Point, end: Point): ArcGeo
   const midAngle = angleFromCentre(centerX, centerY, mid)
   const endAngle = angleFromCentre(centerX, centerY, end)
 
-  // Sweep is the signed shortest angle around the circle that PASSES THROUGH midAngle.
-  // We try both directions (CCW = positive, CW = negative) and pick the one whose
-  // path from start to end includes mid.
-  const ccwFromStartToMid = normaliseAngle(midAngle - startAngle)
-  const ccwFromStartToEnd = normaliseAngle(endAngle - startAngle)
+  // Pick the sweep direction (CCW = +, CW = −) so the arc from start→end passes
+  // through mid. Method: compute the CCW distance from start to mid and to end
+  // (both in [0, 2π)). If mid sits before end going CCW, the arc is CCW; otherwise
+  // the arc must go CW (and the sweep is negative).
+  //
+  // The previous implementation used signed-shortest-angle differences and broke
+  // when start/end straddled the −π/+π seam (mid would end up "outside" what the
+  // boolean check considered the span, the algorithm fell back to CCW sweep,
+  // and the rendered arc went the long way around the circle — exactly what the
+  // user was seeing when the cursor was on one side of the wall and the preview
+  // bulged out on the other).
+  const ccwStartToMid = ((midAngle - startAngle) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)
+  const ccwStartToEnd = ((endAngle - startAngle) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)
 
-  // If mid lies between start and end going CCW, sweep is the (signed) CCW span.
-  // Otherwise it's the (signed) CW span (negative).
-  const goesCcw =
-    (ccwFromStartToMid > 0 && ccwFromStartToEnd > 0 && ccwFromStartToMid < ccwFromStartToEnd) ||
-    (ccwFromStartToMid < 0 && ccwFromStartToEnd < 0 && ccwFromStartToMid > ccwFromStartToEnd)
-
-  const sweepAngle = goesCcw
-    ? ccwFromStartToEnd > 0
-      ? ccwFromStartToEnd
-      : ccwFromStartToEnd + 2 * Math.PI
-    : ccwFromStartToEnd < 0
-      ? ccwFromStartToEnd
-      : ccwFromStartToEnd - 2 * Math.PI
+  const sweepAngle = ccwStartToMid < ccwStartToEnd
+    ? ccwStartToEnd                      // CCW path goes start → mid → end
+    : ccwStartToEnd - 2 * Math.PI        // CW path (negative)
 
   const arcLengthMm = Math.abs(sweepAngle) * radiusMm
 

@@ -45,10 +45,27 @@ interface WallDrawingLayerProps {
   selectedOpeningId: string | null
   /** Currently selected pier id (null = nothing selected). */
   selectedPierId?: string | null
+  /**
+   * Full multi-selection sets. Optional so a parent that doesn't care about
+   * multi-select can omit them; when present, the visual highlight and shift-click
+   * additive selection light up. The single selectedXxxId stays as the source of
+   * truth for "is the side-panel single-item UI showing" and drag-handle enablement.
+   */
+  selectedWallIds?: ReadonlySet<string>
+  selectedOpeningIds?: ReadonlySet<string>
+  selectedPierIds?: ReadonlySet<string>
   onWallAdded: (startMm: Point, endMm: Point) => void
   /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
   onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
   onWallSelect: (wallId: string | null) => void
+  /**
+   * Shift+click handlers — additive selection. Toggle the id in/out of the set
+   * without disturbing the rest. Optional: if omitted, shift+click falls back to
+   * the plain select behaviour.
+   */
+  onWallToggleSelect?: (wallId: string) => void
+  onOpeningToggleSelect?: (openingId: string) => void
+  onPierToggleSelect?: (pierId: string) => void
   onWallEndpointMoved: (
     wallId: string,
     which: 'start' | 'end',
@@ -513,9 +530,15 @@ function WallDrawingLayerInner({
   selectedWallId,
   selectedOpeningId,
   selectedPierId = null,
+  selectedWallIds,
+  selectedOpeningIds,
+  selectedPierIds,
   onWallAdded,
   onCurvedWallAdded,
   onWallSelect,
+  onWallToggleSelect,
+  onOpeningToggleSelect,
+  onPierToggleSelect,
   onWallEndpointMoved,
   onOpeningPlaced,
   onOpeningSelect,
@@ -538,19 +561,26 @@ function WallDrawingLayerInner({
   const [snapTarget, setSnapTarget] = useState<SnapResult | null>(null)
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null)
 
-  /** Anchor selections for curve drawing. Each anchor pins to a specific endpoint of an existing wall. */
+  /**
+   * Anchor selections for curve drawing. Each anchor records a point on an existing
+   * wall — either snapped to the wall's start/end (for clean endpoint-to-endpoint
+   * curves), or anywhere along the wall's centreline (for curves that tie into the
+   * middle of a wall, like a curved bay opening off a straight wall). The `wallId`
+   * is kept around so the renderer can highlight the parent wall and so future
+   * junction-aware logic can know which wall to tie into.
+   */
   const [curveAnchorA, setCurveAnchorA] = useState<{
     wallId: string
-    end: 'start' | 'end'
     xMm: number
     yMm: number
   } | null>(null)
   const [curveAnchorB, setCurveAnchorB] = useState<{
     wallId: string
-    end: 'start' | 'end'
     xMm: number
     yMm: number
   } | null>(null)
+  /** Hover preview during curve mode — projected position on the nearest wall, in MM. */
+  const [curveAnchorHoverMm, setCurveAnchorHoverMm] = useState<Point | null>(null)
   /** Live cursor position during curve-midpoint hover, in MM. */
   const [curveCursorMm, setCurveCursorMm] = useState<Point | null>(null)
   const [dragPreviewMm, setDragPreviewMm] = useState<{
@@ -713,6 +743,57 @@ function WallDrawingLayerInner({
     return best
   }
 
+  /**
+   * Compute where a curve anchor would land for a given raw cursor position.
+   *
+   * The anchor lands on the wall's SIDE FACE — i.e. the centreline projection at
+   * the click's along-wall position, offset halfThickness perpendicular to the
+   * wall on the side the cursor is on. Curves run off the edge of a wall in real
+   * masonry, not its centre, so the geometry that comes out of this matches the
+   * physical block layout. Endpoint detection isn't a special case any more: a
+   * click near a wall's end just lands at the side-face point right at the end,
+   * which is exactly where a curve terminates in a corner anyway.
+   *
+   * Returns null if the cursor is too far from any wall.
+   */
+  function resolveCurveAnchorAtCursor(
+    cursorPx: Point
+  ): { wallId: string; xMm: number; yMm: number } | null {
+    const proj = findClosestWallProjection(cursorPx)
+    if (!proj) return null
+    const wall = walls.find((w) => w.id === proj.wallId)
+    if (!wall) return null
+    const lengthMm = wallLengthMmOf(wall)
+    if (lengthMm <= 0) return null
+
+    // Centreline projection point (in mm).
+    const t = proj.alongMm / lengthMm
+    const projXmm = wall.startX + t * (wall.endX - wall.startX)
+    const projYmm = wall.startY + t * (wall.endY - wall.startY)
+
+    // Wall direction + normal (in mm). For curved walls we approximate using the
+    // chord; faithful curved-on-curved anchoring would need a tangent at proj.
+    const dirXmm = (wall.endX - wall.startX) / lengthMm
+    const dirYmm = (wall.endY - wall.startY) / lengthMm
+    const normXmm = -dirYmm
+    const normYmm = dirXmm
+
+    // Sign = which side of the wall the cursor sits on, computed in mm space so
+    // px/zoom doesn't bias the result.
+    const cursorXmm = pxToMm(cursorPx.x)
+    const cursorYmm = pxToMm(cursorPx.y)
+    const dot =
+      (cursorXmm - projXmm) * normXmm + (cursorYmm - projYmm) * normYmm
+    const sign = dot >= 0 ? 1 : -1
+
+    const halfTmm = (wallThicknessByWallId[wall.id] ?? 190) / 2
+    return {
+      wallId: wall.id,
+      xMm: projXmm + sign * halfTmm * normXmm,
+      yMm: projYmm + sign * halfTmm * normYmm,
+    }
+  }
+
   /** A point along a wall, in pixel coords, given start-along-wall in mm. */
   function pointAlongWallPx(wall: Wall, alongMm: number): Point {
     const length = wallLengthMmOf(wall)
@@ -846,6 +927,7 @@ function WallDrawingLayerInner({
       setCurveAnchorA(null)
       setCurveAnchorB(null)
       setCurveCursorMm(null)
+      setCurveAnchorHoverMm(null)
     }
   }, [drawingCurveMode])
 
@@ -861,6 +943,7 @@ function WallDrawingLayerInner({
           setCurveAnchorA(null)
           setCurveAnchorB(null)
           setCurveCursorMm(null)
+          setCurveAnchorHoverMm(null)
           onCancelDraw?.()
         } else if (placingOpening) {
           setOpeningPlacementStart(null)
@@ -998,32 +1081,50 @@ function WallDrawingLayerInner({
     }
 
     if (placingFreestandingPier) {
-      // Drop the pier wherever the user clicked — in real-world mm.
-      const xMm = pxToMm(raw.x)
-      const yMm = pxToMm(raw.y)
-      onFreestandingPierPlaced?.(xMm, yMm)
+      // Single "+ Pier" mode routes the click based on whether it lands inside a
+      // wall's body:
+      //   - inside wall body (perpendicular distance from centreline ≤ halfThickness)
+      //     → tied pier on that wall at the projected along-wall position;
+      //   - otherwise → freestanding pier at the click coordinates.
+      // Curved walls are excluded for tied piers (piers don't ride curves yet),
+      // so a click on a curve falls through to freestanding.
+      let tiedWallId: string | null = null
+      let tiedAlongMm = 0
+      for (const wall of walls) {
+        if (isCurvedWall(wall)) continue
+        const proj = projectOntoWall(raw, wall)
+        if (!proj) continue
+        const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+        const halfThicknessPx = mmToPx(thicknessMm / 2)
+        if (proj.distFromLinePx <= halfThicknessPx) {
+          tiedWallId = wall.id
+          tiedAlongMm = proj.alongMm
+          break
+        }
+      }
+      if (tiedWallId !== null) {
+        onTiedPierPlaced?.(tiedWallId, tiedAlongMm)
+      } else {
+        onFreestandingPierPlaced?.(pxToMm(raw.x), pxToMm(raw.y))
+      }
       setFreestandingPierHoverMm(null)
+      setTiedPierHover(null)
       return
     }
 
     if (drawingCurveMode) {
-      // Clicks 1 & 2: pick a wall by clicking near it; anchor = its endpoint closer to the click.
+      // Clicks 1 & 2: anchor on the nearest wall's centreline (endpoint snap kicks
+      // in when the click is close to either end). See resolveCurveAnchorAtCursor
+      // for the projection / endpoint-snap logic.
       if (!curveAnchorA || !curveAnchorB) {
-        const proj = findClosestWallProjection(raw)
-        if (!proj) return // ignored — user clicked too far from any wall
-        const wall = walls.find((w) => w.id === proj.wallId)
-        if (!wall) return
-        // Pick the endpoint closer to the click position.
-        const length = wallLengthMmOf(wall)
-        const useStart = proj.alongMm < length / 2
-        const xMm = useStart ? wall.startX : wall.endX
-        const yMm = useStart ? wall.startY : wall.endY
-        const anchor = { wallId: wall.id, end: (useStart ? 'start' : 'end') as 'start' | 'end', xMm, yMm }
+        const anchor = resolveCurveAnchorAtCursor(raw)
+        if (!anchor) return // cursor too far from any wall — ignore
         if (!curveAnchorA) {
           setCurveAnchorA(anchor)
-        } else if (anchor.wallId !== curveAnchorA.wallId) {
+        } else {
           setCurveAnchorB(anchor)
         }
+        setCurveAnchorHoverMm(null)
         return
       }
       // Click 3: midpoint of the arc (free position, no snap to existing walls).
@@ -1069,10 +1170,17 @@ function WallDrawingLayerInner({
       )
       setSnapTarget(snap)
       setCursorMm({ x: pxToMm(point.x), y: pxToMm(point.y) })
-    } else if (drawingCurveMode && curveAnchorA && curveAnchorB) {
-      // After both anchors are picked, follow the cursor so we can preview the arc
-      // through anchorA → cursor → anchorB.
-      setCurveCursorMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+    } else if (drawingCurveMode) {
+      if (curveAnchorA && curveAnchorB) {
+        // Both anchors set — follow the cursor for the arc-midpoint preview.
+        setCurveCursorMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      } else {
+        // Still picking anchors — show where the click would land, projected
+        // onto the nearest wall. setCurveAnchorHoverMm(null) when the cursor
+        // is too far from any wall so the preview marker disappears.
+        const preview = resolveCurveAnchorAtCursor(raw)
+        setCurveAnchorHoverMm(preview ? { x: preview.xMm, y: preview.yMm } : null)
+      }
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
       const proj = findClosestWallProjection(raw, onlyWall)
@@ -1099,7 +1207,28 @@ function WallDrawingLayerInner({
       }
       setTiedPierHover(proj)
     } else if (placingFreestandingPier) {
-      setFreestandingPierHoverMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      // Unified pier mode — preview matches what the click would actually do:
+      // show the tied-pier hover when the cursor sits inside a straight wall's
+      // body, otherwise the freestanding preview at the cursor position.
+      let bodyHit: WallProjection | null = null
+      for (const wall of walls) {
+        if (isCurvedWall(wall)) continue
+        const proj = projectOntoWall(raw, wall)
+        if (!proj) continue
+        const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+        const halfThicknessPx = mmToPx(thicknessMm / 2)
+        if (proj.distFromLinePx <= halfThicknessPx) {
+          bodyHit = proj
+          break
+        }
+      }
+      if (bodyHit) {
+        setTiedPierHover(bodyHit)
+        setFreestandingPierHoverMm(null)
+      } else {
+        setTiedPierHover(null)
+        setFreestandingPierHoverMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      }
     }
   }
 
@@ -1382,7 +1511,8 @@ function WallDrawingLayerInner({
 
           const isCurved = isCurvedWall(wall)
 
-          const isSelected = wall.id === selectedWallId
+          const isSelected =
+            (selectedWallIds && selectedWallIds.has(wall.id)) || wall.id === selectedWallId
           const isHovered =
             wall.id === hoveredWallId &&
             !drawingMode &&
@@ -1421,7 +1551,10 @@ function WallDrawingLayerInner({
                   placingTiedPier ||
                   placingFreestandingPier
                 ) return
-                onWallSelect(wall.id)
+                // Shift+click = additive multi-select (toggle this wall in/out of the
+                // selection). Plain click = replace whole selection with just this wall.
+                if (e.evt.shiftKey && onWallToggleSelect) onWallToggleSelect(wall.id)
+                else onWallSelect(wall.id)
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
@@ -1557,7 +1690,9 @@ function WallDrawingLayerInner({
           const end = pointAlongWallPx(wall, opening.startAlongWallMm + opening.widthMm)
           const midX = (start.x + end.x) / 2
           const midY = (start.y + end.y) / 2
-          const isSelected = opening.id === selectedOpeningId
+          const isSelected =
+            (selectedOpeningIds && selectedOpeningIds.has(opening.id)) ||
+            opening.id === selectedOpeningId
 
           return (
             <Group
@@ -1570,7 +1705,8 @@ function WallDrawingLayerInner({
                   placingTiedPier ||
                   placingFreestandingPier
                 ) return
-                onOpeningSelect(opening.id)
+                if (e.evt.shiftKey && onOpeningToggleSelect) onOpeningToggleSelect(opening.id)
+                else onOpeningSelect(opening.id)
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
@@ -1670,7 +1806,8 @@ function WallDrawingLayerInner({
         {/* Piers — rendered above wall polygons. Tied piers as 390×390 squares on the wall;
             freestanding piers as standalone 390×390 squares at their (x, y). */}
         {piers.map((pier) => {
-          const isSelected = pier.id === selectedPierId
+          const isSelected =
+            (selectedPierIds && selectedPierIds.has(pier.id)) || pier.id === selectedPierId
           // Pier face size: 390mm × 390mm (block 40.925 footprint).
           const sizeMm = 390
           let cxPx = 0
@@ -1709,7 +1846,8 @@ function WallDrawingLayerInner({
                   placingTiedPier ||
                   placingFreestandingPier
                 ) return
-                if (onPierSelect) onPierSelect(pier.id)
+                if (e.evt.shiftKey && onPierToggleSelect) onPierToggleSelect(pier.id)
+                else if (onPierSelect) onPierSelect(pier.id)
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
@@ -1750,8 +1888,11 @@ function WallDrawingLayerInner({
           )
         })}
 
-        {/* Tied pier hover preview — square at the wall projection. */}
-        {placingTiedPier && tiedPierHover && (() => {
+        {/* Tied pier hover preview — square at the wall projection.
+            Renders in both legacy `placingTiedPier` mode AND the unified pier
+            mode (placingFreestandingPier), where the hover handler decides
+            tied-vs-freestanding based on whether the cursor is in a wall body. */}
+        {(placingTiedPier || placingFreestandingPier) && tiedPierHover && (() => {
           const wall = walls.find((w) => w.id === tiedPierHover.wallId)
           if (!wall || isCurvedWall(wall)) return null
           const dx = wall.endX - wall.startX
@@ -1866,20 +2007,32 @@ function WallDrawingLayerInner({
               <Circle
                 x={mmToPx(curveAnchorA.xMm)}
                 y={mmToPx(curveAnchorA.yMm)}
-                radius={7}
+                radius={6}
                 fill="#8b5cf6"
                 stroke="white"
-                strokeWidth={2}
+                strokeWidth={1.5}
               />
             )}
             {curveAnchorB && (
               <Circle
                 x={mmToPx(curveAnchorB.xMm)}
                 y={mmToPx(curveAnchorB.yMm)}
-                radius={7}
+                radius={6}
                 fill="#8b5cf6"
                 stroke="white"
+                strokeWidth={1.5}
+              />
+            )}
+            {/* Hollow hover ring — only while the user is still picking anchors and
+                the cursor is over a wall. Disappears once both anchors are placed. */}
+            {curveAnchorHoverMm && !(curveAnchorA && curveAnchorB) && (
+              <Circle
+                x={mmToPx(curveAnchorHoverMm.x)}
+                y={mmToPx(curveAnchorHoverMm.y)}
+                radius={7}
+                stroke="#8b5cf6"
                 strokeWidth={2}
+                fill="rgba(139, 92, 246, 0.18)"
               />
             )}
             {/* Arc preview through anchor A → cursor → anchor B */}
@@ -1932,14 +2085,15 @@ function WallDrawingLayerInner({
           </Group>
         )}
 
-        {/* Snap indicator — green ring = endpoint (corner), purple ring = body (T-junction) */}
+        {/* Snap indicator — green ring = endpoint (corner), purple ring = body (T-junction).
+            Kept small so the ring doesn't obscure the exact pixel the user is trying to land on. */}
         {snapTarget && (
           <Circle
             x={snapTarget.x}
             y={snapTarget.y}
-            radius={10}
+            radius={8}
             stroke={snapTarget.kind === 'body' ? '#8b5cf6' : '#10b981'}
-            strokeWidth={2.5}
+            strokeWidth={2}
             fill={
               snapTarget.kind === 'body'
                 ? 'rgba(139, 92, 246, 0.18)'
@@ -1987,7 +2141,11 @@ function renderEndpointMarker({
   onMouseEnterStage,
   onMouseLeaveStage,
 }: EndpointMarkerProps) {
-  const radius = isSelected ? 7 : 5
+  // Marker sizes are kept modest so they don't obscure the underlying plan when
+  // the user is trying to click precisely (e.g. picking a corner exactly on a
+  // wall intersection in the PDF). Selected markers get a slight bump so the
+  // active drag handle is easy to find without re-introducing the obscuring.
+  const radius = isSelected ? 6 : 4
   const fill = isSelected
     ? '#3b82f6'
     : isCorner
@@ -2007,16 +2165,16 @@ function renderEndpointMarker({
         <Circle
           x={pos.x}
           y={pos.y}
-          radius={7}
+          radius={6}
           stroke={fill}
-          strokeWidth={2}
+          strokeWidth={1.5}
           fill="white"
           listening={false}
         />
         <Circle
           x={pos.x}
           y={pos.y}
-          radius={2.5}
+          radius={2}
           fill={fill}
           listening={false}
         />
@@ -2027,7 +2185,7 @@ function renderEndpointMarker({
   // T-junction: purple diamond (square rotated 45°). Visually distinct from corners
   // without being noisy.
   if (isTjunction && !isSelected) {
-    const size = 12
+    const size = 10
     return (
       <Rect
         x={pos.x}
@@ -2039,7 +2197,7 @@ function renderEndpointMarker({
         rotation={45}
         fill={fill}
         stroke="white"
-        strokeWidth={2}
+        strokeWidth={1.5}
         draggable={draggable}
         onDragMove={onDragMove}
         onDragEnd={onDragEnd}
@@ -2053,7 +2211,7 @@ function renderEndpointMarker({
   }
 
   if (isCorner && !isSelected) {
-    const size = 12
+    const size = 10
     return (
       <Rect
         x={pos.x - size / 2}
@@ -2062,7 +2220,7 @@ function renderEndpointMarker({
         height={size}
         fill={fill}
         stroke="white"
-        strokeWidth={2}
+        strokeWidth={1.5}
         draggable={draggable}
         onDragMove={onDragMove}
         onDragEnd={onDragEnd}
@@ -2082,7 +2240,7 @@ function renderEndpointMarker({
       radius={radius}
       fill={fill}
       stroke="white"
-      strokeWidth={2}
+      strokeWidth={1.5}
       draggable={draggable}
       onDragMove={onDragMove}
       onDragEnd={onDragEnd}

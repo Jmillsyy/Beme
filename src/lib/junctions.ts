@@ -127,6 +127,76 @@ function addConnection(junction: WallJunction, otherWallId: string): WallJunctio
 }
 
 /**
+ * Returns the "corner candidate" position for one of a wall's endpoints — i.e. the
+ * spot a new wall lands on when it snaps to that end to form an L corner.
+ *
+ * The drawing layer snaps a corner-forming click to the CENTRE of the existing wall's
+ * end block (halfThickness in from the data endpoint, along the wall's own direction)
+ * rather than to the data endpoint itself. That makes the two walls share a single
+ * corner block cleanly, instead of overshooting it. But the new wall's stored endpoint
+ * is then halfT inside the through-wall body, which strict-coordinate corner matching
+ * doesn't see — it falls through to T-junction detection, which is the bug we hit.
+ *
+ * Always returning the inset point (regardless of the wall's current junction type) is
+ * safe: for any wall whose end already participates in a corner, the partner wall's
+ * data endpoint sits at exactly this inset point, so the existing direct-match path
+ * keeps working too.
+ */
+function freeEndCornerPoint(
+  wall: Wall,
+  end: 'start' | 'end',
+  halfThicknessMm: number
+): Point {
+  const dataX = end === 'start' ? wall.startX : wall.endX
+  const dataY = end === 'start' ? wall.startY : wall.endY
+  const farX = end === 'start' ? wall.endX : wall.startX
+  const farY = end === 'start' ? wall.endY : wall.startY
+  const dx = dataX - farX
+  const dy = dataY - farY
+  const len = Math.sqrt(dx * dx + dy * dy)
+  if (len < 0.001) return { x: dataX, y: dataY }
+  const offset = Math.min(halfThicknessMm, len)
+  return {
+    x: dataX - (dx / len) * offset,
+    y: dataY - (dy / len) * offset,
+  }
+}
+
+/**
+ * Do `wallA.endA` and `wallB.endB` represent the same corner? Two endpoints corner
+ * together when their data positions coincide, OR when one wall's data endpoint sits
+ * at the other wall's inset "corner-block-centre" position (the drawing-time snap
+ * target), OR when both walls' inset points coincide (when both ends were drawn with
+ * the inset snap behaviour).
+ */
+function endpointsFormCorner(
+  wallA: Wall,
+  endA: 'start' | 'end',
+  wallB: Wall,
+  endB: 'start' | 'end',
+  thicknessByWallId: Record<string, number>
+): boolean {
+  const aPoint = endA === 'start'
+    ? { x: wallA.startX, y: wallA.startY }
+    : { x: wallA.endX, y: wallA.endY }
+  const bPoint = endB === 'start'
+    ? { x: wallB.startX, y: wallB.startY }
+    : { x: wallB.endX, y: wallB.endY }
+
+  if (pointsMatch(aPoint, bPoint)) return true
+
+  const halfA = (thicknessByWallId[wallA.id] ?? 190) / 2
+  const halfB = (thicknessByWallId[wallB.id] ?? 190) / 2
+  const aCornerPt = freeEndCornerPoint(wallA, endA, halfA)
+  const bCornerPt = freeEndCornerPoint(wallB, endB, halfB)
+
+  if (pointsMatch(aPoint, bCornerPt)) return true
+  if (pointsMatch(bPoint, aCornerPt)) return true
+  if (pointsMatch(aCornerPt, bCornerPt)) return true
+  return false
+}
+
+/**
  * If `endpoint` lies STRICTLY INSIDE the body of another wall, return the perpendicular
  * face point on the side facing `oppositeEndpoint` (i.e. the side the new wall is coming
  * from). Otherwise return `endpoint` unchanged.
@@ -180,6 +250,14 @@ export function snapEndpointToThroughWallFace(
     // slack keeps us from doing redundant work when the wall-snap during drawing
     // already deposited the endpoint exactly on the face.
     if (perpDist >= halfT - 0.5) continue
+    // Skip the snap-to-face if the endpoint's projection sits within halfT of either
+    // data endpoint along the centreline — that's the "centre of the corner block"
+    // position the drawing-time snap deliberately puts a new wall at when it L-corners
+    // onto a free end. Pulling those points sideways onto the perpendicular face would
+    // convert a real corner into a T-junction and break corner detection downstream.
+    const distAlongMm = t * len
+    if (distAlongMm < halfT + ENDPOINT_TOLERANCE_MM) continue
+    if (distAlongMm > len - halfT - ENDPOINT_TOLERANCE_MM) continue
     // Face side = the side the OTHER endpoint of the new wall lies on. If the
     // other endpoint is itself on the centreline, fall back to the endpoint's
     // own perpendicular sign; if that's also zero, default to +N.
@@ -218,18 +296,15 @@ export function detectJunctionsForNewWall(
   const newEnd = { x: newWall.endX, y: newWall.endY }
 
   for (const wall of existingWalls) {
-    const wallStart = { x: wall.startX, y: wall.startY }
-    const wallEnd = { x: wall.endX, y: wall.endY }
-
     // newWall.start <-> wall.start
-    if (pointsMatch(newStart, wallStart)) {
+    if (endpointsFormCorner(newWall, 'start', wall, 'start', thicknessByWallId)) {
       startJunction = addConnection(startJunction, wall.id)
       const u = updatedById.get(wall.id) ?? { ...wall }
       u.startJunction = addConnection(u.startJunction, newWall.id)
       updatedById.set(wall.id, u)
     }
     // newWall.start <-> wall.end
-    else if (pointsMatch(newStart, wallEnd)) {
+    else if (endpointsFormCorner(newWall, 'start', wall, 'end', thicknessByWallId)) {
       startJunction = addConnection(startJunction, wall.id)
       const u = updatedById.get(wall.id) ?? { ...wall }
       u.endJunction = addConnection(u.endJunction, newWall.id)
@@ -237,14 +312,14 @@ export function detectJunctionsForNewWall(
     }
 
     // newWall.end <-> wall.start
-    if (pointsMatch(newEnd, wallStart)) {
+    if (endpointsFormCorner(newWall, 'end', wall, 'start', thicknessByWallId)) {
       endJunction = addConnection(endJunction, wall.id)
       const u = updatedById.get(wall.id) ?? { ...wall }
       u.startJunction = addConnection(u.startJunction, newWall.id)
       updatedById.set(wall.id, u)
     }
     // newWall.end <-> wall.end
-    else if (pointsMatch(newEnd, wallEnd)) {
+    else if (endpointsFormCorner(newWall, 'end', wall, 'end', thicknessByWallId)) {
       endJunction = addConnection(endJunction, wall.id)
       const u = updatedById.get(wall.id) ?? { ...wall }
       u.endJunction = addConnection(u.endJunction, newWall.id)
@@ -332,29 +407,24 @@ export function recomputeAllJunctions(
     for (let j = i + 1; j < reset.length; j++) {
       const a = reset[i]
       const b = reset[j]
-      const aStart = { x: a.startX, y: a.startY }
-      const aEnd = { x: a.endX, y: a.endY }
-      const bStart = { x: b.startX, y: b.startY }
-      const bEnd = { x: b.endX, y: b.endY }
-
       const aStartCJ = skipCornerKeys.has(`${a.id}|start`)
       const aEndCJ = skipCornerKeys.has(`${a.id}|end`)
       const bStartCJ = skipCornerKeys.has(`${b.id}|start`)
       const bEndCJ = skipCornerKeys.has(`${b.id}|end`)
 
-      if (pointsMatch(aStart, bStart) && !aStartCJ && !bStartCJ) {
+      if (endpointsFormCorner(a, 'start', b, 'start', thicknessByWallId) && !aStartCJ && !bStartCJ) {
         a.startJunction = addConnection(a.startJunction, b.id)
         b.startJunction = addConnection(b.startJunction, a.id)
       }
-      if (pointsMatch(aStart, bEnd) && !aStartCJ && !bEndCJ) {
+      if (endpointsFormCorner(a, 'start', b, 'end', thicknessByWallId) && !aStartCJ && !bEndCJ) {
         a.startJunction = addConnection(a.startJunction, b.id)
         b.endJunction = addConnection(b.endJunction, a.id)
       }
-      if (pointsMatch(aEnd, bStart) && !aEndCJ && !bStartCJ) {
+      if (endpointsFormCorner(a, 'end', b, 'start', thicknessByWallId) && !aEndCJ && !bStartCJ) {
         a.endJunction = addConnection(a.endJunction, b.id)
         b.startJunction = addConnection(b.startJunction, a.id)
       }
-      if (pointsMatch(aEnd, bEnd) && !aEndCJ && !bEndCJ) {
+      if (endpointsFormCorner(a, 'end', b, 'end', thicknessByWallId) && !aEndCJ && !bEndCJ) {
         a.endJunction = addConnection(a.endJunction, b.id)
         b.endJunction = addConnection(b.endJunction, a.id)
       }

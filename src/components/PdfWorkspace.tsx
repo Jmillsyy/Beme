@@ -139,14 +139,18 @@ const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
  * with lots of walls on the page, since each wall's mitre/T-junction
  * geometry has to be recomputed and stroked.
  *
- * Capping at 2.5 means the underlying canvas stays at ~2200 px wide no
- * matter how far the user zooms, and CSS transform handles the rest of
- * the visual scaling (which the compositor does for free on the GPU).
- * Lines look very slightly soft at extreme zoom but the wall layer stays
- * responsive, and the PDF export path is unaffected (it uses the original
- * PDF, not the rasterised canvas).
+ * At 3.5 the underlying canvas tops out at ~3080 px wide on a typical
+ * 880-wide base, which keeps the plan crisp through the mid-zoom range
+ * where most pinpointing happens, while CSS transform takes over for
+ * extreme zoom (4×+). The PDF export path is unaffected (it uses the
+ * original PDF, not the rasterised canvas).
+ *
+ * Was 2.5 — the plan looked soft when zooming in for detail work. 3.5
+ * roughly doubles pixel density at the cap (3.5²/2.5² ≈ 2× pixels) but
+ * the per-frame Konva work scales with on-screen elements, not canvas
+ * size, so wall hover/move latency is essentially unchanged.
  */
-const MAX_RENDERED_ZOOM = 2.5
+const MAX_RENDERED_ZOOM = 3.5
 
 const RATIO_PRESETS = [
   { label: '1:20', value: 20 },
@@ -188,7 +192,26 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [drawingMode, setDrawingMode] = useState(false)
   /** Curved wall drawing mode (3-click: pick wall A → pick wall B → pick midpoint). */
   const [drawingCurveMode, setDrawingCurveMode] = useState(false)
-  const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
+  // Selection model: Sets of ids per item type so the user can multi-select with
+  // Shift+click for batch delete and (for walls) batch wall-type reassignment.
+  // The single-ID wrappers below preserve the existing single-select call sites
+  // (side-panel single-item UI, endpoint drag handles, etc.); they collapse to
+  // null whenever zero or multiple items are selected, which is exactly the
+  // "don't show single-item UI" semantic we want.
+  const [selectedWallIds, _setSelectedWallIds] = useState<Set<string>>(new Set())
+  const selectedWallId =
+    selectedWallIds.size === 1 ? Array.from(selectedWallIds)[0]! : null
+  function setSelectedWallId(id: string | null) {
+    _setSelectedWallIds(id ? new Set([id]) : new Set())
+  }
+  function toggleSelectedWallId(id: string) {
+    _setSelectedWallIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
   const drawingModeRef = useRef(false)
 
   // ---------- Control-joint placement mode (block mode) ----------
@@ -206,7 +229,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   /** True while the user is choosing a point on the plan to drop a freestanding pier. */
   const [placingFreestandingPier, setPlacingFreestandingPier] = useState(false)
   /** Pier currently selected (for inspection / height / makeup edit). */
-  const [selectedPierId, setSelectedPierId] = useState<string | null>(null)
+  const [selectedPierIds, _setSelectedPierIds] = useState<Set<string>>(new Set())
+  const selectedPierId =
+    selectedPierIds.size === 1 ? Array.from(selectedPierIds)[0]! : null
+  function setSelectedPierId(id: string | null) {
+    _setSelectedPierIds(id ? new Set([id]) : new Set())
+  }
+  function toggleSelectedPierId(id: string) {
+    _setSelectedPierIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
   /** Default height (mm) for newly-placed freestanding piers — multiple of 200. */
   const [freestandingPierHeightMm, setFreestandingPierHeightMm] = useState(2400)
 
@@ -224,7 +260,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Opening state (block mode) ----------
   const [openingsByPage, setOpeningsByPage] = useState<Record<number, Opening[]>>({})
   const [placingOpening, setPlacingOpening] = useState(false)
-  const [selectedOpeningId, setSelectedOpeningId] = useState<string | null>(null)
+  const [selectedOpeningIds, _setSelectedOpeningIds] = useState<Set<string>>(new Set())
+  const selectedOpeningId =
+    selectedOpeningIds.size === 1 ? Array.from(selectedOpeningIds)[0]! : null
+  function setSelectedOpeningId(id: string | null) {
+    _setSelectedOpeningIds(id ? new Set([id]) : new Set())
+  }
+  function toggleSelectedOpeningId(id: string) {
+    _setSelectedOpeningIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
   const [pendingOpening, setPendingOpening] = useState<{
     wallId: string
     startAlongWallMm: number
@@ -782,7 +831,35 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }
 
   function handleUpdateMakeup(updated: WallMakeup) {
+    // 1. Update the makeup list. The block tally re-derives from makeupsById on
+    //    every render, so block-code changes propagate to every wall of this
+    //    type automatically.
     setMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+
+    // 2. If the wall's effective thickness changed (e.g. body block went from
+    //    20.48 to a narrower or wider block), corner / T-junction matching
+    //    against this wall needs to be re-evaluated, because the snap-to-face
+    //    geometry depends on halfThickness. Recompute every page's junctions
+    //    against the new makeup so walls of this type pick up the change.
+    //    Cheap: just iterates each wall pair on the page.
+    setWallsByPage((prev) => {
+      const nextMakeups = makeups.map((m) => (m.id === updated.id ? updated : m))
+      const nextMakeupsById = Object.fromEntries(
+        nextMakeups.map((m) => [m.id, m])
+      ) as Record<string, WallMakeup>
+      const next: Record<number, Wall[]> = {}
+      for (const [pageStr, walls] of Object.entries(prev)) {
+        const pageNum = Number(pageStr)
+        const thicknesses = computeWallThicknessByWallId(
+          walls,
+          nextMakeupsById,
+          mode,
+          brickSettings.brickTypeCode
+        )
+        next[pageNum] = recomputeAllJunctions(walls, thicknesses)
+      }
+      return next
+    })
   }
 
   function handleDeleteMakeup(id: string) {
@@ -1065,23 +1142,29 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setSelectedWallId(null)
   }
 
-  // Delete / Backspace removes the selected wall, opening, or pier
+  // Delete / Backspace removes every selected wall, opening, and pier — single-
+  // or multi-selection. Walls are deleted last (so attached openings/piers vanish
+  // along the way without us needing to special-case them).
   useEffect(() => {
-    if (!selectedWallId && !selectedOpeningId && !selectedPierId) return
+    if (selectedWallIds.size === 0 && selectedOpeningIds.size === 0 && selectedPierIds.size === 0) return
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const tgt = e.target as HTMLElement | null
         if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return
         e.preventDefault()
-        if (selectedPierId) handleDeletePier(selectedPierId)
-        else if (selectedOpeningId) handleOpeningDelete(selectedOpeningId)
-        else if (selectedWallId) handleWallDelete(selectedWallId)
+        // Snapshot ids before any deletion handler clears the selection sets.
+        const wallIds = Array.from(selectedWallIds)
+        const openingIds = Array.from(selectedOpeningIds)
+        const pierIds = Array.from(selectedPierIds)
+        for (const id of pierIds) handleDeletePier(id)
+        for (const id of openingIds) handleOpeningDelete(id)
+        for (const id of wallIds) handleWallDelete(id)
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWallId, selectedOpeningId, selectedPierId])
+  }, [selectedWallIds, selectedOpeningIds, selectedPierIds])
 
   // Clear selection when leaving the page or replacing PDF
   useEffect(() => {
@@ -1903,10 +1986,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       <div className="sticky top-0 z-20 bg-ink-900 pt-2 pb-1 -mx-1 px-1 mb-2 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
 
       {/* Wall drawing toolbar (block + brick modes) */}
-      {(mode === 'block' || mode === 'brick') && (
+      {(mode === 'block' || mode === 'brick') && (() => {
+        // In block mode, every wall references a wall type (makeup) by id — drawing
+        // without one selected silently produces a broken wall (no body block, no
+        // height, no tally entry). Block the draw buttons until the user picks one.
+        const blockModeNeedsType = mode === 'block'
+        const activeMakeup = blockModeNeedsType ? makeupsById[activeMakeupId] : null
+        const missingActiveType = blockModeNeedsType && !activeMakeup
+        return (
         <div className="flex items-center justify-between mb-3 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-3">
           <div className="text-sm">
-            {currentScale ? (
+            {!currentScale ? (
+              <span className="text-ink-400">
+                Calibrate the scale on this page before drawing walls.
+              </span>
+            ) : missingActiveType ? (
+              <span className="text-amber-300">
+                Select a wall type above before drawing.
+              </span>
+            ) : (
               <span className="text-ink-200">
                 {currentPageWalls.length}{' '}
                 wall{currentPageWalls.length === 1 ? '' : 's'} on this page
@@ -1916,10 +2014,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     · {allWalls.length} total in project
                   </span>
                 )}
-              </span>
-            ) : (
-              <span className="text-ink-400">
-                Calibrate the scale on this page before drawing walls.
+                {activeMakeup && (
+                  <span className="text-ink-400"> · drawing as {activeMakeup.name}</span>
+                )}
               </span>
             )}
           </div>
@@ -1936,7 +2033,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 setSelectedOpeningId(null)
                 setSelectedPierId(null)
               }}
-              disabled={!currentScale || calibrating}
+              disabled={!currentScale || calibrating || missingActiveType}
+              title={
+                missingActiveType
+                  ? 'Pick a wall type in the Wall types panel before drawing.'
+                  : undefined
+              }
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 drawingMode
                   ? 'bg-beme-400 text-black hover:bg-beme-300'
@@ -1958,9 +2060,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   setSelectedOpeningId(null)
                   setSelectedPierId(null)
                 }}
-                disabled={!currentScale || calibrating || currentPageWalls.length < 2}
+                disabled={
+                  !currentScale ||
+                  calibrating ||
+                  currentPageWalls.length < 2 ||
+                  missingActiveType
+                }
                 title={
-                  currentPageWalls.length < 2
+                  missingActiveType
+                    ? 'Pick a wall type in the Wall types panel before drawing.'
+                    : currentPageWalls.length < 2
                     ? 'Draw two straight walls first — a curve goes between them'
                     : undefined
                 }
@@ -2021,49 +2130,32 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             {mode === 'block' && (
               <button
                 onClick={() => {
-                  setPlacingTiedPier((v) => !v)
-                  setDrawingMode(false)
-                  setDrawingCurveMode(false)
-                  setPlacingOpening(false)
-                  setPlacingControlJoint(false)
-                  setPlacingFreestandingPier(false)
-                  setSelectedWallId(null)
-                  setSelectedOpeningId(null)
-                  setSelectedPierId(null)
-                }}
-                disabled={!currentScale || calibrating || currentPageWalls.length === 0}
-                title="Click on a wall to place a tied pier (built into the wall)"
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  placingTiedPier
-                    ? 'bg-emerald-800 text-white hover:bg-emerald-900'
-                    : 'bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40 disabled:cursor-not-allowed'
-                }`}
-              >
-                {placingTiedPier ? 'Cancel tied pier' : '+ Tied pier'}
-              </button>
-            )}
-            {mode === 'block' && (
-              <button
-                onClick={() => {
+                  // Unified pier placement: the same mode covers both tied (on a
+                  // wall) and freestanding (off any wall). The decision is made at
+                  // click time in WallDrawingLayer based on whether the click lands
+                  // inside a wall's body. We reuse the existing
+                  // placingFreestandingPier state as the carrier flag so the rest
+                  // of the component (hover preview, banner visibility, etc.) can
+                  // continue to key off it.
                   setPlacingFreestandingPier((v) => !v)
+                  setPlacingTiedPier(false)
                   setDrawingMode(false)
                   setDrawingCurveMode(false)
                   setPlacingOpening(false)
                   setPlacingControlJoint(false)
-                  setPlacingTiedPier(false)
                   setSelectedWallId(null)
                   setSelectedOpeningId(null)
                   setSelectedPierId(null)
                 }}
                 disabled={!currentScale || calibrating}
-                title="Click anywhere on the plan to place a freestanding pier"
+                title="Click on a wall for a tied pier; anywhere else for a freestanding pier."
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   placingFreestandingPier
                     ? 'bg-teal-800 text-white hover:bg-teal-900'
                     : 'bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-40 disabled:cursor-not-allowed'
                 }`}
               >
-                {placingFreestandingPier ? 'Cancel pier' : '+ Freestanding pier'}
+                {placingFreestandingPier ? 'Cancel pier' : '+ Pier'}
               </button>
             )}
             {allWalls.length > 0 && (
@@ -2076,7 +2168,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             )}
           </div>
         </div>
-      )}
+        )
+      })()}
 
       {drawingMode && (
         <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg text-sm text-beme-200">
@@ -2105,16 +2198,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         </div>
       )}
 
-      {placingTiedPier && (
-        <div className="mb-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-sm text-emerald-200">
-          Click a wall where you want a <strong>tied pier</strong>. The pier column alternates 40.925 and 20.01 by course over the wall height, and displaces a body block per course at that position. Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
-
       {placingFreestandingPier && (
         <div className="mb-3 px-4 py-3 bg-teal-500/10 border border-teal-500/40 rounded-lg text-sm text-teal-200">
-          Click anywhere on the plan to drop a <strong>freestanding pier</strong> ({freestandingPierHeightMm}mm tall — change in the side panel after placing). Tally is 40.925 stacked every course. Press{' '}
+          Click on a wall for a <strong>tied pier</strong> (built into the wall, 40.925 / 20.01 alternating courses) — or click anywhere else for a <strong>freestanding pier</strong> ({freestandingPierHeightMm}mm tall, 40.925 stacked; change height in the side panel after placing). Press{' '}
           <kbd className="px-1.5 py-0.5 rounded border border-teal-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
         </div>
       )}
@@ -2446,6 +2532,88 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         )
       })()}
 
+      {/* Batch multi-selection banner. Shows when 2+ items across walls/openings/
+          piers are selected. Single-item banners only render when their respective
+          "single-selected" ID is non-null (selectedWall, selectedOpening, etc.),
+          which is exactly the case when the user has exactly one of THAT type
+          selected and nothing else. So this batch banner never overlaps with the
+          single-item ones. */}
+      {(() => {
+        const totalSelected =
+          selectedWallIds.size + selectedOpeningIds.size + selectedPierIds.size
+        if (totalSelected < 2) return null
+        const wallCount = selectedWallIds.size
+        const openingCount = selectedOpeningIds.size
+        const pierCount = selectedPierIds.size
+        const parts: string[] = []
+        if (wallCount > 0) parts.push(`${wallCount} wall${wallCount === 1 ? '' : 's'}`)
+        if (openingCount > 0)
+          parts.push(`${openingCount} opening${openingCount === 1 ? '' : 's'}`)
+        if (pierCount > 0) parts.push(`${pierCount} pier${pierCount === 1 ? '' : 's'}`)
+        function batchDelete() {
+          const wallIds = Array.from(selectedWallIds)
+          const openingIds = Array.from(selectedOpeningIds)
+          const pierIds = Array.from(selectedPierIds)
+          for (const id of pierIds) handleDeletePier(id)
+          for (const id of openingIds) handleOpeningDelete(id)
+          for (const id of wallIds) handleWallDelete(id)
+        }
+        function batchClear() {
+          setSelectedWallId(null)
+          setSelectedOpeningId(null)
+          setSelectedPierId(null)
+        }
+        function batchReassignMakeup(makeupId: string) {
+          for (const wallId of Array.from(selectedWallIds)) {
+            handleReassignWallMakeup(wallId, makeupId)
+          }
+        }
+        return (
+          <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-2">
+            <span>
+              {parts.join(' + ')} selected. Press{' '}
+              <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd>{' '}
+              to remove all, or Shift+click to add/remove items.
+            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              {mode === 'block' && wallCount > 0 && (
+                <label className="flex items-center gap-2 text-sm text-sky-200">
+                  <span>Wall type ({wallCount}):</span>
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) batchReassignMakeup(e.target.value)
+                    }}
+                    className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50"
+                  >
+                    <option value="" disabled>
+                      Reassign to…
+                    </option>
+                    {makeups.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <button
+                onClick={batchDelete}
+                className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+              >
+                Delete all
+              </button>
+              <button
+                onClick={batchClear}
+                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+              >
+                Deselect
+              </button>
+            </div>
+          </div>
+        )
+      })()}
+
       {(mode === 'block' || mode === 'brick') && selectedWall && !drawingMode && (
         <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-2">
           <span>
@@ -2750,6 +2918,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   selectedWallId={selectedWallId}
                   selectedOpeningId={selectedOpeningId}
                   selectedPierId={selectedPierId}
+                  selectedWallIds={selectedWallIds}
+                  selectedOpeningIds={selectedOpeningIds}
+                  selectedPierIds={selectedPierIds}
+                  onWallToggleSelect={toggleSelectedWallId}
+                  onOpeningToggleSelect={toggleSelectedOpeningId}
+                  onPierToggleSelect={toggleSelectedPierId}
                   onWallAdded={handleWallAdded}
                   onCurvedWallAdded={handleCurvedWallAdded}
                   onWallSelect={handleWallSelect}
