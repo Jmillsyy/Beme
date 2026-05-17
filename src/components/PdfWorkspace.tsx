@@ -1178,12 +1178,24 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // During interactive zoom we apply (zoom / renderedZoom) via CSS transform for smooth, flicker-free scaling.
   const [zoom, setZoom] = useState(1)
   const [renderedZoom, setRenderedZoom] = useState(1)
-  // Tailwind `lg` = 1024px. At/above lg the right rail is side-by-side with the canvas
-  // (eats ~400px including gap), below lg it stacks beneath, so the canvas can use full width.
+  // Canvas width sizing — favours landscape plans because that's what most
+  // building drawings are. The cap (1140px) is sized so on a typical 24"
+  // monitor the canvas fills most of the available horizontal room rather
+  // than leaving it empty, but the right rail (~360px on lg+) still sits
+  // beside it instead of getting pushed below the canvas.
+  //
+  // Math behind the constants:
+  //   container is max-w-[1600px] mx-auto, with px-6 inner padding (= 48 total)
+  //   right rail is 360px on lg+, with a 16px gap before it
+  //   so canvas area = min(1600, window.innerWidth) − 360 − 16 − 48 = window − 424
+  //   plus ~16px scrollbar slack = window − 440
+  //
+  // Tailwind `lg` = 1024px. At/above lg the right rail is side-by-side; below
+  // lg it stacks beneath and the canvas takes the full width.
   const baseWidth = (() => {
-    if (typeof window === 'undefined') return 880
+    if (typeof window === 'undefined') return 1140
     return window.innerWidth >= 1024
-      ? Math.min(880, window.innerWidth - 600)
+      ? Math.min(1140, window.innerWidth - 440)
       : Math.min(900, window.innerWidth - 120)
   })()
   const renderedPageWidth = Math.round(baseWidth * renderedZoom)
@@ -1636,7 +1648,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   if (!pdfFile) {
     return (
-      <div className="max-w-[1200px] mx-auto">
+      <div className="max-w-[1600px] mx-auto">
         {sourceRequest && <RequestBreadcrumb request={sourceRequest} />}
         {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
         {(mode === 'block' || mode === 'brick') && (
@@ -1750,7 +1762,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             </div>
 
             {/* ── Right: side rail (block: wall + pier types · brick: settings) ── */}
-            <aside className="w-full lg:w-[380px] lg:flex-shrink-0">
+            <aside className="w-full lg:w-[360px] lg:flex-shrink-0">
               {mode === 'block' && (
                 <>
                   <WallTypesPanel
@@ -1788,7 +1800,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Render: workspace ----------
 
   return (
-    <div className="max-w-[1200px] mx-auto">
+    <div className="max-w-[1600px] mx-auto">
       {sourceRequest && <RequestBreadcrumb request={sourceRequest} />}
       {/* Slim project bar — Studio Black header */}
       {(mode === 'block' || mode === 'brick') && (
@@ -2951,7 +2963,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           Each panel handles its own collapse state, so users can hide what they're
           not actively using and the rail can absorb new panels (selection details,
           piers, control joints, etc.) without making the page taller. */}
-      <aside className="w-full lg:w-[380px] lg:flex-shrink-0 -mt-4 lg:mt-0">
+      <aside className="w-full lg:w-[360px] lg:flex-shrink-0 -mt-4 lg:mt-0">
 
         {/* Wall types management panel (block mode) */}
         {mode === 'block' && (
