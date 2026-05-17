@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -2742,54 +2742,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       {/* Page thumbnails + main PDF view */}
       <div className="flex gap-3">
-        {/* Thumbnail sidebar (multi-page only) */}
+        {/* Thumbnail sidebar (multi-page only). Extracted into a memoised
+            component so zoom-driven re-renders of PdfWorkspace don't ripple
+            through the per-page <Page> rendering — without this, each zoom
+            tick reconciled `numPages` PDF pages, which was the bottleneck on
+            multi-page plans. */}
         {numPages > 1 && (
-          <div ref={sidebarRef} className="w-40 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2">
-            <Document file={pdfFile} loading={null} error={null}>
-              <div className="space-y-2">
-                {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
-                  const isCurrent = pageNum === currentPage
-                  // Page is "scaled" if EITHER the new page-ratio is set
-                  // (post-fix projects) or the legacy px/mm field is present
-                  // (legacy projects, until migration runs on PDF load).
-                  const hasScale =
-                    !!pagesData[pageNum]?.pageScaleRatio ||
-                    !!pagesData[pageNum]?.scalePxPerMm
-                  return (
-                    <button
-                      key={pageNum}
-                      onClick={() => setCurrentPage(pageNum)}
-                      className={`block w-full p-1 rounded-md transition-colors text-left ${
-                        isCurrent
-                          ? 'ring-2 ring-beme-500 bg-beme-500/10'
-                          : 'ring-1 ring-ink-600 hover:ring-beme-500/60 bg-ink-700/40'
-                      }`}
-                    >
-                      <div
-                        className="bg-ink-800 flex justify-center overflow-hidden rounded-sm"
-                        style={{ lineHeight: 0 }}
-                      >
-                        <Page
-                          pageNumber={pageNum}
-                          width={130}
-                          renderAnnotationLayer={false}
-                          renderTextLayer={false}
-                        />
-                      </div>
-                      <div
-                        className={`mt-1 text-xs flex items-center justify-between px-1 ${
-                          isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
-                        }`}
-                      >
-                        <span>Page {pageNum}</span>
-                        {hasScale && <span className="text-emerald-300" title="Scale set">✓</span>}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            </Document>
-          </div>
+          <ThumbnailSidebar
+            sidebarRef={sidebarRef}
+            pdfFile={pdfFile}
+            numPages={numPages}
+            currentPage={currentPage}
+            pagesData={pagesData}
+            onSelectPage={setCurrentPage}
+          />
         )}
 
       {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan) */}
@@ -3079,6 +3045,91 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
  * without losing their place in the workspace (the router-link preserves
  * the project in the back history).
  */
+/**
+ * Multi-page PDF thumbnail rail. Extracted from PdfWorkspace and memoised
+ * because the per-page <Page> rendering is the most expensive part of the
+ * workspace render — without memoisation, every zoom tick reconciled all
+ * `numPages` PDF page components, which is what made the lag scale with
+ * page count on plans with many sheets.
+ *
+ * Props are deliberately narrow: only the values the sidebar actually
+ * depends on are passed in, so the memo holds during zoom (none of these
+ * change while the user is wheeling).
+ */
+interface ThumbnailSidebarProps {
+  sidebarRef: React.RefObject<HTMLDivElement | null>
+  pdfFile: File
+  numPages: number
+  currentPage: number
+  pagesData: Record<number, { pageScaleRatio?: number; scalePxPerMm?: number }>
+  onSelectPage: (pageNum: number) => void
+}
+
+const ThumbnailSidebar = memo(function ThumbnailSidebar({
+  sidebarRef,
+  pdfFile,
+  numPages,
+  currentPage,
+  pagesData,
+  onSelectPage,
+}: ThumbnailSidebarProps) {
+  return (
+    <div
+      ref={sidebarRef}
+      className="w-40 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2"
+    >
+      <Document file={pdfFile} loading={null} error={null}>
+        <div className="space-y-2">
+          {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
+            const isCurrent = pageNum === currentPage
+            // "Scaled" if either the new page-ratio is set (post-fix projects)
+            // or the legacy px/mm field is present (legacy projects, until
+            // migration runs on PDF load).
+            const hasScale =
+              !!pagesData[pageNum]?.pageScaleRatio ||
+              !!pagesData[pageNum]?.scalePxPerMm
+            return (
+              <button
+                key={pageNum}
+                onClick={() => onSelectPage(pageNum)}
+                className={`block w-full p-1 rounded-md transition-colors text-left ${
+                  isCurrent
+                    ? 'ring-2 ring-beme-500 bg-beme-500/10'
+                    : 'ring-1 ring-ink-600 hover:ring-beme-500/60 bg-ink-700/40'
+                }`}
+              >
+                <div
+                  className="bg-ink-800 flex justify-center overflow-hidden rounded-sm"
+                  style={{ lineHeight: 0 }}
+                >
+                  <Page
+                    pageNumber={pageNum}
+                    width={130}
+                    renderAnnotationLayer={false}
+                    renderTextLayer={false}
+                  />
+                </div>
+                <div
+                  className={`mt-1 text-xs flex items-center justify-between px-1 ${
+                    isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
+                  }`}
+                >
+                  <span>Page {pageNum}</span>
+                  {hasScale && (
+                    <span className="text-emerald-300" title="Scale set">
+                      ✓
+                    </span>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </Document>
+    </div>
+  )
+})
+
 function RequestBreadcrumb({ request }: { request: EstimateRequest }) {
   return (
     <div className="px-6 pt-4">
