@@ -2936,6 +2936,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   visualWidth={renderedPageWidth}
                   visualHeight={renderedPageHeight}
                   pxPerMmAtCurrentZoom={currentScale * renderedZoom}
+                  // True during the 300 ms debounce after a wheel event,
+                  // when the canvas is CSS-scaling ahead of the rasterised
+                  // zoom. The wall layer uses this to suppress hover state
+                  // updates that would otherwise stutter the gesture.
+                  isZooming={zoom !== renderedZoom}
                   drawingMode={drawingMode}
                   drawingCurveMode={drawingCurveMode}
                   placingOpening={placingOpening}

@@ -37,6 +37,15 @@ interface WallDrawingLayerProps {
   placingTiedPier?: boolean
   /** Whether placing-freestanding-pier mode is active. Click anywhere on the canvas. */
   placingFreestandingPier?: boolean
+  /**
+   * True while the user is actively wheel-zooming (the visual zoom is ahead of
+   * the rasterised zoom). When true the layer suppresses hover state updates,
+   * because cursor enter/leave events fire spuriously during a zoom gesture:
+   * the canvas CSS-scales but the cursor doesn't move on screen, so different
+   * walls come under it in stage coords and trigger setState cascades that
+   * stutter the zoom. Hover comes back instantly the moment the gesture ends.
+   */
+  isZooming?: boolean
   /** Piers on the current page. */
   piers?: Pier[]
   /** Currently selected wall id (null = nothing selected). */
@@ -526,6 +535,7 @@ function WallDrawingLayerInner({
   placingControlJoint = false,
   placingTiedPier = false,
   placingFreestandingPier = false,
+  isZooming = false,
   piers = [],
   selectedWallId,
   selectedOpeningId,
@@ -1593,6 +1603,14 @@ function WallDrawingLayerInner({
                 perfectDrawEnabled={false}
                 shadowForStrokeEnabled={false}
                 onMouseEnter={(e) => {
+                  // During an active zoom gesture the cursor doesn't move on
+                  // screen but the canvas CSS-scales — different walls slide
+                  // under the stage pointer, firing onMouseEnter spuriously
+                  // and stuttering the zoom with setState cascades. Suppress
+                  // hover updates while isZooming; the cursor style change
+                  // also doesn't matter because the user can see they're
+                  // zooming.
+                  if (isZooming) return
                   if (
                     !drawingMode &&
                     !placingOpening &&
@@ -1608,6 +1626,8 @@ function WallDrawingLayerInner({
                   }
                 }}
                 onMouseLeave={(e) => {
+                  // Same zoom-guard as onMouseEnter — see comment above.
+                  if (isZooming) return
                   setHoveredWallId(null)
                   setCursor(e.target.getStage(), containerCursor)
                 }}
