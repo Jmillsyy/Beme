@@ -4,6 +4,7 @@ import Header from '../components/Header'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import {
+  deleteEstimateRequest,
   getEstimateRequest,
   pickUpEstimateRequest,
   updateEstimateRequest,
@@ -152,6 +153,29 @@ export default function RequestDetailPage() {
     }
   }
 
+  async function handleDelete() {
+    if (!request || busy) return
+    // Stronger confirmation than cancel — this is destructive and includes
+    // the plan PDF in storage. Highlight that any linked project stays so
+    // the user understands what they're keeping.
+    const hasProject = !!request.projectId
+    const message = hasProject
+      ? "Permanently delete this estimate request? The linked project stays — it has its own copy of the plan and will still be reachable from the dashboard. Only the request row + the customer-supplied PDF in this workflow are removed."
+      : 'Permanently delete this estimate request? This removes the row + its plan PDF and can\'t be undone.'
+    if (!window.confirm(message)) return
+    setBusy(true)
+    setError(null)
+    try {
+      await deleteEstimateRequest(request.id)
+      // Drop the user back to the inbox once the row is gone — staying on a
+      // detail page that no longer has a row would just dead-end.
+      navigate('/requests')
+    } catch (e) {
+      setError((e as Error).message ?? 'Could not delete')
+      setBusy(false)
+    }
+  }
+
   const statusBadgeClass =
     request.status === 'pending'
       ? 'bg-amber-500/15 text-amber-200 border border-amber-500/40'
@@ -249,6 +273,20 @@ export default function RequestDetailPage() {
                 Cancel request
               </button>
             )}
+          {/* Terminal-state delete: only on cancelled / completed rows so the
+              user can clean their workflow without touching active jobs.
+              Pending / in-progress should be cancelled first (the row stays in
+              the audit log) — that two-step keeps an accidental delete from
+              tearing through a live job. */}
+          {(request.status === 'cancelled' || request.status === 'completed') && (
+            <button
+              onClick={handleDelete}
+              disabled={busy}
+              className="px-4 py-2 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200 text-sm hover:bg-rose-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {busy ? 'Deleting…' : 'Delete request'}
+            </button>
+          )}
         </div>
 
         {error && (

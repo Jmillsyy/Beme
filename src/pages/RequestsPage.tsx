@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import Header from '../components/Header'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
-import { listEstimateRequests } from '../lib/estimateRequests'
+import { deleteEstimateRequest, listEstimateRequests } from '../lib/estimateRequests'
 import type {
   EstimateRequest,
   EstimateRequestStatus,
@@ -225,6 +225,23 @@ export default function RequestsPage() {
                 request={r}
                 assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
                 creator={memberById.get(r.createdByUserId)}
+                onDelete={async () => {
+                  // Optimistic remove from the list — re-fetching would
+                  // also work, but a single row removal feels immediate
+                  // and matches what the user just confirmed. If the
+                  // server delete fails the catch below puts the row
+                  // back.
+                  const snapshot = requests
+                  setRequests((prev) => prev.filter((x) => x.id !== r.id))
+                  try {
+                    await deleteEstimateRequest(r.id)
+                  } catch (err) {
+                    setRequests(snapshot)
+                    window.alert(
+                      `Couldn't delete request: ${(err as Error).message ?? 'unknown error'}`
+                    )
+                  }
+                }}
               />
             ))}
           </div>
@@ -289,10 +306,12 @@ function RequestRow({
   request,
   assignee,
   creator,
+  onDelete,
 }: {
   request: EstimateRequest
   assignee: OrgMember | undefined
   creator: OrgMember | undefined
+  onDelete: () => void
 }) {
   const statusBadgeClass =
     request.status === 'pending'
@@ -303,63 +322,98 @@ function RequestRow({
       ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/40'
       : 'bg-ink-700 text-ink-300 border border-ink-600'
 
+  // Inline delete is offered for terminal-state rows so the user can clear
+  // out their workflow without opening every card. Active rows (pending /
+  // in_progress) need to go through the Cancel button on the detail page
+  // first — that two-step keeps an accidental delete from tearing through
+  // a live job.
+  const canQuickDelete = request.status === 'cancelled' || request.status === 'completed'
+
+  // Wrap the click handler in a custom confirm so the row's Link doesn't
+  // navigate when the user clicks the trash button.
+  function handleDeleteClick(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    const hasProject = !!request.projectId
+    const msg = hasProject
+      ? `Permanently delete the request for "${request.customerName}"? The linked project stays — only the request row + customer PDF are removed.`
+      : `Permanently delete the request for "${request.customerName}"? This can't be undone.`
+    if (window.confirm(msg)) onDelete()
+  }
+
   return (
-    <Link
-      to={`/requests/${request.id}`}
-      className="block border border-ink-600 rounded-xl bg-ink-800 p-4 hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors"
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <h3 className="text-base font-semibold text-ink-50 truncate">
-              {request.customerName}
-              {request.customerCompany && (
-                <span className="text-ink-400 font-normal ml-2">
-                  — {request.customerCompany}
-                </span>
-              )}
-            </h3>
-            <span
-              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusBadgeClass}`}
-            >
-              {estimateRequestStatusLabel(request.status)}
-            </span>
-            <span className="text-xs uppercase tracking-wider text-ink-400">
-              {request.type === 'brick' ? 'Brick' : 'Block'}
-            </span>
-          </div>
-          {request.inclusionNotes && (
-            <p className="text-sm text-ink-300 line-clamp-2 mb-2">
-              {request.inclusionNotes}
-            </p>
-          )}
-          <div className="flex items-center gap-3 text-xs text-ink-400 flex-wrap">
-            <span>
-              From{' '}
-              <span className="text-ink-200">
-                {creator?.displayName || creator?.email || 'team'}
+    <div className="relative">
+      <Link
+        to={`/requests/${request.id}`}
+        className="block border border-ink-600 rounded-xl bg-ink-800 p-4 hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <h3 className="text-base font-semibold text-ink-50 truncate">
+                {request.customerName}
+                {request.customerCompany && (
+                  <span className="text-ink-400 font-normal ml-2">
+                    — {request.customerCompany}
+                  </span>
+                )}
+              </h3>
+              <span
+                className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusBadgeClass}`}
+              >
+                {estimateRequestStatusLabel(request.status)}
               </span>
-            </span>
-            <span>·</span>
-            <span>
-              To{' '}
-              <span className="text-ink-200">
-                {assignee?.displayName ||
-                  assignee?.email ||
-                  (request.assignedToUserId ? 'estimator' : 'Unassigned')}
+              <span className="text-xs uppercase tracking-wider text-ink-400">
+                {request.type === 'brick' ? 'Brick' : 'Block'}
               </span>
-            </span>
-            <span>·</span>
-            <span>{new Date(request.updatedAt).toLocaleDateString()}</span>
-            {request.planPdfFileName && (
-              <>
-                <span>·</span>
-                <span className="text-ink-300">📎 {request.planPdfFileName}</span>
-              </>
+            </div>
+            {request.inclusionNotes && (
+              <p className="text-sm text-ink-300 line-clamp-2 mb-2">
+                {request.inclusionNotes}
+              </p>
             )}
+            <div className="flex items-center gap-3 text-xs text-ink-400 flex-wrap">
+              <span>
+                From{' '}
+                <span className="text-ink-200">
+                  {creator?.displayName || creator?.email || 'team'}
+                </span>
+              </span>
+              <span>·</span>
+              <span>
+                To{' '}
+                <span className="text-ink-200">
+                  {assignee?.displayName ||
+                    assignee?.email ||
+                    (request.assignedToUserId ? 'estimator' : 'Unassigned')}
+                </span>
+              </span>
+              <span>·</span>
+              <span>{new Date(request.updatedAt).toLocaleDateString()}</span>
+              {request.planPdfFileName && (
+                <>
+                  <span>·</span>
+                  <span className="text-ink-300">📎 {request.planPdfFileName}</span>
+                </>
+              )}
+            </div>
           </div>
+          {canQuickDelete && (
+            // Absolutely-positioned so it doesn't reflow the row content; sits
+            // top-right of the card. Stops the Link click so it doesn't open
+            // the detail page on the way to the confirm dialog.
+            <button
+              type="button"
+              onClick={handleDeleteClick}
+              title={`Delete this ${request.status} request`}
+              aria-label="Delete request"
+              className="shrink-0 px-2 py-1 rounded text-xs text-rose-300 hover:text-rose-100 hover:bg-rose-500/10 transition-colors"
+            >
+              Delete
+            </button>
+          )}
         </div>
-      </div>
-    </Link>
+      </Link>
+    </div>
   )
 }

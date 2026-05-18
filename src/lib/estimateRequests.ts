@@ -279,6 +279,57 @@ export async function updateEstimateRequest(
 }
 
 /**
+ * Permanently delete an estimate request from the org's workflow — row +
+ * the attached plan PDF in storage. Use this for cancelled / completed
+ * rows the user wants to clean up out of their inbox.
+ *
+ * If the request has a linked Project (because the estimator picked it up
+ * and worked on it), that project stays — it has its own copy of the
+ * plan PDF in `project-pdfs`. Deleting the request only severs the
+ * "sales → estimator" breadcrumb; the takeoff itself is untouched and
+ * reachable from the dashboard / projects list.
+ *
+ * Callers should typically gate this behind a confirm dialog because it's
+ * not reversible. Soft-delete via `status: 'cancelled'` exists for the
+ * audit-trail case (`updateEstimateRequest({status: 'cancelled'})`).
+ */
+export async function deleteEstimateRequest(id: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Estimate requests require Supabase to be configured.')
+  }
+  const client = supabase()
+
+  // Look up the row first so we can remove its plan PDF from storage
+  // alongside the row delete. Reading the row also gives RLS a chance to
+  // reject early when the caller can't see this request — better error
+  // than a silent no-op on the delete.
+  const { data, error: fetchErr } = await client
+    .from('estimate_requests')
+    .select('plan_pdf_path')
+    .eq('id', id)
+    .maybeSingle()
+  if (fetchErr) {
+    throw new Error(`Couldn't load request to delete: ${fetchErr.message}`)
+  }
+  const planPath = (data as { plan_pdf_path: string | null } | null)?.plan_pdf_path ?? null
+
+  // Remove the plan PDF first. If the storage call fails (e.g. the file is
+  // already gone) we still want to drop the row, so swallow non-fatal
+  // errors and surface only the row-delete failure to the caller.
+  if (planPath) {
+    await client.storage.from(PLANS_BUCKET).remove([planPath]).catch(() => {})
+  }
+
+  const { error: deleteErr } = await client
+    .from('estimate_requests')
+    .delete()
+    .eq('id', id)
+  if (deleteErr) {
+    throw new Error(`Couldn't delete request: ${deleteErr.message}`)
+  }
+}
+
+/**
  * Download the plan PDF attached to a request. Returns a Blob the caller can
  * pass to `new File([blob], filename)` to feed into the existing
  * PdfWorkspace. Returns null if the request has no plan attached.
