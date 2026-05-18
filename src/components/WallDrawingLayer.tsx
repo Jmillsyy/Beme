@@ -127,6 +127,20 @@ const WALL_FACE_SNAP_MM = 20
 const AXIS_SNAP_DEGREES = 4
 
 /**
+ * Wall length is rounded to the nearest multiple of this many millimetres
+ * while drawing. Real construction is laid out on coarse increments —
+ * nobody specs a 357 mm wall when 355 or 360 would do — so anything between
+ * grid lines is almost always cursor noise rather than intent. Rounding the
+ * displayed length keeps the live measurement readout from twitching by 1-2
+ * mm as the user holds the cursor near a target.
+ *
+ * Applied AFTER wall-snap (endpoints / faces) and axis-snap so neither gets
+ * overridden, and bypassed by holding Shift the same way axis-snap is, for
+ * the rare wall that genuinely needs an off-grid length.
+ */
+const WALL_LENGTH_SNAP_MM = 5
+
+/**
  * If the segment from `from` → `to` is near horizontal or vertical, return a
  * snapped `to` that lies exactly on the axis. Otherwise return `to` unchanged.
  * Operates in any coordinate system since the comparison is purely angular.
@@ -1098,7 +1112,34 @@ function WallDrawingLayerInner({
       return { point: { x: snap.x, y: snap.y }, snap }
     }
     if (!anchor || shiftKey) return { point: pos, snap: null }
-    return { point: applyAxisSnap(anchor, pos), snap: null }
+
+    // Axis snap first — pulls a near-orthogonal segment cleanly onto h/v.
+    const axisSnapped = applyAxisSnap(anchor, pos)
+
+    // Length snap — round the segment's real-world length to the nearest 5 mm
+    // and rescale the vector. Preserves the (axis-snapped) direction, so a
+    // diagonal wall stays diagonal; only the length changes. Skip when the
+    // rounded length would be < 5 mm (i.e. cursor effectively on the anchor)
+    // — collapsing to zero would leave the preview wall stuck on its origin
+    // and feel broken.
+    const dxPx = axisSnapped.x - anchor.x
+    const dyPx = axisSnapped.y - anchor.y
+    const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
+    if (lenPx <= 0) return { point: axisSnapped, snap: null }
+    const lenMm = pxToMm(lenPx)
+    const snappedMm =
+      Math.round(lenMm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
+    if (snappedMm < WALL_LENGTH_SNAP_MM) {
+      return { point: axisSnapped, snap: null }
+    }
+    const scale = snappedMm / lenMm
+    return {
+      point: {
+        x: anchor.x + dxPx * scale,
+        y: anchor.y + dyPx * scale,
+      },
+      snap: null,
+    }
   }
 
   // ---------- Stage events ----------
