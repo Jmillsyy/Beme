@@ -98,19 +98,20 @@ interface WallDrawingLayerProps {
 }
 
 /** Pixel radius for snapping to an existing wall's endpoint (corner candidate). */
-const SNAP_THRESHOLD_PX = 12
+const SNAP_THRESHOLD_PX = 8
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
  *  click precision against a visible wall — the user targets the wall on screen. */
-const WALL_PROJECTION_THRESHOLD_PX = 20
+const WALL_PROJECTION_THRESHOLD_PX = 14
 /**
  * Real-world distance at which a cursor near an existing wall's *face* will snap onto it
  * to form a T-junction. Expressed in mm so the snap feels the same at every zoom level
  * and on every plan — at 1:50 a 20-pixel threshold is hundreds of mm of real space, which
- * is far too sticky. 50 mm = roughly one half-block joint, which is tight enough to feel
- * intentional but forgiving enough to land without millimetre precision.
+ * is far too sticky. 20 mm is tight enough to leave room to draw walls in dense junctions
+ * (where multiple existing walls are close together) without their snap zones swallowing
+ * the cursor, while still being forgiving enough to land without millimetre precision.
  */
-const WALL_FACE_SNAP_MM = 50
+const WALL_FACE_SNAP_MM = 20
 
 /**
  * Angular tolerance for orthogonal snap, in degrees.
