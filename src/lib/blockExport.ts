@@ -135,11 +135,79 @@ function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
  */
 function buildPlanOverviewPage(
   walls: Wall[],
+  openings: Opening[],
   piers: Pier[],
+  makeupsById: Record<string, WallMakeup>,
   thicknessByWallId: Record<string, number>,
   pageHeader: string
 ): string {
   if (walls.length === 0) return ''
+
+  // Compute the at-a-glance summary stats shown above the diagram. These
+  // give the reader a sense of project size before they look at the
+  // numbered breakdown — walls × total length × wall area × counts.
+  const wallLengthsMm = walls.map((w) => {
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      const geom = arcFromThreePoints(
+        { x: w.startX, y: w.startY },
+        { x: w.midX, y: w.midY },
+        { x: w.endX, y: w.endY }
+      )
+      if (geom) return geom.arcLengthMm
+    }
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    return Math.sqrt(dx * dx + dy * dy)
+  })
+  const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
+  const totalWallAreaSqMm = walls.reduce((sum, w, i) => {
+    const makeup = makeupsById[w.makeupId]
+    const heightMm = w.heightMmOverride ?? makeup?.heightMm ?? 0
+    return sum + wallLengthsMm[i] * heightMm
+  }, 0)
+  const openingsAreaSqMm = openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
+  const netWallAreaSqMm = Math.max(0, totalWallAreaSqMm - openingsAreaSqMm)
+  const tiedPierCount = piers.filter((p) => p.type === 'tied').length
+  const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length
+  const wallTypeCount = new Set(walls.map((w) => w.makeupId)).size
+  const tallestWall = walls.reduce((max, w) => {
+    const makeup = makeupsById[w.makeupId]
+    const h = w.heightMmOverride ?? makeup?.heightMm ?? 0
+    return Math.max(max, h)
+  }, 0)
+  const longestWallMm = wallLengthsMm.reduce((m, l) => Math.max(m, l), 0)
+
+  // Tiles drawn as horizontal stat row above the SVG. Each tile is small
+  // (number + label below) and the row wraps if there are too many.
+  const summaryTiles: Array<{ label: string; value: string; sub?: string }> = [
+    { label: 'Walls', value: String(walls.length), sub: `${wallTypeCount} wall type${wallTypeCount === 1 ? '' : 's'}` },
+    { label: 'Total length', value: `${(totalWallLengthMm / 1000).toFixed(2)} m` },
+    { label: 'Wall area', value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`, sub: openings.length > 0 ? `net of ${openings.length} opening${openings.length === 1 ? '' : 's'}` : 'no openings' },
+    { label: 'Longest wall', value: `${(longestWallMm / 1000).toFixed(2)} m` },
+    { label: 'Tallest wall', value: `${(tallestWall / 1000).toFixed(2)} m` },
+  ]
+  if (piers.length > 0) {
+    summaryTiles.push({
+      label: 'Piers',
+      value: String(piers.length),
+      sub: `${tiedPierCount} tied · ${freestandingPierCount} freestanding`,
+    })
+  }
+  const summaryRow = `
+    <div class="plan-overview-stats">
+      ${summaryTiles
+        .map(
+          (t) => `
+        <div class="plan-stat">
+          <div class="plan-stat-value">${escapeHtml(t.value)}</div>
+          <div class="plan-stat-label">${escapeHtml(t.label)}</div>
+          ${t.sub ? `<div class="plan-stat-sub">${escapeHtml(t.sub)}</div>` : ''}
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+  `
 
   // Bounding box of everything we're about to draw (walls + curve midpoints +
   // freestanding pier positions), so the SVG viewBox covers the whole plan.
@@ -255,9 +323,12 @@ function buildPlanOverviewPage(
     )
   }
 
-  // Numbered labels at each wall's midpoint (chord midpoint for straight,
-  // user-clicked midpoint for curves). White text inside an orange circle
-  // so it reads on top of the wall fill.
+  // Numbered labels at each wall's midpoint with the wall length as a
+  // secondary text below the circle. White-on-orange circle for the number
+  // so it reads on top of the wall fill; the length text is white with a
+  // dark stroke (paint-order: stroke) so it's legible whether it falls on
+  // the wall body or in the gap.
+  const lengthFontSize = labelFontSize * 0.65
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
@@ -268,17 +339,30 @@ function buildPlanOverviewPage(
       cx = (w.startX + w.endX) / 2
       cy = (w.startY + w.endY) / 2
     }
+    const lengthM = (wallLengthsMm[i] / 1000).toFixed(2)
+    const lengthOffsetY = labelDiameter * 0.7 + lengthFontSize * 0.6
     return `
       <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="#9A3F08" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
       <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${labelFontSize}" font-weight="700" fill="#fff">${i + 1}</text>
+      <text x="${cx}" y="${cy + lengthOffsetY}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.18}" paint-order="stroke">${lengthM} m</text>
     `
   })
+
+  // Inline legend describing what the shapes mean. Sits below the SVG.
+  const legend = `
+    <div class="plan-overview-legend">
+      <span class="legend-item"><span class="legend-swatch legend-wall"></span>Wall (numbered, length labelled)</span>
+      ${piers.length > 0 ? `<span class="legend-item"><span class="legend-swatch legend-pier"></span>Pier</span>` : ''}
+      <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan is scaled to fit the page.</span>
+    </div>
+  `
 
   return `
     <section class="page">
       ${pageHeader}
       <h2 class="section-title">Wall Layout</h2>
-      <p class="page-intro">Diagram of every wall as drawn on the plan. Numbered labels match the wall references in the breakdown tables. Walls are shown in orange at their real-world thickness; piers in blue.</p>
+      <p class="page-intro">Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the breakdown tables.</p>
+      ${summaryRow}
       <div class="plan-overview-wrap">
         <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
           ${wallShapes.join('\n          ')}
@@ -286,6 +370,7 @@ function buildPlanOverviewPage(
           ${wallLabels.join('\n          ')}
         </svg>
       </div>
+      ${legend}
     </section>
   `
 }
@@ -598,7 +683,9 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   // number reference in the breakdown tables.
   const planOverviewPage = buildPlanOverviewPage(
     walls,
+    openings,
     piers,
+    makeupsById,
     thicknessByWallId,
     pageHeader
   )
@@ -936,24 +1023,95 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     break-inside: avoid;
   }
 
-  /* Wall-layout SVG fills the page below the heading + intro. The fixed
-     height keeps the diagram from snapping to whatever the SVG's intrinsic
-     size happens to be on a given browser. preserveAspectRatio in the SVG
-     itself keeps the plan undistorted regardless of how stretched this
-     wrapper is. */
+  /* ── Wall layout page ─────────────────────────────────────────────
+     Stats strip across the top, SVG diagram in the middle, legend at
+     the bottom. The SVG height is reduced from the original 160mm to
+     leave room for the stats and legend on the same page. */
+  .plan-overview-stats {
+    display: flex;
+    gap: 12px;
+    margin: 8px 0 12px;
+    flex-wrap: wrap;
+  }
+  .plan-stat {
+    flex: 1 1 0;
+    min-width: 110px;
+    padding: 8px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+  }
+  .plan-stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1f2937;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .plan-stat-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+    margin-top: 2px;
+  }
+  .plan-stat-sub {
+    font-size: 10px;
+    color: #6b7280;
+    margin-top: 2px;
+  }
+
   .plan-overview-wrap {
     width: 100%;
-    height: 160mm;
+    height: 120mm;
     display: flex;
     align-items: center;
     justify-content: center;
     page-break-inside: avoid;
     break-inside: avoid;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafaf7;
   }
   .plan-overview-wrap svg {
     width: 100%;
     height: 100%;
     display: block;
+  }
+
+  .plan-overview-legend {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    margin-top: 10px;
+    font-size: 11px;
+    color: #4b5563;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-swatch {
+    display: inline-block;
+    width: 18px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .legend-wall {
+    background: rgba(237, 125, 49, 0.55);
+    border: 1px solid #9A3F08;
+  }
+  .legend-pier {
+    background: #3b82f6;
+    border: 1px solid #1e40af;
+    width: 10px;
+  }
+  .legend-note {
+    color: #9ca3af;
+    font-style: italic;
   }
 
   table {
