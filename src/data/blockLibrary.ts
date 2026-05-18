@@ -228,6 +228,18 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     roles: ['end-termination', 'fraction'],
     fraction: 0.5,
   },
+  '30.02': {
+    code: '30.02',
+    name: '300-series Cube Block',
+    description:
+      '290mm cube-faced block (290 wide × 190 high × 290 deep) used to get back on bond ' +
+      "after a 300-series corner. Two are laid in succession between the 30.01 corner " +
+      "block and the regular body — the corner block's deeper footprint would otherwise " +
+      'leave the next 30.48 off the stretcher offset. Not used at free / T-junction / ' +
+      'control-joint ends; those still take 30.01 / 30.03 alternation.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 290 },
+    roles: ['corner-lead-in'],
+  },
   '30.45': {
     code: '30.45',
     name: '300-series Cleanout Block',
@@ -265,6 +277,7 @@ export const PROTECTED_BLOCK_CODES = new Set<BlockCode>([
   // reason the 200-series core codes are protected.
   '30.48',
   '30.01',
+  '30.02',
   '30.03',
   '30.45',
   '30.71',

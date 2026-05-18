@@ -280,6 +280,12 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         baseCourseBlockCode: '30.45',
         baseCourseTileCode: '50.45',
         heightMakeup71BlockCode: '30.71',
+        // 300-series corners need two 30.02 cube blocks laid between the
+        // corner block and the regular body so the next 30.48 lands back on
+        // bond — pre-fill the rule so the canonical 300-series setup is one
+        // click from a saved makeup.
+        cornerLeadInBlockCode: '30.02',
+        cornerLeadInCount: 2,
       },
     ])
     setShowSeriesRanges(true)
@@ -308,7 +314,8 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         r.halfBlockCode ||
         r.baseCourseBlockCode ||
         r.baseCourseTileCode ||
-        r.heightMakeup71BlockCode
+        r.heightMakeup71BlockCode ||
+        r.cornerLeadInBlockCode
       return !!anyOverride
     })
     const updated: WallMakeup = {
@@ -684,7 +691,20 @@ function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps
           options={selectableBlocks}
           onChange={(v) => onChange({ heightMakeup71BlockCode: v })}
         />
+        <RangeFieldPicker
+          label="Corner lead-in (×2 after corner)"
+          value={range.cornerLeadInBlockCode}
+          options={selectableBlocks}
+          onChange={(v) => onChange({ cornerLeadInBlockCode: v })}
+        />
       </div>
+      {range.cornerLeadInBlockCode && (
+        <p className="mt-1 text-[10px] text-ink-500">
+          Two {range.cornerLeadInBlockCode} blocks placed between the corner block and the
+          body on every course at a corner end. Free / T-junction / control-joint ends are
+          unaffected.
+        </p>
+      )}
     </div>
   )
 }

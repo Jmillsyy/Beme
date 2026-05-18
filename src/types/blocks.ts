@@ -46,6 +46,7 @@ export type BuiltInBlockCode =
   // only the wall thickness differs.
   | '30.48' // 300-series H Block — body
   | '30.01' // 300-series Standard Block — end terminations
+  | '30.02' // 300-series Cube Block (290×190×290) — corner lead-in (×2 after a corner)
   | '30.03' // 300-series Half Block — end terminations / 1/2 fraction
   | '30.45' // 300-series Cleanout — base course
   | '30.71' // 300-series Half-Height (90mm) — height makeup
@@ -66,6 +67,7 @@ export type BlockRole =
   | 'pier' // tied or freestanding pier
   | 'lintel' // over an opening
   | 'curve-tight' // for tight-radius curved walls
+  | 'corner-lead-in' // inserted ×2 between a corner block and the body on 300-series courses to get back on bond
   | 'legacy' // older block superseded in most cases
 
 /**

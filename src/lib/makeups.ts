@@ -127,6 +127,16 @@ export interface ResolvedCourseBlocks {
   baseCourseBlockCode: BlockCode
   baseCourseTileCode?: BlockCode
   heightMakeup71BlockCode: BlockCode
+  /**
+   * If set, this block is laid `cornerLeadInCount` times between the corner
+   * block and the regular body on every course at a CORNER end. Undefined
+   * means no lead-in (standard 200-series behaviour). See
+   * CourseSeriesRange.cornerLeadInBlockCode for the rationale.
+   */
+  cornerLeadInBlockCode?: BlockCode
+  /** Number of cornerLeadInBlockCode to place at each corner end. Defaults
+   *  to 2 when cornerLeadInBlockCode is set, 0 otherwise. */
+  cornerLeadInCount: number
 }
 
 /**
@@ -175,6 +185,7 @@ export function resolveCourseBlocks(
   } = { halfBlockCode: '20.03', heightMakeup71BlockCode: '20.71' }
 ): ResolvedCourseBlocks {
   const range = findSeriesRangeForCourse(makeup, courseNumber)
+  const cornerLeadInBlockCode = range?.cornerLeadInBlockCode
   return {
     bodyBlockCode: range?.bodyBlockCode ?? makeup.bodyBlockCode,
     cornerBlockCode: range?.cornerBlockCode ?? makeup.cornerBlockCode,
@@ -183,6 +194,8 @@ export function resolveCourseBlocks(
     baseCourseTileCode: range?.baseCourseTileCode ?? makeup.baseCourseTileCode,
     heightMakeup71BlockCode:
       range?.heightMakeup71BlockCode ?? defaults.heightMakeup71BlockCode,
+    cornerLeadInBlockCode,
+    cornerLeadInCount: cornerLeadInBlockCode ? range?.cornerLeadInCount ?? 2 : 0,
   }
 }
 

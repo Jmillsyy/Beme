@@ -74,6 +74,21 @@ export interface CourseSeriesRange {
   /** 90 mm half-height makeup block (e.g. 30.71). Used when the height-makeup
    *  row for this wall falls inside this range. Falls back to 20.71. */
   heightMakeup71BlockCode?: BlockCode
+  /**
+   * Optional "corner lead-in" block laid between the corner block and the
+   * regular body on every course at a CORNER end. Used in 300 series because
+   * the 30.01 corner block's 290 mm depth would otherwise leave the next 30.48
+   * body off the stretcher offset — two 30.02 cube blocks absorb that and get
+   * the wall back on bond. Defaults to 2 lead-ins per corner end when set;
+   * override via `cornerLeadInCount`.
+   *
+   * Only fires at junction-type 'corner'; free / T-junction / control-joint
+   * ends still use the normal corner / half alternation. When unset, no lead-in
+   * is added (standard 200-series behaviour).
+   */
+  cornerLeadInBlockCode?: BlockCode
+  /** How many lead-in blocks to place at each corner end. Defaults to 2. */
+  cornerLeadInCount?: number
 }
 
 /**

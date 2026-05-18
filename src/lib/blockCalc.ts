@@ -845,11 +845,16 @@ export function calculateWallTally(
     return blocks.cornerBlockCode
   }
 
+  // Cached outer-edge length for re-fitting courses whose corner ends carry a
+  // lead-in (e.g. the 30.02 pair on 300-series corners) — those courses
+  // consume extra modular width that the base oddCourseFit / evenCourseFit
+  // doesn't know about, so we recompute a fit per course as needed.
+  const wallLenForRefit = wallLengthMm(wall, thicknessByWallId, wallsById)
+
   for (let i = 0; i < courses.length; i++) {
     const course = courses[i]
     const courseNumber = i + 1
     const isOddCourse = i % 2 === 0 // courseIndex 0 = course 1 (odd)
-    const fit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
     // Resolve per-course so 300-series courses get 30.01 / 30.03 at their
     // ends and 200-series courses get 20.01 / 20.03 — even within the same
     // wall. planWall's block codes are only consulted for short-wall and
@@ -865,12 +870,55 @@ export function calculateWallTally(
     // IS the whole course — one block).
     const endCount = plan.noEndBlocks ? 0 : 2
 
+    // Corner lead-in (e.g. 30.02 × 2 on 300-series corner ends): inserted
+    // between the corner block and the regular body to get back on bond after
+    // the corner block's deeper footprint. Only fires at corner junctions on
+    // courses where the resolved series defines a lead-in — fall-back is 0.
+    // The lead-in is tallied as its own block code and the per-course modular
+    // gets adjusted so the body fit still hits the wall length.
+    let leadInCode: BlockCode | undefined
+    let startLeadInCount = 0
+    let endLeadInCount = 0
+    let leadInModularTotal = 0
+    if (!plan.noEndBlocks) {
+      const resolvedCourse = resolveCourseBlocks(makeup, courseNumber)
+      leadInCode = resolvedCourse.cornerLeadInBlockCode
+      if (leadInCode && resolvedCourse.cornerLeadInCount > 0) {
+        if (wall.startJunction.type === 'corner') {
+          startLeadInCount = resolvedCourse.cornerLeadInCount
+        }
+        if (wall.endJunction.type === 'corner') {
+          endLeadInCount = resolvedCourse.cornerLeadInCount
+        }
+        const block = BLOCK_LIBRARY[leadInCode]
+        const blockModular = block ? block.dimensions.widthMm + MORTAR_MM : 0
+        leadInModularTotal = (startLeadInCount + endLeadInCount) * blockModular
+      }
+    }
+
+    // Per-course fit: if this course doesn't carry a lead-in, reuse the
+    // pre-computed odd/even fit (the original common case). If it does, the
+    // ends consume more modular so we re-fit against the actual wall length.
+    let fit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
+    if (leadInModularTotal > 0) {
+      const startEndModular = isOddCourse ? plan.startEnd.oddModular : plan.startEnd.evenModular
+      const endEndModular = isOddCourse ? plan.endEnd.oddModular : plan.endEnd.evenModular
+      const adjustedEndsTotal = startEndModular + endEndModular + leadInModularTotal
+      fit = fitCourseLength(wallLenForRefit, adjustedEndsTotal, makeup.useFractions)
+    }
+
     // Height-makeup courses (20.71, 20.140) extend across the FULL course length —
     // the height-makeup block is cut to the size of any end block (20.03) and any fill
     // block, so the course is just a row of height-makeup blocks butted end-to-end. We
     // supply enough of the height-makeup block to cover body + fill + both ends.
     if (course.type === 'height-71' || course.type === 'height-140') {
-      const totalBlocks = fit.bodyCount + fit.fractions.length + endCount
+      // Height-makeup blocks are cut to length to fill the WHOLE course
+      // including any lead-in zone — the lead-in is masonry sitting at the
+      // 290 mm-deep footprint, so the height-makeup block for that course
+      // extends out over it. Count one extra height-makeup unit per lead-in
+      // position to keep the cut-to-length yield right.
+      const totalBlocks =
+        fit.bodyCount + fit.fractions.length + endCount + startLeadInCount + endLeadInCount
       addToTally(tally, course.bodyBlock, totalBlocks)
       continue
     }
@@ -879,6 +927,10 @@ export function calculateWallTally(
 
     if (course.pairedTile && fit.bodyCount > 0) {
       addToTally(tally, course.pairedTile, fit.bodyCount)
+    }
+
+    if (leadInCode && (startLeadInCount > 0 || endLeadInCount > 0)) {
+      addToTally(tally, leadInCode, startLeadInCount + endLeadInCount)
     }
 
     for (const fracCode of fit.fractions) {
