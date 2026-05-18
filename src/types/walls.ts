@@ -355,6 +355,13 @@ export interface BrickExportInclusions {
  */
 export interface BlockExportInclusions {
   assumptions: boolean
+  /**
+   * A "Wall Specifications" section listing every wall type used on the
+   * project with its bond, height, block composition, any course-series
+   * ranges, course overrides, and the walls + total length using it.
+   * Sits between Assumptions and the Wall Layout overview pages.
+   */
+  wallSpecs: boolean
   /** The full block-by-code schedule. */
   blockSchedule: boolean
   /** Breakdown of the schedule grouped by wall type (makeup). */

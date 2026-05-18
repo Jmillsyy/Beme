@@ -412,7 +412,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
         if (proj.brickSettings) setBrickSettings(proj.brickSettings)
         if (proj.exportInclusions) setExportInclusions(proj.exportInclusions)
-        if (proj.blockExportInclusions) setBlockExportInclusions(proj.blockExportInclusions)
+        if (proj.blockExportInclusions) {
+          // Merge with defaults so projects saved before a new inclusion
+          // toggle was added still get the new section (defaulted on). Without
+          // this an older project loads with the new toggle = undefined →
+          // falsy, and the section silently vanishes.
+          setBlockExportInclusions({
+            ...createDefaultBlockExportInclusions(),
+            ...proj.blockExportInclusions,
+          })
+        }
 
         setCurrentProjectId(proj.id)
         setProjectStatus(proj.status)

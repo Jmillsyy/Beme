@@ -150,6 +150,11 @@ export default function BlockExportPanel({
               onChange={(v) => patch({ assumptions: v })}
             />
             <Toggle
+              label="Wall specifications"
+              checked={inclusions.wallSpecs}
+              onChange={(v) => patch({ wallSpecs: v })}
+            />
+            <Toggle
               label="Block schedule"
               checked={inclusions.blockSchedule}
               onChange={(v) => patch({ blockSchedule: v })}

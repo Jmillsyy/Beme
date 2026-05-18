@@ -603,6 +603,172 @@ function buildPlanOverviewPage(
   `
 }
 
+/**
+ * Build the "Wall Specifications" section — one card per wall makeup
+ * listing its bond + height, block composition, any course-series ranges,
+ * course overrides, and how many walls use it / their total length. Sits
+ * between the Assumptions page and the Wall Layout overview pages so the
+ * reader can flick to a wall reference number on the layout and find what
+ * went into that wall type.
+ *
+ * Returns the full <section class="page"> wrapper — or '' if no wall types
+ * are in use, in which case the doc assembly silently skips the section.
+ */
+function buildWallSpecsPage(
+  makeups: WallMakeup[],
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>,
+  wallsById: Record<string, Wall>,
+  pageHeader: string
+): string {
+  // Only document makeups that are actually used on the project. A library
+  // of stale makeups left over from earlier iterations of the same project
+  // would otherwise clutter the spec sheet.
+  const used = makeups
+    .map((m) => {
+      const wallsOfMakeup = walls.filter((w) => w.makeupId === m.id)
+      const totalLenMm = wallsOfMakeup.reduce(
+        (s, w) => s + wallLengthMm(w, thicknessByWallId, wallsById),
+        0
+      )
+      return { makeup: m, walls: wallsOfMakeup, totalLenMm }
+    })
+    .filter((row) => row.walls.length > 0)
+
+  if (used.length === 0) return ''
+
+  // Each card is a self-contained spec block. Compact key/value grid + an
+  // optional 'Course series ranges' table + an optional 'Course overrides'
+  // table. break-inside: avoid keeps a card whole when it would otherwise
+  // straddle a page edge.
+  const cards = used
+    .map(({ makeup, walls: wallsOfMakeup, totalLenMm }) => {
+      const cornerLabel =
+        makeup.cornerBlockCode === '20.21'
+          ? `${makeup.cornerBlockCode} (knockout)`
+          : makeup.cornerBlockCode
+      const baseLabel = makeup.baseCourseTileCode
+        ? `${makeup.baseCourseBlockCode} + ${makeup.baseCourseTileCode}`
+        : makeup.baseCourseBlockCode
+
+      // Key/value rows for the always-on fields. Pier type is only shown
+      // when the makeup actually opted into piers.
+      const specRows: Array<[string, string]> = [
+        ['Bond', `${makeup.bondType} bond`],
+        ['Height', `${formatNumber(makeup.heightMm)} mm`],
+        ['Base course', baseLabel],
+        ['Body block', makeup.bodyBlockCode],
+        ['Top course', makeup.topCourseBlockCode],
+        ['Corner', cornerLabel],
+        ['Fractions', makeup.useFractions ? 'On (20.02 / 20.22)' : 'Off'],
+      ]
+      if (makeup.pierType) {
+        specRows.push(['Piers', `${makeup.pierType} piers`])
+      }
+
+      const specGrid = specRows
+        .map(
+          ([k, v]) => `
+        <div class="spec-row">
+          <span class="spec-key">${escapeHtml(k)}</span>
+          <span class="spec-val">${escapeHtml(v)}</span>
+        </div>`
+        )
+        .join('')
+
+      // Course-series ranges — only render the block when the makeup has
+      // any. Each range's overrides are shown as code-list pairs; fields
+      // left on default are omitted to keep the table tight.
+      let rangesBlock = ''
+      if (makeup.courseSeriesRanges && makeup.courseSeriesRanges.length > 0) {
+        const rangeRows = makeup.courseSeriesRanges
+          .map((r) => {
+            const parts: string[] = []
+            if (r.bodyBlockCode) parts.push(`body ${r.bodyBlockCode}`)
+            if (r.cornerBlockCode) parts.push(`corner ${r.cornerBlockCode}`)
+            if (r.halfBlockCode) parts.push(`half ${r.halfBlockCode}`)
+            if (r.baseCourseBlockCode) parts.push(`base ${r.baseCourseBlockCode}`)
+            if (r.baseCourseTileCode) parts.push(`tile ${r.baseCourseTileCode}`)
+            if (r.heightMakeup71BlockCode) parts.push(`90mm makeup ${r.heightMakeup71BlockCode}`)
+            if (r.cornerLeadInBlockCode) {
+              const count = r.cornerLeadInCount ?? 2
+              parts.push(`corner lead-in ${count}× ${r.cornerLeadInBlockCode}`)
+            }
+            const rangeLabel =
+              r.toCourse > r.fromCourse
+                ? `Courses ${r.fromCourse}–${r.toCourse}`
+                : `Course ${r.fromCourse}`
+            return `
+            <tr>
+              <td class="range-courses">${escapeHtml(rangeLabel)}</td>
+              <td class="range-detail">${escapeHtml(parts.join(' · ')) || '—'}</td>
+            </tr>`
+          })
+          .join('')
+        rangesBlock = `
+          <div class="spec-subsection">
+            <div class="spec-sub-title">Course series ranges</div>
+            <table class="spec-sub-table">
+              <tbody>${rangeRows}</tbody>
+            </table>
+          </div>`
+      }
+
+      // Per-course explicit overrides (e.g. an intermediate bond beam) —
+      // separate from series ranges because they target a single course
+      // by number rather than swapping a whole block series.
+      let overridesBlock = ''
+      if (makeup.courseOverrides && makeup.courseOverrides.length > 0) {
+        const overrideRows = makeup.courseOverrides
+          .map(
+            (o) => `
+          <tr>
+            <td class="range-courses">Course ${o.courseNumber}</td>
+            <td class="range-detail">body ${escapeHtml(o.blockCode)}</td>
+          </tr>`
+          )
+          .join('')
+        overridesBlock = `
+          <div class="spec-subsection">
+            <div class="spec-sub-title">Course overrides</div>
+            <table class="spec-sub-table">
+              <tbody>${overrideRows}</tbody>
+            </table>
+          </div>`
+      }
+
+      const wallCountLabel = `${wallsOfMakeup.length} wall${wallsOfMakeup.length === 1 ? '' : 's'}`
+      const totalLenLabel = `${(totalLenMm / 1000).toFixed(2)} m run`
+
+      return `
+        <div class="wall-spec-card">
+          <div class="wall-spec-header">
+            <h3 class="wall-spec-name">${escapeHtml(makeup.name)}</h3>
+            <span class="wall-spec-meta">${escapeHtml(wallCountLabel)} · ${escapeHtml(totalLenLabel)}</span>
+          </div>
+          <div class="spec-grid">
+            ${specGrid}
+          </div>
+          ${rangesBlock}
+          ${overridesBlock}
+        </div>`
+    })
+    .join('')
+
+  return `
+    <section class="page">
+      ${pageHeader}
+      <h2 class="section-title">Wall Specifications</h2>
+      <p class="page-intro">
+        Block composition for every wall type used on the job — cross-reference
+        with the numbered labels on the Wall Layout pages and the per-makeup
+        tables in the breakdown.
+      </p>
+      ${cards}
+    </section>
+  `
+}
+
 function buildAssumptions(
   inclusions: BlockExportInclusions,
   hasOpenings: boolean,
@@ -869,7 +1035,16 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  // Page 2: Block Schedule (full code-by-code tally)
+  // Page 2: Wall Specifications — one card per wall type with bond,
+  // height, block composition, course-series ranges, course overrides,
+  // and the wall count + total length using it. Sits between Assumptions
+  // and the Wall Layout pages so the reader can map a layout reference
+  // back to the spec.
+  const wallSpecsPage = inclusions.wallSpecs
+    ? buildWallSpecsPage(makeups, walls, thicknessByWallId, wallsById, pageHeader)
+    : ''
+
+  // Page 3: Block Schedule (full code-by-code tally)
   const scheduleTable = inclusions.blockSchedule && entries.length > 0
     ? `
       <h2 class="section-title">Block Schedule</h2>
@@ -1425,6 +1600,94 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     font-style: italic;
   }
 
+  /* ── Wall specifications page ─────────────────────────────────────
+     One card per wall type with a compact key/value spec grid and
+     optional sub-tables for course-series ranges + per-course
+     overrides. Multiple cards flow down the page; break-inside: avoid
+     keeps a single card whole when it would otherwise straddle a page
+     boundary. Sized so 3–4 cards fit comfortably on a landscape A4. */
+  .wall-spec-card {
+    margin: 8px 0 14px;
+    padding: 10px 14px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .wall-spec-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .wall-spec-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1f2937;
+    margin: 0;
+  }
+  .wall-spec-meta {
+    font-size: 11px;
+    color: #6b7280;
+    font-variant-numeric: tabular-nums;
+  }
+  .spec-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 18px;
+    font-size: 12px;
+  }
+  .spec-row {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px dotted #e5e7eb;
+    padding: 3px 0;
+    gap: 12px;
+  }
+  .spec-key {
+    color: #6b7280;
+  }
+  .spec-val {
+    color: #1f2937;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .spec-subsection {
+    margin-top: 8px;
+  }
+  .spec-sub-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+    margin-bottom: 4px;
+  }
+  .spec-sub-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0;
+    font-size: 11px;
+  }
+  .spec-sub-table td {
+    padding: 3px 6px;
+    border-bottom: 1px dotted #e5e7eb;
+  }
+  .spec-sub-table .range-courses {
+    width: 110px;
+    color: #1f2937;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .spec-sub-table .range-detail {
+    color: #4b5563;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -1557,6 +1820,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 </head>
 <body>
   ${assumptionsPage}
+  ${wallSpecsPage}
   ${planOverviewPage}
   ${schedulePage}
   ${breakdownPages}
@@ -1585,6 +1849,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 export function createDefaultBlockExportInclusions(): BlockExportInclusions {
   return {
     assumptions: true,
+    wallSpecs: true,
     blockSchedule: true,
     wallTypeBreakdown: true,
     openingsList: true,
