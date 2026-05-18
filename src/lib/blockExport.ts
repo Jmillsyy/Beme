@@ -308,7 +308,6 @@ function buildPlanOverviewPage(
     {
       label: 'Total blocks',
       value: formatNumber(totalBlocks),
-      sub: 'corner-dedup\'d',
     },
   ]
   if (openings.length > 0) {
