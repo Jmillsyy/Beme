@@ -191,6 +191,62 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
     roles: ['lintel'],
   },
+
+  // ── 300 series ─────────────────────────────────────────────────────────────
+  // Wider (290mm-deep) versions of the core 200 series blocks. Used on the
+  // base courses of a wall where engineering calls for a thicker footing —
+  // typically the bottom 4–6 courses run 300 series and the rest of the wall
+  // steps down to standard 200 series above. Face widths and heights match
+  // the 200 series so the courses still sit on the 200mm modular grid and
+  // alternate the same way (20.01 / 20.03 → 30.01 / 30.03).
+  '30.48': {
+    code: '30.48',
+    name: '300-series H Block',
+    description:
+      '290mm-deep H block used for the body of 300-series courses. Same face dimensions ' +
+      'as 20.48 (390×190mm) — only the wall thickness differs.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 290 },
+    roles: ['body'],
+  },
+  '30.01': {
+    code: '30.01',
+    name: '300-series Standard Block',
+    description:
+      '290mm-deep end-termination / corner block. Used at ends of 300-series courses, ' +
+      'alternating with 30.03 in stretcher bond the same way 20.01 alternates with 20.03 in ' +
+      '200 series.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 290 },
+    roles: ['end-termination', 'corner'],
+  },
+  '30.03': {
+    code: '30.03',
+    name: '300-series Half Block',
+    description:
+      '290mm-deep half block. End termination on alternating courses in stretcher bond, ' +
+      'and the 1/2 fraction equivalent for 300-series courses.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 290 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '30.45': {
+    code: '30.45',
+    name: '300-series Cleanout Block',
+    description:
+      '290mm-deep base-course cleanout block, paired with 50.45 tiles. Used when the base ' +
+      'course of the wall is 300 series.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 290 },
+    roles: ['base-course'],
+    pairedWith: '50.45',
+  },
+  '30.71': {
+    code: '30.71',
+    name: '300-series Half-Height Block (90mm)',
+    description:
+      '290mm-deep half-height block for height makeup on 300-series courses (the 30 equivalent ' +
+      'of 20.71). Typically placed second from the top of the 300-series section.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 290 },
+    roles: ['height-makeup'],
+  },
 }
 
 /** Codes from the seed library that should never be deletable — the calc engine depends on them. */
@@ -204,6 +260,14 @@ export const PROTECTED_BLOCK_CODES = new Set<BlockCode>([
   '20.22',
   '20.71',
   '20.140',
+  // 300-series core codes — once a wall makeup references a course range that
+  // uses these, deleting them would break the tally. Protect for the same
+  // reason the 200-series core codes are protected.
+  '30.48',
+  '30.01',
+  '30.03',
+  '30.45',
+  '30.71',
 ])
 
 // ─── Mutable singleton ──────────────────────────────────────────────────────

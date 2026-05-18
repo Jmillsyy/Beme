@@ -40,6 +40,15 @@ export type BuiltInBlockCode =
   | '20.25' // Lintel 200–299mm head (stood up, 300mm tall modular)
   | '20.13' // Half lintel — heads <200mm (stood up, 200mm tall modular)
   | '20.12' // Standard lintel (laid flat, ~200mm high) — legacy
+  // ── 300 series (290mm-deep, used on base courses where engineering calls for ──
+  // a wider wall stepping down to standard 200 series above). Same face widths
+  // and course heights as 200 series so they sit on a common 200mm modular grid;
+  // only the wall thickness differs.
+  | '30.48' // 300-series H Block — body
+  | '30.01' // 300-series Standard Block — end terminations
+  | '30.03' // 300-series Half Block — end terminations / 1/2 fraction
+  | '30.45' // 300-series Cleanout — base course
+  | '30.71' // 300-series Half-Height (90mm) — height makeup
 
 /**
  * Functional role(s) a block can play within a wall.
