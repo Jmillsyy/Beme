@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import Header from '../components/Header'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
@@ -10,6 +10,27 @@ import type {
 } from '../types/estimateRequests'
 import { estimateRequestStatusLabel } from '../types/estimateRequests'
 import type { OrgMember } from '../types/organisations'
+
+/** Date-range filter — keep it discrete + short so the dropdown stays simple. */
+type PeriodFilter = 'all' | 'today' | 'week' | 'month'
+
+/** Lower-bound timestamp for the given period, or null when no lower bound. */
+function periodStart(period: PeriodFilter): number | null {
+  const now = Date.now()
+  if (period === 'today') return now - 24 * 60 * 60 * 1000
+  if (period === 'week') return now - 7 * 24 * 60 * 60 * 1000
+  if (period === 'month') return now - 30 * 24 * 60 * 60 * 1000
+  return null
+}
+
+function periodLabel(period: PeriodFilter): string {
+  switch (period) {
+    case 'today': return 'Today'
+    case 'week': return 'This week'
+    case 'month': return 'This month'
+    case 'all': return 'All time'
+  }
+}
 
 /**
  * Estimate requests list — the inbox surface.
@@ -27,13 +48,45 @@ import type { OrgMember } from '../types/organisations'
 export default function RequestsPage() {
   const { currentOrg, loading: orgLoading } = useOrganisations()
   const { user } = useAuth()
+  // URL is the source of truth for filters so the page is shareable +
+  // bookmarkable + linkable from the dashboard. The dashboard's 'View team
+  // activity' link points at /requests?scope=all&status=completed and we
+  // want those filters live on first render.
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const [requests, setRequests] = useState<EstimateRequest[]>([])
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState<EstimateRequestStatus | 'all'>(
-    'all'
-  )
-  const [scope, setScope] = useState<'mine' | 'all'>('all')
   const [members, setMembers] = useState<OrgMember[]>([])
+
+  // Filters — initialised from the URL, written back to the URL on change.
+  const scope: 'mine' | 'all' =
+    searchParams.get('scope') === 'mine' ? 'mine' : 'all'
+  const statusFilter: EstimateRequestStatus | 'all' = (() => {
+    const s = searchParams.get('status')
+    if (s === 'pending' || s === 'in_progress' || s === 'completed' || s === 'cancelled') return s
+    return 'all'
+  })()
+  const personFilter: string =
+    searchParams.get('person') ?? 'any'
+  const period: PeriodFilter = (() => {
+    const p = searchParams.get('period')
+    if (p === 'today' || p === 'week' || p === 'month') return p
+    return 'all'
+  })()
+
+  /** Update one filter without losing the others — small wrapper round
+   *  setSearchParams so each onChange handler stays a one-liner. */
+  function updateParam(key: string, value: string | null) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      if (value === null || value === '' || value === 'all' || value === 'any') {
+        next.delete(key)
+      } else {
+        next.set(key, value)
+      }
+      return next
+    }, { replace: true })
+  }
 
   // Load members alongside requests so we can show names instead of UUIDs on
   // the assigned-to badge. Members list is small (tens at most) so it's cheap.
@@ -65,21 +118,45 @@ export default function RequestsPage() {
     return m
   }, [members])
 
-  // Apply scope + status filtering client-side. The data set per org is small
-  // enough that a round-trip per filter change isn't worth the network cost.
+  /** Date-range predicate for a request based on the current period filter.
+   *  Uses completedAt for completed/cancelled rows (when it happened),
+   *  otherwise updatedAt (when sales last touched it). Keeps the filter
+   *  intuitive: "completed this week" means closed in the last 7 days. */
+  function matchesPeriod(r: EstimateRequest): boolean {
+    const start = periodStart(period)
+    if (start === null) return true
+    const ts =
+      r.completedAt
+        ? new Date(r.completedAt).getTime()
+        : new Date(r.updatedAt).getTime()
+    return ts >= start
+  }
+
+  // Apply scope + status + person + period filtering client-side. Per-org
+  // request volume is small so a round-trip per filter change isn't worth
+  // the network cost; just filter the in-memory list.
   const filteredRequests = useMemo(() => {
     return requests.filter((r) => {
       if (scope === 'mine' && r.assignedToUserId !== user?.id) return false
       if (statusFilter !== 'all' && r.status !== statusFilter) return false
+      if (personFilter !== 'any' && r.assignedToUserId !== personFilter) return false
+      if (!matchesPeriod(r)) return false
       return true
     })
-  }, [requests, scope, statusFilter, user?.id])
+    // matchesPeriod closes over `period`; spelling it out keeps the dep
+    // explicit for the linter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requests, scope, statusFilter, personFilter, period, user?.id])
 
-  // Counts shown next to each filter pill — match the filtering above so they
-  // stay in sync with what the user is actually about to see.
+  // Counts shown next to each status pill. Match the OTHER filters (scope,
+  // person, period) but NOT the status itself — pills should still show
+  // 'Pending 5 / Completed 12' even when you're on 'Pending', otherwise
+  // the user can't see how many of each there are.
   const counts = useMemo(() => {
     const base = requests.filter((r) => {
       if (scope === 'mine' && r.assignedToUserId !== user?.id) return false
+      if (personFilter !== 'any' && r.assignedToUserId !== personFilter) return false
+      if (!matchesPeriod(r)) return false
       return true
     })
     const acc: Record<EstimateRequestStatus | 'all', number> = {
@@ -91,7 +168,8 @@ export default function RequestsPage() {
     }
     for (const r of base) acc[r.status]++
     return acc
-  }, [requests, scope, user?.id])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requests, scope, personFilter, period, user?.id])
 
   if (!orgLoading && !currentOrg) {
     return (
@@ -155,17 +233,17 @@ export default function RequestsPage() {
           <ScopePill
             active={scope === 'all'}
             label="All requests"
-            onClick={() => setScope('all')}
+            onClick={() => updateParam('scope', 'all')}
           />
           <ScopePill
             active={scope === 'mine'}
             label="Assigned to me"
-            onClick={() => setScope('mine')}
+            onClick={() => updateParam('scope', 'mine')}
           />
         </div>
 
         {/* Status filter pills with counts */}
-        <div className="flex flex-wrap items-center gap-2 mb-6 text-sm">
+        <div className="flex flex-wrap items-center gap-2 mb-4 text-sm">
           <span className="text-xs uppercase tracking-wider text-ink-400 mr-1">
             Status
           </span>
@@ -173,32 +251,93 @@ export default function RequestsPage() {
             active={statusFilter === 'all'}
             label="All"
             count={counts.all}
-            onClick={() => setStatusFilter('all')}
+            onClick={() => updateParam('status', 'all')}
           />
           <StatusPill
             active={statusFilter === 'pending'}
             label="Pending"
             count={counts.pending}
-            onClick={() => setStatusFilter('pending')}
+            onClick={() => updateParam('status', 'pending')}
           />
           <StatusPill
             active={statusFilter === 'in_progress'}
             label="In progress"
             count={counts.in_progress}
-            onClick={() => setStatusFilter('in_progress')}
+            onClick={() => updateParam('status', 'in_progress')}
           />
           <StatusPill
             active={statusFilter === 'completed'}
             label="Completed"
             count={counts.completed}
-            onClick={() => setStatusFilter('completed')}
+            onClick={() => updateParam('status', 'completed')}
           />
           <StatusPill
             active={statusFilter === 'cancelled'}
             label="Cancelled"
             count={counts.cancelled}
-            onClick={() => setStatusFilter('cancelled')}
+            onClick={() => updateParam('status', 'cancelled')}
           />
+        </div>
+
+        {/* By-person + period filters. Two dropdowns sit side-by-side. The
+            person dropdown lets sales / admins audit one teammate's work
+            ("show me everything Sarah finished this month"); period scopes
+            the result by completion / update date.
+
+            Both default to wide ("Anyone" / "All time"), so opening
+            /requests without query params shows everything — the existing
+            behaviour. Adding either filter narrows the list. */}
+        <div className="flex items-end gap-4 mb-6 flex-wrap text-sm">
+          <label className="block">
+            <span className="text-xs uppercase tracking-wider text-ink-400 mb-1.5 inline-block">
+              By person
+            </span>
+            <select
+              value={personFilter}
+              onChange={(e) => updateParam('person', e.target.value)}
+              className="block min-w-[180px] px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-800 text-ink-100 focus:outline-none focus:border-beme-400"
+            >
+              <option value="any">Anyone</option>
+              {/* Sort by name so the dropdown reads consistently — the
+                  /list_org_members RPC returns by joined date which isn't
+                  useful here. */}
+              {[...members]
+                .sort((a, b) =>
+                  (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '')
+                )
+                .map((m) => (
+                  <option key={m.userId} value={m.userId}>
+                    {m.displayName || m.email || `Member ${m.userId.slice(0, 4)}`}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs uppercase tracking-wider text-ink-400 mb-1.5 inline-block">
+              Period
+            </span>
+            <select
+              value={period}
+              onChange={(e) => updateParam('period', e.target.value)}
+              className="block min-w-[160px] px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-800 text-ink-100 focus:outline-none focus:border-beme-400"
+            >
+              <option value="all">{periodLabel('all')}</option>
+              <option value="today">{periodLabel('today')}</option>
+              <option value="week">{periodLabel('week')}</option>
+              <option value="month">{periodLabel('month')}</option>
+            </select>
+          </label>
+          {/* Reset button only appears when any non-default filter is set,
+              so it doesn't add noise when the page first loads. */}
+          {(scope !== 'all' || statusFilter !== 'all' || personFilter !== 'any' || period !== 'all') && (
+            <button
+              type="button"
+              onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}
+              className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-300 hover:bg-ink-700 text-xs"
+            >
+              Reset filters
+            </button>
+          )}
         </div>
 
         {/* Results */}
