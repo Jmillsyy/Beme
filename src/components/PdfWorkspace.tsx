@@ -210,6 +210,54 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [currentPage, setCurrentPage] = useState<number>(1)
   const [isDragging, setIsDragging] = useState(false)
 
+  // ---------- Multi-PDF support ----------
+  // `pdfFile` above is the PRIMARY plan — the file walls / openings / piers
+  // are drawn against. `referencePdfFiles` is a parallel list of additional
+  // PDFs attached to the project (engineering specs etc.) that the estimator
+  // can flip to but doesn't draw on. `activeReferenceIndex` is null when the
+  // primary is showing, otherwise the index into referencePdfFiles of the
+  // file currently displayed. Walls + pages + calibration all stay tied to
+  // the primary regardless of what's on screen; reference PDFs are view-only.
+  const [referencePdfFiles, setReferencePdfFiles] = useState<File[]>([])
+  // Parallel to referencePdfFiles — storage path for each reference PDF, so
+  // re-saves don't re-upload bytes that haven't changed. Populated when the
+  // project is loaded from cloud; undefined entries mean "freshly attached,
+  // upload on next save". Always the same length as referencePdfFiles.
+  const [referencePdfPaths, setReferencePdfPaths] = useState<(string | undefined)[]>([])
+  const [activeReferenceIndex, setActiveReferenceIndex] = useState<number | null>(null)
+  // When the user flips to a reference PDF we save the primary's current page
+  // here so we can drop them back on that page when they switch back. Without
+  // it, navigating pages inside the engineering PDF would scribble over the
+  // primary's page state and lose their spot.
+  const [primaryCurrentPage, setPrimaryCurrentPage] = useState<number>(1)
+  const isReferenceView = activeReferenceIndex !== null
+  const displayedPdfFile: File | null = isReferenceView
+    ? referencePdfFiles[activeReferenceIndex!] ?? null
+    : pdfFile
+
+  /**
+   * Switch the workspace's displayed PDF. `index === null` means flip back to
+   * the primary; otherwise jumps to the matching reference. Page state is
+   * saved/restored across the switch so navigating pages inside a reference
+   * doesn't clobber where the user was on the primary.
+   */
+  function switchPdf(index: number | null) {
+    if (index === activeReferenceIndex) return
+    // Leaving primary → save its page.
+    if (activeReferenceIndex === null && index !== null) {
+      setPrimaryCurrentPage(currentPage)
+    }
+    setActiveReferenceIndex(index)
+    // Re-entering primary → restore its page.
+    if (index === null) {
+      setCurrentPage(primaryCurrentPage)
+    } else {
+      // Reference PDFs start on page 1 — the user is flipping in to look at
+      // something, not resuming a deep dive.
+      setCurrentPage(1)
+    }
+  }
+
   // ---------- Wall drawing state (block mode) ----------
   const [wallsByPage, setWallsByPage] = useState<Record<number, Wall[]>>({})
   const [drawingMode, setDrawingMode] = useState(false)
@@ -399,6 +447,26 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           })
           setPdfFile(file)
         }
+        // Reference PDFs (engineering specs etc.) — reconstruct File objects
+        // from each saved Blob, parallel to a list of storage paths so re-
+        // saves don't re-upload bytes that haven't changed. Entries whose
+        // blob failed to download are skipped (the file isn't reachable, so
+        // showing a tab for it would just open a broken view).
+        if (proj.referencePdfs && proj.referencePdfs.length > 0) {
+          const files: File[] = []
+          const paths: (string | undefined)[] = []
+          for (const ref of proj.referencePdfs) {
+            if (!ref.blob) continue
+            files.push(
+              new File([ref.blob], ref.fileName, {
+                type: ref.blob.type || 'application/pdf',
+              })
+            )
+            paths.push(ref.path)
+          }
+          setReferencePdfFiles(files)
+          setReferencePdfPaths(paths)
+        }
         setProjectDetails(proj.projectDetails)
         setPagesData(proj.pagesData)
         setWallsByPage(proj.wallsByPage)
@@ -465,6 +533,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       projectDetails,
       // pdfBlob + pdfFileName are optional now — a project can be saved without a PDF
       ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
+      // Carry reference PDFs through every save so the cloud-storage layer
+      // knows about new ones (no path yet → upload) and skips reuploads for
+      // ones that haven't changed (path already set).
+      ...(referencePdfFiles.length > 0
+        ? {
+            referencePdfs: referencePdfFiles.map((f, i) => ({
+              fileName: f.name,
+              blob: f,
+              path: referencePdfPaths[i],
+            })),
+          }
+        : {}),
       pagesData,
       wallsByPage,
       openingsByPage,
@@ -513,6 +593,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         outcome: projectOutcome,
         projectDetails,
         ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
+      // Carry reference PDFs through every save so the cloud-storage layer
+      // knows about new ones (no path yet → upload) and skips reuploads for
+      // ones that haven't changed (path already set).
+      ...(referencePdfFiles.length > 0
+        ? {
+            referencePdfs: referencePdfFiles.map((f, i) => ({
+              fileName: f.name,
+              blob: f,
+              path: referencePdfPaths[i],
+            })),
+          }
+        : {}),
         pagesData,
         wallsByPage,
         openingsByPage,
@@ -1892,26 +1984,87 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       <WorkspacePageHeading mode={mode} />
 
+      {/* File switcher — only renders when there are reference PDFs attached.
+          Tabs let the estimator flip between the primary plan (where they
+          actually draw) and any engineering/reference PDFs that came with
+          the request. Switching re-snaps page state so the user lands at
+          page 1 on a reference and back at their primary page when they
+          return. Active tab gets the beme accent; the rest stay muted. */}
+      {referencePdfFiles.length > 0 && (
+        <div className="flex items-center mb-2 px-1 gap-2 overflow-x-auto">
+          <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
+            File
+          </span>
+          <button
+            onClick={() => switchPdf(null)}
+            className={`px-3 py-1.5 rounded-lg text-sm border whitespace-nowrap transition-colors ${
+              !isReferenceView
+                ? 'bg-beme-500/15 border-beme-500/40 text-beme-300 font-medium'
+                : 'border-ink-600 text-ink-200 hover:bg-ink-700'
+            }`}
+            title={pdfFile?.name ?? 'Primary plan'}
+          >
+            <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
+              Primary
+            </span>
+            <span className="truncate max-w-[14rem] inline-block align-middle">
+              {pdfFile?.name ?? '(no primary)'}
+            </span>
+          </button>
+          {referencePdfFiles.map((f, i) => {
+            const active = activeReferenceIndex === i
+            return (
+              <button
+                key={`${f.name}-${i}`}
+                onClick={() => switchPdf(i)}
+                className={`px-3 py-1.5 rounded-lg text-sm border whitespace-nowrap transition-colors ${
+                  active
+                    ? 'bg-beme-500/15 border-beme-500/40 text-beme-300 font-medium'
+                    : 'border-ink-600 text-ink-200 hover:bg-ink-700'
+                }`}
+                title={f.name}
+              >
+                <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
+                  Ref
+                </span>
+                <span className="truncate max-w-[14rem] inline-block align-middle">
+                  {f.name}
+                </span>
+              </button>
+            )
+          })}
+          {isReferenceView && (
+            <span className="text-xs text-ink-400 italic shrink-0 ml-2">
+              view-only · walls are on the primary
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
       <div className="flex items-center mb-3 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
         {/* PDF filename + Replace */}
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm font-medium text-ink-200 truncate max-w-[16rem]">
-            {pdfFile.name}
+            {displayedPdfFile?.name ?? pdfFile.name}
           </span>
-          <button
-            onClick={() => {
-              setPdfFile(null)
-              setNumPages(0)
-              setCurrentPage(1)
-              setPagesData({})
-              setZoom(1)
-              cancelCalibration()
-            }}
-            className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
-          >
-            Replace
-          </button>
+          {/* Replace only swaps out the PRIMARY — reference PDFs come from the
+              originating estimate request and aren't editable here. */}
+          {!isReferenceView && (
+            <button
+              onClick={() => {
+                setPdfFile(null)
+                setNumPages(0)
+                setCurrentPage(1)
+                setPagesData({})
+                setZoom(1)
+                cancelCalibration()
+              }}
+              className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
+            >
+              Replace
+            </button>
+          )}
         </div>
 
         <div className="h-5 w-px bg-ink-600" />
@@ -2793,13 +2946,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             through the per-page <Page> rendering — without this, each zoom
             tick reconciled `numPages` PDF pages, which was the bottleneck on
             multi-page plans. */}
-        {numPages > 1 && (
+        {numPages > 1 && displayedPdfFile && (
           <ThumbnailSidebar
             sidebarRef={sidebarRef}
-            pdfFile={pdfFile}
+            // Thumbnails follow the displayed PDF — when the user flips to a
+            // reference, the sidebar shows that file's pages so they can
+            // navigate within it. Calibration / wall indicators only make
+            // sense for the primary, hence pagesData stays empty for refs.
+            pdfFile={displayedPdfFile}
             numPages={numPages}
             currentPage={currentPage}
-            pagesData={pagesData}
+            pagesData={isReferenceView ? {} : pagesData}
             onSelectPage={setCurrentPage}
           />
         )}
@@ -2852,7 +3009,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               }}
             >
               <Document
-                file={pdfFile}
+                file={displayedPdfFile}
                 onLoadSuccess={({ numPages: n }) => setNumPages(n)}
                 loading={<p className="text-ink-400 p-12">Loading PDF…</p>}
                 error={<p className="text-rose-400 p-12">Couldn't load that PDF. Is it a valid file?</p>}
@@ -2939,8 +3096,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 )}
               </svg>
 
-              {/* Wall drawing layer — at renderedZoom resolution; scales with parent. */}
-              {(mode === 'block' || mode === 'brick') && renderedPageHeight !== null && currentScale && (
+              {/* Wall drawing layer — at renderedZoom resolution; scales with
+                  parent. Hidden when the user is viewing a reference PDF
+                  (engineering specs etc.) — walls only live on the primary,
+                  so overlaying them on a different page geometry would just
+                  be confusing. */}
+              {(mode === 'block' || mode === 'brick') && !isReferenceView && renderedPageHeight !== null && currentScale && (
                 <WallDrawingLayer
                   walls={currentPageWalls}
                   openings={currentPageOpenings}
