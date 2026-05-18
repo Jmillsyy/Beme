@@ -70,8 +70,31 @@ function computeWallThicknessByWallId(
       continue
     }
     const makeup = makeupsById[w.makeupId]
-    const block = makeup ? BLOCK_LIBRARY[makeup.bodyBlockCode] : undefined
-    map[w.id] = block?.dimensions.depthMm ?? 190
+    // Drawn footprint = the WIDEST block any course of this wall actually uses.
+    // With course-series ranges (e.g. 300 series for the bottom 5 courses, 200
+    // series above) the wall is physically stepped — but its plan-view
+    // footprint is the wider course, since narrower courses sit inside it. We
+    // walk the makeup's body, base, top and any range overrides and pick the
+    // largest depth from the library, falling back to 190 mm.
+    let depth = 190
+    if (makeup) {
+      const candidateCodes = [
+        makeup.bodyBlockCode,
+        makeup.baseCourseBlockCode,
+        makeup.topCourseBlockCode,
+        ...(makeup.courseSeriesRanges?.flatMap((r) => [
+          r.bodyBlockCode,
+          r.cornerBlockCode,
+          r.baseCourseBlockCode,
+          r.heightMakeup71BlockCode,
+        ]) ?? []),
+      ].filter((c): c is string => !!c)
+      for (const code of candidateCodes) {
+        const d = BLOCK_LIBRARY[code]?.dimensions.depthMm
+        if (typeof d === 'number' && d > depth) depth = d
+      }
+    }
+    map[w.id] = depth
   }
   return map
 }

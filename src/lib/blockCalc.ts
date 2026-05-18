@@ -1362,10 +1362,10 @@ export function calculateCornerAdjustment(
     // corner column. Use the resolved height-makeup code so a 300-series
     // height-makeup row dedups to 30.71 (when one's defined for the range).
     if (stack.has71) {
-      // The height-makeup row sits just below the top, so its course number
-      // depends on the wall's course count. Match the placement in
-      // buildCourses: after standard body courses, before the top.
-      const heightMakeupCourseNumber = stack.standardCount - 1 + (stack.has140 ? 1 : 0)
+      // buildCourses lays courses out as: base(1), bodies(2..standardCount-1),
+      // [140](standardCount), [71](next), top(last). So the 71 row's 1-indexed
+      // course number is standardCount + (has140 ? 1 : 0).
+      const heightMakeupCourseNumber = stack.standardCount + (stack.has140 ? 1 : 0)
       const resolved = resolveCourseBlocks(makeup, heightMakeupCourseNumber)
       addToTally(adjustment, resolved.heightMakeup71BlockCode, n - 1)
     }
