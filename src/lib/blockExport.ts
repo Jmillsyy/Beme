@@ -415,9 +415,11 @@ function buildPlanOverviewPage(
   // Numbered wall labels — size scales with the larger of plan-extent and
   // wall thickness. Tuned for "readable but not obscuring the walls": at
   // a typical residential brick wall (110 mm thick) and a 10 m bounding
-  // box the labels print at about 4 mm tall on landscape A4, which sits
-  // comfortably without blocking the plan beneath.
-  const labelDiameter = Math.max(maxThick * 2.4, Math.min(viewW, viewH) * 0.04)
+  // box the labels print at about 5 mm tall on landscape A4, which sits
+  // comfortably without blocking the plan beneath. Slightly larger than
+  // before so the length text below each circle is easy to read at print
+  // size — the length is the most useful info on this page.
+  const labelDiameter = Math.max(maxThick * 3, Math.min(viewW, viewH) * 0.05)
   const labelFontSize = labelDiameter * 0.55
 
   // Wall bodies — semi-transparent fill keyed off the wall's makeup colour
@@ -489,7 +491,7 @@ function buildPlanOverviewPage(
   // so it reads on top of the wall fill; the length text is white with a
   // dark stroke (paint-order: stroke) so it's legible whether it falls on
   // the wall body or in the gap.
-  const lengthFontSize = labelFontSize * 0.75
+  const lengthFontSize = labelFontSize * 0.9
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
