@@ -444,6 +444,147 @@ create policy "Admins delete request plans"
 -- primary plan and inherit the existing org-member access rules.
 alter table public.estimate_requests
   add column if not exists additional_pdfs jsonb;
+
+-- ─── invitations ────────────────────────────────────────────────────────────
+-- One row per "I sent X@company.com an invite link". The row id IS the
+-- token — knowing the UUID is enough to claim the invite, so handle the
+-- link the way you'd handle a password reset link (send via private
+-- channel, don't post it publicly). Expires after 7 days by default.
+create table if not exists public.invitations (
+  id                     uuid primary key default gen_random_uuid(),
+  organisation_id        uuid not null references public.organisations(id) on delete cascade,
+  email                  text not null,
+  role                   text not null default 'estimator'
+                         check (role in ('admin', 'estimator', 'sales')),
+  invited_by_user_id     uuid not null references auth.users(id) on delete restrict,
+  expires_at             timestamptz not null default (now() + interval '7 days'),
+  used_at                timestamptz,
+  used_by_user_id        uuid references auth.users(id) on delete set null,
+  created_at             timestamptz not null default now()
+);
+
+create index if not exists invitations_org_pending_idx
+  on public.invitations (organisation_id, created_at desc)
+  where used_at is null;
+
+alter table public.invitations enable row level security;
+
+-- Admins of the inviting org can create + list + revoke invites for THEIR
+-- org. The recipient of an invite reads it via the SECURITY DEFINER RPC
+-- below, NOT via direct SELECT — that's how we keep the token private to
+-- whoever actually has the link, without making every unused row world-
+-- readable.
+create policy "Admins manage invitations"
+  on public.invitations for all
+  using (public.is_org_admin(organisation_id))
+  with check (
+    public.is_org_admin(organisation_id)
+    and invited_by_user_id = auth.uid()
+  );
+
+-- ─── accept_invitation RPC ─────────────────────────────────────────────────
+-- Called by the freshly-signed-up user from the /accept-invite page.
+-- Validates the token (exists / not used / not expired / email matches),
+-- inserts the user into organisation_members, and marks the invite used.
+-- SECURITY DEFINER so the caller doesn't need INSERT privilege on
+-- organisation_members directly — the function gates the insert behind
+-- the token check.
+create or replace function public.accept_invitation(invite_id uuid)
+returns table (organisation_id uuid, role text)
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  inv record;
+  caller_id uuid := auth.uid();
+  caller_email text;
+begin
+  if caller_id is null then
+    raise exception 'Must be signed in to accept an invitation';
+  end if;
+
+  select au.email into caller_email
+  from auth.users au where au.id = caller_id;
+
+  select i.* into inv
+  from public.invitations i
+  where i.id = invite_id
+    and i.used_at is null
+    and i.expires_at > now();
+
+  if not found then
+    raise exception 'Invitation not found, already used, or expired';
+  end if;
+
+  -- Email match is case-insensitive (auth.users.email is stored lower-case
+  -- by Supabase). Belt-and-braces both sides.
+  if lower(inv.email) <> lower(caller_email) then
+    raise exception 'This invitation was sent to a different email address';
+  end if;
+
+  -- Insert membership. ON CONFLICT in case the user was already added
+  -- (manually, or via a previous successful accept) — idempotent.
+  insert into public.organisation_members (organisation_id, user_id, role)
+  values (inv.organisation_id, caller_id, inv.role)
+  on conflict (organisation_id, user_id) do update set role = excluded.role;
+
+  -- Mark the invite consumed.
+  update public.invitations
+    set used_at = now(), used_by_user_id = caller_id
+    where id = invite_id;
+
+  return query select inv.organisation_id, inv.role;
+end;
+$$;
+
+-- Anyone authenticated can call the RPC — the function itself enforces
+-- the token + email match.
+grant execute on function public.accept_invitation(uuid) to authenticated;
+
+-- ─── public lookup of an invite by id ───────────────────────────────────────
+-- The /accept-invite page needs to show "you've been invited by X to Y"
+-- BEFORE the user has signed in (so they know what they're accepting).
+-- This SECURITY DEFINER function returns just the safe fields — never
+-- the full row — so a stolen token reveals org name + inviter name but
+-- not other invites or internal columns. Returns null if the token is
+-- expired, used, or doesn't exist (caller can't distinguish).
+create or replace function public.peek_invitation(invite_id uuid)
+returns table (
+  email text,
+  organisation_id uuid,
+  organisation_name text,
+  role text,
+  invited_by_display_name text,
+  expires_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  return query
+  select
+    i.email,
+    i.organisation_id,
+    o.name,
+    i.role,
+    coalesce(
+      (au.raw_user_meta_data ->> 'full_name'),
+      (au.raw_user_meta_data ->> 'name'),
+      au.email
+    ),
+    i.expires_at
+  from public.invitations i
+    join public.organisations o on o.id = i.organisation_id
+    left join auth.users au on au.id = i.invited_by_user_id
+  where i.id = invite_id
+    and i.used_at is null
+    and i.expires_at > now();
+end;
+$$;
+
+grant execute on function public.peek_invitation(uuid) to anon, authenticated;
 ```
 
 ---

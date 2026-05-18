@@ -129,6 +129,58 @@ export async function signInWithMagicLink(
 }
 
 /**
+ * Sign up a new user with email + password. Used by the /accept-invite flow:
+ * an admin pre-approves an email by creating an invitation row; the invitee
+ * sets their password via this function, then the SECURITY DEFINER
+ * `accept_invitation` RPC adds them to the org.
+ *
+ * `displayName` is stored in auth.users.raw_user_meta_data so the UI can
+ * surface it via displayNameOf() without a separate profile table.
+ *
+ * If Supabase has email confirmation enabled the user will need to click a
+ * confirmation link before they can sign in — turn it off in the Auth
+ * settings if you want the invite link to be the only confirmation step.
+ */
+export async function signUpWithPassword(
+  email: string,
+  password: string,
+  displayName?: string
+): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    return { error: new Error('Supabase is not configured. See SETUP.md.') }
+  }
+  const { error } = await supabase().auth.signUp({
+    email: email.trim(),
+    password,
+    options: {
+      data: displayName ? { full_name: displayName.trim() } : undefined,
+      emailRedirectTo: `${window.location.origin}/`,
+    },
+  })
+  return { error }
+}
+
+/**
+ * Sign in with email + password. Counterpart to signUpWithPassword for
+ * users who already have an account — works after they set their password
+ * via the invite flow. Falls back to magic link from the sign-in page if
+ * Supabase email confirmation is on and they haven't confirmed yet.
+ */
+export async function signInWithPassword(
+  email: string,
+  password: string
+): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    return { error: new Error('Supabase is not configured. See SETUP.md.') }
+  }
+  const { error } = await supabase().auth.signInWithPassword({
+    email: email.trim(),
+    password,
+  })
+  return { error }
+}
+
+/**
  * Sign the user out everywhere. Clears the Supabase session and forces a
  * re-render of components subscribed to `useAuth`.
  */

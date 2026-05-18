@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Header from '../components/Header'
 import {
@@ -12,8 +12,16 @@ import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { useOrganisations, listOrgMembers, isCurrentUserOrgAdmin } from '../lib/organisations'
+import {
+  createInvitation,
+  inviteAcceptUrl,
+  listInvitations,
+  revokeInvitation,
+  statusOf,
+  type Invitation,
+} from '../lib/invitations'
 import { useEffect } from 'react'
-import type { OrgMember } from '../types/organisations'
+import type { OrgMember, OrgRole } from '../types/organisations'
 import { orgRoleLabel } from '../types/organisations'
 import {
   bricksPerSquareMetreOf,
@@ -818,14 +826,246 @@ function OrganisationTab() {
           </div>
         )}
 
-        <div className="mt-4 p-3 rounded-lg border border-ink-600 bg-ink-700/30 text-xs text-ink-300">
-          <strong className="text-ink-100">Adding teammates:</strong> self-serve
-          invites aren't built yet. {isAdmin
-            ? 'As an admin you can add members directly via the Supabase dashboard — see Section 8 of SETUP.md for the SQL.'
-            : 'Ask an admin to add new members from the Supabase dashboard (see SETUP.md).'}
-        </div>
+        {!isAdmin && (
+          <div className="mt-4 p-3 rounded-lg border border-ink-600 bg-ink-700/30 text-xs text-ink-300">
+            <strong className="text-ink-100">Want to add a teammate?</strong>{' '}
+            Ask an admin to send them an invite from this page.
+          </div>
+        )}
       </PanelCard>
+
+      {/* Invite teammate — admins only. Workflow: admin types email + picks
+          role, app creates the invitation row + builds the accept URL, admin
+          copies the URL into Slack / email / wherever. The invitee opens the
+          link, sets their password on /accept-invite, and lands in the org. */}
+      {isAdmin && (
+        <InvitationsPanel orgId={currentOrg.id} />
+      )}
     </div>
+  )
+}
+
+/**
+ * Invite-teammate card. Lives at the bottom of the Organisation tab for
+ * admins. Creates rows in `public.invitations` and shows the resulting
+ * URL, plus a list of pending / used / expired invites so the admin can
+ * see what's outstanding and revoke ones they shouldn't have sent.
+ */
+function InvitationsPanel({ orgId }: { orgId: string }) {
+  const [invitations, setInvitations] = useState<Invitation[]>([])
+  const [loading, setLoading] = useState(true)
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState<OrgRole>('estimator')
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // Most recently created invitation. Its row stays in the table below too,
+  // but we surface the copy link inline above the form so the admin doesn't
+  // have to hunt for the one they just made.
+  const [justCreated, setJustCreated] = useState<Invitation | null>(null)
+  // Tracks which invite is currently showing a "Copied!" tick instead of
+  // the Copy button — clears itself after 1.5s.
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    const list = await listInvitations(orgId)
+    setInvitations(list)
+    setLoading(false)
+  }, [orgId])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  async function handleCopy(token: string) {
+    const url = inviteAcceptUrl(token)
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      // Some browsers (older Safari over http) can't write to the clipboard
+      // — fall back to a temporary textarea so we never silently fail.
+      const ta = document.createElement('textarea')
+      ta.value = url
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setCopiedId(token)
+    setTimeout(() => {
+      setCopiedId((cur) => (cur === token ? null : cur))
+    }, 1500)
+  }
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault()
+    if (creating || !email.trim()) return
+    setCreating(true)
+    setError(null)
+    try {
+      const inv = await createInvitation(orgId, email.trim(), role)
+      setJustCreated(inv)
+      setEmail('')
+      // Pre-copy the link so the admin can paste straight into Slack/email
+      // without an extra click. Falls back to manual copy via the Copy
+      // button if the clipboard API rejects.
+      await handleCopy(inv.id)
+      await refresh()
+    } catch (err) {
+      setError((err as Error).message ?? 'Failed to create invitation')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function handleRevoke(invitationId: string) {
+    if (!window.confirm('Revoke this invitation? The link will stop working.')) return
+    try {
+      await revokeInvitation(invitationId)
+      if (justCreated?.id === invitationId) setJustCreated(null)
+      await refresh()
+    } catch (err) {
+      setError((err as Error).message ?? 'Failed to revoke')
+    }
+  }
+
+  return (
+    <PanelCard
+      title="Invite a teammate"
+      subtitle="Generate a link they can use to set their own password and join the org. Send it however suits — Slack, email, SMS."
+    >
+      <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-[1fr_180px_auto] gap-2 items-end">
+        <Field label="Teammate email">
+          <TextInput
+            value={email}
+            onChange={setEmail}
+            placeholder="teammate@yourcompany.com.au"
+            type="email"
+          />
+        </Field>
+        <Field label="Role">
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value as OrgRole)}
+            className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+          >
+            <option value="estimator">Estimator</option>
+            <option value="sales">Sales</option>
+            <option value="admin">Admin</option>
+          </select>
+        </Field>
+        <button
+          type="submit"
+          disabled={creating || !email.trim()}
+          className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors h-fit"
+        >
+          {creating ? 'Generating…' : 'Generate link'}
+        </button>
+      </form>
+
+      {error && <p className="text-sm text-rose-300 mt-2">{error}</p>}
+
+      {justCreated && (
+        <div className="mt-4 p-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-sm text-emerald-100">
+          <strong className="text-emerald-50">Invite link ready</strong>
+          <p className="text-xs mt-1">
+            Copied to your clipboard. Paste it to <strong>{justCreated.email}</strong>{' '}
+            so they can set their password and sign in.
+          </p>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <code className="text-xs px-2 py-1 rounded bg-ink-900/50 text-ink-100 truncate max-w-[28rem] flex-1 min-w-0">
+              {inviteAcceptUrl(justCreated.id)}
+            </code>
+            <button
+              type="button"
+              onClick={() => handleCopy(justCreated.id)}
+              className="px-3 py-1 rounded border border-emerald-500/40 text-emerald-200 text-xs hover:bg-emerald-500/20 transition-colors"
+            >
+              {copiedId === justCreated.id ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Existing invites — pending sit at top, used + expired below.
+          Admin can copy a still-valid link or revoke any of them. */}
+      <div className="mt-6">
+        <h4 className="text-xs uppercase tracking-wider text-ink-400 mb-2">
+          Pending + recent invites
+        </h4>
+        {loading ? (
+          <p className="text-sm text-ink-400">Loading…</p>
+        ) : invitations.length === 0 ? (
+          <p className="text-sm text-ink-400">No invitations yet.</p>
+        ) : (
+          <div className="border border-ink-600 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-ink-700/40">
+                <tr className="text-left text-xs uppercase tracking-wider text-ink-400">
+                  <th className="px-3 py-2 font-semibold">Email</th>
+                  <th className="px-3 py-2 font-semibold">Role</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invitations.map((inv) => {
+                  const status = statusOf(inv)
+                  const statusClass =
+                    status === 'pending'
+                      ? 'bg-amber-500/15 text-amber-200 border-amber-500/40'
+                      : status === 'used'
+                        ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
+                        : 'bg-ink-700 text-ink-300 border-ink-600'
+                  return (
+                    <tr key={inv.id} className="border-t border-ink-600 text-ink-100">
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-ink-50 truncate max-w-[18rem]">
+                          {inv.email}
+                        </div>
+                        <div className="text-[11px] text-ink-400">
+                          Sent {new Date(inv.createdAt).toLocaleDateString()}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-ink-300">
+                        {orgRoleLabel(inv.role)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${statusClass}`}
+                        >
+                          {status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="inline-flex gap-2">
+                          {status === 'pending' && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(inv.id)}
+                              className="text-xs text-beme-300 hover:text-beme-200"
+                            >
+                              {copiedId === inv.id ? 'Copied!' : 'Copy link'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRevoke(inv.id)}
+                            className="text-xs text-rose-300 hover:text-rose-200"
+                          >
+                            {status === 'pending' ? 'Revoke' : 'Delete'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </PanelCard>
   )
 }
 
