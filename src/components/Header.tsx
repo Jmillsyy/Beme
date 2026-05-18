@@ -59,14 +59,19 @@ export default function Header() {
 
   return (
     <header className="bg-ink-800 border-b border-ink-600">
-      <div className="max-w-[1600px] mx-auto px-6 py-5 flex items-center justify-between gap-6">
+      {/* Slightly more vertical room + a chunkier brand mark to match the
+          bumped type scale across the rest of the app. Header height stays
+          modest relative to the content area, but the wordmark is now sized
+          as a proper anchor instead of disappearing behind the larger body
+          text below it. */}
+      <div className="max-w-[1600px] mx-auto px-6 py-6 flex items-center justify-between gap-6">
         <Link to="/" className="flex items-center gap-3 group">
-          <div className="relative w-[26px] h-[26px] rounded-[5px] bg-beme-500 group-hover:bg-beme-400 transition-colors">
-            <div className="absolute inset-[5px] bg-ink-900 rounded-[2px]" />
+          <div className="relative w-[32px] h-[32px] rounded-[6px] bg-beme-500 group-hover:bg-beme-400 transition-colors">
+            <div className="absolute inset-[6px] bg-ink-900 rounded-[2px]" />
           </div>
           <div className="leading-tight">
-            <div className="text-2xl font-extrabold tracking-tight text-ink-50">Beme</div>
-            <div className="text-[12px] text-ink-300">Building estimates made easy</div>
+            <div className="text-3xl font-extrabold tracking-tight text-ink-50">Beme</div>
+            <div className="text-[13px] text-ink-300">Building estimates made easy</div>
           </div>
         </Link>
 
@@ -88,7 +93,7 @@ export default function Header() {
               company / profile / OAuth name when any of those are set. */}
           {!currentOrg && personalisedName && (
             <p
-              className="text-[11px] text-ink-400 uppercase tracking-wider hidden md:block max-w-[260px] truncate"
+              className="text-[12px] text-ink-400 uppercase tracking-wider hidden md:block max-w-[260px] truncate"
               title={personalisedName}
             >
               {personalisedName}
@@ -158,10 +163,10 @@ function OrgSwitcher({
     // the user where they are without offering a menu they don't need.
     return (
       <span
-        className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-ink-600 bg-ink-700/40 text-xs text-ink-100 max-w-[220px] truncate"
+        className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-ink-600 bg-ink-700/40 text-sm text-ink-100 max-w-[240px] truncate"
         title={label}
       >
-        <span className="w-1.5 h-1.5 rounded-full bg-beme-500" />
+        <span className="w-2 h-2 rounded-full bg-beme-500" />
         {label}
       </span>
     )
@@ -172,7 +177,7 @@ function OrgSwitcher({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-ink-600 hover:bg-ink-700 text-xs text-ink-100 max-w-[220px]"
+        className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-ink-600 hover:bg-ink-700 text-sm text-ink-100 max-w-[240px]"
         aria-expanded={open}
         aria-haspopup="menu"
         title={label}
@@ -251,14 +256,14 @@ function UserMenu({ user }: { user: import('@supabase/supabase-js').User }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2.5 pl-1 pr-3 py-1 rounded-full border border-ink-600 hover:bg-ink-700 transition-colors"
+        className="flex items-center gap-2.5 pl-1.5 pr-3.5 py-1 rounded-full border border-ink-600 hover:bg-ink-700 transition-colors"
         aria-expanded={open}
         aria-haspopup="menu"
       >
-        <span className="w-7 h-7 rounded-full bg-beme-500 text-black text-xs font-bold flex items-center justify-center">
+        <span className="w-8 h-8 rounded-full bg-beme-500 text-black text-sm font-bold flex items-center justify-center">
           {initials}
         </span>
-        <span className="text-sm text-ink-100 max-w-[160px] truncate hidden sm:inline">
+        <span className="text-base text-ink-100 max-w-[180px] truncate hidden sm:inline">
           {name}
         </span>
         <span className="text-ink-400 text-xs">▾</span>
