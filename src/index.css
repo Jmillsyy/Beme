@@ -73,22 +73,22 @@
      / 2xl / 3xl / 4xl` utility across the app in one place. Nudge of
      roughly +1 px per step — enough to feel noticeably easier to read
      without reflowing layouts. */
-  --text-xs: 0.8125rem;             /* 13 px (was 12) */
-  --text-xs--line-height: 1.125rem; /* 18 px */
-  --text-sm: 0.9375rem;             /* 15 px (was 14) */
-  --text-sm--line-height: 1.375rem; /* 22 px */
-  --text-base: 1.0625rem;           /* 17 px (was 16) */
-  --text-base--line-height: 1.625rem; /* 26 px */
-  --text-lg: 1.1875rem;             /* 19 px (was 18) */
-  --text-lg--line-height: 1.75rem;  /* 28 px */
-  --text-xl: 1.3125rem;             /* 21 px (was 20) */
-  --text-xl--line-height: 1.875rem; /* 30 px */
-  --text-2xl: 1.625rem;             /* 26 px (was 24) */
-  --text-2xl--line-height: 2.125rem; /* 34 px */
-  --text-3xl: 2rem;                 /* 32 px (was 30) */
-  --text-3xl--line-height: 2.375rem; /* 38 px */
-  --text-4xl: 2.375rem;             /* 38 px (was 36) */
-  --text-4xl--line-height: 2.625rem; /* 42 px */
+  --text-xs: 0.9375rem;             /* 15 px (was 12) */
+  --text-xs--line-height: 1.375rem; /* 22 px */
+  --text-sm: 1.0625rem;             /* 17 px (was 14) */
+  --text-sm--line-height: 1.625rem; /* 26 px */
+  --text-base: 1.1875rem;           /* 19 px (was 16) */
+  --text-base--line-height: 1.875rem; /* 30 px */
+  --text-lg: 1.3125rem;             /* 21 px (was 18) */
+  --text-lg--line-height: 2rem;     /* 32 px */
+  --text-xl: 1.5rem;                /* 24 px (was 20) */
+  --text-xl--line-height: 2.125rem; /* 34 px */
+  --text-2xl: 1.875rem;             /* 30 px (was 24) */
+  --text-2xl--line-height: 2.375rem; /* 38 px */
+  --text-3xl: 2.25rem;              /* 36 px (was 30) */
+  --text-3xl--line-height: 2.625rem; /* 42 px */
+  --text-4xl: 2.75rem;              /* 44 px (was 36) */
+  --text-4xl--line-height: 3rem;    /* 48 px */
 }
 
 /* ── Light mode overrides ───────────────────────────────────────────────────
@@ -180,6 +180,20 @@ body,
   height: 100%;
 }
 
+/* Default page zoom — equivalent to the user hitting Cmd/Ctrl+Minus once
+   on first load. Keeps the bumped-up type scale's proportions (so headings
+   and buttons still feel proportionally sized) but shrinks the whole UI to
+   fit ~25% more content per viewport without having to manually zoom every
+   session.
+
+   `zoom` is the right tool here — it scales BOTH content and layout boxes
+   so scrollbars / fixed-position elements stay correct, unlike
+   `transform: scale()` which leaves them at their original size and
+   creates a viewport overflow. Standard in WebKit/Blink/Firefox now. */
+html {
+  zoom: 0.8;
+}
+
 body {
   background: var(--color-ink-900);
   color: var(--color-ink-50);
@@ -188,7 +202,7 @@ body {
      that inherit straight from <body> (native <select> options, plain
      inputs without a Tailwind text class, etc.) so they don't look out of
      place next to the rest of the UI. */
-  font-size: 15px;
+  font-size: 17px;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
