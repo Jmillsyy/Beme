@@ -12,7 +12,7 @@ import {
   listProjects,
   saveProject,
 } from '../lib/projectStorage'
-import { useAuth } from '../lib/auth'
+import { accountTypeOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
 import {
@@ -81,6 +81,16 @@ export default function HomePage() {
   // orgs resolve → org-dashboard takes over a moment later).
   const stillResolving = authLoading || orgsLoading
 
+  // 'org-invited' users (signed up via /accept-invite) never see the personal
+  // dashboard — even when they're temporarily not in any org (just removed,
+  // or invited to a new org but haven't accepted yet). They live in a
+  // different product space than self-served personal users. 'personal'
+  // users (legacy admins who signed themselves up before the invite flow
+  // existed) keep the existing dual-mode behaviour: OrgDashboard when in an
+  // org, PersonalDashboard when not.
+  const accountType = accountTypeOf(user)
+  const isOrgInvited = accountType === 'org-invited'
+
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
@@ -90,10 +100,47 @@ export default function HomePage() {
           <div className="text-sm text-ink-400 py-16 text-center">Loading…</div>
         ) : currentOrg ? (
           <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
+        ) : isOrgInvited ? (
+          <NoOrgEmptyState />
         ) : (
           <PersonalDashboard />
         )}
       </main>
+    </div>
+  )
+}
+
+/**
+ * Shown to an 'org-invited' user when they're not currently a member of any
+ * organisation — either because they were removed, or their invitation to
+ * a new org is still pending. Deliberately doesn't fall through to the
+ * personal-projects flow because that's a different product entirely
+ * (separate billing track in the longer term).
+ */
+function NoOrgEmptyState() {
+  return (
+    <div className="max-w-xl mx-auto py-12">
+      <div className="border border-ink-600 rounded-2xl bg-ink-800 p-8 text-center">
+        <div className="mx-auto w-14 h-14 rounded-xl bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4">
+          <span className="text-2xl">📭</span>
+        </div>
+        <h2 className="text-2xl font-extrabold tracking-tight text-ink-50 mb-2">
+          You're not in any organisation
+        </h2>
+        <p className="text-sm text-ink-300 mb-6">
+          Your account was set up via an invitation, so you'll see work
+          here once an admin adds you to an organisation. If you were
+          recently removed or expected to be a member already, reach out
+          to whoever runs your team — they can send a fresh invite link.
+        </p>
+        <button
+          type="button"
+          onClick={() => void signOut()}
+          className="px-4 py-2 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 text-sm transition-colors"
+        >
+          Sign out
+        </button>
+      </div>
     </div>
   )
 }

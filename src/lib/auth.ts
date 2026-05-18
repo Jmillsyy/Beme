@@ -129,6 +129,37 @@ export async function signInWithMagicLink(
 }
 
 /**
+ * High-level account category for a Supabase user. Stored in
+ * auth.users.raw_user_meta_data.account_type at sign-up time; never changes
+ * over the user's lifetime.
+ *
+ * - `org-invited`: signed up by accepting an invitation link. These users
+ *   are exclusively organisation members — even if they're not currently in
+ *   any org (because they were removed, or their invite hasn't been claimed
+ *   on the new org yet), the UI shows an org-aware empty state, not the
+ *   personal "win-rate donut" dashboard. They live in a different product
+ *   space than a bricklayer doing supply-and-lay quotes.
+ *
+ * - `personal`: signed up directly, lives in the personal projects flow.
+ *   Can still be added to organisations later (legacy admins fall into
+ *   this bucket because they signed themselves up before the invite flow
+ *   existed) — when they are, they see the OrgDashboard for their active
+ *   org and PersonalDashboard when no org is selected. Default for any
+ *   user whose metadata doesn't have an account_type field.
+ */
+export type AccountType = 'personal' | 'org-invited'
+
+/**
+ * Read the account type off a user. Defaults to 'personal' so legacy users
+ * (signed up before this field existed) keep their original behaviour.
+ */
+export function accountTypeOf(user: User | null): AccountType {
+  if (!user) return 'personal'
+  const t = (user.user_metadata ?? {}).account_type
+  return t === 'org-invited' ? 'org-invited' : 'personal'
+}
+
+/**
  * Sign up a new user with email + password. Used by the /accept-invite flow:
  * an admin pre-approves an email by creating an invitation row; the invitee
  * sets their password via this function, then the SECURITY DEFINER
@@ -137,6 +168,10 @@ export async function signInWithMagicLink(
  * `displayName` is stored in auth.users.raw_user_meta_data so the UI can
  * surface it via displayNameOf() without a separate profile table.
  *
+ * `accountType` defaults to 'personal' but the accept-invite flow passes
+ * 'org-invited' so the dashboard knows never to show that user a personal
+ * fallback even if they're temporarily not in any org.
+ *
  * If Supabase has email confirmation enabled the user will need to click a
  * confirmation link before they can sign in — turn it off in the Auth
  * settings if you want the invite link to be the only confirmation step.
@@ -144,16 +179,19 @@ export async function signInWithMagicLink(
 export async function signUpWithPassword(
   email: string,
   password: string,
-  displayName?: string
+  displayName?: string,
+  accountType: AccountType = 'personal'
 ): Promise<{ error: Error | null }> {
   if (!isSupabaseConfigured) {
     return { error: new Error('Supabase is not configured. See SETUP.md.') }
   }
+  const data: Record<string, unknown> = { account_type: accountType }
+  if (displayName?.trim()) data.full_name = displayName.trim()
   const { error } = await supabase().auth.signUp({
     email: email.trim(),
     password,
     options: {
-      data: displayName ? { full_name: displayName.trim() } : undefined,
+      data,
       emailRedirectTo: `${window.location.origin}/`,
     },
   })

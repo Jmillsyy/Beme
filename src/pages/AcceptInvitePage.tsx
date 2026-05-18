@@ -105,10 +105,16 @@ export default function AcceptInvitePage() {
     setSubmitError(null)
     try {
       // Create the auth.users row with the invited email + password.
+      // accountType='org-invited' stamps the user as an organisation
+      // member for life — even if they later end up with no org (because
+      // they were removed, or moved between orgs), they never fall back
+      // to the personal-projects dashboard. They live in a different
+      // product space than a self-served bricklayer.
       const { error: signUpErr } = await signUpWithPassword(
         preview.email,
         password,
-        displayName || undefined
+        displayName || undefined,
+        'org-invited'
       )
       if (signUpErr) {
         // If the email already exists in Supabase auth, fall through to
