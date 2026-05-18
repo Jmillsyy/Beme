@@ -52,18 +52,42 @@ interface ExportParams {
    */
   business?: BusinessExportInfo
   /**
-   * Optional reference to the loaded PDF. If supplied together with
-   * `pageInfo`, the Wall Layout overview rasterises the page and uses it
-   * as the background behind the SVG annotations so the reader sees the
-   * actual building plan with walls drawn over it.
+   * Optional reference to the loaded PDF. When provided together with
+   * `pagesInfo`, each page's plan is rasterised as the SVG background for
+   * its Wall Layout overview so the reader sees the building plan with
+   * walls drawn over it. Without the PDF the layout still renders, just
+   * without the background image.
    */
   pdfFile?: File
-  pageInfo?: {
-    pageNumber: number
-    pageWidthMm?: number
-    pageHeightMm?: number
-    pageScaleRatio?: number
-  }
+  /**
+   * One entry per PDF page that has any walls / openings / piers worth
+   * showing on its own Wall Layout overview page. The export emits one
+   * "Wall Layout — Page N" section per entry in this array, in order.
+   *
+   * Multi-floor projects need this — the current PDF page is no longer
+   * enough info, because the export's Wall Layout section runs across
+   * every drawn floor. When the array has just one entry, the export
+   * behaves the same as the old single-page flow.
+   */
+  pagesInfo?: PageInfo[]
+}
+
+/**
+ * Per-PDF-page metadata + the walls / openings / piers that belong to
+ * that page. The export uses these to build one Wall Layout section per
+ * page; the tally tables still come off the flat `walls` / `openings` /
+ * `piers` arrays in the params so totals are project-wide.
+ */
+export interface PageInfo {
+  pageNumber: number
+  pageWidthMm?: number
+  pageHeightMm?: number
+  pageScaleRatio?: number
+  walls: Wall[]
+  openings: Opening[]
+  piers: Pier[]
+  /** Optional human label, e.g. "Ground Floor". Falls back to "Page N". */
+  label?: string
 }
 
 export interface BusinessExportInfo {
@@ -226,7 +250,10 @@ function buildPlanOverviewPage(
   thicknessByWallId: Record<string, number>,
   totalBlocks: number,
   pageHeader: string,
-  background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null
+  background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null,
+  /** Suffix on the section heading + intro, e.g. ' — Ground Floor' or ' — Page 9'.
+   *  Empty string keeps the original "Wall Layout" heading for single-page exports. */
+  pageLabelSuffix: string = ''
 ): string {
   if (walls.length === 0) return ''
 
@@ -413,13 +440,12 @@ function buildPlanOverviewPage(
   }
 
   // Numbered wall labels — size scales with the larger of plan-extent and
-  // wall thickness. Tuned for "readable but not obscuring the walls": at
-  // a typical residential brick wall (110 mm thick) and a 10 m bounding
-  // box the labels print at about 5 mm tall on landscape A4, which sits
-  // comfortably without blocking the plan beneath. Slightly larger than
-  // before so the length text below each circle is easy to read at print
-  // size — the length is the most useful info on this page.
-  const labelDiameter = Math.max(maxThick * 4, Math.min(viewW, viewH) * 0.07)
+  // wall thickness. Tuned for "readable but not obscuring the walls" on
+  // plans with many wall types: at a typical residential 190 mm block
+  // wall and a 10 m bounding box the labels print at about 4 mm tall on
+  // landscape A4, which sits comfortably without blocking the plan and
+  // leaves room for adjacent labels even in dense junctions.
+  const labelDiameter = Math.max(maxThick * 2.8, Math.min(viewW, viewH) * 0.045)
   const labelFontSize = labelDiameter * 0.55
 
   // Wall bodies — semi-transparent fill keyed off the wall's makeup colour
@@ -491,7 +517,7 @@ function buildPlanOverviewPage(
   // so it reads on top of the wall fill; the length text is white with a
   // dark stroke (paint-order: stroke) so it's legible whether it falls on
   // the wall body or in the gap.
-  const lengthFontSize = labelFontSize * 1.05
+  const lengthFontSize = labelFontSize * 0.85
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
@@ -561,7 +587,7 @@ function buildPlanOverviewPage(
   return `
     <section class="page plan-overview-page">
       ${pageHeader}
-      <h2 class="section-title">Wall Layout</h2>
+      <h2 class="section-title">Wall Layout${escapeHtml(pageLabelSuffix)}</h2>
       <p class="page-intro">${intro}</p>
       ${summaryRow}
       <div class="plan-overview-wrap">
@@ -661,7 +687,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     pierMakeups = [],
     business,
     pdfFile,
-    pageInfo,
+    pagesInfo,
   } = params
 
   const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
@@ -880,50 +906,86 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  // Plan-overview page — an SVG diagram of the walls + piers as drawn,
-  // sized to fit the landscape A4 content area. Goes between the Assumptions
-  // and the first quantities page so the bricklayer can eyeball the layout
-  // before getting into numbers, and to verify which wall maps to which
-  // number reference in the breakdown tables.
-  // Rasterise the current PDF page (if one's loaded + calibrated) so we
-  // can show the real plan under the wall overlay. Falls back to a bare
-  // diagram if rasterisation fails or the project is uncalibrated.
-  let planOverviewBackground: {
-    dataUrl: string
-    pageWidthMm: number
-    pageHeightMm: number
-    pageScaleRatio: number
-  } | null = null
-  if (
-    pdfFile &&
-    pageInfo &&
-    pageInfo.pageWidthMm &&
-    pageInfo.pageHeightMm &&
-    pageInfo.pageScaleRatio &&
-    pageInfo.pageScaleRatio > 0
-  ) {
-    const rastered = await rasterisePdfPage(pdfFile, pageInfo.pageNumber)
-    if (rastered) {
-      planOverviewBackground = {
-        dataUrl: rastered.dataUrl,
-        pageWidthMm: pageInfo.pageWidthMm,
-        pageHeightMm: pageInfo.pageHeightMm,
-        pageScaleRatio: pageInfo.pageScaleRatio,
+  // Plan-overview pages — one section per PDF page that has walls (a
+  // multi-floor project draws walls on multiple pages, so a single
+  // overview can't show the whole job). Each section has its own SVG
+  // viewBox cropped to its page's walls, its own rasterised PDF page as
+  // a background, and a heading like "Wall Layout — Page 9" so the
+  // running header on continuation pages carries the same label.
+  //
+  // The schedule + breakdown tables that follow are project-wide and
+  // come off the flat walls/openings/piers arrays — only the layout
+  // diagram needs page splitting.
+  const pagesToShow: PageInfo[] = pagesInfo && pagesInfo.length > 0
+    ? pagesInfo.filter((p) => p.walls.length > 0)
+    : []
+  const planOverviewPages: string[] = []
+  for (const page of pagesToShow) {
+    // Rasterise this PDF page so the diagram has the building plan behind
+    // it. If the page isn't calibrated yet (no scale ratio) or the PDF
+    // can't be opened, the section still renders — just without the
+    // background image.
+    let pageBackground: {
+      dataUrl: string
+      pageWidthMm: number
+      pageHeightMm: number
+      pageScaleRatio: number
+    } | null = null
+    if (
+      pdfFile &&
+      page.pageWidthMm &&
+      page.pageHeightMm &&
+      page.pageScaleRatio &&
+      page.pageScaleRatio > 0
+    ) {
+      const rastered = await rasterisePdfPage(pdfFile, page.pageNumber)
+      if (rastered) {
+        pageBackground = {
+          dataUrl: rastered.dataUrl,
+          pageWidthMm: page.pageWidthMm,
+          pageHeightMm: page.pageHeightMm,
+          pageScaleRatio: page.pageScaleRatio,
+        }
       }
     }
-  }
 
-  const planOverviewPage = buildPlanOverviewPage(
-    walls,
-    openings,
-    piers,
-    makeups,
-    makeupsById,
-    thicknessByWallId,
-    totalBlocks,
-    pageHeader,
-    planOverviewBackground
-  )
+    const pageLabel = page.label?.trim() || `Page ${page.pageNumber}`
+    // Only suffix the heading when there's more than one Wall Layout
+    // section — single-page exports keep the cleaner "Wall Layout" title.
+    const labelSuffix = pagesToShow.length > 1 ? ` — ${pageLabel}` : ''
+
+    // Total blocks across just THIS page's walls so the per-page tile
+    // reads as the blocks for this floor, not the whole project. Computed
+    // from per-wall tallies (without corner dedup, same as the breakdown
+    // tables); the project-wide dedup'd count still appears on the Block
+    // Schedule page.
+    let pageBlockTotal = 0
+    for (const w of page.walls) {
+      const makeup = makeupsById[w.makeupId]
+      if (!makeup) continue
+      const openingsForWall = page.openings.filter((o) => o.wallId === w.id)
+      const t = calculateWallTally(w, makeup, openingsForWall, thicknessByWallId, wallsById)
+      for (const c of Object.values(t)) pageBlockTotal += c ?? 0
+    }
+
+    planOverviewPages.push(
+      buildPlanOverviewPage(
+        page.walls,
+        page.openings,
+        page.piers,
+        makeups,
+        makeupsById,
+        thicknessByWallId,
+        pageBlockTotal,
+        pageHeader,
+        pageBackground,
+        labelSuffix
+      )
+    )
+  }
+  // Pre-joined so the assembly below can splice it in unchanged regardless
+  // of how many pages there are.
+  const planOverviewPage = planOverviewPages.join('\n')
 
   // Page 3: Wall-type breakdown
   // Combined totals per block code across all makeups — pre-corner-dedup, so these are the

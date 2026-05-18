@@ -3061,12 +3061,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             piers={allPiers}
             pierMakeups={pierMakeups}
             pdfFile={pdfFile}
-            pageInfo={{
-              pageNumber: currentPage,
-              pageWidthMm: pagesData[currentPage]?.pageWidthMm,
-              pageHeightMm: pagesData[currentPage]?.pageHeightMm,
-              pageScaleRatio: pagesData[currentPage]?.pageScaleRatio,
-            }}
+            // One PageInfo per PDF page that actually has walls — the export
+            // builds a separate Wall Layout overview page for each, so
+            // multi-floor projects get one labelled diagram per floor instead
+            // of trying to cram every floor onto one overview. Page order
+            // follows numeric order so the export reads bottom-up the way the
+            // building is built.
+            pagesInfo={Object.keys(wallsByPage)
+              .map((n) => parseInt(n, 10))
+              .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)
+              .sort((a, b) => a - b)
+              .map((n) => ({
+                pageNumber: n,
+                pageWidthMm: pagesData[n]?.pageWidthMm,
+                pageHeightMm: pagesData[n]?.pageHeightMm,
+                pageScaleRatio: pagesData[n]?.pageScaleRatio,
+                walls: wallsByPage[n] ?? [],
+                openings: openingsByPage[n] ?? [],
+                piers: piersByPage[n] ?? [],
+              }))}
           />
         )}
 

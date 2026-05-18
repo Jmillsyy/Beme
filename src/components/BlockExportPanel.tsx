@@ -8,7 +8,7 @@ import type {
   Wall,
   WallMakeup,
 } from '../types/walls'
-import { exportBlockEstimate } from '../lib/blockExport'
+import { exportBlockEstimate, type PageInfo } from '../lib/blockExport'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
 
@@ -22,17 +22,19 @@ interface BlockExportPanelProps {
   piers?: Pier[]
   pierMakeups?: PierMakeup[]
   /**
-   * The uploaded plan PDF. When provided alongside `pageInfo`, the export's
-   * Wall Layout overview rasterises the page and uses it as the background
-   * behind the SVG wall annotations.
+   * The uploaded plan PDF. When provided alongside `pagesInfo`, the export
+   * rasterises each page's plan as the SVG background for its Wall Layout
+   * overview so the reader sees the real building plan with the walls
+   * drawn over it.
    */
   pdfFile?: File | null
-  pageInfo?: {
-    pageNumber: number
-    pageWidthMm?: number
-    pageHeightMm?: number
-    pageScaleRatio?: number
-  }
+  /**
+   * One entry per PDF page that has any walls — the export builds a
+   * separate Wall Layout overview page for each, labelled with the page's
+   * label or its page number. Multi-floor projects rely on this; single-
+   * page exports just pass a one-element array.
+   */
+  pagesInfo?: PageInfo[]
 }
 
 export default function BlockExportPanel({
@@ -45,7 +47,7 @@ export default function BlockExportPanel({
   piers = [],
   pierMakeups = [],
   pdfFile,
-  pageInfo,
+  pagesInfo,
 }: BlockExportPanelProps) {
   // Collapsed by default in the rail — export is end-of-workflow.
   const [expanded, setExpanded] = useState(false)
@@ -72,7 +74,7 @@ export default function BlockExportPanel({
         piers,
         pierMakeups,
         pdfFile: pdfFile ?? undefined,
-        pageInfo,
+        pagesInfo,
         // Pass the user's business identity through so exports become branded.
         // When the user is signed in to an organisation, the org's name takes
         // precedence over the personal business.companyName field — that way
