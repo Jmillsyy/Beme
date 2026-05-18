@@ -603,6 +603,14 @@ function WallDrawingLayerInner({
    * already placed stays anchored to the same physical point on the plan even if you zoom or pan.
    */
   const [startMm, setStartMm] = useState<Point | null>(null)
+  /**
+   * CAD-style typed length while drawing a wall. After the first click anchors
+   * `startMm`, the user can type digits to override the cursor-distance length
+   * — direction still comes from the cursor (and axis-snap), but the magnitude
+   * is whatever they type. `Enter` commits, `Esc` clears, `Backspace` edits.
+   * Empty string means "use the cursor distance as the length" (default).
+   */
+  const [typedLengthMm, setTypedLengthMm] = useState<string>('')
   const [cursorMm, setCursorMm] = useState<Point | null>(null)
   const [snapTarget, setSnapTarget] = useState<SnapResult | null>(null)
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null)
@@ -1018,6 +1026,7 @@ function WallDrawingLayerInner({
   useEffect(() => {
     if (!drawingMode) {
       setStartMm(null)
+      setTypedLengthMm('')
       setCursorMm(null)
       setSnapTarget(null)
     }
@@ -1053,11 +1062,65 @@ function WallDrawingLayerInner({
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
+      // Don't intercept anything while the user is typing in an input/textarea
+      // — wall-type names, dimension fields etc. would be ruined.
+      const tgt = e.target as HTMLElement | null
+      const inField =
+        !!tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)
+
+      // CAD-style typed length while drawing — only valid once the first
+      // click has anchored startMm. Direction still comes from the cursor;
+      // typing overrides the distance.
+      if (!inField && drawingMode && startMm) {
+        if (e.key >= '0' && e.key <= '9') {
+          e.preventDefault()
+          setTypedLengthMm((prev) => prev + e.key)
+          return
+        }
+        if (e.key === '.' || e.key === ',') {
+          e.preventDefault()
+          setTypedLengthMm((prev) => (prev.includes('.') ? prev : prev + '.'))
+          return
+        }
+        if (e.key === 'Backspace') {
+          e.preventDefault()
+          setTypedLengthMm((prev) => prev.slice(0, -1))
+          return
+        }
+        if (e.key === 'Enter' && typedLengthMm.trim()) {
+          e.preventDefault()
+          const lengthMm = parseFloat(typedLengthMm)
+          if (
+            cursorMm &&
+            Number.isFinite(lengthMm) &&
+            lengthMm > 0
+          ) {
+            const dx = cursorMm.x - startMm.x
+            const dy = cursorMm.y - startMm.y
+            const cursorDist = Math.sqrt(dx * dx + dy * dy)
+            if (cursorDist > 0.001) {
+              const ux = dx / cursorDist
+              const uy = dy / cursorDist
+              onWallAdded(startMm, {
+                x: startMm.x + ux * lengthMm,
+                y: startMm.y + uy * lengthMm,
+              })
+              setStartMm(null)
+              setCursorMm(null)
+              setSnapTarget(null)
+              setTypedLengthMm('')
+            }
+          }
+          return
+        }
+      }
+
       if (e.key === 'Escape') {
         if (drawingMode) {
           setStartMm(null)
           setCursorMm(null)
           setSnapTarget(null)
+          setTypedLengthMm('')
           onCancelDraw?.()
         } else if (drawingCurveMode) {
           setCurveAnchorA(null)
@@ -1087,7 +1150,7 @@ function WallDrawingLayerInner({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -1186,11 +1249,29 @@ function WallDrawingLayerInner({
       const startPxAnchor = { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
       const { point } = resolveDrawSnap(raw, startPxAnchor, e.evt.shiftKey)
       if (distance(startPxAnchor, point) < 5) return
-      const posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
+      let posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
+      // If the user typed a length while aiming, override the cursor-distance
+      // with the typed value while keeping the cursor's direction (which is
+      // already axis-snapped via resolveDrawSnap above).
+      const typedNum = parseFloat(typedLengthMm)
+      if (typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0) {
+        const dx = posMm.x - startMm.x
+        const dy = posMm.y - startMm.y
+        const cursorDist = Math.sqrt(dx * dx + dy * dy)
+        if (cursorDist > 0.001) {
+          const ux = dx / cursorDist
+          const uy = dy / cursorDist
+          posMm = {
+            x: startMm.x + ux * typedNum,
+            y: startMm.y + uy * typedNum,
+          }
+        }
+      }
       onWallAdded(startMm, posMm)
       setStartMm(null)
       setCursorMm(null)
       setSnapTarget(null)
+      setTypedLengthMm('')
       return
     }
 
@@ -2183,29 +2264,63 @@ function WallDrawingLayerInner({
         {drawingMode && startPx && (
           <Group listening={false}>
             <Circle x={startPx.x} y={startPx.y} radius={5} fill="#ED7D31" stroke="white" strokeWidth={2} />
-            {cursorPx && (
-              <>
-                <Line
-                  points={[startPx.x, startPx.y, cursorPx.x, cursorPx.y]}
-                  stroke="#ED7D31"
-                  strokeWidth={3}
-                  dash={[6, 4]}
-                />
-                <Text
-                  x={(startPx.x + cursorPx.x) / 2 + 8}
-                  y={(startPx.y + cursorPx.y) / 2 - 18}
-                  text={formatMm(
-                    distance(
-                      { x: pxToMm(startPx.x), y: pxToMm(startPx.y) },
-                      { x: pxToMm(cursorPx.x), y: pxToMm(cursorPx.y) }
-                    )
-                  )}
-                  fontSize={14}
-                  fill="#C5530A"
-                  fontStyle="bold"
-                />
-              </>
-            )}
+            {cursorPx && (() => {
+              // If the user typed a length, project the preview line along the
+              // cursor direction at exactly the typed magnitude — that way the
+              // dashed preview matches what the click will commit.
+              const typedNum = parseFloat(typedLengthMm)
+              const hasTyped =
+                !!typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0
+              const cursorMmFromPx = {
+                x: pxToMm(cursorPx.x),
+                y: pxToMm(cursorPx.y),
+              }
+              const startMmFromPx = {
+                x: pxToMm(startPx.x),
+                y: pxToMm(startPx.y),
+              }
+              const dx = cursorMmFromPx.x - startMmFromPx.x
+              const dy = cursorMmFromPx.y - startMmFromPx.y
+              const cursorDistMm = Math.sqrt(dx * dx + dy * dy)
+              let endPx = cursorPx
+              if (hasTyped && cursorDistMm > 0.001) {
+                const ux = dx / cursorDistMm
+                const uy = dy / cursorDistMm
+                endPx = {
+                  x: mmToPx(startMmFromPx.x + ux * typedNum),
+                  y: mmToPx(startMmFromPx.y + uy * typedNum),
+                }
+              }
+              const previewLengthMm = hasTyped ? typedNum : cursorDistMm
+              return (
+                <>
+                  <Line
+                    points={[startPx.x, startPx.y, endPx.x, endPx.y]}
+                    stroke="#ED7D31"
+                    strokeWidth={3}
+                    dash={[6, 4]}
+                  />
+                  {/* When the user is typing, show the digits they've entered
+                      so far in a chunky badge so they know the system has
+                      registered their input. Otherwise show the standard
+                      cursor-distance read-out. */}
+                  <Text
+                    x={(startPx.x + endPx.x) / 2 + 8}
+                    y={(startPx.y + endPx.y) / 2 - 18}
+                    text={
+                      hasTyped
+                        ? `${typedLengthMm} mm ⏎`
+                        : typedLengthMm.trim()
+                          ? `${typedLengthMm} mm …`
+                          : formatMm(previewLengthMm)
+                    }
+                    fontSize={14}
+                    fill={hasTyped ? '#3B82F6' : '#C5530A'}
+                    fontStyle="bold"
+                  />
+                </>
+              )
+            })()}
           </Group>
         )}
 

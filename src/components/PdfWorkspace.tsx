@@ -361,6 +361,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [openingHeadHeightMm, setOpeningHeadHeightMm] = useState(300)
   /** Brick-mode opening height — user types it directly, no sill/head math needed. */
   const [brickOpeningHeightMm, setBrickOpeningHeightMm] = useState(2100)
+
+  // ---------- Undo / redo ----------
+  // A snapshot is the tuple of every page-keyed data state we let the user
+  // undo: walls, openings, piers. We track them as a single object so one
+  // undo step rolls them all back together (deleting a wall also drops
+  // attached openings + tied piers, and the user should get all three back
+  // on Ctrl+Z, not just the wall).
+  type EditSnapshot = {
+    wallsByPage: Record<number, Wall[]>
+    openingsByPage: Record<number, Opening[]>
+    piersByPage: Record<number, Pier[]>
+  }
+  const UNDO_LIMIT = 50
+  const [undoStack, setUndoStack] = useState<EditSnapshot[]>([])
+  const [redoStack, setRedoStack] = useState<EditSnapshot[]>([])
+  // Last snapshot we observed — used by the auto-snapshot effect below to
+  // decide whether the latest render reflects a new edit (push to undo) or
+  // a state restoration we just performed (skip).
+  const lastEditSnapshotRef = useRef<EditSnapshot | null>(null)
   const [makeups, setMakeups] = useState<WallMakeup[]>(() => [
     createDefaultWallMakeup({ name: 'External 2400mm stretcher' }),
   ])
@@ -470,6 +489,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
         setProjectDetails(proj.projectDetails)
         setPagesData(proj.pagesData)
+        // Loading a project replaces the workspace state wholesale — wipe the
+        // undo / redo stacks so the user can't accidentally "undo" all the way
+        // back to the previous project's blank state. Also seed the snapshot
+        // ref to match the incoming data so the auto-snapshot effect doesn't
+        // immediately push it as if it were an edit.
+        setUndoStack([])
+        setRedoStack([])
+        lastEditSnapshotRef.current = {
+          wallsByPage: proj.wallsByPage,
+          openingsByPage: proj.openingsByPage,
+          piersByPage: proj.piersByPage ?? {},
+        }
         setWallsByPage(proj.wallsByPage)
         setOpeningsByPage(proj.openingsByPage)
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
@@ -1295,6 +1326,94 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setSelectedWallId(null)
   }
 
+  // Auto-snapshot effect: every time wallsByPage / openingsByPage / piersByPage
+  // change, push the PREVIOUS values onto the undo stack and clear the redo
+  // stack. Compares by reference — React always returns a fresh object/array
+  // from setState callbacks (we use `(prev) => ...` everywhere) so a true edit
+  // shows up as a new reference. Restorations from undo/redo update the ref
+  // before the state setters fire, so this effect sees "no change" and skips
+  // the push.
+  useEffect(() => {
+    const current: EditSnapshot = {
+      wallsByPage,
+      openingsByPage,
+      piersByPage,
+    }
+    const prev = lastEditSnapshotRef.current
+    if (!prev) {
+      lastEditSnapshotRef.current = current
+      return
+    }
+    if (
+      prev.wallsByPage === current.wallsByPage &&
+      prev.openingsByPage === current.openingsByPage &&
+      prev.piersByPage === current.piersByPage
+    ) {
+      return
+    }
+    setUndoStack((stack) => {
+      const next = [...stack, prev]
+      // Trim from the front so the oldest snapshots fall off.
+      return next.length > UNDO_LIMIT ? next.slice(next.length - UNDO_LIMIT) : next
+    })
+    setRedoStack([])
+    lastEditSnapshotRef.current = current
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallsByPage, openingsByPage, piersByPage])
+
+  function performUndo() {
+    if (undoStack.length === 0) return
+    const restore = undoStack[undoStack.length - 1]
+    const current: EditSnapshot = { wallsByPage, openingsByPage, piersByPage }
+    setRedoStack((s) => [...s, current])
+    setUndoStack((s) => s.slice(0, -1))
+    // Update the ref BEFORE the state setters so the auto-snapshot effect's
+    // next pass sees the new state == ref and skips re-pushing onto undo.
+    lastEditSnapshotRef.current = restore
+    setWallsByPage(restore.wallsByPage)
+    setOpeningsByPage(restore.openingsByPage)
+    setPiersByPage(restore.piersByPage)
+  }
+
+  function performRedo() {
+    if (redoStack.length === 0) return
+    const restore = redoStack[redoStack.length - 1]
+    const current: EditSnapshot = { wallsByPage, openingsByPage, piersByPage }
+    setUndoStack((s) => [...s, current])
+    setRedoStack((s) => s.slice(0, -1))
+    lastEditSnapshotRef.current = restore
+    setWallsByPage(restore.wallsByPage)
+    setOpeningsByPage(restore.openingsByPage)
+    setPiersByPage(restore.piersByPage)
+  }
+
+  // Ctrl+Z = undo, Ctrl+Y or Ctrl+Shift+Z = redo. Mac uses Cmd. Suppressed
+  // while typing in inputs so we don't fight the browser's text-field undo.
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      const tgt = e.target as HTMLElement | null
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
+      const isCmd = e.ctrlKey || e.metaKey
+      if (!isCmd) return
+      const k = e.key.toLowerCase()
+      if (k === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        performUndo()
+      } else if ((k === 'z' && e.shiftKey) || k === 'y') {
+        e.preventDefault()
+        performRedo()
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [undoStack, redoStack, wallsByPage, openingsByPage, piersByPage])
+
+  // Help-overlay state used by the keyboard-shortcut effect (registered later
+  // after currentScale + calibrating have been declared — TS const declarations
+  // are in a temporal dead zone here so the effect can't reference them yet).
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false)
+
   // Delete / Backspace removes every selected wall, opening, and pier — single-
   // or multi-selection. Walls are deleted last (so attached openings/piers vanish
   // along the way without us needing to special-case them).
@@ -1397,6 +1516,88 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     pageData?.pageWidthMm && pageData?.pageScaleRatio
       ? baseWidth / (pageData.pageWidthMm * pageData.pageScaleRatio)
       : pageData?.scalePxPerMm
+
+  // Single-letter shortcuts to flip into/out of the drawing modes — saves a
+  // round trip to the toolbar every time the user starts another wall or
+  // opening. Has to live AFTER currentScale and calibrating are declared
+  // because the deps array reads both. Suppressed while focus is in any
+  // input/textarea so a wall type name with the letter "w" doesn't trigger
+  // Draw mode. Ctrl/Meta/Alt combos pass through so browser shortcuts still
+  // work.
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const tgt = e.target as HTMLElement | null
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return
+      if (!(mode === 'block' || mode === 'brick')) return
+      function clearOtherModes() {
+        setDrawingMode(false)
+        setDrawingCurveMode(false)
+        setPlacingOpening(false)
+        setPlacingControlJoint(false)
+        setPlacingTiedPier(false)
+        setPlacingFreestandingPier(false)
+        setSelectedWallId(null)
+        setSelectedOpeningId(null)
+        setSelectedPierId(null)
+      }
+      const k = e.key.toLowerCase()
+      if (k === 'w') {
+        if (!currentScale || calibrating) return
+        if (mode === 'block') {
+          const activeMakeup = makeupsById[activeMakeupId]
+          if (!activeMakeup) return
+        }
+        e.preventDefault()
+        const next = !drawingMode
+        clearOtherModes()
+        setDrawingMode(next)
+      } else if (k === 'o') {
+        if (!currentScale || calibrating || currentPageWalls.length === 0) return
+        e.preventDefault()
+        const next = !placingOpening
+        clearOtherModes()
+        setPlacingOpening(next)
+      } else if (k === 'c' && mode === 'block') {
+        if (!currentScale || calibrating || currentPageWalls.length < 2) return
+        const activeMakeup = makeupsById[activeMakeupId]
+        if (!activeMakeup) return
+        e.preventDefault()
+        const next = !drawingCurveMode
+        clearOtherModes()
+        setDrawingCurveMode(next)
+      } else if (k === 'j' && mode === 'block') {
+        if (!currentScale || calibrating || currentPageWalls.length === 0) return
+        e.preventDefault()
+        const next = !placingControlJoint
+        clearOtherModes()
+        setPlacingControlJoint(next)
+      } else if (k === 'p' && mode === 'block') {
+        if (!currentScale || calibrating) return
+        e.preventDefault()
+        const next = !placingFreestandingPier
+        clearOtherModes()
+        setPlacingFreestandingPier(next)
+      } else if (k === '?') {
+        e.preventDefault()
+        setShowShortcutHelp((v) => !v)
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [
+    mode,
+    drawingMode,
+    drawingCurveMode,
+    placingOpening,
+    placingControlJoint,
+    placingFreestandingPier,
+    currentScale,
+    calibrating,
+    currentPageWalls.length,
+    activeMakeupId,
+    makeupsById,
+  ])
 
   // Aspect ratio (constant per page) — used to compute rendered height ahead of canvas re-render
   const aspectRatio =
@@ -2279,6 +2480,88 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           wall/opening. Wraps the wall-drawing toolbar and all contextual banners/forms. */}
       <div className="sticky top-0 z-20 bg-ink-900 pt-2 pb-1 -mx-1 px-1 mb-2 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
 
+      {/* Keyboard shortcut help — pinned in the corner of the toolbar area.
+          Toggles with the `?` key; click outside the box (or press `?` again)
+          to dismiss. Only visible in block / brick mode. */}
+      {(mode === 'block' || mode === 'brick') && showShortcutHelp && (
+        <div className="mb-3 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg text-sm text-ink-200">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs uppercase tracking-wider text-ink-400">
+              Keyboard shortcuts
+            </span>
+            <button
+              onClick={() => setShowShortcutHelp(false)}
+              className="text-xs text-ink-400 hover:text-ink-200"
+              aria-label="Close shortcuts"
+            >
+              ×
+            </button>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1.5">
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">W</kbd>
+              <span className="ml-2">Draw wall</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">O</kbd>
+              <span className="ml-2">Add opening</span>
+            </div>
+            {mode === 'block' && (
+              <>
+                <div>
+                  <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">C</kbd>
+                  <span className="ml-2">Curved wall</span>
+                </div>
+                <div>
+                  <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">J</kbd>
+                  <span className="ml-2">Control joint</span>
+                </div>
+                <div>
+                  <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">P</kbd>
+                  <span className="ml-2">Pier</span>
+                </div>
+              </>
+            )}
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Shift</kbd>
+              <span className="text-ink-400 mx-1">+</span>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">click</kbd>
+              <span className="ml-2">Multi-select</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Ctrl</kbd>
+              <span className="text-ink-400 mx-1">+</span>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Z</kbd>
+              <span className="ml-2">Undo</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Ctrl</kbd>
+              <span className="text-ink-400 mx-1">+</span>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Y</kbd>
+              <span className="ml-2">Redo</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">type</kbd>
+              <span className="text-ink-400 mx-1">+</span>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Enter</kbd>
+              <span className="ml-2">Wall to exact length</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd>
+              <span className="ml-2">Delete selected</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd>
+              <span className="ml-2">Cancel current tool</span>
+            </div>
+            <div>
+              <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">?</kbd>
+              <span className="ml-2">Toggle this panel</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Wall drawing toolbar (block + brick modes) */}
       {(mode === 'block' || mode === 'brick') && (() => {
         // In block mode, every wall references a wall type (makeup) by id — drawing
@@ -2298,21 +2581,61 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               <span className="text-amber-300">
                 Select a wall type above before drawing.
               </span>
-            ) : (
-              <span className="text-ink-200">
-                {currentPageWalls.length}{' '}
-                wall{currentPageWalls.length === 1 ? '' : 's'} on this page
-                {allWalls.length !== currentPageWalls.length && (
-                  <span className="text-ink-400">
-                    {' '}
-                    · {allWalls.length} total in project
-                  </span>
-                )}
-                {activeMakeup && (
-                  <span className="text-ink-400"> · drawing as {activeMakeup.name}</span>
-                )}
-              </span>
-            )}
+            ) : (() => {
+              // Quick stats — count, run-metres on the current page, and a
+              // running count of openings/piers if any. Cheap to compute on
+              // every render: just a sum over the current page's walls.
+              let totalRunMm = 0
+              for (const w of currentPageWalls) {
+                if (w.kind === 'curved' && w.midX !== undefined && w.midY !== undefined) {
+                  const dx = w.endX - w.startX
+                  const dy = w.endY - w.startY
+                  // Cheap chord approximation for the inline HUD; the export
+                  // / tally calc uses the proper arc length.
+                  totalRunMm += Math.sqrt(dx * dx + dy * dy)
+                } else {
+                  const dx = w.endX - w.startX
+                  const dy = w.endY - w.startY
+                  totalRunMm += Math.sqrt(dx * dx + dy * dy)
+                }
+              }
+              const totalRunM = totalRunMm / 1000
+              return (
+                <span className="text-ink-200">
+                  {currentPageWalls.length}{' '}
+                  wall{currentPageWalls.length === 1 ? '' : 's'}
+                  {currentPageWalls.length > 0 && (
+                    <span className="text-ink-400">
+                      {' '}
+                      · <span className="text-ink-100 font-medium">{totalRunM.toFixed(2)} m</span> run
+                    </span>
+                  )}
+                  {currentPageOpenings.length > 0 && (
+                    <span className="text-ink-400">
+                      {' '}
+                      · {currentPageOpenings.length} opening
+                      {currentPageOpenings.length === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {currentPagePiers.length > 0 && (
+                    <span className="text-ink-400">
+                      {' '}
+                      · {currentPagePiers.length} pier
+                      {currentPagePiers.length === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {allWalls.length !== currentPageWalls.length && (
+                    <span className="text-ink-400">
+                      {' '}
+                      · {allWalls.length} walls total in project
+                    </span>
+                  )}
+                  {activeMakeup && (
+                    <span className="text-ink-400"> · drawing as {activeMakeup.name}</span>
+                  )}
+                </span>
+              )
+            })()}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <button
@@ -2508,10 +2831,49 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const lintelBlock =
           openingHeadHeightMm > 0 ? selectBlockLintel(openingHeadHeightMm).code : null
         const tooSmall = computedOpeningHeightMm < 100
+        // Common opening presets — each spec'd as (sillMm, openingMm). Head is
+        // computed at render time from the actual wall height so the same
+        // preset works on a 2400 wall or a 3000 wall. Filtered to presets that
+        // actually fit (opening + sill ≤ wall height − 100 for the lintel area).
+        const blockOpeningPresets: Array<{ label: string; sillMm: number; openingMm: number }> = [
+          { label: 'Door 2100', sillMm: 0, openingMm: 2100 },
+          { label: 'Door 2040', sillMm: 0, openingMm: 2040 },
+          { label: 'Window 1500 (sill 900)', sillMm: 900, openingMm: 1500 },
+          { label: 'Window 1200 (sill 900)', sillMm: 900, openingMm: 1200 },
+          { label: 'Window 1800 (sill 600)', sillMm: 600, openingMm: 1800 },
+        ]
         return (
           <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
             <div className="font-medium mb-3">
               Opening on a {Math.round(wallHeightMm)}mm wall · {Math.round(pendingOpening.widthMm)}mm wide
+            </div>
+            {/* Quick-pick presets — one click sets sill + head to a common
+                door/window pattern. Disabled when the preset can't fit (head
+                would be negative or under 100 mm). */}
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              <span className="text-[11px] text-amber-300 self-center mr-1">Presets:</span>
+              {blockOpeningPresets.map((p) => {
+                const computedHead = wallHeightMm - p.sillMm - p.openingMm
+                const fits = computedHead >= 0
+                return (
+                  <button
+                    key={p.label}
+                    onClick={() => {
+                      setOpeningSillHeightMm(p.sillMm)
+                      setOpeningHeadHeightMm(Math.max(0, computedHead))
+                    }}
+                    disabled={!fits}
+                    title={
+                      fits
+                        ? `Sill ${p.sillMm} · Head ${computedHead} · Opening ${p.openingMm}`
+                        : `Doesn't fit on a ${Math.round(wallHeightMm)}mm wall`
+                    }
+                    className="px-2 py-0.5 rounded border border-amber-500/40 text-xs hover:bg-amber-500/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {p.label}
+                  </button>
+                )
+              })}
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <label className="text-sm">
@@ -2604,6 +2966,29 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             <div className="font-medium mb-3">
               Opening on a {Math.round(wallHeightMm)}mm wall ·{' '}
               {Math.round(pendingOpening.widthMm)}mm wide
+            </div>
+            {/* Quick-pick height presets — one click instead of typing the
+                same numbers for every door / window. Disabled if the preset
+                doesn't fit the wall. */}
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              <span className="text-[11px] text-amber-300 self-center mr-1">Presets:</span>
+              {[
+                { label: 'Door 2100', h: 2100 },
+                { label: 'Door 2040', h: 2040 },
+                { label: 'Window 1500', h: 1500 },
+                { label: 'Window 1200', h: 1200 },
+                { label: 'Window 1800', h: 1800 },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => setBrickOpeningHeightMm(p.h)}
+                  disabled={p.h > wallHeightMm}
+                  title={`${p.h}mm tall`}
+                  className="px-2 py-0.5 rounded border border-amber-500/40 text-xs hover:bg-amber-500/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  {p.label}
+                </button>
+              ))}
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <label className="text-sm">
@@ -3463,7 +3848,7 @@ function WorkspacePageHeading({ mode }: { mode: 'block' | 'brick' | undefined })
   if (mode === 'brick') {
     return (
       <div className="mb-6">
-        <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">Brick estimate</h2>
+        <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Brick estimate</h2>
         <p className="text-ink-300 text-sm mt-1">
           Trace brick walls over a plan — area × bricks/m² plus ties, plascourse, and lintels.
         </p>
@@ -3473,7 +3858,7 @@ function WorkspacePageHeading({ mode }: { mode: 'block' | 'brick' | undefined })
   if (mode === 'block') {
     return (
       <div className="mb-6">
-        <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">Block estimate</h2>
+        <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Block estimate</h2>
         <p className="text-ink-300 text-sm mt-1">
           Walls, piers, openings — auto-tallied to a printable schedule.
         </p>

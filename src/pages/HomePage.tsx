@@ -8,6 +8,7 @@ import {
   type ProjectStatus,
   type SavedProject,
   deleteProject,
+  duplicateProject,
   listProjects,
   saveProject,
 } from '../lib/projectStorage'
@@ -71,15 +72,23 @@ function nextOutcome(o: ProjectOutcome | undefined): ProjectOutcome | undefined 
  * X" branches that obscured the actual UI.
  */
 export default function HomePage() {
-  const { signedIn, user } = useAuth()
-  const { currentOrg } = useOrganisations()
+  const { signedIn, user, loading: authLoading } = useAuth()
+  const { currentOrg, loading: orgsLoading } = useOrganisations()
+
+  // Wait for both auth and org info to resolve before deciding which dashboard
+  // to render. Otherwise the personal dashboard flashes on first paint for org
+  // members (signedIn starts as false → personal-dashboard renders → auth and
+  // orgs resolve → org-dashboard takes over a moment later).
+  const stillResolving = authLoading || orgsLoading
 
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
       <main className="max-w-[1600px] mx-auto px-6 py-12">
         {signedIn && <LocalMigrationBanner />}
-        {currentOrg ? (
+        {stillResolving ? (
+          <div className="text-sm text-ink-400 py-16 text-center">Loading…</div>
+        ) : currentOrg ? (
           <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
         ) : (
           <PersonalDashboard />
@@ -248,7 +257,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
         <div>
-          <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">
+          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">
             Dashboard
           </h2>
           <p className="text-ink-300 text-sm mt-1">
@@ -727,6 +736,31 @@ function PersonalDashboard() {
     }
   }
 
+  /**
+   * Duplicate an existing project into a fresh in-progress one with the same
+   * wall types, brick settings, pier patterns etc. — but no walls, no PDFs.
+   * The whole point is "start a new job from my last similar one in one click",
+   * so we route the user straight into the new workspace afterwards.
+   */
+  async function handleDuplicate(project: SavedProject) {
+    try {
+      const newId = await duplicateProject(project.id)
+      if (!newId) {
+        window.alert('Could not duplicate that project.')
+        return
+      }
+      // Push the new project into the list immediately so the user sees a
+      // confirming entry before the route change kicks in. Then navigate.
+      const refreshed = await listProjects()
+      setProjects(refreshed)
+      const route = project.type === 'brick' ? `/project/brick?id=${newId}` : `/project/block?id=${newId}`
+      navigate(route)
+    } catch (err) {
+      console.error('Failed to duplicate', err)
+      window.alert('Could not duplicate that project. See the console for details.')
+    }
+  }
+
   async function handleCycleOutcome(project: SavedProject) {
     const next = nextOutcome(project.outcome)
     setProjects((prev) =>
@@ -748,7 +782,7 @@ function PersonalDashboard() {
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
         <div>
-          <h2 className="text-4xl font-extrabold tracking-tight text-ink-50">Dashboard</h2>
+          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Dashboard</h2>
           <p className="text-ink-300 text-sm mt-1">
             Your estimates, win rate, and current jobs at a glance.
           </p>
@@ -898,6 +932,7 @@ function PersonalDashboard() {
                 key={p.id}
                 project={p}
                 onDelete={() => handleDelete(p.id)}
+                onDuplicate={() => handleDuplicate(p)}
                 onCycleOutcome={() => handleCycleOutcome(p)}
               />
             ))}
@@ -934,7 +969,7 @@ function StatTile({
       <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
         {label}
       </div>
-      <div className={`text-3xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
+      <div className={`text-2xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
         {value}
       </div>
       {sub && <div className="text-xs text-ink-400 mt-0.5">{sub}</div>}
@@ -1002,10 +1037,12 @@ function OutcomePill({
 function ProjectRow({
   project,
   onDelete,
+  onDuplicate,
   onCycleOutcome,
 }: {
   project: SavedProject
   onDelete: () => void
+  onDuplicate: () => void
   onCycleOutcome: () => void
 }) {
   const name =
@@ -1050,6 +1087,13 @@ function ProjectRow({
           >
             Open
           </Link>
+          <button
+            onClick={onDuplicate}
+            title="Start a new project with the same wall types, brick settings, pier patterns — fresh canvas, no PDFs."
+            className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-300 text-sm hover:bg-beme-500/10 hover:border-beme-500/40 hover:text-beme-300 transition-colors"
+          >
+            Duplicate
+          </button>
           <button
             onClick={onDelete}
             className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-300 text-sm hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 transition-colors"

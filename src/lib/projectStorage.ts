@@ -185,6 +185,62 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 /**
+ * Duplicate an existing project as a new in-progress project. Copies wall types,
+ * brick settings, pier patterns, export inclusions — the full "this is how I
+ * estimate" boilerplate — but starts with no walls / openings / piers / PDFs
+ * and a fresh project name. The user's typical workflow ("same client, new
+ * job, same wall types") becomes one click instead of recreating setup.
+ *
+ * Returns the new project's id so the caller can route the user into it.
+ */
+export async function duplicateProject(sourceId: string): Promise<string | null> {
+  const source = await getProject(sourceId)
+  if (!source) return null
+  const now = new Date().toISOString()
+  const newId = generateProjectId()
+  const baseName = source.projectDetails.projectName?.trim() || 'Untitled project'
+  const copy: SavedProject = {
+    id: newId,
+    type: source.type,
+    status: 'in-progress',
+    organisationId: source.organisationId,
+    createdAt: now,
+    updatedAt: now,
+    // Drop completedAt / outcome — the new project hasn't been won/lost yet.
+    projectDetails: {
+      ...source.projectDetails,
+      projectName: `${baseName} (copy)`,
+      // Reset siteAddress + date — usually different per job. Estimator name
+      // + client name often stay the same so we keep those, and the user can
+      // edit them in the side panel anyway.
+      siteAddress: '',
+      date: now.slice(0, 10),
+      notes: '',
+    },
+    // PDFs are NOT copied — a new job has a new plan. Estimator uploads it.
+    pdfBlob: undefined,
+    pdfFileName: undefined,
+    referencePdfs: undefined,
+    // Drawn data is also NOT copied — the whole point is a clean canvas with
+    // the user's preferred setup pre-loaded.
+    pagesData: {},
+    wallsByPage: {},
+    openingsByPage: {},
+    piersByPage: {},
+    currentPage: 1,
+    // Preserve the user's setup work — wall types, pier makeups, export prefs.
+    makeups: source.makeups,
+    activeMakeupId: source.activeMakeupId,
+    pierMakeups: source.pierMakeups,
+    blockExportInclusions: source.blockExportInclusions,
+    brickSettings: source.brickSettings,
+    exportInclusions: source.exportInclusions,
+  }
+  await saveProject(copy)
+  return newId
+}
+
+/**
  * Read the local (IndexedDB) project list without touching the cloud. Used by
  * the first-time-login migration prompt.
  */

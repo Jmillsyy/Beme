@@ -70,8 +70,8 @@ export default function Header() {
             <div className="absolute inset-[6px] bg-ink-900 rounded-[2px]" />
           </div>
           <div className="leading-tight">
-            <div className="text-3xl font-extrabold tracking-tight text-ink-50">Beme</div>
-            <div className="text-[13px] text-ink-300">Building estimates made easy</div>
+            <div className="text-2xl font-extrabold tracking-tight text-ink-50">Beme</div>
+            <div className="text-xs text-ink-300">Building estimates made easy</div>
           </div>
         </Link>
 
@@ -163,10 +163,10 @@ function OrgSwitcher({
     // the user where they are without offering a menu they don't need.
     return (
       <span
-        className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-ink-600 bg-ink-700/40 text-sm text-ink-100 max-w-[240px] truncate"
+        className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-ink-600 bg-ink-700/40 text-xs text-ink-100 max-w-[220px] truncate"
         title={label}
       >
-        <span className="w-2 h-2 rounded-full bg-beme-500" />
+        <span className="w-1.5 h-1.5 rounded-full bg-beme-500" />
         {label}
       </span>
     )
@@ -177,7 +177,7 @@ function OrgSwitcher({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-ink-600 hover:bg-ink-700 text-sm text-ink-100 max-w-[240px]"
+        className="flex items-center gap-2 px-2.5 py-1 rounded-full border border-ink-600 hover:bg-ink-700 text-xs text-ink-100 max-w-[220px]"
         aria-expanded={open}
         aria-haspopup="menu"
         title={label}
@@ -256,14 +256,14 @@ function UserMenu({ user }: { user: import('@supabase/supabase-js').User }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2.5 pl-1.5 pr-3.5 py-1 rounded-full border border-ink-600 hover:bg-ink-700 transition-colors"
+        className="flex items-center gap-2 pl-1 pr-3 py-0.5 rounded-full border border-ink-600 hover:bg-ink-700 transition-colors"
         aria-expanded={open}
         aria-haspopup="menu"
       >
-        <span className="w-8 h-8 rounded-full bg-beme-500 text-black text-sm font-bold flex items-center justify-center">
+        <span className="w-7 h-7 rounded-full bg-beme-500 text-black text-xs font-bold flex items-center justify-center">
           {initials}
         </span>
-        <span className="text-base text-ink-100 max-w-[180px] truncate hidden sm:inline">
+        <span className="text-sm text-ink-100 max-w-[160px] truncate hidden sm:inline">
           {name}
         </span>
         <span className="text-ink-400 text-xs">▾</span>
