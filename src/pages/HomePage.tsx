@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import Header from '../components/Header'
 import DonutChart from '../components/DonutChart'
 import LocalMigrationBanner from '../components/LocalMigrationBanner'
@@ -14,7 +14,10 @@ import {
 import { useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
-import { listEstimateRequests } from '../lib/estimateRequests'
+import {
+  listEstimateRequests,
+  pickUpEstimateRequest,
+} from '../lib/estimateRequests'
 import type { EstimateRequest } from '../types/estimateRequests'
 import { estimateRequestStatusLabel } from '../types/estimateRequests'
 import type { OrgMember, Organisation } from '../types/organisations'
@@ -109,9 +112,15 @@ export default function HomePage() {
  *     a link through to the linked project.
  */
 function OrgDashboard({ org, userId }: { org: Organisation; userId: string | null }) {
+  const navigate = useNavigate()
   const [requests, setRequests] = useState<EstimateRequest[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
   const [loading, setLoading] = useState(true)
+  // Which request the user is currently picking up (drives the row's
+  // disabled state + button label). One at a time — the user can't sensibly
+  // claim two requests in parallel and the request-side update isn't
+  // batched.
+  const [pickingUpId, setPickingUpId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -130,6 +139,28 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       cancelled = true
     }
   }, [org.id])
+
+  // Inline pickup straight from a dashboard row: creates the linked project,
+  // flips the request to in_progress, then navigates the user into the
+  // workspace. Used by the Pick up button on pending rows in 'Action needed'.
+  const handlePickUp = useCallback(
+    async (request: EstimateRequest) => {
+      if (pickingUpId) return
+      setPickingUpId(request.id)
+      try {
+        const newProjectId = await pickUpEstimateRequest(request)
+        const path =
+          request.type === 'brick'
+            ? `/project/brick?id=${newProjectId}`
+            : `/project/block?id=${newProjectId}`
+        navigate(path)
+      } catch (err) {
+        window.alert(`Couldn't pick up: ${(err as Error).message ?? 'unknown error'}`)
+        setPickingUpId(null)
+      }
+    },
+    [pickingUpId, navigate]
+  )
 
   // Member lookup for assignee / creator name display on request rows.
   const memberById = useMemo(() => {
@@ -172,24 +203,31 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { pending, inProgress, completedThisWeek, avgTurnaround }
   }, [requests])
 
-  // Split active (pending + in_progress) requests by mine / theirs so each
-  // can render in its own clearly labelled section.
-  const { myActive, teamActive, recentlyCompleted } = useMemo(() => {
+  // Split the active requests three ways:
+  //   - myPending    → 'Needs you to pick up'   (left column of Your inbox)
+  //   - myInProgress → 'Currently working on'   (right column of Your inbox)
+  //   - teamActive   → 'Team inbox'             (collapsed-ish section below)
+  //
+  // The two 'mine' columns sort by oldest-pending-first because that's the
+  // one that's been waiting longest and most likely to need attention.
+  const { myPending, myInProgress, teamActive, recentlyCompleted } = useMemo(() => {
     const active = requests.filter(
       (r) => r.status === 'pending' || r.status === 'in_progress'
     )
-    const sortActive = (a: EstimateRequest, b: EstimateRequest) => {
-      // Pending before in-progress (pending = needs attention sooner).
-      if (a.status !== b.status) return a.status === 'pending' ? -1 : 1
-      // Then most recently updated first.
-      return b.updatedAt.localeCompare(a.updatedAt)
-    }
-    const mine = active
-      .filter((r) => r.assignedToUserId === userId)
-      .sort(sortActive)
+    const byOldestUpdated = (a: EstimateRequest, b: EstimateRequest) =>
+      a.updatedAt.localeCompare(b.updatedAt)
+    const myPending = active
+      .filter((r) => r.status === 'pending' && r.assignedToUserId === userId)
+      .sort(byOldestUpdated)
+    const myInProgress = active
+      .filter((r) => r.status === 'in_progress' && r.assignedToUserId === userId)
+      .sort(byOldestUpdated)
     const team = active
       .filter((r) => r.assignedToUserId !== userId)
-      .sort(sortActive)
+      .sort((a, b) => {
+        if (a.status !== b.status) return a.status === 'pending' ? -1 : 1
+        return b.updatedAt.localeCompare(a.updatedAt)
+      })
     const completed = requests
       .filter((r) => r.status === 'completed')
       .sort(
@@ -197,8 +235,13 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           new Date(b.completedAt ?? b.updatedAt).getTime() -
           new Date(a.completedAt ?? a.updatedAt).getTime()
       )
-      .slice(0, 5)
-    return { myActive: mine, teamActive: team, recentlyCompleted: completed }
+      .slice(0, 6)
+    return {
+      myPending,
+      myInProgress,
+      teamActive: team,
+      recentlyCompleted: completed,
+    }
   }, [requests, userId])
 
   return (
@@ -264,21 +307,27 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         />
       </section>
 
-      {/* ── Your inbox ── */}
+      {/* ── Your inbox ──
+          Two side-by-side columns so the distinction between 'still needs
+          to be picked up' (urgent / blocking) and 'I've started, finish it'
+          (continue) is obvious without scanning status badges. Each column
+          has its own count + empty state. Stacks to one column under md so
+          the dashboard stays usable on narrower viewports. */}
       <section className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
             Your inbox
           </h3>
-          {myActive.length > 0 && (
+          {(myPending.length + myInProgress.length) > 0 && (
             <span className="text-xs text-ink-400">
-              {myActive.length} {myActive.length === 1 ? 'request' : 'requests'} assigned to you
+              {myPending.length + myInProgress.length}{' '}
+              {myPending.length + myInProgress.length === 1 ? 'request' : 'requests'} assigned to you
             </span>
           )}
         </div>
         {loading ? (
           <div className="text-sm text-ink-400">Loading…</div>
-        ) : myActive.length === 0 ? (
+        ) : myPending.length === 0 && myInProgress.length === 0 ? (
           <div className="border border-dashed border-ink-600 rounded-xl p-8 text-center bg-ink-800/40">
             <p className="text-ink-100 text-sm mb-1">Nothing waiting for you right now.</p>
             <p className="text-ink-400 text-xs">
@@ -290,16 +339,41 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             </p>
           </div>
         ) : (
-          <ul className="space-y-2">
-            {myActive.map((r) => (
-              <InboxRow
-                key={r.id}
-                request={r}
-                assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                creator={memberById.get(r.createdByUserId)}
-              />
-            ))}
-          </ul>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <InboxColumn
+              title="Needs you to pick up"
+              accent="amber"
+              count={myPending.length}
+              empty="Nothing pending in your queue."
+            >
+              {myPending.map((r) => (
+                <InboxRow
+                  key={r.id}
+                  request={r}
+                  assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
+                  creator={memberById.get(r.createdByUserId)}
+                  onPickUp={() => handlePickUp(r)}
+                  pickingUp={pickingUpId === r.id}
+                  disablePickUp={!!pickingUpId && pickingUpId !== r.id}
+                />
+              ))}
+            </InboxColumn>
+            <InboxColumn
+              title="Currently working on"
+              accent="blue"
+              count={myInProgress.length}
+              empty="You haven't started any requests yet."
+            >
+              {myInProgress.map((r) => (
+                <InboxRow
+                  key={r.id}
+                  request={r}
+                  assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
+                  creator={memberById.get(r.createdByUserId)}
+                />
+              ))}
+            </InboxColumn>
+          </div>
         )}
       </section>
 
@@ -328,7 +402,12 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         </section>
       )}
 
-      {/* ── Recently completed ── */}
+      {/* ── Recently completed ──
+          3-up grid of small cards. Each card shows the customer, who
+          finished it, and the turnaround in days. Saves vertical space
+          on a dashboard that's already inbox-heavy, and surfaces team
+          throughput (who's getting things done, how long things are
+          taking) as a glanceable metric. */}
       {recentlyCompleted.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
@@ -342,20 +421,121 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               View all →
             </Link>
           </div>
-          <ul className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {recentlyCompleted.map((r) => (
-              <InboxRow
+              <CompletedCard
                 key={r.id}
                 request={r}
                 assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                creator={memberById.get(r.createdByUserId)}
-                muted
               />
             ))}
-          </ul>
+          </div>
         </section>
       )}
     </>
+  )
+}
+
+/**
+ * Single column inside the 'Your inbox' two-up grid. The header carries a
+ * small coloured dot matching the section's status (amber = pending, blue
+ * = in-progress) so the columns read distinctly even when the user's eyes
+ * blur past the heading text. Empty columns show a dashed placeholder so
+ * the side-by-side proportions stay visually balanced when one side has
+ * nothing in it.
+ */
+function InboxColumn({
+  title,
+  accent,
+  count,
+  empty,
+  children,
+}: {
+  title: string
+  accent: 'amber' | 'blue'
+  count: number
+  empty: string
+  children: React.ReactNode
+}) {
+  const dotClass = accent === 'amber' ? 'bg-amber-400' : 'bg-blue-400'
+  const hasContent = Array.isArray(children) ? children.length > 0 : !!children
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2 px-1">
+        <span className={`w-2 h-2 rounded-full ${dotClass}`} />
+        <span className="text-sm font-semibold text-ink-100">{title}</span>
+        <span className="text-xs text-ink-400 ml-auto tabular-nums">{count}</span>
+      </div>
+      {hasContent ? (
+        <ul className="space-y-2">{children}</ul>
+      ) : (
+        <div className="border border-dashed border-ink-600 rounded-xl p-5 text-center bg-ink-800/30">
+          <p className="text-ink-400 text-xs">{empty}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Compact card for the Recently Completed 3-up grid. Surfaces the three
+ * things a teammate actually wants from this view: the customer's name,
+ * who closed it out, and how long it took (turnaround). Click-through
+ * lands on the request detail page so the project can be reopened from
+ * there if needed.
+ */
+function CompletedCard({
+  request,
+  assignee,
+}: {
+  request: EstimateRequest
+  assignee: OrgMember | undefined
+}) {
+  // Turnaround = completedAt − createdAt. Defaults to updatedAt for safety
+  // if completedAt is missing (shouldn't happen on completed rows but
+  // tolerate older data).
+  const created = new Date(request.createdAt).getTime()
+  const completedIso = request.completedAt ?? request.updatedAt
+  const completed = new Date(completedIso).getTime()
+  const turnaroundDays = (completed - created) / (1000 * 60 * 60 * 24)
+  const turnaroundLabel = formatTurnaround(turnaroundDays)
+
+  return (
+    <Link
+      to={`/requests/${request.id}`}
+      className="block border border-ink-600 rounded-xl bg-ink-800 p-4 hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors group"
+    >
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <div className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
+            {request.customerName}
+          </div>
+          {request.customerCompany && (
+            <div className="text-xs text-ink-400 truncate">{request.customerCompany}</div>
+          )}
+        </div>
+        <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-400">
+          {request.type === 'brick' ? 'Brick' : 'Block'}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-xs text-ink-400 gap-2 flex-wrap">
+        <span className="truncate">
+          By{' '}
+          <span className="text-ink-200">
+            {assignee?.displayName || assignee?.email || 'team'}
+          </span>
+        </span>
+        <span
+          className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-medium tabular-nums"
+          title={`Turnaround: ${turnaroundLabel}`}
+        >
+          ⏱ {turnaroundLabel}
+        </span>
+      </div>
+      <div className="text-[11px] text-ink-500 mt-2">
+        Completed {formatRelative(completedIso)}
+      </div>
+    </Link>
   )
 }
 
@@ -376,17 +556,29 @@ function formatTurnaround(days: number): string {
  * Compact request row tuned for the dashboard. Smaller than the full row on
  * /requests so a list of 5–10 fits comfortably on the home page. Same data
  * — customer name, status, assignee, last update — different density.
+ *
+ * Optional `onPickUp` adds a 'Pick up' button to the right of the row that
+ * stops the surrounding Link from navigating to the detail page; instead it
+ * creates the project + flips the request straight from the dashboard. Used
+ * on pending rows in 'Needs you to pick up' so the user can claim a request
+ * in one click.
  */
 function InboxRow({
   request,
   assignee,
   creator,
   muted,
+  onPickUp,
+  pickingUp,
+  disablePickUp,
 }: {
   request: EstimateRequest
   assignee: OrgMember | undefined
   creator: OrgMember | undefined
   muted?: boolean
+  onPickUp?: () => void
+  pickingUp?: boolean
+  disablePickUp?: boolean
 }) {
   const statusBadgeClass =
     request.status === 'pending'
@@ -396,6 +588,14 @@ function InboxRow({
         : request.status === 'completed'
           ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/40'
           : 'bg-ink-700 text-ink-300 border border-ink-600'
+
+  // Wrap the Pick up handler so a click on it never navigates the Link.
+  function handlePickUpClick(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!onPickUp || pickingUp || disablePickUp) return
+    onPickUp()
+  }
 
   return (
     <li>
@@ -450,6 +650,16 @@ function InboxRow({
               <span>{formatRelative(request.updatedAt)}</span>
             </div>
           </div>
+          {onPickUp && (
+            <button
+              type="button"
+              onClick={handlePickUpClick}
+              disabled={pickingUp || disablePickUp}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {pickingUp ? 'Picking up…' : 'Pick up'}
+            </button>
+          )}
         </div>
       </Link>
     </li>
