@@ -133,15 +133,67 @@ function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
  * Returns an empty string when there are no walls — no point in a blank
  * overview page.
  */
+/**
+ * Palette of (stroke, dark) colour pairs used to differentiate wall types on
+ * the layout diagram. Each pair is a medium colour (used at 55 % opacity for
+ * the wall body stroke) and a darker version (used as the solid fill of the
+ * numbered label circle, so the white number reads cleanly inside).
+ *
+ * Colour choice is colour-blind-friendly-ish and prints well in landscape A4.
+ * First slot stays the brand orange so plans with a single wall type look
+ * unchanged from the previous version of the diagram.
+ */
+const WALL_TYPE_PALETTE: Array<{ body: string; dark: string }> = [
+  { body: '#ED7D31', dark: '#9A3F08' }, // brand orange
+  { body: '#2563eb', dark: '#1e3a8a' }, // blue
+  { body: '#16a34a', dark: '#14532d' }, // green
+  { body: '#7c3aed', dark: '#4c1d95' }, // purple
+  { body: '#db2777', dark: '#831843' }, // pink
+  { body: '#0891b2', dark: '#164e63' }, // teal
+  { body: '#ca8a04', dark: '#713f12' }, // amber
+  { body: '#dc2626', dark: '#7f1d1d' }, // red
+]
+
 function buildPlanOverviewPage(
   walls: Wall[],
   openings: Opening[],
   piers: Pier[],
+  makeups: WallMakeup[],
   makeupsById: Record<string, WallMakeup>,
   thicknessByWallId: Record<string, number>,
   pageHeader: string
 ): string {
   if (walls.length === 0) return ''
+
+  // Assign each wall type a colour from the palette. Order follows the order
+  // makeups were added to the project so the assignment is stable across
+  // exports — the bricklayer doesn't see the colour for "Retaining" change
+  // between two builds of the same project.
+  const colourByMakeupId: Record<string, { body: string; dark: string }> = {}
+  // Only consider makeups that actually have walls in this project, in the
+  // order they first appear in the walls array. Then fall through to any
+  // remaining makeups (e.g. defined but unused) so the legend stays stable.
+  const orderedMakeups: WallMakeup[] = []
+  const seen = new Set<string>()
+  for (const w of walls) {
+    if (!seen.has(w.makeupId) && makeupsById[w.makeupId]) {
+      seen.add(w.makeupId)
+      orderedMakeups.push(makeupsById[w.makeupId])
+    }
+  }
+  for (const m of makeups) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id)
+      orderedMakeups.push(m)
+    }
+  }
+  for (let i = 0; i < orderedMakeups.length; i++) {
+    colourByMakeupId[orderedMakeups[i].id] = WALL_TYPE_PALETTE[i % WALL_TYPE_PALETTE.length]
+  }
+  // Fallback for any wall whose makeup id isn't in makeupsById (shouldn't
+  // happen but defensively keep the diagram from crashing).
+  const fallbackColour = WALL_TYPE_PALETTE[0]
+  const colourFor = (wall: Wall) => colourByMakeupId[wall.makeupId] ?? fallbackColour
 
   // Compute the at-a-glance summary stats shown above the diagram. These
   // give the reader a sense of project size before they look at the
@@ -266,13 +318,17 @@ function buildPlanOverviewPage(
   const labelDiameter = Math.max(maxThick * 3.3, Math.min(viewW, viewH) * 0.06)
   const labelFontSize = labelDiameter * 0.6
 
-  // Wall bodies — semi-transparent orange fill with rounded ends. We render
-  // walls as a STROKE on a line/polyline with stroke-width equal to the
-  // thickness, which is simpler than computing per-corner mitres and is
-  // accurate enough for an at-a-glance overview.
+  // Wall bodies — semi-transparent fill keyed off the wall's makeup colour
+  // (see WALL_TYPE_PALETTE / colourByMakeupId above). We render walls as a
+  // STROKE on a line/polyline with stroke-width equal to the thickness,
+  // which is simpler than computing per-corner mitres and is accurate
+  // enough for an at-a-glance overview. stroke-opacity 0.55 lets the
+  // dashed plan beneath show through a touch where walls overlap, which
+  // helps disambiguate cavity/double walls drawn close together.
   const wallShapes: string[] = []
   for (const w of walls) {
     const thickness = thicknessByWallId[w.id] || 190
+    const c = colourFor(w)
     if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
       const geom = arcFromThreePoints(
         { x: w.startX, y: w.startY },
@@ -281,7 +337,7 @@ function buildPlanOverviewPage(
       )
       if (!geom) {
         wallShapes.push(
-          `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="rgba(237,125,49,0.55)" stroke-width="${thickness}" stroke-linecap="butt"/>`
+          `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${thickness}" stroke-linecap="butt"/>`
         )
         continue
       }
@@ -291,11 +347,11 @@ function buildPlanOverviewPage(
       const samples = sampleArc(geom, 48)
       const pts = samples.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
       wallShapes.push(
-        `<polyline points="${pts}" stroke="rgba(237,125,49,0.55)" stroke-width="${thickness}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`
+        `<polyline points="${pts}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${thickness}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`
       )
     } else {
       wallShapes.push(
-        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="rgba(237,125,49,0.55)" stroke-width="${thickness}" stroke-linecap="butt"/>`
+        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${thickness}" stroke-linecap="butt"/>`
       )
     }
   }
@@ -344,19 +400,44 @@ function buildPlanOverviewPage(
     }
     const lengthM = (wallLengthsMm[i] / 1000).toFixed(2)
     const lengthOffsetY = labelDiameter * 0.7 + lengthFontSize * 0.6
+    // Circle fill matches the wall type's "dark" colour so the number sits
+    // visually on top of a deeper version of the wall colour beside it.
+    const c = colourFor(w)
     return `
-      <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="#9A3F08" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
+      <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="${c.dark}" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
       <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${labelFontSize}" font-weight="700" fill="#fff">${i + 1}</text>
       <text x="${cx}" y="${cy + lengthOffsetY}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.18}" paint-order="stroke">${lengthM} m</text>
     `
   })
 
-  // Inline legend describing what the shapes mean. Sits below the SVG.
+  // Inline legend — one row per wall type used on the project, each with
+  // its colour swatch and the count + total length of walls in that type.
+  // Piers (if any) get their own line at the end. Lets the reader map a
+  // colour they see on the diagram back to a named wall type instantly.
+  const wallTypeLegendItems = orderedMakeups
+    .filter((m) => walls.some((w) => w.makeupId === m.id))
+    .map((m) => {
+      const c = colourByMakeupId[m.id] ?? fallbackColour
+      const wallsOfType = walls.filter((w) => w.makeupId === m.id)
+      const totalLenM =
+        wallsOfType.reduce((s, w) => {
+          const idx = walls.indexOf(w)
+          return s + (idx >= 0 ? wallLengthsMm[idx] : 0)
+        }, 0) / 1000
+      return `
+        <span class="legend-item">
+          <span class="legend-swatch" style="background: ${c.body}; opacity: 0.85; border: 1px solid ${c.dark};"></span>
+          <strong>${escapeHtml(m.name)}</strong>
+          <span class="legend-sub">${wallsOfType.length} wall${wallsOfType.length === 1 ? '' : 's'} · ${totalLenM.toFixed(2)} m</span>
+        </span>
+      `
+    })
+    .join('')
   const legend = `
     <div class="plan-overview-legend">
-      <span class="legend-item"><span class="legend-swatch legend-wall"></span>Wall (numbered, length labelled)</span>
-      ${piers.length > 0 ? `<span class="legend-item"><span class="legend-swatch legend-pier"></span>Pier</span>` : ''}
-      <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan is scaled to fit the page.</span>
+      ${wallTypeLegendItems}
+      ${piers.length > 0 ? `<span class="legend-item"><span class="legend-swatch legend-pier"></span><strong>Pier</strong></span>` : ''}
+      <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan scaled to fit page.</span>
     </div>
   `
 
@@ -688,6 +769,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     walls,
     openings,
     piers,
+    makeups,
     makeupsById,
     thicknessByWallId,
     pageHeader
@@ -1097,15 +1179,20 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     align-items: center;
     gap: 6px;
   }
+  .legend-item strong {
+    font-weight: 600;
+    color: #1f2937;
+  }
+  .legend-sub {
+    color: #6b7280;
+    font-size: 10px;
+    margin-left: 2px;
+  }
   .legend-swatch {
     display: inline-block;
     width: 18px;
     height: 10px;
     border-radius: 2px;
-  }
-  .legend-wall {
-    background: rgba(237, 125, 49, 0.55);
-    border: 1px solid #9A3F08;
   }
   .legend-pier {
     background: #3b82f6;
