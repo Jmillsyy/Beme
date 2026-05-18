@@ -224,6 +224,7 @@ function buildPlanOverviewPage(
   makeups: WallMakeup[],
   makeupsById: Record<string, WallMakeup>,
   thicknessByWallId: Record<string, number>,
+  totalBlocks: number,
   pageHeader: string,
   background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null
 ): string {
@@ -286,22 +287,37 @@ function buildPlanOverviewPage(
   const tiedPierCount = piers.filter((p) => p.type === 'tied').length
   const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length
   const wallTypeCount = new Set(walls.map((w) => w.makeupId)).size
-  const tallestWall = walls.reduce((max, w) => {
-    const makeup = makeupsById[w.makeupId]
-    const h = w.heightMmOverride ?? makeup?.heightMm ?? 0
-    return Math.max(max, h)
-  }, 0)
-  const longestWallMm = wallLengthsMm.reduce((m, l) => Math.max(m, l), 0)
 
-  // Tiles drawn as horizontal stat row above the SVG. Each tile is small
-  // (number + label below) and the row wraps if there are too many.
+  // Stat tiles are tuned for what a bricklayer / supplier looking at the
+  // overview actually needs: count, run, area, total blocks, plus the
+  // accessory counts (openings, piers) when they're non-zero. Per-wall
+  // extremes like "longest" / "tallest" don't drive ordering decisions
+  // so they're left out.
   const summaryTiles: Array<{ label: string; value: string; sub?: string }> = [
-    { label: 'Walls', value: String(walls.length), sub: `${wallTypeCount} wall type${wallTypeCount === 1 ? '' : 's'}` },
+    {
+      label: 'Walls',
+      value: String(walls.length),
+      sub: `${wallTypeCount} wall type${wallTypeCount === 1 ? '' : 's'}`,
+    },
     { label: 'Total length', value: `${(totalWallLengthMm / 1000).toFixed(2)} m` },
-    { label: 'Wall area', value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`, sub: openings.length > 0 ? `net of ${openings.length} opening${openings.length === 1 ? '' : 's'}` : 'no openings' },
-    { label: 'Longest wall', value: `${(longestWallMm / 1000).toFixed(2)} m` },
-    { label: 'Tallest wall', value: `${(tallestWall / 1000).toFixed(2)} m` },
+    {
+      label: 'Wall area',
+      value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`,
+      sub: openings.length > 0 ? `net of openings` : 'gross area',
+    },
+    {
+      label: 'Total blocks',
+      value: formatNumber(totalBlocks),
+      sub: 'corner-dedup\'d',
+    },
   ]
+  if (openings.length > 0) {
+    summaryTiles.push({
+      label: 'Openings',
+      value: String(openings.length),
+      sub: `${(openingsAreaSqMm / 1_000_000).toFixed(2)} m² deducted`,
+    })
+  }
   if (piers.length > 0) {
     summaryTiles.push({
       label: 'Piers',
@@ -903,6 +919,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     makeups,
     makeupsById,
     thicknessByWallId,
+    totalBlocks,
     pageHeader,
     planOverviewBackground
   )
