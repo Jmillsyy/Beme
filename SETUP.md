@@ -585,6 +585,153 @@ end;
 $$;
 
 grant execute on function public.peek_invitation(uuid) to anon, authenticated;
+
+-- ─── member management ──────────────────────────────────────────────────────
+-- Org admins need to see who's in their org with full names + emails (the
+-- Settings page can only show emails for the signed-in user via the
+-- anonymous Supabase client — auth.users is locked down). These three
+-- SECURITY DEFINER RPCs cover the read + the two destructive operations
+-- with a built-in last-admin guard so an org can never end up with no
+-- admin.
+
+-- 1) Read: returns members of an org WITH email + display_name. Gated to
+--    org members so a random signed-in user can't enumerate other orgs.
+create or replace function public.list_org_members_with_identity(org_id uuid)
+returns table (
+  id uuid,
+  organisation_id uuid,
+  user_id uuid,
+  role text,
+  email text,
+  display_name text,
+  created_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  if not public.is_org_member(org_id) then
+    raise exception 'Not a member of this organisation';
+  end if;
+  return query
+  select
+    m.id,
+    m.organisation_id,
+    m.user_id,
+    m.role,
+    au.email::text,
+    coalesce(
+      (au.raw_user_meta_data ->> 'full_name'),
+      (au.raw_user_meta_data ->> 'name')
+    )::text as display_name,
+    m.created_at
+  from public.organisation_members m
+    left join auth.users au on au.id = m.user_id
+  where m.organisation_id = org_id
+  order by m.created_at asc;
+end;
+$$;
+
+grant execute on function public.list_org_members_with_identity(uuid) to authenticated;
+
+-- 2) Remove a member. Admins only. Blocks removing the last admin — every
+--    org must have at least one. A member can remove themselves (leave
+--    the org) as long as they're not the last admin.
+create or replace function public.remove_org_member(member_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  target record;
+  caller_id uuid := auth.uid();
+  admin_count integer;
+begin
+  if caller_id is null then
+    raise exception 'Must be signed in';
+  end if;
+
+  select * into target
+  from public.organisation_members
+  where id = member_id;
+
+  if not found then
+    raise exception 'Member not found';
+  end if;
+
+  -- Caller must be an admin of the target's org OR be removing themselves.
+  if not public.is_org_admin(target.organisation_id)
+     and target.user_id <> caller_id then
+    raise exception 'Only admins can remove other members';
+  end if;
+
+  -- Last-admin guard. Count current admins; if removing this one would
+  -- drop the count to zero, reject. Applies whether the caller is the
+  -- admin themselves or someone else removing them.
+  if target.role = 'admin' then
+    select count(*) into admin_count
+    from public.organisation_members
+    where organisation_id = target.organisation_id and role = 'admin';
+    if admin_count <= 1 then
+      raise exception 'Cannot remove the last admin — promote someone else first';
+    end if;
+  end if;
+
+  delete from public.organisation_members where id = member_id;
+end;
+$$;
+
+grant execute on function public.remove_org_member(uuid) to authenticated;
+
+-- 3) Change a member's role. Admins only. Last-admin guard applies when
+--    demoting the current sole admin.
+create or replace function public.update_org_member_role(
+  member_id uuid,
+  new_role text
+) returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  target record;
+  admin_count integer;
+begin
+  if new_role not in ('admin', 'estimator', 'sales') then
+    raise exception 'Invalid role: %', new_role;
+  end if;
+
+  select * into target
+  from public.organisation_members
+  where id = member_id;
+
+  if not found then
+    raise exception 'Member not found';
+  end if;
+
+  if not public.is_org_admin(target.organisation_id) then
+    raise exception 'Only admins can change roles';
+  end if;
+
+  -- Demoting from admin → check that another admin exists.
+  if target.role = 'admin' and new_role <> 'admin' then
+    select count(*) into admin_count
+    from public.organisation_members
+    where organisation_id = target.organisation_id and role = 'admin';
+    if admin_count <= 1 then
+      raise exception 'Cannot demote the last admin — promote someone else first';
+    end if;
+  end if;
+
+  update public.organisation_members
+  set role = new_role
+  where id = member_id;
+end;
+$$;
+
+grant execute on function public.update_org_member_role(uuid, text) to authenticated;
 ```
 
 ---

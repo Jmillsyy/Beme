@@ -220,44 +220,112 @@ export function useOrganisations() {
 export async function listOrgMembers(orgId: string): Promise<OrgMember[]> {
   if (!isSupabaseConfigured) return []
   const client = supabase()
-  const { data, error } = await client
-    .from('organisation_members')
-    .select('id, organisation_id, user_id, role, created_at')
-    .eq('organisation_id', orgId)
-    .order('created_at', { ascending: true })
+
+  // Use the SECURITY DEFINER RPC so the admin gets full names + emails for
+  // every member (auth.users is locked down to the anon role, so a direct
+  // SELECT can only see the signed-in user's own email). The RPC enforces
+  // org-membership before it returns anything — RLS-equivalent gating
+  // inside the function body.
+  const { data, error } = await client.rpc('list_org_members_with_identity', {
+    org_id: orgId,
+  })
+
+  // Older deployments (before the member-management RPC migration ran) won't
+  // have list_org_members_with_identity yet. Fall back to the plain SELECT
+  // so the page still works — only the current user's email is visible in
+  // that mode, same as it was before.
   if (error) {
     // eslint-disable-next-line no-console
-    console.error('Failed to load org members', error.message)
-    return []
+    console.warn(
+      'list_org_members_with_identity unavailable, falling back to plain select:',
+      error.message
+    )
+    const { data: fallback, error: fbErr } = await client
+      .from('organisation_members')
+      .select('id, organisation_id, user_id, role, created_at')
+      .eq('organisation_id', orgId)
+      .order('created_at', { ascending: true })
+    if (fbErr) {
+      // eslint-disable-next-line no-console
+      console.error('Failed to load org members', fbErr.message)
+      return []
+    }
+    const {
+      data: { user },
+    } = await client.auth.getUser()
+    const selfId = user?.id ?? null
+    const selfEmail = user?.email ?? undefined
+    const selfDisplay = user ? displayNameOf(user) ?? undefined : undefined
+    type Row = {
+      id: string
+      organisation_id: string
+      user_id: string
+      role: OrgRole
+      created_at: string
+    }
+    return (fallback as Row[]).map((row) => ({
+      id: row.id,
+      organisationId: row.organisation_id,
+      userId: row.user_id,
+      role: row.role,
+      createdAt: row.created_at,
+      email: row.user_id === selfId ? selfEmail : undefined,
+      displayName: row.user_id === selfId ? selfDisplay : undefined,
+    }))
   }
 
-  // Resolve identity for the current user via auth — Supabase's anon key can't
-  // see other users' auth records, so other members come back without an email
-  // until we add a `profiles` table or an RPC. The Settings UI shows them by
-  // role + creation date in that case.
-  const {
-    data: { user },
-  } = await client.auth.getUser()
-  const selfId = user?.id ?? null
-  const selfEmail = user?.email ?? undefined
-  const selfDisplay = user ? displayNameOf(user) ?? undefined : undefined
-
-  type Row = {
+  type RpcRow = {
     id: string
     organisation_id: string
     user_id: string
     role: OrgRole
+    email: string | null
+    display_name: string | null
     created_at: string
   }
-  return (data as Row[]).map((row) => ({
+  return (data as RpcRow[]).map((row) => ({
     id: row.id,
     organisationId: row.organisation_id,
     userId: row.user_id,
     role: row.role,
     createdAt: row.created_at,
-    email: row.user_id === selfId ? selfEmail : undefined,
-    displayName: row.user_id === selfId ? selfDisplay : undefined,
+    email: row.email ?? undefined,
+    displayName: row.display_name ?? undefined,
   }))
+}
+
+/**
+ * Remove a member from their organisation. Admins only — the SECURITY
+ * DEFINER RPC blocks anyone else, and refuses to drop the last admin so
+ * the org can never end up unmanageable. A member can remove themselves
+ * (leave the org) under the same last-admin rule.
+ */
+export async function removeOrgMember(memberId: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Member management requires Supabase to be configured.')
+  }
+  const client = supabase()
+  const { error } = await client.rpc('remove_org_member', { member_id: memberId })
+  if (error) throw new Error(error.message)
+}
+
+/**
+ * Change a member's role. Admins only. The RPC blocks demoting the last
+ * admin — promote someone else first.
+ */
+export async function updateOrgMemberRole(
+  memberId: string,
+  newRole: OrgRole
+): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Member management requires Supabase to be configured.')
+  }
+  const client = supabase()
+  const { error } = await client.rpc('update_org_member_role', {
+    member_id: memberId,
+    new_role: newRole,
+  })
+  if (error) throw new Error(error.message)
 }
 
 /**

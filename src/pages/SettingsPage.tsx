@@ -11,7 +11,13 @@ import { signOut, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
-import { useOrganisations, listOrgMembers, isCurrentUserOrgAdmin } from '../lib/organisations'
+import {
+  useOrganisations,
+  listOrgMembers,
+  isCurrentUserOrgAdmin,
+  removeOrgMember,
+  updateOrgMemberRole,
+} from '../lib/organisations'
 import {
   createInvitation,
   inviteAcceptUrl,
@@ -711,9 +717,20 @@ function DefaultsTab({ defaults }: { defaults: EstimatingDefaults }) {
  */
 function OrganisationTab() {
   const { currentOrg } = useOrganisations()
+  const { user } = useAuth()
   const [members, setMembers] = useState<OrgMember[]>([])
   const [loading, setLoading] = useState(true)
   const [isAdmin, setIsAdmin] = useState(false)
+  // Per-row busy state for in-flight role changes / removals so we can
+  // disable just the row being edited rather than the whole table.
+  const [busyMemberId, setBusyMemberId] = useState<string | null>(null)
+  const [memberError, setMemberError] = useState<string | null>(null)
+
+  const refreshMembers = useCallback(async () => {
+    if (!currentOrg) return
+    const list = await listOrgMembers(currentOrg.id)
+    setMembers(list)
+  }, [currentOrg])
 
   useEffect(() => {
     let cancelled = false
@@ -736,6 +753,46 @@ function OrganisationTab() {
       cancelled = true
     }
   }, [currentOrg])
+
+  async function handleChangeRole(member: OrgMember, newRole: OrgRole) {
+    if (newRole === member.role) return
+    setBusyMemberId(member.id)
+    setMemberError(null)
+    try {
+      await updateOrgMemberRole(member.id, newRole)
+      await refreshMembers()
+    } catch (err) {
+      setMemberError((err as Error).message ?? 'Could not change role.')
+    } finally {
+      setBusyMemberId(null)
+    }
+  }
+
+  async function handleRemoveMember(member: OrgMember) {
+    const isSelf = member.userId === user?.id
+    const label = member.displayName || member.email || 'this member'
+    const msg = isSelf
+      ? `Leave ${currentOrg?.name}? You'll lose access to its projects and requests until an admin re-invites you.`
+      : `Remove ${label} from ${currentOrg?.name}? They'll lose access immediately. Existing estimate requests they were assigned to stay in place, just unattributed.`
+    if (!window.confirm(msg)) return
+    setBusyMemberId(member.id)
+    setMemberError(null)
+    try {
+      await removeOrgMember(member.id)
+      if (isSelf) {
+        // Reload so the org context drops this org from the list and the
+        // user lands back in personal mode / sign-in if it was their only
+        // org.
+        window.location.assign('/')
+        return
+      }
+      await refreshMembers()
+    } catch (err) {
+      setMemberError((err as Error).message ?? 'Could not remove member.')
+    } finally {
+      setBusyMemberId(null)
+    }
+  }
 
   if (!currentOrg) {
     return (
@@ -787,43 +844,90 @@ function OrganisationTab() {
                   <th className="px-3 py-2 font-semibold">Name</th>
                   <th className="px-3 py-2 font-semibold">Role</th>
                   <th className="px-3 py-2 font-semibold">Joined</th>
+                  {isAdmin && (
+                    <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
-                {members.map((m) => (
-                  <tr
-                    key={m.id}
-                    className="border-t border-ink-600 text-ink-100"
-                  >
-                    <td className="px-3 py-2">
-                      <div className="font-medium text-ink-50">
-                        {m.displayName || m.email || (
-                          <span className="text-ink-400 italic">Member</span>
+                {members.map((m) => {
+                  const isSelf = m.userId === user?.id
+                  const rowBusy = busyMemberId === m.id
+                  return (
+                    <tr
+                      key={m.id}
+                      className="border-t border-ink-600 text-ink-100"
+                    >
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-ink-50">
+                          {m.displayName || m.email || (
+                            <span className="text-ink-400 italic">Member</span>
+                          )}
+                          {isSelf && (
+                            <span className="ml-2 text-[10px] uppercase tracking-wider text-ink-400">
+                              You
+                            </span>
+                          )}
+                        </div>
+                        {m.email && m.email !== m.displayName && (
+                          <div className="text-xs text-ink-400">{m.email}</div>
                         )}
-                      </div>
-                      {m.email && (
-                        <div className="text-xs text-ink-400">{m.email}</div>
+                      </td>
+                      <td className="px-3 py-2">
+                        {isAdmin ? (
+                          // Admins get an inline dropdown. The RPC blocks
+                          // demoting the last admin, so the destructive
+                          // case is server-enforced; we just surface the
+                          // resulting error in memberError below.
+                          <select
+                            value={m.role}
+                            onChange={(e) =>
+                              handleChangeRole(m, e.target.value as OrgRole)
+                            }
+                            disabled={rowBusy}
+                            className="px-2 py-1 rounded border border-ink-600 bg-ink-900 text-ink-50 text-xs focus:outline-none focus:border-beme-400 disabled:opacity-40"
+                          >
+                            <option value="admin">Admin</option>
+                            <option value="estimator">Estimator</option>
+                            <option value="sales">Sales</option>
+                          </select>
+                        ) : (
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                              m.role === 'admin'
+                                ? 'bg-beme-500/15 text-beme-300 border border-beme-500/40'
+                                : 'bg-ink-700 text-ink-200 border border-ink-600'
+                            }`}
+                          >
+                            {orgRoleLabel(m.role)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-ink-400">
+                        {new Date(m.createdAt).toLocaleDateString()}
+                      </td>
+                      {isAdmin && (
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveMember(m)}
+                            disabled={rowBusy}
+                            className="text-xs text-rose-300 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {rowBusy ? '…' : isSelf ? 'Leave org' : 'Remove'}
+                          </button>
+                        </td>
                       )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          m.role === 'admin'
-                            ? 'bg-beme-500/15 text-beme-300 border border-beme-500/40'
-                            : 'bg-ink-700 text-ink-200 border border-ink-600'
-                        }`}
-                      >
-                        {orgRoleLabel(m.role)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-xs text-ink-400">
-                      {new Date(m.createdAt).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
+        )}
+
+        {memberError && (
+          <p className="text-sm text-rose-300 mt-3">{memberError}</p>
         )}
 
         {!isAdmin && (
