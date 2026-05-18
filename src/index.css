@@ -66,6 +66,29 @@
   /* Font families */
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ── Type scale (slight bump over Tailwind v4 defaults) ────────────
+     Tailwind v4 reads `--text-*` from @theme; overriding the size and
+     paired line-height here lifts every `text-xs / sm / base / lg / xl
+     / 2xl / 3xl / 4xl` utility across the app in one place. Nudge of
+     roughly +1 px per step — enough to feel noticeably easier to read
+     without reflowing layouts. */
+  --text-xs: 0.8125rem;             /* 13 px (was 12) */
+  --text-xs--line-height: 1.125rem; /* 18 px */
+  --text-sm: 0.9375rem;             /* 15 px (was 14) */
+  --text-sm--line-height: 1.375rem; /* 22 px */
+  --text-base: 1.0625rem;           /* 17 px (was 16) */
+  --text-base--line-height: 1.625rem; /* 26 px */
+  --text-lg: 1.1875rem;             /* 19 px (was 18) */
+  --text-lg--line-height: 1.75rem;  /* 28 px */
+  --text-xl: 1.3125rem;             /* 21 px (was 20) */
+  --text-xl--line-height: 1.875rem; /* 30 px */
+  --text-2xl: 1.625rem;             /* 26 px (was 24) */
+  --text-2xl--line-height: 2.125rem; /* 34 px */
+  --text-3xl: 2rem;                 /* 32 px (was 30) */
+  --text-3xl--line-height: 2.375rem; /* 38 px */
+  --text-4xl: 2.375rem;             /* 38 px (was 36) */
+  --text-4xl--line-height: 2.625rem; /* 42 px */
 }
 
 /* ── Light mode overrides ───────────────────────────────────────────────────
@@ -161,7 +184,11 @@ body {
   background: var(--color-ink-900);
   color: var(--color-ink-50);
   font-family: var(--font-sans);
-  font-size: 13.5px;
+  /* Base size matched to the bumped text-sm token above — controls things
+     that inherit straight from <body> (native <select> options, plain
+     inputs without a Tailwind text class, etc.) so they don't look out of
+     place next to the rest of the UI. */
+  font-size: 15px;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
