@@ -1,5 +1,10 @@
 import { useMemo, useState } from 'react'
-import type { WallMakeup, BondType, CourseOverride } from '../types/walls'
+import type {
+  WallMakeup,
+  BondType,
+  CourseOverride,
+  CourseSeriesRange,
+} from '../types/walls'
 import type { BlockCode } from '../types/blocks'
 import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 
@@ -115,6 +120,29 @@ export default function WallTypesPanel({
                   {m.courseOverrides.length === 1 ? '' : 's'}
                 </div>
               )}
+              {m.courseSeriesRanges && m.courseSeriesRanges.length > 0 && (
+                <div className="text-xs text-ink-400 mt-1">
+                  {m.courseSeriesRanges.length} series range
+                  {m.courseSeriesRanges.length === 1 ? '' : 's'}
+                  {m.courseSeriesRanges.map((r, idx) => {
+                    const codes = [
+                      r.bodyBlockCode,
+                      r.cornerBlockCode,
+                      r.baseCourseBlockCode,
+                    ]
+                      .filter(Boolean)
+                      .slice(0, 1)
+                      .join(' / ')
+                    return (
+                      <span key={idx} className="ml-2 font-mono text-ink-500">
+                        c{r.fromCourse}
+                        {r.toCourse > r.fromCourse ? `–${r.toCourse}` : ''}
+                        {codes ? `: ${codes}` : ''}
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
               <div className="text-xs text-ink-500 mt-2">
                 {wallCount} wall{wallCount === 1 ? '' : 's'} using this
               </div>
@@ -227,8 +255,62 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
     setCourseOverrides((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const [seriesRanges, setSeriesRanges] = useState<CourseSeriesRange[]>(
+    existing?.courseSeriesRanges ?? []
+  )
+  const [showSeriesRanges, setShowSeriesRanges] = useState(
+    (existing?.courseSeriesRanges ?? []).length > 0
+  )
+
+  /**
+   * Add a new series range pre-filled with the 300-series block codes — the
+   * common case from the user's brief is "bottom 5 courses use 300 series",
+   * so the first-time UX should land on a useful starting point instead of an
+   * empty form. If the user wants something else they can change each picker.
+   */
+  function addSeriesRange() {
+    setSeriesRanges((prev) => [
+      ...prev,
+      {
+        fromCourse: 1,
+        toCourse: 5,
+        bodyBlockCode: '30.48',
+        cornerBlockCode: '30.01',
+        halfBlockCode: '30.03',
+        baseCourseBlockCode: '30.45',
+        baseCourseTileCode: '50.45',
+        heightMakeup71BlockCode: '30.71',
+      },
+    ])
+    setShowSeriesRanges(true)
+  }
+
+  function updateSeriesRange(index: number, patch: Partial<CourseSeriesRange>) {
+    setSeriesRanges((prev) =>
+      prev.map((r, i) => (i === index ? { ...r, ...patch } : r))
+    )
+  }
+
+  function removeSeriesRange(index: number) {
+    setSeriesRanges((prev) => prev.filter((_, i) => i !== index))
+  }
+
   function handleSave() {
     const id = existing?.id ?? generateMakeupId()
+    // Strip any range with from > to (degenerate) and any whose overrides are
+    // all blank (no-op). Saves on bytes and keeps the calc engine's iteration
+    // efficient if the user added a range and then cleared it.
+    const cleanedRanges = seriesRanges.filter((r) => {
+      if (r.toCourse < r.fromCourse) return false
+      const anyOverride =
+        r.bodyBlockCode ||
+        r.cornerBlockCode ||
+        r.halfBlockCode ||
+        r.baseCourseBlockCode ||
+        r.baseCourseTileCode ||
+        r.heightMakeup71BlockCode
+      return !!anyOverride
+    })
     const updated: WallMakeup = {
       id,
       name: name.trim() || 'New wall type',
@@ -241,6 +323,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       cornerBlockCode: knockoutCorners ? '20.21' : '20.01',
       useFractions,
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
+      courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
     }
     onSave(updated)
   }
@@ -451,6 +534,50 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         )}
       </div>
 
+      {/* Course-series ranges — let the user mix series across courses, e.g.
+          300 series for the base 5 courses for an engineered footing, then
+          standard 200 series above. Each range overrides any subset of the
+          role-based block picks; anything left on "Default" falls back to the
+          makeup-level field above. */}
+      <div className="mt-5">
+        <button
+          onClick={() => setShowSeriesRanges((v) => !v)}
+          className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
+        >
+          {showSeriesRanges ? '−' : '+'} Mix block series across courses
+          {seriesRanges.length > 0 && ` (${seriesRanges.length})`}
+        </button>
+
+        {showSeriesRanges && (
+          <div className="mt-2 p-3 border border-ink-600 rounded-lg bg-ink-800">
+            {seriesRanges.length === 0 && (
+              <p className="text-xs text-ink-400 mb-2">
+                Use a different block series for a range of courses — e.g. when
+                engineering calls for 300-series (290 mm-deep) blocks on the
+                bottom 5 courses, stepping down to standard 200 series above.
+                Each range can override any subset of the role-based picks;
+                leave a field on Default to inherit from the makeup above.
+              </p>
+            )}
+            {seriesRanges.map((range, i) => (
+              <RangeRow
+                key={i}
+                range={range}
+                selectableBlocks={selectableBlocks}
+                onChange={(patch) => updateSeriesRange(i, patch)}
+                onRemove={() => removeSeriesRange(i)}
+              />
+            ))}
+            <button
+              onClick={addSeriesRange}
+              className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
+            >
+              + Add series range
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="flex gap-2 mt-5">
         <button
           onClick={handleSave}
@@ -467,5 +594,124 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         </button>
       </div>
     </div>
+  )
+}
+
+// ---------- Internal: RangeRow ----------
+
+interface RangeRowProps {
+  range: CourseSeriesRange
+  selectableBlocks: BlockCode[]
+  onChange: (patch: Partial<CourseSeriesRange>) => void
+  onRemove: () => void
+}
+
+/**
+ * One series range editor. Course bounds on the top line, then a 2-column
+ * grid of optional block-code overrides (each with a Default option that
+ * stores the field as undefined so the calc engine falls back to the
+ * makeup-level pick). Kept compact because a user will typically have only
+ * one or two ranges per wall type.
+ */
+function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps) {
+  return (
+    <div className="mb-3 p-2 border border-ink-600 rounded bg-ink-700/30">
+      <div className="flex items-center gap-2 mb-2 text-sm flex-wrap">
+        <span className="text-ink-300">Courses</span>
+        <input
+          type="number"
+          min="1"
+          value={range.fromCourse}
+          onChange={(e) =>
+            onChange({ fromCourse: Math.max(1, parseInt(e.target.value || '1', 10)) })
+          }
+          className="w-16 px-2 py-1 border border-ink-600 rounded text-sm"
+        />
+        <span className="text-ink-300">to</span>
+        <input
+          type="number"
+          min="1"
+          value={range.toCourse}
+          onChange={(e) =>
+            onChange({ toCourse: Math.max(1, parseInt(e.target.value || '1', 10)) })
+          }
+          className="w-16 px-2 py-1 border border-ink-600 rounded text-sm"
+        />
+        <span className="text-xs text-ink-500">(1 = base course)</span>
+        <button
+          onClick={onRemove}
+          className="ml-auto text-rose-400 hover:text-rose-300 text-sm px-2"
+          aria-label="Remove range"
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <RangeFieldPicker
+          label="Body"
+          value={range.bodyBlockCode}
+          options={selectableBlocks}
+          onChange={(v) => onChange({ bodyBlockCode: v })}
+        />
+        <RangeFieldPicker
+          label="Corner / full end"
+          value={range.cornerBlockCode}
+          options={selectableBlocks}
+          onChange={(v) => onChange({ cornerBlockCode: v })}
+        />
+        <RangeFieldPicker
+          label="Half-block end (stretcher)"
+          value={range.halfBlockCode}
+          options={selectableBlocks}
+          onChange={(v) => onChange({ halfBlockCode: v })}
+        />
+        <RangeFieldPicker
+          label="Base course (if c1 in range)"
+          value={range.baseCourseBlockCode}
+          options={selectableBlocks}
+          onChange={(v) => onChange({ baseCourseBlockCode: v })}
+        />
+        <RangeFieldPicker
+          label="Base tile (paired)"
+          value={range.baseCourseTileCode}
+          options={['50.45'] as BlockCode[]}
+          onChange={(v) => onChange({ baseCourseTileCode: v })}
+        />
+        <RangeFieldPicker
+          label="90 mm height makeup"
+          value={range.heightMakeup71BlockCode}
+          options={selectableBlocks}
+          onChange={(v) => onChange({ heightMakeup71BlockCode: v })}
+        />
+      </div>
+    </div>
+  )
+}
+
+interface RangeFieldPickerProps {
+  label: string
+  value: BlockCode | undefined
+  options: BlockCode[]
+  onChange: (v: BlockCode | undefined) => void
+}
+
+function RangeFieldPicker({ label, value, options, onChange }: RangeFieldPickerProps) {
+  return (
+    <label className="block">
+      <span className="block text-ink-400 mb-0.5">{label}</span>
+      <select
+        value={value ?? ''}
+        onChange={(e) => onChange((e.target.value as BlockCode) || undefined)}
+        className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-800"
+      >
+        <option value="">Default</option>
+        {options.map((code) => (
+          <option key={code} value={code}>
+            {blockLabel(code)}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }
