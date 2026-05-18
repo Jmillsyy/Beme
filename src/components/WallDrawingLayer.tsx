@@ -156,6 +156,14 @@ interface EndpointPixel {
   /** Per-endpoint snap radius in px. Larger for thick walls so the user can land
    *  anywhere in the end-block area and the snap fires. */
   snapRadiusPx: number
+  /** Unit vector in pixel space pointing from the far end of the wall *outward*
+   *  through this endpoint. Used to make the endpoint snap zone anisotropic —
+   *  generous along the wall axis (covers the whole end-block) but tight across
+   *  it, so the cursor a few millimetres off to the side of the wall's end
+   *  doesn't get swallowed into a corner snap and prevent the user from making
+   *  a T-junction at the very tip of the wall. */
+  dirX: number
+  dirY: number
 }
 
 /** Result of snapping the cursor to an existing wall — either its endpoint, or a point on its body. */
@@ -703,12 +711,26 @@ function WallDrawingLayerInner({
         // its inner edge, plus a small buffer.
         const snapRadiusPx = Math.max(SNAP_THRESHOLD_PX, halfThicknessPx)
 
+        // Direction vector (unit, in pixels) pointing from the far end outward
+        // through this endpoint. For a free end we already have farX/farY in
+        // scope; recompute for corner/T ends too. Used to project the cursor
+        // offset into along-wall vs across-wall components in findSnap.
+        const farXmm = end === 'start' ? w.endX : w.startX
+        const farYmm = end === 'start' ? w.endY : w.startY
+        const wDxMm = dataX - farXmm
+        const wDyMm = dataY - farYmm
+        const wLenMm = Math.sqrt(wDxMm * wDxMm + wDyMm * wDyMm)
+        const dirX = wLenMm > 0 ? wDxMm / wLenMm : 1
+        const dirY = wLenMm > 0 ? wDyMm / wLenMm : 0
+
         result.push({
           x: mmToPx(snapX),
           y: mmToPx(snapY),
           wallId: w.id,
           end,
           snapRadiusPx,
+          dirX,
+          dirY,
         })
       }
     }
@@ -861,17 +883,33 @@ function WallDrawingLayerInner({
     excludeEnd?: 'start' | 'end'
   ): SnapResult | null {
     // 1. Endpoint snap (corner candidate) — preferred when in range.
+    //
+    // The snap zone is anisotropic: GENEROUS along the wall axis (full
+    // snapRadiusPx, which on a thick wall is roughly halfThickness, so the
+    // whole end-block area snaps) but TIGHT across it (SNAP_THRESHOLD_PX,
+    // 12 px). That way a cursor parked beside the wall's end face — i.e.
+    // the user trying to T-junction at the very tip — escapes the corner
+    // snap and lets the face snap below fire instead. A round radius would
+    // swallow a halfThickness-wide cone of sideways space and force every
+    // wall starting near another wall's end to be a corner.
     let closestEp: EndpointPixel | null = null
-    // Each endpoint carries its own snap radius (larger for thick walls so the user can
-    // land anywhere in the end-block area). closestEpDist starts at Infinity so any
-    // endpoint within its own radius is a candidate.
-    let closestEpDist = Infinity
+    let closestEpScore = Infinity
     for (const ep of endpointsPx) {
       if (ep.wallId === excludeWallId && ep.end === excludeEnd) continue
-      const d = distance(cursor, ep)
-      if (d < ep.snapRadiusPx && d < closestEpDist) {
+      const vx = cursor.x - ep.x
+      const vy = cursor.y - ep.y
+      // Decompose cursor offset into along/across the wall axis.
+      const alongAbs = Math.abs(vx * ep.dirX + vy * ep.dirY)
+      const perpAbs = Math.abs(vx * -ep.dirY + vy * ep.dirX)
+      if (alongAbs > ep.snapRadiusPx) continue
+      if (perpAbs > SNAP_THRESHOLD_PX) continue
+      // Pick the closest by combined offset so the tightest endpoint wins
+      // when multiple are eligible (e.g. corner junctions where two snap
+      // targets coincide).
+      const score = alongAbs + perpAbs
+      if (score < closestEpScore) {
         closestEp = ep
-        closestEpDist = d
+        closestEpScore = score
       }
     }
     if (closestEp) {
@@ -887,7 +925,14 @@ function WallDrawingLayerInner({
     // 2. Wall-FACE snap (T-junction candidate). With thick walls, the right snap target is
     // the nearest face — not the centreline. The user clicks somewhere near or inside the
     // wall body; we snap to the closest face point so the new wall's endpoint lands at the
-    // through-wall's edge. Endpoint dead-zone still applies along the wall length.
+    // through-wall's edge.
+    //
+    // No along-wall dead-zone here: a T-junction at the very END of an
+    // existing wall is a legitimate construction (new wall coming off the
+    // side of the host wall's end-face), so face snap is allowed to fire
+    // anywhere along the host's length. The endpoint snap above already
+    // dominates when the cursor is on-axis with the wall end, so this only
+    // kicks in when the cursor is genuinely off to the side.
     let closestBody: { x: number; y: number; wallId: string; distPx: number } | null = null
     for (const wall of walls) {
       if (wall.id === excludeWallId) continue
@@ -896,9 +941,6 @@ function WallDrawingLayerInner({
       if (!proj) continue
       const wallLenMm = wallLengthMmOf(wall)
       if (wallLenMm === 0) continue
-      const wallLenPx = mmToPx(wallLenMm)
-      const alongPx = (proj.alongMm / wallLenMm) * wallLenPx
-      if (alongPx < SNAP_THRESHOLD_PX || alongPx > wallLenPx - SNAP_THRESHOLD_PX) continue
 
       // Half-thickness in pixels. Convert via mmToPx so it scales with the current zoom.
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
