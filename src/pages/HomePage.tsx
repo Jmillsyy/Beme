@@ -171,6 +171,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   const navigate = useNavigate()
   const [requests, setRequests] = useState<EstimateRequest[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
+  // All projects visible to the user — both org-scoped (everyone on the team
+  // sees them) and personal (their own). Used to surface in-progress
+  // projects on the dashboard, since direct '+ Brick / + Block' creates
+  // don't go through the estimate-request inbox.
+  const [projects, setProjects] = useState<SavedProject[]>([])
   const [loading, setLoading] = useState(true)
   // Which request the user is currently picking up (drives the row's
   // disabled state + button label). One at a time — the user can't sensibly
@@ -181,11 +186,19 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all([listEstimateRequests(org.id), listOrgMembers(org.id)])
-      .then(([reqs, mems]) => {
+    Promise.all([
+      listEstimateRequests(org.id),
+      listOrgMembers(org.id),
+      // listProjects returns every project this user can see (their own +
+      // any org-scoped project where they're a member). Cloud RLS does
+      // the filtering server-side so anyone in the org sees the same set.
+      listProjects(),
+    ])
+      .then(([reqs, mems, projs]) => {
         if (cancelled) return
         setRequests(reqs)
         setMembers(mems)
+        setProjects(projs)
         setLoading(false)
       })
       .catch(() => {
@@ -266,6 +279,24 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   //
   // The two 'mine' columns sort by oldest-pending-first because that's the
   // one that's been waiting longest and most likely to need attention.
+  // In-progress projects on this org that aren't tied to an estimate
+  // request — these are the ones created via '+ Brick / + Block estimate'
+  // on the dashboard rather than picked up from a request. The inbox grid
+  // above already covers request-driven work; this section surfaces the
+  // free-standing projects so they have somewhere to live on the
+  // dashboard. Most recent first.
+  const inProgressProjects = useMemo(() => {
+    const linkedProjectIds = new Set(
+      requests.map((r) => r.projectId).filter((id): id is string => !!id)
+    )
+    return projects
+      .filter((p) => p.status === 'in-progress' && !linkedProjectIds.has(p.id))
+      .sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      )
+  }, [projects, requests])
+
   const { myPending, myInProgress, teamActive, recentlyCompleted } = useMemo(() => {
     const active = requests.filter(
       (r) => r.status === 'pending' || r.status === 'in_progress'
@@ -455,6 +486,32 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         )}
       </section>
 
+      {/* ── In-progress projects (not from a request) ──
+          Direct '+ Brick / + Block' creates bypass the estimate-request
+          inbox entirely — they need somewhere to surface on the dashboard
+          so the user doesn't lose them. Show every in-progress project on
+          this org that ISN'T already shown above as a request, sorted by
+          most recently updated. */}
+      {inProgressProjects.length > 0 && (
+        <section className="mt-8">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              In-progress projects
+            </h3>
+            <span className="text-xs text-ink-400">
+              {inProgressProjects.length}{' '}
+              {inProgressProjects.length === 1 ? 'project' : 'projects'} on
+              the go
+            </span>
+          </div>
+          <ul className="space-y-2">
+            {inProgressProjects.map((p) => (
+              <ProjectInProgressRow key={p.id} project={p} />
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* ── Team inbox ── */}
       {teamActive.length > 0 && (
         <section className="mt-8">
@@ -634,6 +691,57 @@ function InboxColumn({
  * lands on the request detail page so the project can be reopened from
  * there if needed.
  */
+/**
+ * Single row in the 'In-progress projects' dashboard section. Lighter than
+ * an estimate-request InboxRow because there's less status to convey — the
+ * project's just sitting there waiting to be worked on. Click anywhere on
+ * the row to open the workspace; brick / block decides the URL path.
+ */
+function ProjectInProgressRow({ project }: { project: SavedProject }) {
+  const name =
+    project.projectDetails.projectName.trim() ||
+    project.projectDetails.siteAddress.trim() ||
+    'Untitled project'
+  const subtitle =
+    project.projectDetails.projectName.trim() &&
+    project.projectDetails.siteAddress.trim()
+      ? project.projectDetails.siteAddress
+      : ''
+  const href =
+    project.type === 'brick'
+      ? `/project/brick?id=${project.id}`
+      : `/project/block?id=${project.id}`
+  return (
+    <li>
+      <Link
+        to={href}
+        className="block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors"
+      >
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-ink-50 truncate">
+                {name}
+              </span>
+              <span className="text-[10px] uppercase tracking-wider text-ink-400">
+                {project.type === 'brick' ? 'Brick' : 'Block'}
+              </span>
+            </div>
+            {subtitle && (
+              <div className="text-sm text-ink-300 mt-0.5 truncate">
+                {subtitle}
+              </div>
+            )}
+            <div className="text-xs text-ink-400 mt-1">
+              Updated {formatRelative(project.updatedAt)}
+            </div>
+          </div>
+        </div>
+      </Link>
+    </li>
+  )
+}
+
 function CompletedCard({
   request,
   assignee,
