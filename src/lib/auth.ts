@@ -219,6 +219,30 @@ export async function signInWithPassword(
 }
 
 /**
+ * Set or change the current user's password. Works for any signed-in user,
+ * including ones who originally signed up via magic link / OAuth and never
+ * picked a password. After this succeeds the user can sign in with email
+ * + password going forward, in addition to whatever auth method they used
+ * to create the account.
+ *
+ * Supabase doesn't require the existing password to update — auth.updateUser
+ * trusts the active session. The signed-in user is the only one who can
+ * call this for their own account, so accidental changes by a third party
+ * are gated by session ownership, not password knowledge. If you ever want
+ * to require the old password as an extra safety net, add an explicit
+ * signInWithPassword check first.
+ */
+export async function updatePassword(
+  newPassword: string
+): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    return { error: new Error('Supabase is not configured. See SETUP.md.') }
+  }
+  const { error } = await supabase().auth.updateUser({ password: newPassword })
+  return { error }
+}
+
+/**
  * Sign the user out everywhere. Clears the Supabase session and forces a
  * re-render of components subscribed to `useAuth`.
  */

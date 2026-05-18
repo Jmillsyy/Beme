@@ -7,7 +7,7 @@ import {
   useUserSettings,
 } from '../lib/userSettings'
 import { useTheme } from '../lib/theme'
-import { signOut, useAuth } from '../lib/auth'
+import { signOut, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
@@ -1243,6 +1243,12 @@ function AccountTab() {
         </PanelCard>
       )}
 
+      {/* Password card — set or change the signed-in user's password.
+          Works whether they originally signed in via magic link, Microsoft
+          OAuth, or password. After setting, they can also use email +
+          password to sign in alongside whatever they used first. */}
+      {isSupabaseConfigured && signedIn && <PasswordCard />}
+
       <PanelCard
         title="Reset libraries"
         description="Restore the SEQ QLD seed defaults. Custom blocks / bricks are removed."
@@ -1305,5 +1311,106 @@ function AccountTab() {
         </button>
       </PanelCard>
     </div>
+  )
+}
+
+/**
+ * Set or change the signed-in user's password. Lives inside the Account tab.
+ * Doesn't ask for the existing password — Supabase auth.updateUser trusts
+ * the active session, and we treat session ownership as proof of identity
+ * (someone with a stolen session can do worse things than change a
+ * password). If a higher bar is needed later, gate this behind a fresh
+ * sign-in or require the current password explicitly.
+ */
+function PasswordCard() {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (submitting) return
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    if (password !== confirm) {
+      setError("Passwords don't match.")
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    setSuccess(false)
+    const { error: updateErr } = await updatePassword(password)
+    if (updateErr) {
+      setError(updateErr.message)
+      setSubmitting(false)
+      return
+    }
+    // Clear the form so the user can see a fresh empty state if they
+    // open it again; surfaces the success banner instead.
+    setPassword('')
+    setConfirm('')
+    setSuccess(true)
+    setSubmitting(false)
+  }
+
+  return (
+    <PanelCard
+      title="Password"
+      description="Set a password so you can sign in with email + password as an alternative to magic links. Updating this won't affect your current session."
+    >
+      <form onSubmit={handleSubmit} className="space-y-3 max-w-md">
+        <label className="block">
+          <span className="text-xs text-ink-300 mb-1.5 inline-block">
+            New password
+          </span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="At least 8 characters"
+            autoComplete="new-password"
+            minLength={8}
+            className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-ink-300 mb-1.5 inline-block">
+            Confirm new password
+          </span>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            minLength={8}
+            className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+          />
+        </label>
+
+        {error && (
+          <p className="text-sm text-rose-300 px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/10">
+            {error}
+          </p>
+        )}
+        {success && (
+          <p className="text-sm text-emerald-200 px-3 py-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10">
+            Password saved. You can now sign in with email + password from the
+            sign-in page.
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={submitting || password.length < 8 || password !== confirm}
+          className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {submitting ? 'Saving…' : 'Save password'}
+        </button>
+      </form>
+    </PanelCard>
   )
 }
