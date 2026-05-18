@@ -259,9 +259,12 @@ function buildPlanOverviewPage(
 
   // Numbered wall labels — size scales with the larger of plan-extent and
   // wall thickness so the labels read at the printed size regardless of
-  // how big the plan is.
-  const labelDiameter = Math.max(maxThick * 2.2, Math.min(viewW, viewH) * 0.04)
-  const labelFontSize = labelDiameter * 0.55
+  // how big the plan is. The multipliers below were bumped from the first
+  // pass (2.2× thickness, 4% of plan) because the labels printed too small
+  // at typical residential plan scales; this gives ~6 mm tall numbers and
+  // ~5 mm tall length captions on a landscape-A4 print.
+  const labelDiameter = Math.max(maxThick * 3.3, Math.min(viewW, viewH) * 0.06)
+  const labelFontSize = labelDiameter * 0.6
 
   // Wall bodies — semi-transparent orange fill with rounded ends. We render
   // walls as a STROKE on a line/polyline with stroke-width equal to the
@@ -328,7 +331,7 @@ function buildPlanOverviewPage(
   // so it reads on top of the wall fill; the length text is white with a
   // dark stroke (paint-order: stroke) so it's legible whether it falls on
   // the wall body or in the gap.
-  const lengthFontSize = labelFontSize * 0.65
+  const lengthFontSize = labelFontSize * 0.85
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
