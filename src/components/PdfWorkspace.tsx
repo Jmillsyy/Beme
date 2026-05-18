@@ -205,11 +205,28 @@ interface PdfWorkspaceProps {
   projectId?: string | null
 }
 
+/**
+ * Virtual page dimensions used by empty-workspace mode. Treats the canvas like
+ * an A1 sheet (841 × 594 mm) so the proportions match what a printed plan
+ * would look like, and seeds pageScaleRatio so currentScale resolves on first
+ * render — no calibration step required. The user can still flip to a
+ * different ratio (1:50, 1:200…) from the toolbar dropdown.
+ */
+const EMPTY_WORKSPACE_PAGE_WIDTH_MM = 841
+const EMPTY_WORKSPACE_PAGE_HEIGHT_MM = 594
+const EMPTY_WORKSPACE_DEFAULT_RATIO = 100
+
 export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}) {
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [numPages, setNumPages] = useState<number>(0)
   const [currentPage, setCurrentPage] = useState<number>(1)
   const [isDragging, setIsDragging] = useState(false)
+  /**
+   * True when the project was started without uploading a PDF — we're drawing
+   * on a blank canvas at a fixed ratio. Persisted on the SavedProject so
+   * reloads land back in this mode instead of bouncing back to the upload zone.
+   */
+  const [isEmptyWorkspace, setIsEmptyWorkspace] = useState(false)
 
   // ---------- Multi-PDF support ----------
   // `pdfFile` above is the PRIMARY plan — the file walls / openings / piers
@@ -296,6 +313,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // half gets its own end termination at the joint (junction.type = 'control-joint').
   const [placingControlJoint, setPlacingControlJoint] = useState(false)
   const placingControlJointRef = useRef(false)
+
+  // ---------- Ruler / measurement state ----------
+  // Transient on-canvas measurements. NOT persisted to the project — they're
+  // a quick-check tool: drop two points to see how far apart they are on
+  // the plan, useful before drawing a wall, verifying calibration, or
+  // sizing something the plan doesn't dimension. Keyed by page so a measure
+  // on page 2 doesn't show on page 1.
+  const [placingRuler, setPlacingRuler] = useState(false)
+  const [measurementsByPage, setMeasurementsByPage] = useState<
+    Record<number, Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }>>
+  >({})
+  const [rulerAnchorMm, setRulerAnchorMm] = useState<{ x: number; y: number } | null>(null)
 
   // ---------- Pier state (block mode) ----------
   const [piersByPage, setPiersByPage] = useState<Record<number, Pier[]>>({})
@@ -466,6 +495,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             type: proj.pdfBlob.type || 'application/pdf',
           })
           setPdfFile(file)
+        }
+        // Empty-workspace flag — hydrate so reload skips the upload zone. Also
+        // seed numPages = 1 since there's no Document.onLoadSuccess to do it.
+        if (proj.emptyWorkspace) {
+          setIsEmptyWorkspace(true)
+          setNumPages(1)
         }
         // Reference PDFs (engineering specs etc.) — reconstruct File objects
         // from each saved Blob, parallel to a list of storage paths so re-
@@ -638,6 +673,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       projectDetails,
       // pdfBlob + pdfFileName are optional now — a project can be saved without a PDF
       ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
+      // Empty-workspace projects skip the PDF entirely; persist the flag so a
+      // reload lands back on the canvas instead of bouncing to the upload zone.
+      ...(isEmptyWorkspace ? { emptyWorkspace: true } : {}),
       // Carry reference PDFs through every save so the cloud-storage layer
       // knows about new ones (no path yet → upload) and skips reuploads for
       // ones that haven't changed (path already set).
@@ -710,6 +748,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         outcome: projectOutcome,
         projectDetails,
         ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
+        ...(isEmptyWorkspace ? { emptyWorkspace: true } : {}),
       // Carry reference PDFs through every save so the cloud-storage layer
       // knows about new ones (no path yet → upload) and skips reuploads for
       // ones that haven't changed (path already set).
@@ -757,6 +796,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setPlacingControlJoint(false)
     setPlacingTiedPier(false)
     setPlacingFreestandingPier(false)
+    setPlacingRuler(false)
+    setRulerAnchorMm(null)
   }, [])
 
   async function handleDeleteProject() {
@@ -1288,6 +1329,38 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (selectedPierId === pierId) setSelectedPierId(null)
   }
 
+  // ---------- Ruler / measurement handlers ----------
+
+  /**
+   * Called by the canvas on a measurement click. First call sets the anchor;
+   * second call commits a measurement and clears the anchor (ready for the
+   * next one). Stays in ruler mode after each commit so the user can drop
+   * multiple measurements in a row without re-clicking the tool button.
+   */
+  const handleRulerClick = useCallback(function handleRulerClick(posMm: { x: number; y: number }) {
+    setRulerAnchorMm((prev) => {
+      if (prev === null) return posMm
+      // Commit a new measurement and clear the anchor.
+      const newId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setMeasurementsByPage((all) => {
+        const page = all[currentPage] ?? []
+        return {
+          ...all,
+          [currentPage]: [...page, { id: newId, startMm: prev, endMm: posMm }],
+        }
+      })
+      return null
+    })
+  }, [currentPage])
+
+  function handleClearMeasurements() {
+    setMeasurementsByPage((all) => ({ ...all, [currentPage]: [] }))
+    setRulerAnchorMm(null)
+  }
+
   // ---------- Pier makeup CRUD ----------
 
   function handleAddPierMakeup() {
@@ -1622,6 +1695,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setPlacingControlJoint(false)
         setPlacingTiedPier(false)
         setPlacingFreestandingPier(false)
+        setPlacingRuler(false)
+        setRulerAnchorMm(null)
         setSelectedWallId(null)
         setSelectedOpeningId(null)
         setSelectedPierId(null)
@@ -1663,6 +1738,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const next = !placingFreestandingPier
         clearOtherModes()
         setPlacingFreestandingPier(next)
+      } else if (k === 'r') {
+        // Ruler works in any mode as long as we have a scale to convert
+        // pixels → real-world mm.
+        if (!currentScale || calibrating) return
+        e.preventDefault()
+        const next = !placingRuler
+        clearOtherModes()
+        setPlacingRuler(next)
       } else if (k === '?') {
         e.preventDefault()
         setShowShortcutHelp((v) => !v)
@@ -2097,9 +2180,30 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     cancelCalibration()
   }
 
+  /**
+   * Drop into empty-workspace mode — no PDF, fixed 1:100 metric scale on a
+   * virtual A1 page. Seeds `pagesData[1]` directly so `currentScale` resolves
+   * without going through the calibration flow.
+   */
+  function startEmptyWorkspace() {
+    setIsEmptyWorkspace(true)
+    setNumPages(1)
+    setCurrentPage(1)
+    setZoom(1)
+    setPagesData({
+      1: {
+        pageWidthMm: EMPTY_WORKSPACE_PAGE_WIDTH_MM,
+        pageHeightMm: EMPTY_WORKSPACE_PAGE_HEIGHT_MM,
+        pageScaleRatio: EMPTY_WORKSPACE_DEFAULT_RATIO,
+        scalePxPerMm: undefined,
+      },
+    })
+    cancelCalibration()
+  }
+
   // ---------- Render: upload zone ----------
 
-  if (!pdfFile) {
+  if (!pdfFile && !isEmptyWorkspace) {
     return (
       <div className="max-w-[1600px] mx-auto">
         {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
@@ -2165,6 +2269,22 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 <p className="text-xs text-ink-500 mt-5">
                   Multi-page plans are supported. Each page is calibrated separately.
                 </p>
+                <div className="mt-6 pt-5 border-t border-ink-700">
+                  <p className="text-xs text-ink-400 mb-2">
+                    No plan to work from?
+                  </p>
+                  <button
+                    onClick={startEmptyWorkspace}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-ink-600 text-sm text-ink-200 hover:border-beme-500/60 hover:text-beme-300 transition-colors"
+                  >
+                    <span className="text-base leading-none">📐</span>
+                    Start with an empty workspace
+                  </button>
+                  <p className="text-[11px] text-ink-500 mt-2">
+                    Fixed at 1:100 metric — great for quick what-ifs and
+                    sample walls. You can change the ratio anytime.
+                  </p>
+                </div>
               </div>
 
               {/* Quick-start steps */}
@@ -2285,8 +2405,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       {/* File switcher — always renders when a primary PDF is loaded so the
           user can attach extra reference PDFs (engineering specs, architectural
           plans etc.) and flip between them. Walls / pages / calibration stay
-          locked to the primary; reference PDFs are view-only. */}
-      {pdfFile && (
+          locked to the primary; reference PDFs are view-only.
+          Hidden in empty-workspace mode — there's no primary file to switch
+          to or away from. */}
+      {pdfFile && !isEmptyWorkspace && (
         <div className="flex items-center mb-3 px-1 gap-2 overflow-x-auto">
           <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
             File
@@ -2395,56 +2517,89 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
       <div className="flex items-center mb-4 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
-        {/* PDF filename + Replace */}
+        {/* PDF filename + Replace, OR empty-workspace label + Attach a PDF */}
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-medium text-ink-200 truncate max-w-[16rem]">
-            {displayedPdfFile?.name ?? pdfFile.name}
-          </span>
-          {/* Replace only swaps out the PRIMARY — reference PDFs come from the
-              originating estimate request and aren't editable here. */}
-          {!isReferenceView && (
-            <button
-              onClick={() => {
-                setPdfFile(null)
-                setNumPages(0)
-                setCurrentPage(1)
-                setPagesData({})
-                setZoom(1)
-                cancelCalibration()
-              }}
-              className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
-            >
-              Replace
-            </button>
+          {isEmptyWorkspace ? (
+            <>
+              <span className="text-sm font-medium text-ink-200 inline-flex items-center gap-2">
+                <span className="text-base leading-none">📐</span>
+                Empty workspace
+              </span>
+              <button
+                onClick={() => {
+                  // Switch out of empty-workspace mode → land back in the upload
+                  // zone with everything reset. Walls/openings/piers persist so
+                  // the user can still upload a PDF underneath them later if
+                  // they change their mind (they'll just need to calibrate).
+                  setIsEmptyWorkspace(false)
+                  setNumPages(0)
+                  setCurrentPage(1)
+                  setPagesData({})
+                  setZoom(1)
+                  cancelCalibration()
+                }}
+                className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
+                title="Attach a PDF instead — drawing keeps any existing walls"
+              >
+                Attach a PDF
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-sm font-medium text-ink-200 truncate max-w-[16rem]">
+                {displayedPdfFile?.name ?? pdfFile?.name ?? '(no file)'}
+              </span>
+              {/* Replace only swaps out the PRIMARY — reference PDFs come from
+                  the originating estimate request and aren't editable here. */}
+              {!isReferenceView && (
+                <button
+                  onClick={() => {
+                    setPdfFile(null)
+                    setNumPages(0)
+                    setCurrentPage(1)
+                    setPagesData({})
+                    setZoom(1)
+                    cancelCalibration()
+                  }}
+                  className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
+                >
+                  Replace
+                </button>
+              )}
+            </>
           )}
         </div>
 
         <div className="h-5 w-px bg-ink-600" />
 
-        {/* Page nav */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-            disabled={currentPage <= 1}
-            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            aria-label="Previous page"
-          >
-            ←
-          </button>
-          <span className="text-sm text-ink-300 tabular-nums px-1 min-w-[5.5rem] text-center">
-            Page {currentPage} / {numPages || '…'}
-          </span>
-          <button
-            onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
-            disabled={currentPage >= numPages}
-            className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            aria-label="Next page"
-          >
-            →
-          </button>
-        </div>
+        {/* Page nav — hidden in empty-workspace mode (single virtual page). */}
+        {!isEmptyWorkspace && (
+          <>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage <= 1}
+                className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                aria-label="Previous page"
+              >
+                ←
+              </button>
+              <span className="text-sm text-ink-300 tabular-nums px-1 min-w-[5.5rem] text-center">
+                Page {currentPage} / {numPages || '…'}
+              </span>
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
+                disabled={currentPage >= numPages}
+                className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                aria-label="Next page"
+              >
+                →
+              </button>
+            </div>
 
-        <div className="h-5 w-px bg-ink-600" />
+            <div className="h-5 w-px bg-ink-600" />
+          </>
+        )}
 
         {/* Zoom */}
         <div className="flex items-center gap-1">
@@ -2500,12 +2655,36 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 </>
               )}
             </span>
-            <button
-              onClick={startCalibration}
-              className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
-            >
-              Recalibrate
-            </button>
+            {isEmptyWorkspace ? (
+              // Empty workspace has no plan to click against, so the recalibrate
+              // flow doesn't apply — give them a ratio dropdown instead. Same
+              // applyRatioScale path the PDF mode exposes, but always available.
+              <select
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (!v) return
+                  applyRatioScale(parseFloat(v))
+                  e.target.value = ''
+                }}
+                className="px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-200 focus:outline-none focus:border-beme-400"
+                title="Change drawing ratio"
+              >
+                <option value="">Change…</option>
+                {RATIO_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <button
+                onClick={startCalibration}
+                className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
+              >
+                Recalibrate
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap">
@@ -2859,6 +3038,42 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 {placingFreestandingPier ? 'Cancel pier' : '+ Pier'}
               </button>
             )}
+            {/* Ruler — transient on-canvas measurement tool. Works in both
+                block and brick mode. Active button is fuchsia so it stands
+                apart from the colour palette used by drawing tools. */}
+            <button
+              onClick={() => {
+                setPlacingRuler((v) => !v)
+                setRulerAnchorMm(null)
+                setDrawingMode(false)
+                setDrawingCurveMode(false)
+                setPlacingOpening(false)
+                setPlacingControlJoint(false)
+                setPlacingTiedPier(false)
+                setPlacingFreestandingPier(false)
+                setSelectedWallId(null)
+                setSelectedOpeningId(null)
+                setSelectedPierId(null)
+              }}
+              disabled={!currentScale || calibrating}
+              title="Two clicks to measure the distance between any two points on the plan. Press R."
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                placingRuler
+                  ? 'bg-fuchsia-800 text-white hover:bg-fuchsia-900'
+                  : 'bg-fuchsia-700 text-white hover:bg-fuchsia-800 disabled:opacity-40 disabled:cursor-not-allowed'
+              }`}
+            >
+              {placingRuler ? 'Cancel ruler' : '📏 Ruler'}
+            </button>
+            {((measurementsByPage[currentPage] ?? []).length > 0) && (
+              <button
+                onClick={handleClearMeasurements}
+                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+                title="Remove all measurements on this page."
+              >
+                Clear measurements
+              </button>
+            )}
             {allWalls.length > 0 && (
               <button
                 onClick={clearAllWalls}
@@ -2875,6 +3090,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       {drawingMode && (
         <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg text-sm text-beme-200">
           Click two points on the plan to draw a wall. Press <kbd className="px-1.5 py-0.5 rounded border border-beme-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
+        </div>
+      )}
+
+      {placingRuler && (
+        <div className="mb-3 px-4 py-3 bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-lg text-sm text-fuchsia-100">
+          Click two points on the plan to measure the distance between them. Each pair drops a measurement that stays on the canvas until you clear it. Press{' '}
+          <kbd className="px-1.5 py-0.5 rounded border border-fuchsia-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
         </div>
       )}
 
@@ -3544,53 +3766,69 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 willChange: 'transform',
               }}
             >
-              <Document
-                file={displayedPdfFile}
-                onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-                loading={<p className="text-ink-400 p-12">Loading PDF…</p>}
-                error={<p className="text-rose-400 p-12">Couldn't load that PDF. Is it a valid file?</p>}
-              >
-                <Page
-                  pageNumber={currentPage}
-                  width={renderedPageWidth}
-                  renderAnnotationLayer={false}
-                  renderTextLayer={false}
-                  onLoadSuccess={(page) => {
-                    const widthMm = (page.originalWidth / POINTS_PER_INCH) * MM_PER_INCH
-                    const heightMm = (page.originalHeight / POINTS_PER_INCH) * MM_PER_INCH
-                    setPagesData((prev) => {
-                      const existing = prev[currentPage] ?? {}
-                      // Migration for projects saved before the page-ratio
-                      // refactor: convert the legacy canvas-pixel-relative
-                      // `scalePxPerMm` into the window-independent
-                      // `pageScaleRatio` now that we know the PDF's true
-                      // `pageWidthMm`. Best-effort — it assumes the current
-                      // baseWidth roughly matches the one at save time. After
-                      // this migration the ratio is the source of truth and
-                      // subsequent reloads are stable regardless of viewport
-                      // size.
-                      const needsMigration =
-                        existing.scalePxPerMm !== undefined &&
-                        existing.pageScaleRatio === undefined
-                      const migratedRatio = needsMigration
-                        ? baseWidth / (widthMm * existing.scalePxPerMm!)
-                        : existing.pageScaleRatio
-                      return {
-                        ...prev,
-                        [currentPage]: {
-                          ...existing,
-                          pageWidthMm: widthMm,
-                          pageHeightMm: heightMm,
-                          pageScaleRatio: migratedRatio,
-                          // Clear the legacy field once migrated so future
-                          // saves don't carry the now-stale value forward.
-                          scalePxPerMm: needsMigration ? undefined : existing.scalePxPerMm,
-                        },
-                      }
-                    })
+              {isEmptyWorkspace ? (
+                // Blank drawing surface — no PDF underneath, just a paper-tinted
+                // rectangle so the user can see the page extents. The Konva wall
+                // layer (below) gives them the grid, walls, snap markers, etc.
+                <div
+                  style={{
+                    width: renderedPageWidth,
+                    height: renderedPageHeight ?? undefined,
+                    backgroundColor: '#f6f5ef',
+                    backgroundImage:
+                      'linear-gradient(rgba(0,0,0,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.04) 1px, transparent 1px)',
+                    backgroundSize: '20px 20px, 20px 20px',
                   }}
                 />
-              </Document>
+              ) : (
+                <Document
+                  file={displayedPdfFile}
+                  onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+                  loading={<p className="text-ink-400 p-12">Loading PDF…</p>}
+                  error={<p className="text-rose-400 p-12">Couldn't load that PDF. Is it a valid file?</p>}
+                >
+                  <Page
+                    pageNumber={currentPage}
+                    width={renderedPageWidth}
+                    renderAnnotationLayer={false}
+                    renderTextLayer={false}
+                    onLoadSuccess={(page) => {
+                      const widthMm = (page.originalWidth / POINTS_PER_INCH) * MM_PER_INCH
+                      const heightMm = (page.originalHeight / POINTS_PER_INCH) * MM_PER_INCH
+                      setPagesData((prev) => {
+                        const existing = prev[currentPage] ?? {}
+                        // Migration for projects saved before the page-ratio
+                        // refactor: convert the legacy canvas-pixel-relative
+                        // `scalePxPerMm` into the window-independent
+                        // `pageScaleRatio` now that we know the PDF's true
+                        // `pageWidthMm`. Best-effort — it assumes the current
+                        // baseWidth roughly matches the one at save time. After
+                        // this migration the ratio is the source of truth and
+                        // subsequent reloads are stable regardless of viewport
+                        // size.
+                        const needsMigration =
+                          existing.scalePxPerMm !== undefined &&
+                          existing.pageScaleRatio === undefined
+                        const migratedRatio = needsMigration
+                          ? baseWidth / (widthMm * existing.scalePxPerMm!)
+                          : existing.pageScaleRatio
+                        return {
+                          ...prev,
+                          [currentPage]: {
+                            ...existing,
+                            pageWidthMm: widthMm,
+                            pageHeightMm: heightMm,
+                            pageScaleRatio: migratedRatio,
+                            // Clear the legacy field once migrated so future
+                            // saves don't carry the now-stale value forward.
+                            scalePxPerMm: needsMigration ? undefined : existing.scalePxPerMm,
+                          },
+                        }
+                      })
+                    }}
+                  />
+                </Document>
+              )}
 
               {/* Calibration overlay — at renderedZoom resolution; scales with parent. */}
               <svg
@@ -3665,6 +3903,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   placingControlJoint={placingControlJoint}
                   placingTiedPier={placingTiedPier}
                   placingFreestandingPier={placingFreestandingPier}
+                  placingRuler={placingRuler}
+                  rulerAnchorMm={rulerAnchorMm}
+                  measurements={measurementsByPage[currentPage] ?? []}
+                  onRulerClick={handleRulerClick}
                   piers={currentPagePiers}
                   selectedWallId={selectedWallId}
                   selectedOpeningId={selectedOpeningId}

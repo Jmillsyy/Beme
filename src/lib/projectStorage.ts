@@ -106,6 +106,13 @@ export interface SavedProject {
   outcome?: ProjectOutcome
 
   projectDetails: ProjectDetails
+  /**
+   * Project started without a PDF — the user is drawing on a blank canvas at
+   * a fixed ratio (defaults to 1:100 metric). The drawing surface is a virtual
+   * page seeded into `pagesData[1]`. `pdfBlob` is left undefined and the
+   * upload zone is bypassed on reload because of this flag.
+   */
+  emptyWorkspace?: boolean
   /** Optional — projects can be saved before a PDF is uploaded.
    *  This is the PRIMARY PDF — the one walls / openings / piers are drawn on
    *  (usually the architectural). Reference PDFs (engineering specs etc.)

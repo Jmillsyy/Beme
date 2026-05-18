@@ -244,7 +244,9 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           new Date(b.completedAt ?? b.updatedAt).getTime() -
           new Date(a.completedAt ?? a.updatedAt).getTime()
       )
-      .slice(0, 6)
+      // Cap at 4 so the row fills cleanly on common viewport widths without
+      // orphans. "View all →" link surfaces the rest.
+      .slice(0, 4)
     return {
       myPending,
       myInProgress,
@@ -348,41 +350,55 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <InboxColumn
-              title="Needs you to pick up"
-              accent="amber"
-              count={myPending.length}
-              empty="Nothing pending in your queue."
-            >
-              {myPending.map((r) => (
-                <InboxRow
-                  key={r.id}
-                  request={r}
-                  assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                  creator={memberById.get(r.createdByUserId)}
-                  onPickUp={() => handlePickUp(r)}
-                  pickingUp={pickingUpId === r.id}
-                  disablePickUp={!!pickingUpId && pickingUpId !== r.id}
-                />
-              ))}
-            </InboxColumn>
-            <InboxColumn
-              title="Currently working on"
-              accent="blue"
-              count={myInProgress.length}
-              empty="You haven't started any requests yet."
-            >
-              {myInProgress.map((r) => (
-                <InboxRow
-                  key={r.id}
-                  request={r}
-                  assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                  creator={memberById.get(r.createdByUserId)}
-                />
-              ))}
-            </InboxColumn>
-          </div>
+          // Self-balancing layout: when BOTH columns have items, split 50/50.
+          // When only one side has items, that side takes the full row so we
+          // never show a thin empty stripe next to a tall populated card.
+          // No lopsidedness — the row width is always evenly consumed.
+          (() => {
+            const bothHaveItems = myPending.length > 0 && myInProgress.length > 0
+            const cols = bothHaveItems ? 'md:grid-cols-2' : 'md:grid-cols-1'
+            return (
+              <div className={`grid grid-cols-1 ${cols} gap-4 items-stretch`}>
+                {myPending.length > 0 && (
+                  <InboxColumn
+                    title="Needs you to pick up"
+                    accent="amber"
+                    count={myPending.length}
+                    empty="Nothing pending in your queue."
+                  >
+                    {myPending.map((r) => (
+                      <InboxRow
+                        key={r.id}
+                        request={r}
+                        assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
+                        creator={memberById.get(r.createdByUserId)}
+                        onPickUp={() => handlePickUp(r)}
+                        pickingUp={pickingUpId === r.id}
+                        disablePickUp={!!pickingUpId && pickingUpId !== r.id}
+                      />
+                    ))}
+                  </InboxColumn>
+                )}
+                {myInProgress.length > 0 && (
+                  <InboxColumn
+                    title="Currently working on"
+                    accent="blue"
+                    count={myInProgress.length}
+                    empty="You haven't started any requests yet."
+                  >
+                    {myInProgress.map((r) => (
+                      <InboxRow
+                        key={r.id}
+                        request={r}
+                        assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
+                        creator={memberById.get(r.createdByUserId)}
+                      />
+                    ))}
+                  </InboxColumn>
+                )}
+              </div>
+            )
+          })()
         )}
       </section>
 
@@ -430,7 +446,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               View all →
             </Link>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {/* Auto-fit + 1fr: cards stretch to fill the row evenly no matter
+              how many there are. 1 card spans the full row, 2 split 50/50,
+              3 split 33/33/33, 4+ wrap to a new row at the min width. No
+              empty gaps on the right, no orphans on the last row. */}
+          <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
             {recentlyCompleted.map((r) => (
               <CompletedCard
                 key={r.id}
@@ -443,17 +463,27 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       )}
 
       {/* Material library tile — full management UI lives at /library, with
-          org-admin gating for edits enforced inside that page. */}
+          org-admin gating for edits enforced inside that page. Section
+          heading matches the "Recently completed" pattern so the dashboard
+          reads as a consistent stack of titled bands. */}
       <section className="mt-10">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            Material library
+          </h3>
+          <Link
+            to="/library"
+            className="text-xs text-beme-300 hover:text-beme-200"
+          >
+            Open →
+          </Link>
+        </div>
         <Link
           to="/library"
-          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
+          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group mb-10"
         >
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-1">
-                Material library
-              </div>
               <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
                 Manage blocks, bricks &amp; supply items →
               </div>
@@ -461,6 +491,38 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
                 Your team's catalogue: block types, brick types, and supply
                 items priced per block / brick / m² / lineal m. Only an org
                 admin can edit; everyone can view.
+              </p>
+            </div>
+          </div>
+        </Link>
+      </section>
+
+      {/* Beme guide tile — link to /guide for the full walkthrough. */}
+      <section className="mt-10">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            Beme guide
+          </h3>
+          <Link
+            to="/guide"
+            className="text-xs text-beme-300 hover:text-beme-200"
+          >
+            Open →
+          </Link>
+        </div>
+        <Link
+          to="/guide"
+          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
+        >
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
+                Full walkthrough &amp; shortcuts →
+              </div>
+              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
+                Setup your library, draw walls, place openings, export an
+                estimate — step-by-step with tips and shortcuts. Region-
+                agnostic; works no matter where in the world you're laying.
               </p>
             </div>
           </div>
@@ -494,17 +556,19 @@ function InboxColumn({
   const dotClass = accent === 'amber' ? 'bg-amber-400' : 'bg-blue-400'
   const hasContent = Array.isArray(children) ? children.length > 0 : !!children
   return (
-    <div>
+    <div className="flex flex-col">
       <div className="flex items-center gap-2 mb-2 px-1">
         <span className={`w-2 h-2 rounded-full ${dotClass}`} />
         <span className="text-sm font-semibold text-ink-100">{title}</span>
         <span className="text-xs text-ink-400 ml-auto tabular-nums">{count}</span>
       </div>
       {hasContent ? (
-        <ul className="space-y-2">{children}</ul>
+        <ul className="space-y-2 flex-1">{children}</ul>
       ) : (
-        <div className="border border-dashed border-ink-600 rounded-xl p-5 text-center bg-ink-800/30">
-          <p className="text-ink-400 text-xs">{empty}</p>
+        // Compact one-line empty state — keeps the column slim so it doesn't
+        // look "tall and lonely" when only one side has items.
+        <div className="border border-dashed border-ink-600 rounded-lg px-3 py-2 bg-ink-800/30">
+          <p className="text-ink-500 text-xs italic">{empty}</p>
         </div>
       )}
     </div>
@@ -1014,17 +1078,26 @@ function PersonalDashboard() {
       </section>
 
       {/* Material library tile — links to the dedicated /library page where
-          blocks, bricks, and supply items are all managed. */}
+          blocks, bricks, and supply items are all managed. Heading matches
+          the other dashboard bands for consistent rhythm. */}
       <section className="mt-10">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            Material library
+          </h3>
+          <Link
+            to="/library"
+            className="text-xs text-beme-300 hover:text-beme-200"
+          >
+            Open →
+          </Link>
+        </div>
         <Link
           to="/library"
           className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
         >
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div>
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-1">
-                Material library
-              </div>
               <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
                 Manage blocks, bricks &amp; supply items →
               </div>
@@ -1032,6 +1105,38 @@ function PersonalDashboard() {
                 Your full catalogue: block types, brick types, and any custom
                 supply items priced by the block / brick / m² / lineal m.
                 Edits flow straight into every project.
+              </p>
+            </div>
+          </div>
+        </Link>
+      </section>
+
+      {/* Beme guide tile — link to /guide for the full walkthrough. */}
+      <section className="mt-10">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            Beme guide
+          </h3>
+          <Link
+            to="/guide"
+            className="text-xs text-beme-300 hover:text-beme-200"
+          >
+            Open →
+          </Link>
+        </div>
+        <Link
+          to="/guide"
+          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
+        >
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
+                Full walkthrough &amp; shortcuts →
+              </div>
+              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
+                Setup your library, draw walls, place openings, export an
+                estimate — step-by-step with tips and shortcuts. Region-
+                agnostic; works no matter where in the world you're laying.
               </p>
             </div>
           </div>

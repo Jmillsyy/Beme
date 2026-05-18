@@ -64,6 +64,21 @@ interface WallDrawingLayerProps {
   selectedOpeningIds?: ReadonlySet<string>
   selectedPierIds?: ReadonlySet<string>
   /**
+   * Ruler / measurement tool. When `placingRuler` is true the cursor drops
+   * measurement points on click — first click sets the anchor (rendered
+   * live via `rulerAnchorMm`), second click commits a measurement (handed
+   * back to the parent via `onRulerClick`, which the parent stores in
+   * `measurements` so it persists across cursor moves).
+   */
+  placingRuler?: boolean
+  rulerAnchorMm?: Point | null
+  measurements?: ReadonlyArray<{
+    id: string
+    startMm: Point
+    endMm: Point
+  }>
+  onRulerClick?: (posMm: Point) => void
+  /**
    * Per-wall stroke colour, keyed by wall id — set by the parent based on the
    * wall type's palette colour. Falls back to the brand orange if missing.
    */
@@ -579,6 +594,10 @@ function WallDrawingLayerInner({
   selectedOpeningIds,
   selectedPierIds,
   wallColorByWallId,
+  placingRuler = false,
+  rulerAnchorMm = null,
+  measurements = [],
+  onRulerClick,
   onWallAdded,
   onCurvedWallAdded,
   onWallSelect,
@@ -1141,6 +1160,9 @@ function WallDrawingLayerInner({
         } else if (placingFreestandingPier) {
           setFreestandingPierHoverMm(null)
           onCancelDraw?.()
+        } else if (placingRuler) {
+          // Cancel any in-progress measurement and exit ruler mode entirely.
+          onCancelDraw?.()
         } else if (selectedWallId) {
           onWallSelect(null)
         } else if (selectedOpeningId) {
@@ -1150,7 +1172,7 @@ function WallDrawingLayerInner({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -1370,6 +1392,18 @@ function WallDrawingLayerInner({
       return
     }
 
+    if (placingRuler) {
+      // Each click drops a measurement point. Parent state tracks whether
+      // this is the first (sets the anchor) or second (commits a measurement
+      // and clears the anchor for the next pair).
+      const posMm = {
+        x: useGrid ? snapMmToGrid(pxToMm(raw.x)) : pxToMm(raw.x),
+        y: useGrid ? snapMmToGrid(pxToMm(raw.y)) : pxToMm(raw.y),
+      }
+      onRulerClick?.(posMm)
+      return
+    }
+
     if (drawingCurveMode) {
       // Clicks 1 & 2: anchor on the nearest wall's centreline (endpoint snap kicks
       // in when the click is close to either end). See resolveCurveAnchorAtCursor
@@ -1464,6 +1498,13 @@ function WallDrawingLayerInner({
         }
       }
       setTiedPierHover(proj)
+    } else if (placingRuler) {
+      // Track the cursor in mm so the in-progress measurement line follows
+      // the cursor between anchor and click. Snap to the grid for repeatable
+      // measurements when the user is doing layout checks at round numbers.
+      const xMm = useGrid ? snapMmToGrid(pxToMm(raw.x)) : pxToMm(raw.x)
+      const yMm = useGrid ? snapMmToGrid(pxToMm(raw.y)) : pxToMm(raw.y)
+      setCursorMm({ x: xMm, y: yMm })
     } else if (placingFreestandingPier) {
       // Unified pier mode — preview matches what the click would actually do:
       // show the tied-pier hover when the cursor sits inside a straight wall's
@@ -2426,6 +2467,67 @@ function WallDrawingLayerInner({
             listening={false}
           />
         )}
+
+        {/* Persistent measurements + in-progress measurement preview. Drawn
+            in fuchsia so they pop against the orange walls and don't get
+            mistaken for in-progress drawing. */}
+        {measurements.map((m) => {
+          const startPx = { x: mmToPx(m.startMm.x), y: mmToPx(m.startMm.y) }
+          const endPx = { x: mmToPx(m.endMm.x), y: mmToPx(m.endMm.y) }
+          const lengthMm = distance(m.startMm, m.endMm)
+          const midPx = {
+            x: (startPx.x + endPx.x) / 2,
+            y: (startPx.y + endPx.y) / 2,
+          }
+          return (
+            <Group key={m.id} listening={false}>
+              <Line
+                points={[startPx.x, startPx.y, endPx.x, endPx.y]}
+                stroke="#d946ef"
+                strokeWidth={2}
+                dash={[6, 4]}
+              />
+              <Circle x={startPx.x} y={startPx.y} radius={4} fill="#d946ef" stroke="white" strokeWidth={1.5} />
+              <Circle x={endPx.x} y={endPx.y} radius={4} fill="#d946ef" stroke="white" strokeWidth={1.5} />
+              <Text
+                x={midPx.x + 8}
+                y={midPx.y - 18}
+                text={formatMm(lengthMm)}
+                fontSize={14}
+                fill="#a21caf"
+                fontStyle="bold"
+              />
+            </Group>
+          )
+        })}
+        {placingRuler && rulerAnchorMm && cursorMm && (() => {
+          const startPx = {
+            x: mmToPx(rulerAnchorMm.x),
+            y: mmToPx(rulerAnchorMm.y),
+          }
+          const endPx = { x: mmToPx(cursorMm.x), y: mmToPx(cursorMm.y) }
+          const lengthMm = distance(rulerAnchorMm, cursorMm)
+          return (
+            <Group listening={false}>
+              <Line
+                points={[startPx.x, startPx.y, endPx.x, endPx.y]}
+                stroke="#d946ef"
+                strokeWidth={2}
+                dash={[6, 4]}
+                opacity={0.85}
+              />
+              <Circle x={startPx.x} y={startPx.y} radius={5} fill="#d946ef" stroke="white" strokeWidth={2} />
+              <Text
+                x={(startPx.x + endPx.x) / 2 + 8}
+                y={(startPx.y + endPx.y) / 2 - 18}
+                text={formatMm(lengthMm)}
+                fontSize={14}
+                fill="#a21caf"
+                fontStyle="bold"
+              />
+            </Group>
+          )
+        })()}
       </Layer>
     </Stage>
   )

@@ -8,6 +8,7 @@ import RequestsPage from './pages/RequestsPage'
 import NewRequestPage from './pages/NewRequestPage'
 import RequestDetailPage from './pages/RequestDetailPage'
 import MaterialLibraryPage from './pages/MaterialLibraryPage'
+import GuidePage from './pages/GuidePage'
 import { useAuth } from './lib/auth'
 import { isSupabaseConfigured } from './lib/supabase'
 
@@ -40,6 +41,7 @@ export default function App() {
       <Route path="/project/brick" element={<BrickEstimatePage />} />
       <Route path="/project/block" element={<BlockEstimatePage />} />
       <Route path="/library" element={<MaterialLibraryPage />} />
+      <Route path="/guide" element={<GuidePage />} />
       <Route path="/settings" element={<SettingsPage />} />
       <Route path="/requests" element={<RequestsPage />} />
       <Route path="/requests/new" element={<NewRequestPage />} />
