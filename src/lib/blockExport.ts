@@ -360,45 +360,50 @@ function buildPlanOverviewPage(
   }
   if (!isFinite(minX) || !isFinite(maxX)) return ''
 
-  // Pad by a multiple of the thickest wall so the wall edges don't bleed
-  // against the SVG viewBox. Minimum 500 mm so a single-wall plan still
-  // has breathing room.
+  // Pad by a generous amount so the walls have breathing room AND a bit
+  // of surrounding plan context (when a PDF is shown behind). The amount
+  // scales with the plan's extent — a tiny gazebo gets a 1 m pad, a
+  // multi-storey commercial layout gets several metres.
   const maxThick = Math.max(
     190,
     ...Object.values(thicknessByWallId).filter((v) => v > 0)
   )
-  const pad = Math.max(500, maxThick * 4)
+  const pad = Math.max(
+    1000,
+    maxThick * 4,
+    (maxX - minX) * 0.1,
+    (maxY - minY) * 0.1
+  )
 
-  // When we have a PDF background to embed, the SVG's coordinate system
-  // is the FULL PAGE (in real-world mm) so the rasterised page can sit
-  // at (0,0) covering its full extent. Walls' stored coordinates are
-  // already in real-world mm relative to the page, so they line up
-  // exactly. Without a background, we crop to the walls' bounding box
-  // (+ padding) so the user gets a tight, zoomed-in diagram instead of
-  // a tiny clump in the corner of a blank page-sized canvas.
-  let viewMinX: number, viewMinY: number, viewW: number, viewH: number
+  // viewBox crops to the walls' bounding box + padding REGARDLESS of
+  // whether we have a background image. With a background, the
+  // rasterised page is placed at the page origin (0, 0) covering its
+  // full real-world extent — the SVG just shows the cropped slice. This
+  // means the reader gets a zoomed-in view of the walls with the relevant
+  // bit of plan around them, instead of a full A4 page with the walls
+  // crammed in one corner. When there's a background, we also clamp the
+  // viewBox to the page bounds so we never expose empty SVG space past
+  // the edge of the page.
+  let viewMinX = minX - pad
+  let viewMinY = minY - pad
+  let viewW = maxX - minX + pad * 2
+  let viewH = maxY - minY + pad * 2
   if (background) {
     const pageRealW = background.pageWidthMm * background.pageScaleRatio
     const pageRealH = background.pageHeightMm * background.pageScaleRatio
-    viewMinX = 0
-    viewMinY = 0
-    viewW = pageRealW
-    viewH = pageRealH
-  } else {
-    viewMinX = minX - pad
-    viewMinY = minY - pad
-    viewW = maxX - minX + pad * 2
-    viewH = maxY - minY + pad * 2
+    viewMinX = Math.max(0, viewMinX)
+    viewMinY = Math.max(0, viewMinY)
+    viewW = Math.min(viewW, pageRealW - viewMinX)
+    viewH = Math.min(viewH, pageRealH - viewMinY)
   }
 
   // Numbered wall labels — size scales with the larger of plan-extent and
-  // wall thickness so the labels read at the printed size regardless of
-  // how big the plan is. The multipliers below were bumped from the first
-  // pass (2.2× thickness, 4% of plan) because the labels printed too small
-  // at typical residential plan scales; this gives ~6 mm tall numbers and
-  // ~5 mm tall length captions on a landscape-A4 print.
-  const labelDiameter = Math.max(maxThick * 3.3, Math.min(viewW, viewH) * 0.06)
-  const labelFontSize = labelDiameter * 0.6
+  // wall thickness. Tuned for "readable but not obscuring the walls": at
+  // a typical residential brick wall (110 mm thick) and a 10 m bounding
+  // box the labels print at about 4 mm tall on landscape A4, which sits
+  // comfortably without blocking the plan beneath.
+  const labelDiameter = Math.max(maxThick * 2.4, Math.min(viewW, viewH) * 0.04)
+  const labelFontSize = labelDiameter * 0.55
 
   // Wall bodies — semi-transparent fill keyed off the wall's makeup colour
   // (see WALL_TYPE_PALETTE / colourByMakeupId above). We render walls as a
@@ -469,7 +474,7 @@ function buildPlanOverviewPage(
   // so it reads on top of the wall fill; the length text is white with a
   // dark stroke (paint-order: stroke) so it's legible whether it falls on
   // the wall body or in the gap.
-  const lengthFontSize = labelFontSize * 0.85
+  const lengthFontSize = labelFontSize * 0.75
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
