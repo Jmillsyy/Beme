@@ -688,6 +688,7 @@ function InboxRow({
 function PersonalDashboard() {
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [filter, setFilter] = useState<Filter>('all')
+  const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const { signedIn } = useAuth()
   const { settings } = useUserSettings()
@@ -718,13 +719,29 @@ function PersonalDashboard() {
   }, [projects])
 
   const filtered = useMemo(() => {
-    if (filter === 'all') return projects
-    if (filter === 'in-progress' || filter === 'completed')
-      return projects.filter((p) => p.status === filter)
-    if (filter === 'won') return projects.filter((p) => p.outcome === 'won')
-    if (filter === 'lost') return projects.filter((p) => p.outcome === 'lost')
-    return projects.filter((p) => !p.outcome)
-  }, [projects, filter])
+    // Status / outcome filter first.
+    let base: SavedProject[]
+    if (filter === 'all') base = projects
+    else if (filter === 'in-progress' || filter === 'completed')
+      base = projects.filter((p) => p.status === filter)
+    else if (filter === 'won') base = projects.filter((p) => p.outcome === 'won')
+    else if (filter === 'lost') base = projects.filter((p) => p.outcome === 'lost')
+    else base = projects.filter((p) => !p.outcome)
+    // Then search — case-insensitive substring match against project name,
+    // site address, client name, and estimator name. The four fields cover
+    // every way an estimator typically remembers a job.
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return base
+    return base.filter((p) => {
+      const d = p.projectDetails
+      return (
+        d.projectName.toLowerCase().includes(q) ||
+        d.siteAddress.toLowerCase().includes(q) ||
+        d.clientName.toLowerCase().includes(q) ||
+        d.estimatorName.toLowerCase().includes(q)
+      )
+    })
+  }, [projects, filter, searchQuery])
 
   async function handleDelete(id: string) {
     if (!window.confirm('Delete this project? This cannot be undone.')) return
@@ -900,13 +917,40 @@ function PersonalDashboard() {
           <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
             Projects
           </h3>
-          <div className="flex items-center gap-1 border border-ink-600 rounded-lg p-1 bg-ink-800 flex-wrap">
-            <FilterTab label="All" count={stats.total} active={filter === 'all'} onClick={() => setFilter('all')} />
-            <FilterTab label="In progress" count={stats.inProgress} active={filter === 'in-progress'} onClick={() => setFilter('in-progress')} />
-            <FilterTab label="Completed" count={stats.completed} active={filter === 'completed'} onClick={() => setFilter('completed')} />
-            <FilterTab label="Won" count={stats.won} active={filter === 'won'} onClick={() => setFilter('won')} />
-            <FilterTab label="Lost" count={stats.lost} active={filter === 'lost'} onClick={() => setFilter('lost')} />
-            <FilterTab label="Pending" count={stats.pending} active={filter === 'pending'} onClick={() => setFilter('pending')} />
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Search — matches project name, site address, client name,
+                estimator name. Case-insensitive substring. Layered on top
+                of the status / outcome filter to the right. */}
+            <div className="relative">
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search projects…"
+                className="pl-8 pr-3 py-1.5 w-56 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
+              />
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-500 text-xs">
+                🔍
+              </span>
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-500 hover:text-ink-200 text-xs"
+                  aria-label="Clear search"
+                  type="button"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-1 border border-ink-600 rounded-lg p-1 bg-ink-800 flex-wrap">
+              <FilterTab label="All" count={stats.total} active={filter === 'all'} onClick={() => setFilter('all')} />
+              <FilterTab label="In progress" count={stats.inProgress} active={filter === 'in-progress'} onClick={() => setFilter('in-progress')} />
+              <FilterTab label="Completed" count={stats.completed} active={filter === 'completed'} onClick={() => setFilter('completed')} />
+              <FilterTab label="Won" count={stats.won} active={filter === 'won'} onClick={() => setFilter('won')} />
+              <FilterTab label="Lost" count={stats.lost} active={filter === 'lost'} onClick={() => setFilter('lost')} />
+              <FilterTab label="Pending" count={stats.pending} active={filter === 'pending'} onClick={() => setFilter('pending')} />
+            </div>
           </div>
         </div>
 
@@ -918,6 +962,10 @@ function PersonalDashboard() {
               <span>
                 No saved projects yet. Click <strong>+ Block estimate</strong> or{' '}
                 <strong>+ Brick estimate</strong> above to start one.
+              </span>
+            ) : searchQuery ? (
+              <span>
+                No projects match <strong>"{searchQuery}"</strong>.
               </span>
             ) : (
               <span>No projects with this filter.</span>

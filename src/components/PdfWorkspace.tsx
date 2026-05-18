@@ -529,6 +529,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setProjectCreatedAt(proj.createdAt)
         setProjectCompletedAt(proj.completedAt ?? null)
         setLastSavedAt(proj.updatedAt)
+        // Loading a project resets the dirty baseline — fresh open means
+        // nothing's been edited yet, so Save changes should be greyed out.
+        // The snapshot effect will seed the ref from the loaded state on
+        // its next pass (because we just nulled it here).
+        savedSnapshotRef.current = null
+        setHasUnsavedChanges(false)
       })
       .catch((err) => {
         console.error('Failed to load project', err)
@@ -539,15 +545,82 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
+  // Tracks whether the in-memory project differs from the last-saved (or
+  // last-loaded) state. Set true by the useEffect below whenever any key
+  // state reference changes, set false after a save/load.
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  /**
+   * Snapshot of the key state references at the last load/save. We compare by
+   * reference because every state setter we use returns a fresh object/array
+   * via `(prev) => ...`, so any real edit changes a reference. Storing the
+   * snapshot in a ref keeps the comparison effect from looping.
+   */
+  const savedSnapshotRef = useRef<{
+    walls: typeof wallsByPage
+    openings: typeof openingsByPage
+    piers: typeof piersByPage
+    makeups: typeof makeups
+    pierMakeups: typeof pierMakeups
+    details: typeof projectDetails
+    brick: typeof brickSettings
+  } | null>(null)
+
+  useEffect(() => {
+    const current = {
+      walls: wallsByPage,
+      openings: openingsByPage,
+      piers: piersByPage,
+      makeups,
+      pierMakeups,
+      details: projectDetails,
+      brick: brickSettings,
+    }
+    if (!savedSnapshotRef.current) {
+      // First render — seed the snapshot so the very first effect run doesn't
+      // mark the project dirty before anyone's touched it.
+      savedSnapshotRef.current = current
+      return
+    }
+    const snap = savedSnapshotRef.current
+    const dirty =
+      current.walls !== snap.walls ||
+      current.openings !== snap.openings ||
+      current.piers !== snap.piers ||
+      current.makeups !== snap.makeups ||
+      current.pierMakeups !== snap.pierMakeups ||
+      current.details !== snap.details ||
+      current.brick !== snap.brick
+    if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
+  }, [
+    wallsByPage,
+    openingsByPage,
+    piersByPage,
+    makeups,
+    pierMakeups,
+    projectDetails,
+    brickSettings,
+    hasUnsavedChanges,
+  ])
+
   // Reasons save might be blocked, evaluated each render. A PDF is NO LONGER required —
   // users can save a project with just a name (and pre-configured wall / pier types),
-  // then upload the PDF later.
+  // then upload the PDF later. For projects that have been saved at least once we ALSO
+  // require unsaved changes — no point pretending the button does something when it
+  // would just rewrite the same data.
   const saveBlockedReason = useMemo<string | null>(() => {
     if (!projectDetails.projectName.trim() && !projectDetails.siteAddress.trim()) {
       return 'Fill in a project name or site address in Project details before saving.'
     }
+    if (currentProjectId !== null && !hasUnsavedChanges) {
+      return 'No unsaved changes.'
+    }
     return null
-  }, [projectDetails.projectName, projectDetails.siteAddress])
+  }, [
+    projectDetails.projectName,
+    projectDetails.siteAddress,
+    currentProjectId,
+    hasUnsavedChanges,
+  ])
   const canSave = saveBlockedReason === null
 
   async function handleSaveProject() {
@@ -592,6 +665,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       setCurrentProjectId(id)
       setProjectCreatedAt(project.createdAt)
       setLastSavedAt(now)
+      // Refresh the dirty-state baseline so the Save changes button greys
+      // out until the user actually edits something next.
+      savedSnapshotRef.current = {
+        walls: wallsByPage,
+        openings: openingsByPage,
+        piers: piersByPage,
+        makeups,
+        pierMakeups,
+        details: projectDetails,
+        brick: brickSettings,
+      }
+      setHasUnsavedChanges(false)
       // Update URL with the project id (so refresh keeps you in the saved project)
       if (typeof window !== 'undefined') {
         const url = new URL(window.location.href)
@@ -2017,7 +2102,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   if (!pdfFile) {
     return (
       <div className="max-w-[1600px] mx-auto">
-        {sourceRequest && <RequestBreadcrumb request={sourceRequest} />}
         {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
         {(mode === 'block' || mode === 'brick') && (
           <ProjectBar
@@ -2027,6 +2111,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             lastSavedAt={lastSavedAt}
             canSave={canSave}
             saveBlockedReason={saveBlockedReason}
+            mode={mode}
+            sourceRequest={sourceRequest ?? null}
             onSave={handleSaveProject}
             onToggleStatus={handleToggleProjectStatus}
             onDelete={handleDeleteProject}
@@ -2042,8 +2128,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           onClose={() => setDetailsDrawerOpen(false)}
         />
 
-        <div className="px-6 py-6">
-          <WorkspacePageHeading mode={mode} />
+        <div className="px-6 py-4">
 
           <div className="flex flex-col lg:flex-row gap-4 items-start">
 
@@ -2169,7 +2254,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   return (
     <div className="max-w-[1600px] mx-auto">
-      {sourceRequest && <RequestBreadcrumb request={sourceRequest} />}
       {/* Slim project bar — Studio Black header */}
       {(mode === 'block' || mode === 'brick') && (
         <ProjectBar
@@ -2179,6 +2263,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           lastSavedAt={lastSavedAt}
           canSave={canSave}
           saveBlockedReason={saveBlockedReason}
+          mode={mode}
+          sourceRequest={sourceRequest ?? null}
           onSave={handleSaveProject}
           onToggleStatus={handleToggleProjectStatus}
           onDelete={handleDeleteProject}
@@ -2194,16 +2280,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
-      <div className="px-6 py-6">
-
-      <WorkspacePageHeading mode={mode} />
+      <div className="px-6 py-5">
 
       {/* File switcher — always renders when a primary PDF is loaded so the
           user can attach extra reference PDFs (engineering specs, architectural
           plans etc.) and flip between them. Walls / pages / calibration stay
           locked to the primary; reference PDFs are view-only. */}
       {pdfFile && (
-        <div className="flex items-center mb-2 px-1 gap-2 overflow-x-auto">
+        <div className="flex items-center mb-3 px-1 gap-2 overflow-x-auto">
           <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
             File
           </span>
@@ -2310,7 +2394,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       )}
 
       {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
-      <div className="flex items-center mb-3 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
+      <div className="flex items-center mb-4 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
         {/* PDF filename + Replace */}
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-sm font-medium text-ink-200 truncate max-w-[16rem]">
@@ -2571,7 +2655,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const activeMakeup = blockModeNeedsType ? makeupsById[activeMakeupId] : null
         const missingActiveType = blockModeNeedsType && !activeMakeup
         return (
-        <div className="flex items-center justify-between mb-3 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-3">
+        <div className="flex items-center justify-between mb-4 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-3">
           <div className="text-sm">
             {!currentScale ? (
               <span className="text-ink-400">
@@ -3821,15 +3905,15 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
 
 function RequestBreadcrumb({ request }: { request: EstimateRequest }) {
   return (
-    <div className="px-6 pt-4">
+    <div className="px-6 pt-4 pb-3">
       <Link
         to={`/requests/${request.id}`}
-        className="inline-flex items-center gap-2 text-xs text-ink-300 hover:text-beme-300 transition-colors"
+        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
       >
-        <span>←</span>
+        <span className="text-base leading-none">←</span>
         <span>
           Request from{' '}
-          <span className="text-ink-100 font-medium">{request.customerName}</span>
+          <span className="font-medium text-ink-50">{request.customerName}</span>
           {request.customerCompany && (
             <span className="text-ink-400"> · {request.customerCompany}</span>
           )}
