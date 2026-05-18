@@ -955,7 +955,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
               <section class="page">
                 ${pageHeader}
                 <h2 class="section-title">Breakdown by Wall Type</h2>
-                <p class="page-intro">Block counts per wall makeup (pre-deduplication of shared corners).</p>
+                <p class="page-intro">Block counts per wall makeup.</p>
                 <div class="wall-type-section">
                   <h3 class="wall-type-name">
                     ${escapeHtml(p.makeup.name)}
@@ -996,7 +996,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
           <section class="page">
             ${pageHeader}
             <h2 class="section-title">Grand Total per Block Type</h2>
-            <p class="page-intro">Combined block counts across every wall makeup (pre-deduplication of shared corners).</p>
+            <p class="page-intro">Combined block counts across every wall makeup.</p>
             <div class="wall-type-section">
               <table>
                 <thead>
