@@ -2920,7 +2920,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   // when the canvas is CSS-scaling ahead of the rasterised
                   // zoom. The wall layer uses this to suppress hover state
                   // updates that would otherwise stutter the gesture.
-                  isZooming={zoom !== renderedZoom}
+                  //
+                  // IMPORTANT: compare against the CLAMPED target, not raw
+                  // `zoom`. `renderedZoom` caps at MAX_RENDERED_ZOOM, so a
+                  // raw `zoom !== renderedZoom` comparison stays true forever
+                  // whenever the user is zoomed in past the cap — which would
+                  // permanently disable hit-testing on the stage and silently
+                  // break wall selection / delete. Using the clamped target
+                  // means the flag resets to false the moment the re-raster
+                  // debounce completes, regardless of how high zoom goes.
+                  isZooming={Math.min(zoom, MAX_RENDERED_ZOOM) !== renderedZoom}
                   drawingMode={drawingMode}
                   drawingCurveMode={drawingCurveMode}
                   placingOpening={placingOpening}
