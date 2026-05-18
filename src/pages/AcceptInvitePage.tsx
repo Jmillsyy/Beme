@@ -7,7 +7,7 @@ import {
   peekInvitation,
   type InvitationPreview,
 } from '../lib/invitations'
-import { setCurrentOrg } from '../lib/organisations'
+import { refreshOrganisations, setCurrentOrg } from '../lib/organisations'
 
 /**
  * Accept-invite page reached from a link the admin pasted to a teammate.
@@ -122,7 +122,14 @@ export default function AcceptInvitePage() {
       }
       // Accept the invite — adds row to organisation_members + marks used.
       const { organisationId } = await acceptInvitation(token)
-      // Set the active org so the dashboard reflects the new membership.
+      // CRITICAL: refresh the orgs singleton BEFORE setCurrentOrg. The new
+      // organisation_members row is freshly inserted; the org context still
+      // has the empty list it loaded when the brand-new user signed up.
+      // Without the refresh, setCurrentOrg flips the active-org pointer but
+      // getCurrentOrg() returns null (the org isn't in state.organisations
+      // yet), the dashboard renders the personal layout, and the user
+      // thinks the invite didn't work.
+      await refreshOrganisations()
       setCurrentOrg(organisationId)
       navigate('/')
     } catch (err) {
@@ -137,6 +144,9 @@ export default function AcceptInvitePage() {
     setSubmitError(null)
     try {
       const { organisationId } = await acceptInvitation(token)
+      // Same reason as the sign-up path above — the org list needs to know
+      // about the new membership before setCurrentOrg's pointer is useful.
+      await refreshOrganisations()
       setCurrentOrg(organisationId)
       navigate('/')
     } catch (err) {
