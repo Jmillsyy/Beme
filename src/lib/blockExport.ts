@@ -419,7 +419,7 @@ function buildPlanOverviewPage(
   // comfortably without blocking the plan beneath. Slightly larger than
   // before so the length text below each circle is easy to read at print
   // size — the length is the most useful info on this page.
-  const labelDiameter = Math.max(maxThick * 3, Math.min(viewW, viewH) * 0.05)
+  const labelDiameter = Math.max(maxThick * 4, Math.min(viewW, viewH) * 0.07)
   const labelFontSize = labelDiameter * 0.55
 
   // Wall bodies — semi-transparent fill keyed off the wall's makeup colour
@@ -491,7 +491,7 @@ function buildPlanOverviewPage(
   // so it reads on top of the wall fill; the length text is white with a
   // dark stroke (paint-order: stroke) so it's legible whether it falls on
   // the wall body or in the gap.
-  const lengthFontSize = labelFontSize * 0.9
+  const lengthFontSize = labelFontSize * 1.05
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
