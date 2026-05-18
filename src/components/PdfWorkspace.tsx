@@ -1997,13 +1997,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       <WorkspacePageHeading mode={mode} />
 
-      {/* File switcher — only renders when there are reference PDFs attached.
-          Tabs let the estimator flip between the primary plan (where they
-          actually draw) and any engineering/reference PDFs that came with
-          the request. Switching re-snaps page state so the user lands at
-          page 1 on a reference and back at their primary page when they
-          return. Active tab gets the beme accent; the rest stay muted. */}
-      {referencePdfFiles.length > 0 && (
+      {/* File switcher — always renders when a primary PDF is loaded so the
+          user can attach extra reference PDFs (engineering specs, architectural
+          plans etc.) and flip between them. Walls / pages / calibration stay
+          locked to the primary; reference PDFs are view-only. */}
+      {pdfFile && (
         <div className="flex items-center mb-2 px-1 gap-2 overflow-x-auto">
           <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
             File
@@ -2027,25 +2025,81 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           {referencePdfFiles.map((f, i) => {
             const active = activeReferenceIndex === i
             return (
-              <button
+              <span
                 key={`${f.name}-${i}`}
-                onClick={() => switchPdf(i)}
-                className={`px-3 py-1.5 rounded-lg text-sm border whitespace-nowrap transition-colors ${
+                className={`group inline-flex items-center rounded-lg border whitespace-nowrap transition-colors ${
                   active
-                    ? 'bg-beme-500/15 border-beme-500/40 text-beme-300 font-medium'
+                    ? 'bg-beme-500/15 border-beme-500/40 text-beme-300'
                     : 'border-ink-600 text-ink-200 hover:bg-ink-700'
                 }`}
-                title={f.name}
               >
-                <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
-                  Ref
-                </span>
-                <span className="truncate max-w-[14rem] inline-block align-middle">
-                  {f.name}
-                </span>
-              </button>
+                <button
+                  onClick={() => switchPdf(i)}
+                  className={`pl-3 pr-1.5 py-1.5 text-sm ${active ? 'font-medium' : ''}`}
+                  title={f.name}
+                >
+                  <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
+                    Ref
+                  </span>
+                  <span className="truncate max-w-[14rem] inline-block align-middle">
+                    {f.name}
+                  </span>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (!window.confirm(`Remove "${f.name}" from this project?`)) return
+                    // If we're currently viewing the one being removed, hop back
+                    // to the primary first so we don't end up on a missing index.
+                    if (activeReferenceIndex === i) switchPdf(null)
+                    else if (activeReferenceIndex !== null && activeReferenceIndex > i) {
+                      // Indices after the removed one shift down by 1 — keep the
+                      // displayed PDF stable across the change.
+                      setActiveReferenceIndex(activeReferenceIndex - 1)
+                    }
+                    setReferencePdfFiles((prev) => prev.filter((_, idx) => idx !== i))
+                    setReferencePdfPaths((prev) => prev.filter((_, idx) => idx !== i))
+                  }}
+                  title={`Remove ${f.name}`}
+                  className="px-2 py-1.5 text-ink-400 hover:text-rose-300 text-sm"
+                  aria-label={`Remove ${f.name}`}
+                >
+                  ×
+                </button>
+              </span>
             )
           })}
+          {/* Hidden file input drives the + Add reference button. Accepts
+              multiple PDFs in one shot. */}
+          <input
+            id="reference-pdf-input"
+            type="file"
+            accept="application/pdf"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const picked = Array.from(e.target.files ?? []).filter(
+                (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+              )
+              if (picked.length === 0) return
+              setReferencePdfFiles((prev) => [...prev, ...picked])
+              setReferencePdfPaths((prev) => [
+                ...prev,
+                ...picked.map(() => undefined as string | undefined),
+              ])
+              // Reset the input so picking the same file again still fires change.
+              e.target.value = ''
+            }}
+          />
+          <button
+            onClick={() =>
+              document.getElementById('reference-pdf-input')?.click()
+            }
+            className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-ink-600 text-ink-300 hover:border-beme-500/60 hover:text-beme-300 transition-colors whitespace-nowrap shrink-0"
+            title="Attach another PDF — engineering, architectural, etc."
+          >
+            + Add reference
+          </button>
           {isReferenceView && (
             <span className="text-xs text-ink-400 italic shrink-0 ml-2">
               view-only · walls are on the primary
