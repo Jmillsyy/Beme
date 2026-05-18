@@ -495,6 +495,14 @@ language plpgsql
 security definer
 set search_path = public, auth
 as $$
+-- Tell plpgsql to prefer column names over OUT parameter / variable names
+-- when there's a collision. The function's RETURNS TABLE declares OUT
+-- params named `organisation_id` and `role`, which clash with the column
+-- names of organisation_members used inside the INSERT + ON CONFLICT
+-- below. Without this directive, Postgres throws
+--   ERROR: column reference "organisation_id" is ambiguous
+-- when the function is called.
+#variable_conflict use_column
 declare
   inv record;
   caller_id uuid := auth.uid();
