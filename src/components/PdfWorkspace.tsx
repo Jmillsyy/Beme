@@ -108,6 +108,7 @@ import { recomputeAllJunctions, snapEndpointToThroughWallFace } from '../lib/jun
 import { wallTypeColor } from '../lib/wallTypeColors'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 import { getEstimateRequestByProjectId } from '../lib/estimateRequests'
+import { getCurrentOrgId } from '../lib/organisations'
 import type { EstimateRequest } from '../types/estimateRequests'
 import { Link } from 'react-router-dom'
 
@@ -447,6 +448,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Saved-project tracking ----------
   /** ID of the currently-loaded saved project (null if this is a fresh, unsaved workspace). */
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(projectId ?? null)
+  /**
+   * organisation_id this project belongs to. Set from the loaded SavedProject
+   * on hydrate, so a project that's already attached to an org keeps that
+   * link even if the user has since switched their active org context.
+   * Saves re-use this value (falling back to the current org for brand-new
+   * projects that haven't been saved yet). Personal-track projects keep this
+   * as null and stay personal.
+   */
+  const [projectOrganisationId, setProjectOrganisationId] = useState<string | null>(null)
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>('in-progress')
   /** Outcome ('won' | 'lost' | undefined). Set from the dashboard, round-tripped here so saves preserve it. */
   const [projectOutcome, setProjectOutcome] = useState<'won' | 'lost' | undefined>(undefined)
@@ -559,6 +569,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
 
         setCurrentProjectId(proj.id)
+        setProjectOrganisationId(proj.organisationId ?? null)
         setProjectStatus(proj.status)
         setProjectOutcome(proj.outcome)
         setProjectCreatedAt(proj.createdAt)
@@ -662,10 +673,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (!mode) return
     const now = new Date().toISOString()
     const id = currentProjectId ?? generateProjectId()
+    // Use the project's existing org link if it has one (loaded from cloud),
+    // otherwise stamp the current org context. Means a project created from
+    // a fresh '+ Brick estimate' click while signed into an org gets shared
+    // with the team automatically — no manual SQL update afterwards. Null
+    // means truly personal, which is the right outcome for users not in any
+    // org or who explicitly want a private project.
+    const organisationId = projectOrganisationId ?? getCurrentOrgId() ?? undefined
     const project: SavedProject = {
       id,
       type: mode,
       status: projectStatus,
+      organisationId,
       createdAt: projectCreatedAt ?? now,
       updatedAt: now,
       completedAt: projectCompletedAt ?? undefined,
@@ -701,6 +720,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     try {
       await saveProjectToStore(project)
       setCurrentProjectId(id)
+      setProjectOrganisationId(organisationId ?? null)
       setProjectCreatedAt(project.createdAt)
       setLastSavedAt(now)
       // Refresh the dirty-state baseline so the Save changes button greys
@@ -738,10 +758,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (nextStatus === 'completed') setProjectCompletedAt(now)
     // Persist immediately. PDF is optional now.
     if (mode) {
+      // Same org-id rule as handleSaveProject — preserve any existing link
+      // or stamp the current org for brand-new projects flipping status.
+      const organisationId = projectOrganisationId ?? getCurrentOrgId() ?? undefined
       const project: SavedProject = {
         id: currentProjectId,
         type: mode,
         status: nextStatus,
+        organisationId,
         createdAt: projectCreatedAt ?? now,
         updatedAt: now,
         completedAt: nextStatus === 'completed' ? now : projectCompletedAt ?? undefined,
