@@ -127,18 +127,27 @@ const WALL_FACE_SNAP_MM = 20
 const AXIS_SNAP_DEGREES = 4
 
 /**
- * Wall length is rounded to the nearest multiple of this many millimetres
- * while drawing. Real construction is laid out on coarse increments —
- * nobody specs a 357 mm wall when 355 or 360 would do — so anything between
- * grid lines is almost always cursor noise rather than intent. Rounding the
- * displayed length keeps the live measurement readout from twitching by 1-2
- * mm as the user holds the cursor near a target.
+ * Wall length snaps to multiples of this many millimetres while drawing,
+ * but only when the cursor settles within WALL_LENGTH_SNAP_TOLERANCE_MM of a
+ * grid line. Real construction is laid out on coarse increments — nobody
+ * specs a 357 mm wall when 355 or 360 would do — so a soft pull to the
+ * nearest 5 mm makes settled measurements land cleanly. Between grid lines
+ * the raw cursor length shows through, so the user can still drag past
+ * a grid value to a non-grid one if they need to.
  *
  * Applied AFTER wall-snap (endpoints / faces) and axis-snap so neither gets
  * overridden, and bypassed by holding Shift the same way axis-snap is, for
  * the rare wall that genuinely needs an off-grid length.
  */
 const WALL_LENGTH_SNAP_MM = 5
+/**
+ * How close to a 5 mm grid line the cursor has to be before the snap fires.
+ * With round-to-nearest the max distance was implicitly 2.5 mm (half of the
+ * increment) — every position snapped to something. With this narrower
+ * deadband the snap only pulls you in when you're clearly near a grid value,
+ * leaving plenty of room in between to drag through intermediate lengths.
+ */
+const WALL_LENGTH_SNAP_TOLERANCE_MM = 1.5
 
 /**
  * If the segment from `from` → `to` is near horizontal or vertical, return a
@@ -1116,12 +1125,18 @@ function WallDrawingLayerInner({
     // Axis snap first — pulls a near-orthogonal segment cleanly onto h/v.
     const axisSnapped = applyAxisSnap(anchor, pos)
 
-    // Length snap — round the segment's real-world length to the nearest 5 mm
-    // and rescale the vector. Preserves the (axis-snapped) direction, so a
-    // diagonal wall stays diagonal; only the length changes. Skip when the
-    // rounded length would be < 5 mm (i.e. cursor effectively on the anchor)
-    // — collapsing to zero would leave the preview wall stuck on its origin
-    // and feel broken.
+    // Length snap — pull the segment's real-world length to the nearest 5 mm
+    // grid line, but ONLY when the cursor is close (within
+    // WALL_LENGTH_SNAP_TOLERANCE_MM). Outside the deadband, the raw cursor
+    // length passes through so the user can drag smoothly to any value;
+    // when they settle near a grid value it pulls cleanly onto it.
+    //
+    // Without this deadband the snap was always rounding to nearest 5 mm,
+    // which made every intermediate value inaccessible — at low zoom levels
+    // where one cursor pixel is many mm, you'd see lengths jump by the
+    // pixel-to-mm ratio (e.g. 395 → 495) because each integer pixel landed
+    // on a different grid line and nothing in between was reachable. With
+    // the deadband the raw cursor length shows through everywhere else.
     const dxPx = axisSnapped.x - anchor.x
     const dyPx = axisSnapped.y - anchor.y
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
@@ -1130,6 +1145,10 @@ function WallDrawingLayerInner({
     const snappedMm =
       Math.round(lenMm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
     if (snappedMm < WALL_LENGTH_SNAP_MM) {
+      return { point: axisSnapped, snap: null }
+    }
+    if (Math.abs(snappedMm - lenMm) > WALL_LENGTH_SNAP_TOLERANCE_MM) {
+      // Cursor is between grid lines — let the raw length show.
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
