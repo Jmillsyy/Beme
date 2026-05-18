@@ -106,6 +106,33 @@ create policy "Users delete own PDFs"
     bucket_id = 'project-pdfs'
     and (storage.foldername(name))[1] = auth.uid()::text
   );
+
+-- Org-scoped projects: any org member can READ the project's PDFs (primary +
+-- references). The path layout is still `<owner_user_id>/<project_id>.pdf`,
+-- so this policy looks the row up via projects.pdf_path / referencePdfs to
+-- find the project's organisation_id and check membership. Keeps the
+-- existing user-scoped INSERT/UPDATE/DELETE in place — only the owner
+-- uploads or replaces, teammates only read.
+create policy "Org members read project PDFs"
+  on storage.objects for select
+  using (
+    bucket_id = 'project-pdfs'
+    and exists (
+      select 1 from public.projects p
+      where p.organisation_id is not null
+        and public.is_org_member(p.organisation_id)
+        and (
+          p.pdf_path = name
+          or exists (
+            select 1
+            from jsonb_array_elements(
+              coalesce(p.data->'referencePdfs', '[]'::jsonb)
+            ) ref
+            where ref->>'path' = name
+          )
+        )
+    )
+  );
 ```
 
 You should see "Success. No rows returned." If a policy already exists from a
