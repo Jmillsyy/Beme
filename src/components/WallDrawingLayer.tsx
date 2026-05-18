@@ -127,27 +127,25 @@ const WALL_FACE_SNAP_MM = 20
 const AXIS_SNAP_DEGREES = 4
 
 /**
- * Wall length snaps to multiples of this many millimetres while drawing,
- * but only when the cursor settles within WALL_LENGTH_SNAP_TOLERANCE_MM of a
- * grid line. Real construction is laid out on coarse increments — nobody
- * specs a 357 mm wall when 355 or 360 would do — so a soft pull to the
- * nearest 5 mm makes settled measurements land cleanly. Between grid lines
- * the raw cursor length shows through, so the user can still drag past
- * a grid value to a non-grid one if they need to.
+ * Wall length, opening width, control-joint offset, and pier position all
+ * snap to multiples of this many millimetres. Real masonry is laid out on
+ * coarse increments — nothing's ever spec'd at 357 mm — so always rounding
+ * to the nearest 5 mm makes every measurement land cleanly.
  *
  * Applied AFTER wall-snap (endpoints / faces) and axis-snap so neither gets
  * overridden, and bypassed by holding Shift the same way axis-snap is, for
- * the rare wall that genuinely needs an off-grid length.
+ * the rare measurement that genuinely needs an off-grid value.
  */
 const WALL_LENGTH_SNAP_MM = 5
+
 /**
- * How close to a 5 mm grid line the cursor has to be before the snap fires.
- * With round-to-nearest the max distance was implicitly 2.5 mm (half of the
- * increment) — every position snapped to something. With this narrower
- * deadband the snap only pulls you in when you're clearly near a grid value,
- * leaving plenty of room in between to drag through intermediate lengths.
+ * Round a mm length to the nearest WALL_LENGTH_SNAP_MM. Shared by all the
+ * placement code paths (walls, openings, control joints, piers) so the user
+ * sees a consistent grid no matter what they're dropping onto the plan.
  */
-const WALL_LENGTH_SNAP_TOLERANCE_MM = 1.5
+function snapMmToGrid(mm: number): number {
+  return Math.round(mm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
+}
 
 /**
  * If the segment from `from` → `to` is near horizontal or vertical, return a
@@ -1116,39 +1114,37 @@ function WallDrawingLayerInner({
     excludeWallId?: string,
     excludeEnd?: 'start' | 'end'
   ): { point: Point; snap: SnapResult | null } {
+    // Shift bypasses ALL snaps — wall-snap, axis-snap, length-snap. This is
+    // the escape hatch the user reaches for when a nearby wall's endpoint
+    // is "eating" a length they want to draw past (the endpoint snap zone
+    // covers half-thickness of along-axis cursor space, which on a 290 mm
+    // wall is 145 mm — wide enough that the cursor can be pulled to the
+    // snap target for a chunk of cursor movement, making the length appear
+    // to skip values). Hold Shift to draw freely past any snap target.
+    if (shiftKey) return { point: pos, snap: null }
+
     const snap = findSnap(pos, excludeWallId, excludeEnd)
     if (snap) {
       return { point: { x: snap.x, y: snap.y }, snap }
     }
-    if (!anchor || shiftKey) return { point: pos, snap: null }
+    if (!anchor) return { point: pos, snap: null }
 
     // Axis snap first — pulls a near-orthogonal segment cleanly onto h/v.
     const axisSnapped = applyAxisSnap(anchor, pos)
 
     // Length snap — pull the segment's real-world length to the nearest 5 mm
-    // grid line, but ONLY when the cursor is close (within
-    // WALL_LENGTH_SNAP_TOLERANCE_MM). Outside the deadband, the raw cursor
-    // length passes through so the user can drag smoothly to any value;
-    // when they settle near a grid value it pulls cleanly onto it.
-    //
-    // Without this deadband the snap was always rounding to nearest 5 mm,
-    // which made every intermediate value inaccessible — at low zoom levels
-    // where one cursor pixel is many mm, you'd see lengths jump by the
-    // pixel-to-mm ratio (e.g. 395 → 495) because each integer pixel landed
-    // on a different grid line and nothing in between was reachable. With
-    // the deadband the raw cursor length shows through everywhere else.
+    // grid line and rescale the vector. Preserves the (axis-snapped)
+    // direction so a diagonal wall stays diagonal; only the length changes.
+    // Skip when the rounded length would be 0 (cursor effectively on the
+    // anchor) — collapsing to zero would leave the preview wall stuck on
+    // its origin.
     const dxPx = axisSnapped.x - anchor.x
     const dyPx = axisSnapped.y - anchor.y
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     if (lenPx <= 0) return { point: axisSnapped, snap: null }
     const lenMm = pxToMm(lenPx)
-    const snappedMm =
-      Math.round(lenMm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
+    const snappedMm = snapMmToGrid(lenMm)
     if (snappedMm < WALL_LENGTH_SNAP_MM) {
-      return { point: axisSnapped, snap: null }
-    }
-    if (Math.abs(snappedMm - lenMm) > WALL_LENGTH_SNAP_TOLERANCE_MM) {
-      // Cursor is between grid lines — let the raw length show.
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
@@ -1192,17 +1188,25 @@ function WallDrawingLayerInner({
       return
     }
 
+    // Shift on any non-wall placement bypasses the 5 mm grid so the user can
+    // drop something at an off-grid spot if they truly need to.
+    const useGrid = !e.evt.shiftKey
+
     if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
       const proj = findClosestWallProjection(raw, onlyWall)
       if (!proj) return
+      // Round alongMm to the 5 mm grid so both edges of every opening land on
+      // a clean increment and the width comes out as a multiple of 5 mm. The
+      // user can shift-click to bypass.
+      const snappedAlong = useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
       if (!openingPlacementStart) {
-        setOpeningPlacementStart({ wallId: proj.wallId, alongMm: proj.alongMm })
+        setOpeningPlacementStart({ wallId: proj.wallId, alongMm: snappedAlong })
         return
       }
       // Second click — compute opening start + width
       const a = openingPlacementStart.alongMm
-      const b = proj.alongMm
+      const b = snappedAlong
       const startAlong = Math.min(a, b)
       const widthMm = Math.abs(b - a)
       if (widthMm < 100) return // ignore degenerate
@@ -1218,7 +1222,10 @@ function WallDrawingLayerInner({
       // Curved walls aren't splittable here.
       const wall = walls.find((w) => w.id === proj.wallId)
       if (!wall || isCurvedWall(wall)) return
-      onControlJointPlaced?.(proj.wallId, proj.alongMm)
+      onControlJointPlaced?.(
+        proj.wallId,
+        useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+      )
       setControlJointHover(null)
       return
     }
@@ -1228,7 +1235,10 @@ function WallDrawingLayerInner({
       if (!proj) return
       const wall = walls.find((w) => w.id === proj.wallId)
       if (!wall || isCurvedWall(wall)) return
-      onTiedPierPlaced?.(proj.wallId, proj.alongMm)
+      onTiedPierPlaced?.(
+        proj.wallId,
+        useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+      )
       setTiedPierHover(null)
       return
     }
@@ -1256,9 +1266,17 @@ function WallDrawingLayerInner({
         }
       }
       if (tiedWallId !== null) {
-        onTiedPierPlaced?.(tiedWallId, tiedAlongMm)
+        onTiedPierPlaced?.(
+          tiedWallId,
+          useGrid ? snapMmToGrid(tiedAlongMm) : tiedAlongMm
+        )
       } else {
-        onFreestandingPierPlaced?.(pxToMm(raw.x), pxToMm(raw.y))
+        const xMm = pxToMm(raw.x)
+        const yMm = pxToMm(raw.y)
+        onFreestandingPierPlaced?.(
+          useGrid ? snapMmToGrid(xMm) : xMm,
+          useGrid ? snapMmToGrid(yMm) : yMm
+        )
       }
       setFreestandingPierHoverMm(null)
       setTiedPierHover(null)
