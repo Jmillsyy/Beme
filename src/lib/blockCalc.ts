@@ -42,6 +42,7 @@ import type {
 import { findCornerPoints } from './junctions'
 import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
+import { resolveCourseBlocks } from './makeups'
 
 /**
  * Geometric derivation: a block of front-face width w_f, rear-face width w_r, depth d
@@ -722,30 +723,63 @@ export interface CourseSpec {
  *   Course N-1 (or N-2)     = height-makeup row, if present (placed second from top)
  *   Course N                = top course (bond beam if specified, else body block)
  *
- * Course overrides from makeup.courseOverrides are applied after the default layout is built.
+ * Each course's block code is resolved through the makeup's course-series
+ * ranges (if any) — so a 300-series range covering courses 1-5 swaps in
+ * 30.45 for the base, 30.48 for body, 30.71 for height-makeup, etc.
+ *
+ * Course overrides from makeup.courseOverrides are applied LAST so they win
+ * over both the makeup defaults and any series-range substitution. The
+ * override is a single explicit code that knows what it's doing.
  */
 export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec[] {
   const courses: CourseSpec[] = []
 
+  // Per-course block resolution lives on the makeups module so the UI and the
+  // calc engine agree on which code wins for a given course. A course that's
+  // outside any range still resolves correctly — it just gets the makeup
+  // defaults straight back.
+  const blocksForCourse = (courseNumber: number) => resolveCourseBlocks(makeup, courseNumber)
+
   // ---- Course 1: base ----
-  courses.push({
-    type: 'base',
-    bodyBlock: makeup.baseCourseBlockCode,
-    pairedTile: makeup.baseCourseTileCode,
-  })
+  {
+    const b = blocksForCourse(1)
+    courses.push({
+      type: 'base',
+      bodyBlock: b.baseCourseBlockCode,
+      pairedTile: b.baseCourseTileCode,
+    })
+  }
 
   // ---- Middle body courses (exclude base and top from standardCount) ----
   const standardBodyCount = Math.max(stack.standardCount - 2, 0)
   for (let i = 0; i < standardBodyCount; i++) {
-    courses.push({ type: 'body', bodyBlock: makeup.bodyBlockCode })
+    // courseNumber is 1-indexed; courses array index i corresponds to course (i+1)
+    // after the base, so i=0 here is course 2.
+    const courseNumber = 2 + i
+    const b = blocksForCourse(courseNumber)
+    courses.push({ type: 'body', bodyBlock: b.bodyBlockCode })
   }
 
   // ---- Height-makeup courses (placed before the top, so they end up "second from top") ----
-  if (stack.has140) courses.push({ type: 'height-140', bodyBlock: '20.140' })
-  if (stack.has71) courses.push({ type: 'height-71', bodyBlock: '20.71' })
+  if (stack.has140) {
+    // 20.140 has no 300-series equivalent in the catalogue, so it stays 20.140
+    // even if the course lands inside a 300-series range. Document the gap if
+    // a user ever asks for it.
+    const courseNumber = courses.length + 1
+    void courseNumber
+    courses.push({ type: 'height-140', bodyBlock: '20.140' })
+  }
+  if (stack.has71) {
+    const courseNumber = courses.length + 1
+    const b = blocksForCourse(courseNumber)
+    courses.push({ type: 'height-71', bodyBlock: b.heightMakeup71BlockCode })
+  }
 
   // ---- Top course ----
   if (stack.totalCourses >= 2) {
+    // topCourseBlockCode is a makeup-level choice (bond beam or not) — keep it
+    // makeup-driven; if a user wants a 300-series top course they'd put a
+    // 30.20 (none exists in this catalogue) on it via the makeup field.
     courses.push({ type: 'top', bodyBlock: makeup.topCourseBlockCode })
   }
 
@@ -793,12 +827,40 @@ export function calculateWallTally(
 
   const tally: BlockTally = {}
 
+  // Pick the right end-of-wall block for THIS course. Honours both the
+  // makeup-level cornerBlock / half-block defaults and any course-series range
+  // override (so a 300-series course gets 30.01 / 30.03 instead of 20.01 /
+  // 20.03 at its ends). Mirrors the parity logic in planEnd: corner ends use
+  // the full block on every course; free / T-junction / control-joint ends
+  // alternate in stretcher and stay full in stack.
+  function resolveEndForCourse(
+    junctionType: JunctionType,
+    courseNumber: number,
+    isOddCourse: boolean
+  ): BlockCode {
+    const blocks = resolveCourseBlocks(makeup, courseNumber)
+    if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
+      return isOddCourse ? blocks.cornerBlockCode : blocks.halfBlockCode
+    }
+    return blocks.cornerBlockCode
+  }
+
   for (let i = 0; i < courses.length; i++) {
     const course = courses[i]
+    const courseNumber = i + 1
     const isOddCourse = i % 2 === 0 // courseIndex 0 = course 1 (odd)
     const fit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
-    const startBlock = isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock
-    const endBlock = isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock
+    // Resolve per-course so 300-series courses get 30.01 / 30.03 at their
+    // ends and 200-series courses get 20.01 / 20.03 — even within the same
+    // wall. planWall's block codes are only consulted for short-wall and
+    // single-block-stub fallback modes (which both set startEnd/endEnd to
+    // the makeup defaults uniformly).
+    const startBlock = plan.noEndBlocks
+      ? (isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock)
+      : resolveEndForCourse(wall.startJunction.type, courseNumber, isOddCourse)
+    const endBlock = plan.noEndBlocks
+      ? (isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock)
+      : resolveEndForCourse(wall.endJunction.type, courseNumber, isOddCourse)
     // Single-block-stub mode skips the start/end pair entirely (the fit's fractions list
     // IS the whole course — one block).
     const endCount = plan.noEndBlocks ? 0 : 2
@@ -891,24 +953,25 @@ function applyOpeningAdjustments(
     }
   }
 
-  // The "full" jamb block follows the makeup's cornerBlockCode (20.01 normally, 20.21 when
-  // knockout corners is enabled). Half-block jambs (even courses, stretcher) stay 20.03.
-  const fullJambBlock = makeup.cornerBlockCode
-
+  // The "full" jamb block follows the per-course resolved corner — 20.01 by
+  // default (or 20.21 with knockout corners) for 200-series courses, 30.01 for
+  // 300-series courses. Half-block jambs (even courses, stretcher) similarly
+  // swap between 20.03 and 30.03 according to the course's range.
   // ---- Opening area: jambs + body subtraction per course (parity-aware) ----
   for (let i = 0; i < openingCourses; i++) {
     const wallCourseNumber = sillCoursesFloor + i + 1 // 1-indexed from wall base
     const courseIdx = sillCoursesFloor + i
     const isOddCourse = wallCourseNumber % 2 === 1
 
+    const resolved = resolveCourseBlocks(makeup, wallCourseNumber)
     let jambCode: BlockCode
     let bodyToSubtract: number
 
     if (isStretcher) {
-      jambCode = isOddCourse ? fullJambBlock : '20.03'
+      jambCode = isOddCourse ? resolved.cornerBlockCode : resolved.halfBlockCode
       bodyToSubtract = (isOddCourse ? 2 : 1) + blocksAcrossOpening
     } else {
-      jambCode = fullJambBlock
+      jambCode = resolved.cornerBlockCode
       bodyToSubtract = 2 + blocksAcrossOpening
     }
 
@@ -1278,14 +1341,33 @@ export function calculateCornerAdjustment(
     const stack = calculateCourseStack(heightMm)
     if (stack.totalCourses <= 0) continue
 
-    // Standard / base / top courses contribute cornerBlockCode at the corner column.
+    // Each course's corner column contributes whatever block code that COURSE
+    // resolves to. With a 300-series range covering courses 1-5, the bottom
+    // five corner-column subtractions are 30.01, the rest are 20.01 — so we
+    // walk the stack rather than scaling a single code by standardCount.
     const standardCornerColumn = stack.standardCount
     if (standardCornerColumn > 0) {
-      addToTally(adjustment, makeup.cornerBlockCode, (n - 1) * standardCornerColumn)
+      // Build the course list the same way calculateWallTally does — bases,
+      // bodies, height-makeup, top — and read the corner block per course.
+      const courses = buildCourses(stack, makeup)
+      for (let ci = 0; ci < courses.length; ci++) {
+        const courseNumber = ci + 1
+        const course = courses[ci]
+        if (course.type === 'height-71' || course.type === 'height-140') continue
+        const resolved = resolveCourseBlocks(makeup, courseNumber)
+        addToTally(adjustment, resolved.cornerBlockCode, n - 1)
+      }
     }
-    // Height-makeup courses contribute the height-makeup block itself at the corner column.
+    // Height-makeup courses contribute the height-makeup block itself at the
+    // corner column. Use the resolved height-makeup code so a 300-series
+    // height-makeup row dedups to 30.71 (when one's defined for the range).
     if (stack.has71) {
-      addToTally(adjustment, '20.71', n - 1)
+      // The height-makeup row sits just below the top, so its course number
+      // depends on the wall's course count. Match the placement in
+      // buildCourses: after standard body courses, before the top.
+      const heightMakeupCourseNumber = stack.standardCount - 1 + (stack.has140 ? 1 : 0)
+      const resolved = resolveCourseBlocks(makeup, heightMakeupCourseNumber)
+      addToTally(adjustment, resolved.heightMakeup71BlockCode, n - 1)
     }
     if (stack.has140) {
       addToTally(adjustment, '20.140', n - 1)
