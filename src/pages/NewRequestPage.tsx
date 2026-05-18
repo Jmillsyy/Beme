@@ -30,7 +30,12 @@ export default function NewRequestPage() {
   const [customerEmail, setCustomerEmail] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [inclusionNotes, setInclusionNotes] = useState('')
-  const [planFile, setPlanFile] = useState<File | null>(null)
+  // Multi-file upload — the first file is treated as the PRIMARY plan
+  // (architectural, where walls get drawn). Anything after it is a reference
+  // PDF (engineering specs etc.) the estimator can flip to in the workspace
+  // but doesn't draw on. Ordered list because the order is meaningful
+  // (whatever sits at index 0 is the primary).
+  const [planFiles, setPlanFiles] = useState<File[]>([])
   const [assignedToUserId, setAssignedToUserId] = useState<string>('')
 
   const [submitting, setSubmitting] = useState(false)
@@ -105,7 +110,10 @@ export default function NewRequestPage() {
         customerEmail: customerEmail.trim() || undefined,
         customerPhone: customerPhone.trim() || undefined,
         inclusionNotes: inclusionNotes.trim() || undefined,
-        planFile: planFile ?? undefined,
+        // First selected file is the primary plan (where walls go); the rest
+        // travel as reference PDFs the estimator can flip to in the workspace.
+        planFile: planFiles[0],
+        additionalFiles: planFiles.length > 1 ? planFiles.slice(1) : undefined,
       }
       const created = await createEstimateRequest(currentOrg.id, draft)
       navigate(`/requests/${created.id}`)
@@ -212,24 +220,90 @@ export default function NewRequestPage() {
             />
           </section>
 
-          {/* ── Plan PDF ── */}
+          {/* ── Plan PDFs ──
+              Multi-file: the FIRST file becomes the primary plan (where
+              walls are drawn), everything else travels along as reference
+              PDFs (engineering specs etc.) the estimator can flip to in the
+              workspace. The list below makes the primary explicit so the
+              user knows which file the estimator will actually be working
+              against — reorderable via the small Make primary action. */}
           <section className="border border-ink-600 rounded-xl bg-ink-800 p-5">
-            <h3 className="text-sm font-semibold text-ink-50 mb-1">Plan</h3>
+            <h3 className="text-sm font-semibold text-ink-50 mb-1">Plans</h3>
             <p className="text-xs text-ink-400 mb-3">
-              Upload the customer's PDF of the plans. The estimator will trace
-              over it inside Beme.
+              Attach the architectural plan plus anything else useful —
+              engineering specs, structural notes, the lot. The first file is
+              the <span className="text-ink-100">primary</span> plan the
+              estimator traces walls on; the rest are reference material they
+              can flip to in the workspace.
             </p>
             <input
               type="file"
               accept="application/pdf"
-              onChange={(e) => setPlanFile(e.target.files?.[0] ?? null)}
+              multiple
+              onChange={(e) => {
+                const newFiles = Array.from(e.target.files ?? [])
+                if (newFiles.length === 0) return
+                // Append rather than replace — clicking the file input
+                // multiple times should accumulate so the user can pick
+                // primary + reference in separate clicks if their file
+                // dialog only lets them grab one folder at a time.
+                setPlanFiles((prev) => [...prev, ...newFiles])
+                // Clear the input so re-selecting the same file works.
+                e.target.value = ''
+              }}
               className="block w-full text-sm text-ink-200 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-beme-500 file:text-black file:font-medium file:cursor-pointer hover:file:bg-beme-400"
             />
-            {planFile && (
-              <p className="text-xs text-ink-300 mt-2">
-                Selected: <span className="text-ink-50">{planFile.name}</span> (
-                {Math.round(planFile.size / 1024)} KB)
-              </p>
+            {planFiles.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {planFiles.map((f, idx) => (
+                  <li
+                    key={`${f.name}-${idx}`}
+                    className="flex items-center gap-3 px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/50"
+                  >
+                    <span
+                      className={`text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0 ${
+                        idx === 0
+                          ? 'bg-beme-500/15 text-beme-300 border border-beme-500/40'
+                          : 'bg-ink-700 text-ink-300 border border-ink-600'
+                      }`}
+                    >
+                      {idx === 0 ? 'Primary' : 'Reference'}
+                    </span>
+                    <span className="text-sm text-ink-100 flex-1 truncate" title={f.name}>
+                      {f.name}
+                    </span>
+                    <span className="text-xs text-ink-400 shrink-0 tabular-nums">
+                      {Math.round(f.size / 1024)} KB
+                    </span>
+                    {idx !== 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Promote this file to primary: swap with index 0.
+                          setPlanFiles((prev) => {
+                            const next = [...prev]
+                            const [chosen] = next.splice(idx, 1)
+                            return [chosen, ...next]
+                          })
+                        }}
+                        className="text-xs text-beme-300 hover:text-beme-200 shrink-0"
+                      >
+                        Make primary
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlanFiles((prev) => prev.filter((_, i) => i !== idx))
+                      }}
+                      className="text-xs text-rose-300 hover:text-rose-200 shrink-0"
+                      aria-label={`Remove ${f.name}`}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </section>
 

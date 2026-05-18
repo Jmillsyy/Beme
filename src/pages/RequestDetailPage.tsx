@@ -322,17 +322,39 @@ export default function RequestDetailPage() {
             )}
           </Card>
 
-          <Card title="Plan">
-            {request.planPdfFileName ? (
-              <p className="text-sm text-ink-100">
-                📎 {request.planPdfFileName}
-                <span className="text-ink-400 ml-2">
-                  (loads automatically when you pick up the request)
-                </span>
-              </p>
+          <Card title="Plans">
+            {request.planPdfFileName || (request.additionalPdfs?.length ?? 0) > 0 ? (
+              <ul className="space-y-2">
+                {/* Primary first — the file walls actually get drawn on after
+                    pickup. Reference PDFs follow underneath in attach order. */}
+                {request.planPdfFileName && (
+                  <li className="flex items-center gap-3">
+                    <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-beme-500/15 text-beme-300 border border-beme-500/40 shrink-0">
+                      Primary
+                    </span>
+                    <span className="text-sm text-ink-100 truncate" title={request.planPdfFileName}>
+                      📎 {request.planPdfFileName}
+                    </span>
+                  </li>
+                )}
+                {request.additionalPdfs?.map((p, i) => (
+                  <li key={i} className="flex items-center gap-3">
+                    <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-ink-700 text-ink-300 border border-ink-600 shrink-0">
+                      Reference
+                    </span>
+                    <span className="text-sm text-ink-100 truncate" title={p.fileName}>
+                      📎 {p.fileName}
+                    </span>
+                  </li>
+                ))}
+                <li className="text-xs text-ink-400 pt-1">
+                  All files load automatically when the estimator picks up the
+                  request.
+                </li>
+              </ul>
             ) : (
               <p className="text-sm text-ink-400 italic">
-                No plan attached. You'll need to upload one inside the project
+                No plans attached. You'll need to upload one inside the project
                 once you've picked it up.
               </p>
             )}
