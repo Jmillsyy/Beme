@@ -54,6 +54,34 @@ export interface UserPreferences {
   theme: Theme
   /** What clicking "+ New estimate" defaults to on the dashboard. */
   defaultProjectType: 'block' | 'brick'
+  /**
+   * Regional feature toggles — which "extras" the estimator typically prices
+   * into their jobs. Different markets use different practices and the user
+   * shouldn't have to wade past line items that never apply to them. These
+   * defaults flow into new brick projects' BrickSettings and export
+   * inclusions; users can still override per-project.
+   *
+   * Defaults to all-on so existing AU users see no change.
+   */
+  regionalFeatures: {
+    /**
+     * Lintel calculation + export. AU/UK estimators usually price the lintel
+     * separately (steel for brick, stood-up lintel block for block walls);
+     * US estimators often roll lintels into the structural design rather
+     * than the masonry takeoff. Off → no lintel section in the export.
+     */
+    lintels: boolean
+    /**
+     * Brick ties between veneer and structural backing. Universal in cavity
+     * construction (AU/UK/NZ/US) but rate per m² and supplier vary.
+     */
+    brickTies: boolean
+    /**
+     * Plascourse / DPC (damp-proof course). AU + UK term. US equivalent is
+     * usually a flashing membrane priced under sealants, not masonry.
+     */
+    plascourse: boolean
+  }
 }
 
 export interface EstimatingDefaults {
@@ -67,11 +95,66 @@ export interface EstimatingDefaults {
   defaultBrickTypeCode: string
 }
 
+/**
+ * Unit of measure for a supply item — how the rate is applied against the
+ * estimate's geometry.
+ *
+ * - `each`: flat count entered per project (e.g. "2× lintels supplied").
+ * - `per-block`: rate × total block count.
+ * - `per-brick`: rate × total brick count.
+ * - `per-m2`: rate × total brickwork / blockwork area.
+ * - `per-m-lineal`: rate × total wall run length.
+ * - `per-opening`: rate × number of openings on the plan.
+ */
+export type SupplyItemUnit =
+  | 'each'
+  | 'per-block'
+  | 'per-brick'
+  | 'per-m2'
+  | 'per-m-lineal'
+  | 'per-opening'
+
+/**
+ * A user-defined supply item that gets added to estimate totals based on a
+ * rate. Generalisation of the existing ties / plascourse mechanism — any
+ * "this many of X per Y" addition can be expressed here.
+ *
+ * Examples:
+ *   - "Cement bags" — per-m2, rate 0.3 (so 0.3 bags per m² of brickwork)
+ *   - "N12 vertical rebar" — per-block, rate 0.05 (so 1 bar per 20 blocks)
+ *   - "Steel lintels — 1500mm" — per-opening, rate 1 (one per opening)
+ *   - "Brick ties" — per-m2, rate 2 (same as the legacy ties.perSquareMetre)
+ *   - "Cavity flashing" — per-m-lineal, rate 1
+ */
+export interface SupplyItem {
+  id: string
+  /** User-chosen display name. Shown in the supply-items section of the export. */
+  name: string
+  /** Optional description / supplier note. */
+  description?: string
+  unit: SupplyItemUnit
+  /** Quantity per unit (e.g. 2 ties per m² → rate: 2, unit: 'per-m2'). */
+  rate: number
+  /** Which estimate types this item applies to. */
+  appliesTo: ('block' | 'brick')[]
+  /**
+   * Default-on for new projects. Per-project the user can still tick/untick
+   * individual items if a job doesn't need this particular supply.
+   */
+  enabledByDefault: boolean
+}
+
 export interface UserSettings {
   profile: UserProfile
   business: BusinessProfile
   preferences: UserPreferences
   defaults: EstimatingDefaults
+  /**
+   * User's catalogue of additional supply items. Each new project picks up
+   * the enabledByDefault items into its supply-list; user can toggle them
+   * per-project in the brick/block settings panel.
+   */
+  supplyItems?: SupplyItem[]
 }
 
 /**
@@ -105,6 +188,11 @@ export function createDefaultUserSettings(): UserSettings {
       dateFormat: 'DD/MM/YYYY',
       theme: 'dark',
       defaultProjectType: 'block',
+      regionalFeatures: {
+        lintels: true,
+        brickTies: true,
+        plascourse: true,
+      },
     },
     defaults: {
       defaultWallHeightMm: 2400,
@@ -112,5 +200,6 @@ export function createDefaultUserSettings(): UserSettings {
       defaultMortarJointMm: 10,
       defaultBrickTypeCode: 'standard',
     },
+    supplyItems: [],
   }
 }

@@ -19,9 +19,19 @@ import {
  * component takes no props so once mounted it only re-renders when the brick
  * library singleton emits a change (via useBrickLibrary's listener set).
  */
-function BrickLibraryPanelImpl() {
+interface BrickLibraryPanelProps {
+  readOnly?: boolean
+  defaultExpanded?: boolean
+  hideChrome?: boolean
+}
+
+function BrickLibraryPanelImpl({
+  readOnly = false,
+  defaultExpanded = false,
+  hideChrome = false,
+}: BrickLibraryPanelProps = {}) {
   const { library } = useBrickLibrary()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BrickCode | 'new' | null>(null)
 
   const bricks = useMemo(
@@ -30,38 +40,51 @@ function BrickLibraryPanelImpl() {
   )
 
   return (
-    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-2 text-left flex-1 min-w-0 group"
-        >
-          <span className="text-ink-400 group-hover:text-ink-200 text-xs">
-            {expanded ? '▾' : '▸'}
-          </span>
-          <h3 className="text-sm font-semibold text-ink-50 group-hover:text-beme-300">
-            Brick library
-          </h3>
-          <span className="text-xs text-ink-400 truncate">
-            · {Object.keys(library).length} types
-          </span>
-        </button>
-        {expanded && (
+    <div className={hideChrome ? '' : 'my-4 border border-ink-600 rounded-xl bg-ink-800 p-3'}>
+      {!hideChrome && (
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-center gap-2 text-left flex-1 min-w-0 group"
+          >
+            <span className="text-ink-400 group-hover:text-ink-200 text-xs">
+              {expanded ? '▾' : '▸'}
+            </span>
+            <h3 className="text-sm font-semibold text-ink-50 group-hover:text-beme-300">
+              Brick library
+            </h3>
+            <span className="text-xs text-ink-400 truncate">
+              · {Object.keys(library).length} types
+            </span>
+          </button>
+          {expanded && !readOnly && (
+            <button
+              onClick={() => setEditingCode('new')}
+              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          )}
+        </div>
+      )}
+      {hideChrome && !readOnly && (
+        <div className="flex justify-end mb-2">
           <button
             onClick={() => setEditingCode('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
+            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors"
           >
-            + Add
+            + Add brick
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      {expanded && (
+      {(expanded || hideChrome) && (
         <div className="flex flex-col gap-1">
           {bricks.map((brick) => (
             <BrickRow
               key={brick.code}
               brick={brick}
+              readOnly={readOnly}
               onEdit={() => setEditingCode(brick.code)}
               onDelete={() => {
                 if (PROTECTED_BRICK_CODES.has(brick.code)) return
@@ -72,24 +95,26 @@ function BrickLibraryPanelImpl() {
             />
           ))}
 
-          <button
-            onClick={() => {
-              if (
-                window.confirm(
-                  'Reset the brick library to defaults? Any custom brick types will be removed.'
-                )
-              ) {
-                resetBrickLibrary()
-              }
-            }}
-            className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
-          >
-            ↺ Reset to defaults
-          </button>
+          {!readOnly && (
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Reset the brick library to defaults? Any custom brick types will be removed.'
+                  )
+                ) {
+                  resetBrickLibrary()
+                }
+              }}
+              className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
+            >
+              ↺ Reset to defaults
+            </button>
+          )}
         </div>
       )}
 
-      {editingCode !== null && (
+      {!readOnly && editingCode !== null && (
         <BrickEditor
           existing={editingCode === 'new' ? null : library[editingCode] ?? null}
           existingCodes={Object.keys(library)}
@@ -113,10 +138,12 @@ function BrickRow({
   brick,
   onEdit,
   onDelete,
+  readOnly = false,
 }: {
   brick: BrickType
   onEdit: () => void
   onDelete: () => void
+  readOnly?: boolean
 }) {
   const isProtected = PROTECTED_BRICK_CODES.has(brick.code)
   const dims = `${brick.widthMm}×${brick.heightMm}×${brick.depthMm}mm`
@@ -148,20 +175,24 @@ function BrickRow({
           )}
         </div>
       </div>
-      <button
-        onClick={onEdit}
-        className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-ink-700 transition-colors"
-      >
-        Edit
-      </button>
-      <button
-        onClick={onDelete}
-        disabled={isProtected}
-        title={isProtected ? 'Default brick type can be renamed but not deleted' : 'Delete this brick type'}
-        className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        Delete
-      </button>
+      {!readOnly && (
+        <>
+          <button
+            onClick={onEdit}
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-ink-700 transition-colors"
+          >
+            Edit
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={isProtected}
+            title={isProtected ? 'Default brick type can be renamed but not deleted' : 'Delete this brick type'}
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            Delete
+          </button>
+        </>
+      )}
     </div>
   )
 }

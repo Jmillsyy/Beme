@@ -12,7 +12,6 @@ import {
   listProjects,
   saveProject,
 } from '../lib/projectStorage'
-import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import { useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
@@ -443,40 +442,30 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         </section>
       )}
 
-      {/* Your Library — block catalogue, shared across the org. Only org
-          admins can edit (add / edit / delete / reset); other members see
-          the list in read-only mode. The role comes from the org members
-          list that was loaded above. */}
-      {(() => {
-        const myMembership = userId
-          ? members.find((m) => m.userId === userId)
-          : null
-        const isAdmin = myMembership?.role === 'admin'
-        return (
-          <section className="mt-10">
-            <div className="flex items-end justify-between flex-wrap gap-3 mb-3">
-              <div>
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Your library
-                </h3>
-                <p className="text-sm text-ink-400 mt-1">
-                  {isAdmin
-                    ? 'Every block type used by your team, with dimensions and roles. Edit, add, or reset to defaults.'
-                    : 'Every block type used by your team. Only an org admin can edit this list.'}
-                </p>
+      {/* Material library tile — full management UI lives at /library, with
+          org-admin gating for edits enforced inside that page. */}
+      <section className="mt-10">
+        <Link
+          to="/library"
+          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
+        >
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-1">
+                Material library
               </div>
-              {!isAdmin && (
-                <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border border-ink-600 text-ink-400">
-                  Read-only · admin to edit
-                </span>
-              )}
+              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
+                Manage blocks, bricks &amp; supply items →
+              </div>
+              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
+                Your team's catalogue: block types, brick types, and supply
+                items priced per block / brick / m² / lineal m. Only an org
+                admin can edit; everyone can view.
+              </p>
             </div>
-            <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
-              <BlockLibraryPanel defaultExpanded hideChrome readOnly={!isAdmin} />
-            </div>
-          </section>
-        )
-      })()}
+          </div>
+        </Link>
+      </section>
     </>
   )
 }
@@ -1024,24 +1013,29 @@ function PersonalDashboard() {
         )}
       </section>
 
-      {/* Your Library — block catalogue. A single-user account's owner is
-          always the admin, so editing is unrestricted here. */}
+      {/* Material library tile — links to the dedicated /library page where
+          blocks, bricks, and supply items are all managed. */}
       <section className="mt-10">
-        <div className="flex items-end justify-between flex-wrap gap-3 mb-3">
-          <div>
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-              Your library
-            </h3>
-            <p className="text-sm text-ink-400 mt-1">
-              Every block type you use, with dimensions and where they're typically used.
-              Edit a block to change its name, dimensions, or role; add new ones for blocks
-              specific to your supplier.
-            </p>
+        <Link
+          to="/library"
+          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
+        >
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-1">
+                Material library
+              </div>
+              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
+                Manage blocks, bricks &amp; supply items →
+              </div>
+              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
+                Your full catalogue: block types, brick types, and any custom
+                supply items priced by the block / brick / m² / lineal m.
+                Edits flow straight into every project.
+              </p>
+            </div>
           </div>
-        </div>
-        <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
-          <BlockLibraryPanel defaultExpanded hideChrome />
-        </div>
+        </Link>
       </section>
     </>
   )

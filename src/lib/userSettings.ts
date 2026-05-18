@@ -51,6 +51,12 @@ export function updateUserSettings(partial: DeepPartial<UserSettings>): void {
     business: { ..._settings.business, ...(partial.business ?? {}) },
     preferences: { ..._settings.preferences, ...(partial.preferences ?? {}) },
     defaults: { ..._settings.defaults, ...(partial.defaults ?? {}) },
+    // supplyItems is an array — replace wholesale when provided. Callers
+    // pass the full list every time (no partial array merging).
+    supplyItems:
+      partial.supplyItems !== undefined
+        ? (partial.supplyItems as UserSettings['supplyItems'])
+        : _settings.supplyItems,
   }
   notifyChange()
   void persistSettings(_settings)
@@ -140,8 +146,19 @@ export async function initUserSettings(): Promise<void> {
     _settings = {
       profile: { ...defaults.profile, ...(saved.profile ?? {}) },
       business: { ...defaults.business, ...(saved.business ?? {}) },
-      preferences: { ...defaults.preferences, ...(saved.preferences ?? {}) },
+      preferences: {
+        ...defaults.preferences,
+        ...(saved.preferences ?? {}),
+        // regionalFeatures is a nested object — merge field-by-field so a
+        // partial saved payload (or one from before this field existed)
+        // gets sensible defaults for missing toggles.
+        regionalFeatures: {
+          ...defaults.preferences.regionalFeatures,
+          ...(saved.preferences?.regionalFeatures ?? {}),
+        },
+      },
       defaults: { ...defaults.defaults, ...(saved.defaults ?? {}) },
+      supplyItems: saved.supplyItems ?? [],
     }
     notifyChange()
   }

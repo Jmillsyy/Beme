@@ -17,6 +17,7 @@ import type {
 } from '../types/walls'
 import { calculateBrickTally } from './brickCalc'
 import { downloadPdfFromHtml } from './pdfExport'
+import { getUserSettings } from './userSettings'
 
 interface ExportParams {
   projectDetails: ProjectDetails
@@ -600,13 +601,20 @@ export function createDefaultProjectDetails(): ProjectDetails {
   }
 }
 
+/**
+ * Default brick-export inclusion tickboxes. Section flags for lintels /
+ * brick ties / plascourse honour the user's regional-feature preferences
+ * so a US estimator who's turned off plascourse doesn't see that section
+ * appear in every new project. The user can still re-enable per project.
+ */
 export function createDefaultExportInclusions(): BrickExportInclusions {
+  const regional = getUserSettings().preferences.regionalFeatures
   return {
     assumptions: true,
     brickAreaSummary: true,
-    lintels: true,
-    brickTies: true,
-    plascourse: true,
+    lintels: regional.lintels,
+    brickTies: regional.brickTies,
+    plascourse: regional.plascourse,
     disclaimer: true,
   }
 }

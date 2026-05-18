@@ -539,7 +539,86 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
           />
         </Field>
       </FieldGroup>
+
+      {/* Regional features — toggle off line items that don't apply in your
+          market. New brick projects pick up these defaults; per-project
+          overrides are still available in the brick settings panel. */}
+      <FieldGroup
+        title="Regional features"
+        description="Different markets use different masonry conventions. Turn off anything you don't price into your estimates and it'll be hidden from new project tallies and exports."
+      >
+        <Toggle
+          label="Lintels"
+          hint="Steel / concrete lintels over brick openings, or stood-up lintel blocks over block openings. US estimators often leave lintels to the structural engineer rather than the masonry takeoff."
+          checked={preferences.regionalFeatures.lintels}
+          onChange={(checked) =>
+            set({
+              regionalFeatures: {
+                ...preferences.regionalFeatures,
+                lintels: checked,
+              },
+            })
+          }
+        />
+        <Toggle
+          label="Brick ties"
+          hint="Ties between brick veneer and structural backing in cavity walls. Universal in AU/UK/NZ/US but the rate per m² varies by code."
+          checked={preferences.regionalFeatures.brickTies}
+          onChange={(checked) =>
+            set({
+              regionalFeatures: {
+                ...preferences.regionalFeatures,
+                brickTies: checked,
+              },
+            })
+          }
+        />
+        <Toggle
+          label="Plascourse (DPC)"
+          hint="Damp-proof course / plastic course at the base of brick walls. AU & UK terminology. US construction typically uses flashing membrane priced under sealants instead."
+          checked={preferences.regionalFeatures.plascourse}
+          onChange={(checked) =>
+            set({
+              regionalFeatures: {
+                ...preferences.regionalFeatures,
+                plascourse: checked,
+              },
+            })
+          }
+        />
+      </FieldGroup>
     </PanelCard>
+  )
+}
+
+/**
+ * Simple labelled toggle row — matches the Field/FieldGroup styling but
+ * uses a checkbox instead of a value input.
+ */
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string
+  hint?: string
+  checked: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer py-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-1 w-4 h-4 accent-beme-500 cursor-pointer"
+      />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-ink-100">{label}</div>
+        {hint && <div className="text-xs text-ink-400 mt-0.5">{hint}</div>}
+      </div>
+    </label>
   )
 }
 

@@ -8,6 +8,7 @@
 
 import type { BrickLintelEntry, BrickSettings, Opening, Wall } from '../types/walls'
 import { brickLintelBearingMm } from './lintels'
+import { getUserSettings } from './userSettings'
 
 // ---------- Brick lintel catalogue ----------
 
@@ -160,11 +161,16 @@ export function calculateBrickTally(
  * whenever it changes.
  */
 export function createDefaultBrickSettings(): BrickSettings {
+  // Ties + plascourse default to "enabled if your region uses them" so a new
+  // brick project pre-ticks the boxes for AU/UK users and pre-unticks for
+  // markets where these don't apply. Per-project overrides remain in the
+  // brick settings panel.
+  const regional = getUserSettings().preferences.regionalFeatures
   return {
     defaultWallHeightMm: 2400,
     brickTypeCode: 'standard',
     bricksPerSquareMetre: 48, // 230×76 + 10mm joint → ~48/m²
-    ties: { enabled: false, perSquareMetre: 2 },
-    plascourse: { enabled: false, metresPerUnit: 30 },
+    ties: { enabled: regional.brickTies, perSquareMetre: 2 },
+    plascourse: { enabled: regional.plascourse, metresPerUnit: 30 },
   }
 }
