@@ -3028,6 +3028,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             openings={allOpenings}
             piers={allPiers}
             pierMakeups={pierMakeups}
+            pdfFile={pdfFile}
+            pageInfo={{
+              pageNumber: currentPage,
+              pageWidthMm: pagesData[currentPage]?.pageWidthMm,
+              pageHeightMm: pagesData[currentPage]?.pageHeightMm,
+              pageScaleRatio: pagesData[currentPage]?.pageScaleRatio,
+            }}
           />
         )}
 

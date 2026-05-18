@@ -33,6 +33,7 @@ import {
   wallLengthMm,
 } from './blockCalc'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
+import { pdfjs } from 'react-pdf'
 import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
 
@@ -50,6 +51,19 @@ interface ExportParams {
    * "Beme" wordmark — turning the export into a branded quote.
    */
   business?: BusinessExportInfo
+  /**
+   * Optional reference to the loaded PDF. If supplied together with
+   * `pageInfo`, the Wall Layout overview rasterises the page and uses it
+   * as the background behind the SVG annotations so the reader sees the
+   * actual building plan with walls drawn over it.
+   */
+  pdfFile?: File
+  pageInfo?: {
+    pageNumber: number
+    pageWidthMm?: number
+    pageHeightMm?: number
+    pageScaleRatio?: number
+  }
 }
 
 export interface BusinessExportInfo {
@@ -134,6 +148,55 @@ function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
  * overview page.
  */
 /**
+ * Render one page of a PDF to a base64 PNG data URL using PDF.js, plus
+ * return the page's intrinsic mm dimensions. Used by the Wall Layout page
+ * to embed the plan as the SVG's background so walls overlay the drawing.
+ *
+ * Failures (corrupt file, page not found, render error) resolve to null so
+ * the export can fall back to the bare diagram without crashing.
+ */
+async function rasterisePdfPage(
+  pdfFile: File,
+  pageNumber: number,
+  scale = 2
+): Promise<{ dataUrl: string; widthMm: number; heightMm: number } | null> {
+  try {
+    const buffer = await pdfFile.arrayBuffer()
+    // Worker is shared with the workspace's react-pdf instance (configured
+    // in PdfWorkspace.tsx at module load), so we don't need to re-init.
+    const pdf = await pdfjs.getDocument({ data: buffer }).promise
+    const page = await pdf.getPage(pageNumber)
+    const baseViewport = page.getViewport({ scale: 1 })
+    // PDF user-space units are 1/72 inch; convert to mm.
+    const widthMm = (baseViewport.width / 72) * 25.4
+    const heightMm = (baseViewport.height / 72) * 25.4
+
+    const renderViewport = page.getViewport({ scale })
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.floor(renderViewport.width)
+    canvas.height = Math.floor(renderViewport.height)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    // White background — PDF.js by default renders on transparent, but
+    // most plans assume a white page. Without this, dark PDFs show black
+    // through the transparency where there's no ink.
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // react-pdf's pdfjs typings are a bit loose around the render params
+    // shape, so cast through any to keep this code building cleanly.
+    await page.render({
+      canvasContext: ctx,
+      viewport: renderViewport,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any).promise
+    const dataUrl = canvas.toDataURL('image/png')
+    return { dataUrl, widthMm, heightMm }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Palette of (stroke, dark) colour pairs used to differentiate wall types on
  * the layout diagram. Each pair is a medium colour (used at 55 % opacity for
  * the wall body stroke) and a darker version (used as the solid fill of the
@@ -161,7 +224,8 @@ function buildPlanOverviewPage(
   makeups: WallMakeup[],
   makeupsById: Record<string, WallMakeup>,
   thicknessByWallId: Record<string, number>,
-  pageHeader: string
+  pageHeader: string,
+  background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null
 ): string {
   if (walls.length === 0) return ''
 
@@ -304,10 +368,28 @@ function buildPlanOverviewPage(
     ...Object.values(thicknessByWallId).filter((v) => v > 0)
   )
   const pad = Math.max(500, maxThick * 4)
-  const viewMinX = minX - pad
-  const viewMinY = minY - pad
-  const viewW = maxX - minX + pad * 2
-  const viewH = maxY - minY + pad * 2
+
+  // When we have a PDF background to embed, the SVG's coordinate system
+  // is the FULL PAGE (in real-world mm) so the rasterised page can sit
+  // at (0,0) covering its full extent. Walls' stored coordinates are
+  // already in real-world mm relative to the page, so they line up
+  // exactly. Without a background, we crop to the walls' bounding box
+  // (+ padding) so the user gets a tight, zoomed-in diagram instead of
+  // a tiny clump in the corner of a blank page-sized canvas.
+  let viewMinX: number, viewMinY: number, viewW: number, viewH: number
+  if (background) {
+    const pageRealW = background.pageWidthMm * background.pageScaleRatio
+    const pageRealH = background.pageHeightMm * background.pageScaleRatio
+    viewMinX = 0
+    viewMinY = 0
+    viewW = pageRealW
+    viewH = pageRealH
+  } else {
+    viewMinX = minX - pad
+    viewMinY = minY - pad
+    viewW = maxX - minX + pad * 2
+    viewH = maxY - minY + pad * 2
+  }
 
   // Numbered wall labels — size scales with the larger of plan-extent and
   // wall thickness so the labels read at the printed size regardless of
@@ -441,14 +523,28 @@ function buildPlanOverviewPage(
     </div>
   `
 
+  // Background <image> — only when we have a rasterised PDF. Sits at the
+  // page origin (0, 0) covering the full page real-world extent. Walls
+  // (which are positioned in the same coordinate system) overlay it
+  // perfectly. preserveAspectRatio="none" on the image so the data URL
+  // stretches edge-to-edge regardless of the source PNG's pixel ratio.
+  const backgroundSvgElement = background
+    ? `<image href="${background.dataUrl}" x="0" y="0" width="${(background.pageWidthMm * background.pageScaleRatio).toFixed(0)}" height="${(background.pageHeightMm * background.pageScaleRatio).toFixed(0)}" preserveAspectRatio="none" opacity="0.85"/>`
+    : ''
+
+  const intro = background
+    ? 'The plan with the drawn walls and piers overlaid in colour. Numbered labels match the wall references in the breakdown tables; the plan is shown at 85 % opacity so the wall fills read clearly.'
+    : 'Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the breakdown tables.'
+
   return `
     <section class="page">
       ${pageHeader}
       <h2 class="section-title">Wall Layout</h2>
-      <p class="page-intro">Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the breakdown tables.</p>
+      <p class="page-intro">${intro}</p>
       ${summaryRow}
       <div class="plan-overview-wrap">
         <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+          ${backgroundSvgElement}
           ${wallShapes.join('\n          ')}
           ${pierShapes.join('\n          ')}
           ${wallLabels.join('\n          ')}
@@ -542,6 +638,8 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     piers = [],
     pierMakeups = [],
     business,
+    pdfFile,
+    pageInfo,
   } = params
 
   const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
@@ -765,6 +863,34 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   // and the first quantities page so the bricklayer can eyeball the layout
   // before getting into numbers, and to verify which wall maps to which
   // number reference in the breakdown tables.
+  // Rasterise the current PDF page (if one's loaded + calibrated) so we
+  // can show the real plan under the wall overlay. Falls back to a bare
+  // diagram if rasterisation fails or the project is uncalibrated.
+  let planOverviewBackground: {
+    dataUrl: string
+    pageWidthMm: number
+    pageHeightMm: number
+    pageScaleRatio: number
+  } | null = null
+  if (
+    pdfFile &&
+    pageInfo &&
+    pageInfo.pageWidthMm &&
+    pageInfo.pageHeightMm &&
+    pageInfo.pageScaleRatio &&
+    pageInfo.pageScaleRatio > 0
+  ) {
+    const rastered = await rasterisePdfPage(pdfFile, pageInfo.pageNumber)
+    if (rastered) {
+      planOverviewBackground = {
+        dataUrl: rastered.dataUrl,
+        pageWidthMm: pageInfo.pageWidthMm,
+        pageHeightMm: pageInfo.pageHeightMm,
+        pageScaleRatio: pageInfo.pageScaleRatio,
+      }
+    }
+  }
+
   const planOverviewPage = buildPlanOverviewPage(
     walls,
     openings,
@@ -772,7 +898,8 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     makeups,
     makeupsById,
     thicknessByWallId,
-    pageHeader
+    pageHeader,
+    planOverviewBackground
   )
 
   // Page 3: Wall-type breakdown

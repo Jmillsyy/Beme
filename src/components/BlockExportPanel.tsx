@@ -21,6 +21,18 @@ interface BlockExportPanelProps {
   openings: Opening[]
   piers?: Pier[]
   pierMakeups?: PierMakeup[]
+  /**
+   * The uploaded plan PDF. When provided alongside `pageInfo`, the export's
+   * Wall Layout overview rasterises the page and uses it as the background
+   * behind the SVG wall annotations.
+   */
+  pdfFile?: File | null
+  pageInfo?: {
+    pageNumber: number
+    pageWidthMm?: number
+    pageHeightMm?: number
+    pageScaleRatio?: number
+  }
 }
 
 export default function BlockExportPanel({
@@ -32,6 +44,8 @@ export default function BlockExportPanel({
   openings,
   piers = [],
   pierMakeups = [],
+  pdfFile,
+  pageInfo,
 }: BlockExportPanelProps) {
   // Collapsed by default in the rail — export is end-of-workflow.
   const [expanded, setExpanded] = useState(false)
@@ -57,6 +71,8 @@ export default function BlockExportPanel({
         openings,
         piers,
         pierMakeups,
+        pdfFile: pdfFile ?? undefined,
+        pageInfo,
         // Pass the user's business identity through so exports become branded.
         // When the user is signed in to an organisation, the org's name takes
         // precedence over the personal business.companyName field — that way
