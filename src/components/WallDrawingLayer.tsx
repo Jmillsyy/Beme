@@ -643,12 +643,14 @@ function WallDrawingLayerInner({
    * junction-aware logic can know which wall to tie into.
    */
   const [curveAnchorA, setCurveAnchorA] = useState<{
-    wallId: string
+    /** Null when the anchor isn't snapped to any wall — free placement. */
+    wallId: string | null
     xMm: number
     yMm: number
   } | null>(null)
   const [curveAnchorB, setCurveAnchorB] = useState<{
-    wallId: string
+    /** Null when the anchor isn't snapped to any wall — free placement. */
+    wallId: string | null
     xMm: number
     yMm: number
   } | null>(null)
@@ -853,10 +855,13 @@ function WallDrawingLayerInner({
    */
   function resolveCurveAnchorAtCursor(
     cursorPx: Point
-  ): { wallId: string; xMm: number; yMm: number } | null {
+  ): { wallId: string | null; xMm: number; yMm: number } {
     // Generous threshold so the curve can be anchored well past the end of a
     // wall — that's the common case for end-face anchoring, where the user's
-    // cursor is in empty space beyond the wall's tip.
+    // cursor is in empty space beyond the wall's tip. Outside this radius we
+    // fall through to a 'free' anchor at the raw cursor position so the user
+    // can draw a curve between any two points without needing existing
+    // walls to anchor on.
     const CURVE_ANCHOR_THRESHOLD_PX = 60
 
     let best: { wallId: string; distPx: number; tUnclamped: number } | null = null
@@ -879,12 +884,32 @@ function WallDrawingLayerInner({
         best = { wallId: wall.id, distPx, tUnclamped }
       }
     }
-    if (!best) return null
+    // No wall nearby → free anchor at the cursor. The curve still works
+    // geometrically; it just isn't tied to a wall.
+    if (!best) {
+      return {
+        wallId: null,
+        xMm: pxToMm(cursorPx.x),
+        yMm: pxToMm(cursorPx.y),
+      }
+    }
 
     const wall = walls.find((w) => w.id === best!.wallId)
-    if (!wall) return null
+    if (!wall) {
+      return {
+        wallId: null,
+        xMm: pxToMm(cursorPx.x),
+        yMm: pxToMm(cursorPx.y),
+      }
+    }
     const lengthMm = wallLengthMmOf(wall)
-    if (lengthMm <= 0) return null
+    if (lengthMm <= 0) {
+      return {
+        wallId: null,
+        xMm: pxToMm(cursorPx.x),
+        yMm: pxToMm(cursorPx.y),
+      }
+    }
 
     // End-face anchors: cursor is past the wall's tip in the wall's own
     // direction. Anchor sits on the centreline endpoint with no perpendicular
@@ -1405,12 +1430,13 @@ function WallDrawingLayerInner({
     }
 
     if (drawingCurveMode) {
-      // Clicks 1 & 2: anchor on the nearest wall's centreline (endpoint snap kicks
-      // in when the click is close to either end). See resolveCurveAnchorAtCursor
-      // for the projection / endpoint-snap logic.
+      // Clicks 1 & 2: anchor on the nearest wall's centreline if one is in
+      // range (endpoint snap kicks in when the click is close to either end),
+      // OTHERWISE free placement at the cursor's mm coords. The user can
+      // draw a curve between any two points; existing-wall snap is a
+      // convenience, not a requirement.
       if (!curveAnchorA || !curveAnchorB) {
         const anchor = resolveCurveAnchorAtCursor(raw)
-        if (!anchor) return // cursor too far from any wall — ignore
         if (!curveAnchorA) {
           setCurveAnchorA(anchor)
         } else {
@@ -1467,11 +1493,11 @@ function WallDrawingLayerInner({
         // Both anchors set — follow the cursor for the arc-midpoint preview.
         setCurveCursorMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
       } else {
-        // Still picking anchors — show where the click would land, projected
-        // onto the nearest wall. setCurveAnchorHoverMm(null) when the cursor
-        // is too far from any wall so the preview marker disappears.
+        // Still picking anchors — show where the click would land. Snaps
+        // to the nearest wall edge when within range, otherwise tracks
+        // the cursor's mm position for free placement.
         const preview = resolveCurveAnchorAtCursor(raw)
-        setCurveAnchorHoverMm(preview ? { x: preview.xMm, y: preview.yMm } : null)
+        setCurveAnchorHoverMm({ x: preview.xMm, y: preview.yMm })
       }
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId

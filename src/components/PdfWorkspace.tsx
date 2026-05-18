@@ -38,6 +38,8 @@ import {
   createDefaultTiedPierMakeup,
   createDefaultWallMakeup,
 } from '../lib/makeups'
+import { arcFromThreePoints } from '../lib/curveGeom'
+import { curveZoneForRadius } from '../lib/blockCalc'
 import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
 import { getUserSettings } from '../lib/userSettings'
@@ -1052,12 +1054,44 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     endMm: { x: number; y: number }
   ) {
     if (mode !== 'block') return // Brick mode doesn't support curves yet
+
+    // Pick a body block based on the curve's radius so the user doesn't have
+    // to think about it: tight radii get the wedge (20.03CW), mid radii get
+    // standard body with a cut allowance noted in assumptions, large radii
+    // get plain standard body. The same threshold logic is used by the calc
+    // engine downstream — we're just pre-stamping the makeup so the user
+    // sees the right block in the Wall Types panel from the moment they
+    // draw the curve.
+    const geom = arcFromThreePoints(startMm, midMm, endMm)
+    const radiusMm = geom?.radiusMm ?? Infinity
+    const zone = isFinite(radiusMm) ? curveZoneForRadius(radiusMm) : 'standard'
+    // 'standard' (R ≥ 6000mm): plain 20.48, no cuts.
+    // 'cut' (1500-6000mm): 20.48 with rear-corner cuts (noted in assumptions).
+    // 'wedge' (665-1500mm): 20.03CW wedge.
+    // 'custom' (< 665mm): wedge is closest stock; calc-engine + assumptions
+    //    flag that custom blocks are really needed.
+    const bodyBlock = zone === 'wedge' || zone === 'custom' ? '20.03CW' : '20.48'
+    const radiusLabel = isFinite(radiusMm)
+      ? `R${Math.round(radiusMm)}mm`
+      : 'straight-ish'
+
+    // Auto-create a wall type for this curve. Each curve gets its own
+    // makeup so the user can rename it / set a specific height in the
+    // Wall Types panel without affecting other curves. Default height
+    // 2400mm — the user can override per-curve via the wall's
+    // heightMmOverride or by editing the makeup.
+    const curveMakeup = createDefaultWallMakeup({
+      name: `Curved wall — ${radiusLabel}`,
+      heightMm: 2400,
+    })
+    curveMakeup.bodyBlockCode = bodyBlock
+
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      makeupId: activeMakeupId,
+      makeupId: curveMakeup.id,
       startX: startMm.x,
       startY: startMm.y,
       endX: endMm.x,
@@ -1068,12 +1102,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       midX: midMm.x,
       midY: midMm.y,
     }
+    // Add the makeup BEFORE adding the wall so the wall's makeupId always
+    // resolves to a real row, even if React batches the two state writes.
+    const nextMakeups = [...makeups, curveMakeup]
+    const nextMakeupsById = { ...makeupsById, [curveMakeup.id]: curveMakeup }
+    setMakeups(nextMakeups)
     const existing = wallsByPage[currentPage] ?? []
     const newWalls = [...existing, rawWall]
-    const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
+    const thicknesses = computeWallThicknessByWallId(newWalls, nextMakeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
     setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
-  }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, activeMakeupId])
+  }, [mode, wallsByPage, currentPage, makeups, makeupsById, brickSettings])
 
   /**
    * Split a wall at a click point along its centreline. Replaces the original wall with
