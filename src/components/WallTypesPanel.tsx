@@ -51,6 +51,15 @@ export default function WallTypesPanel({
 
   const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
 
+  // Sort so the active wall type sits at the top of the list and stays there
+  // — handy when there are 4+ types and the user spends most of their time
+  // drawing with one of them. The remaining types keep their original order
+  // so the user's mental map of "the second one I created" doesn't shuffle.
+  const orderedMakeups = useMemo(() => {
+    if (!activeMakeup) return makeups
+    return [activeMakeup, ...makeups.filter((m) => m.id !== activeMakeup.id)]
+  }, [makeups, activeMakeup])
+
   return (
     <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -85,13 +94,26 @@ export default function WallTypesPanel({
       {expanded && (
         <>
       <div className="flex flex-col gap-2 pb-1">
-        {makeups.map((m) => {
+        {/* "New" form opens at the very top of the list so an in-progress add
+            doesn't shove every existing wall type down out of view. */}
+        {editingId === 'new' && (
+          <WallTypeForm
+            existing={null}
+            onSave={(makeup) => {
+              onAddMakeup(makeup)
+              setEditingId(null)
+            }}
+            onCancel={() => setEditingId(null)}
+          />
+        )}
+        {orderedMakeups.map((m) => {
           const isActive = m.id === activeMakeupId
           const wallCount = wallCountsByMakeupId[m.id] ?? 0
           const canDelete = makeups.length > 1 && wallCount === 0
+          const isEditingThis = editingId === m.id
           return (
+            <div key={m.id} className="flex flex-col gap-2">
             <button
-              key={m.id}
               onClick={() => onSetActive(m.id)}
               className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
                 isActive
@@ -162,11 +184,13 @@ export default function WallTypesPanel({
                   tabIndex={0}
                   onClick={(e) => {
                     e.stopPropagation()
-                    setEditingId(m.id)
+                    // Toggle: clicking Edit on the type that's already open
+                    // collapses the form instead of leaving it stuck open.
+                    setEditingId(isEditingThis ? null : m.id)
                   }}
                   className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
                 >
-                  Edit
+                  {isEditingThis ? 'Close' : 'Edit'}
                 </span>
                 {canDelete && (
                   <span
@@ -185,21 +209,23 @@ export default function WallTypesPanel({
                 )}
               </div>
             </button>
+            {/* Edit form opens INLINE beneath the wall type being edited so
+                the user doesn't have to scroll to find it at the bottom of
+                the panel every time. */}
+            {isEditingThis && (
+              <WallTypeForm
+                existing={editingMakeup}
+                onSave={(makeup) => {
+                  onUpdateMakeup(makeup)
+                  setEditingId(null)
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            )}
+            </div>
           )
         })}
       </div>
-
-      {editingId !== null && (
-        <WallTypeForm
-          existing={editingMakeup}
-          onSave={(makeup) => {
-            if (editingId === 'new') onAddMakeup(makeup)
-            else onUpdateMakeup(makeup)
-            setEditingId(null)
-          }}
-          onCancel={() => setEditingId(null)}
-        />
-      )}
         </>
       )}
     </div>
