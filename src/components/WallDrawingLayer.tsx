@@ -63,6 +63,11 @@ interface WallDrawingLayerProps {
   selectedWallIds?: ReadonlySet<string>
   selectedOpeningIds?: ReadonlySet<string>
   selectedPierIds?: ReadonlySet<string>
+  /**
+   * Per-wall stroke colour, keyed by wall id — set by the parent based on the
+   * wall type's palette colour. Falls back to the brand orange if missing.
+   */
+  wallColorByWallId?: Record<string, string>
   onWallAdded: (startMm: Point, endMm: Point) => void
   /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
   onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
@@ -573,6 +578,7 @@ function WallDrawingLayerInner({
   selectedWallIds,
   selectedOpeningIds,
   selectedPierIds,
+  wallColorByWallId,
   onWallAdded,
   onCurvedWallAdded,
   onWallSelect,
@@ -1706,11 +1712,15 @@ function WallDrawingLayerInner({
           const isCurveAnchor =
             drawingCurveMode &&
             (curveAnchorA?.wallId === wall.id || curveAnchorB?.wallId === wall.id)
+          // Default wall colour comes from the wall-type palette so multiple
+          // wall types in the same project are visually distinct on the plan.
+          // Selection (blue) and curve-anchor (purple) overrides still win.
+          const wallTypeStroke = wallColorByWallId?.[wall.id] ?? '#ED7D31'
           const strokeColor = isCurveAnchor
             ? '#8b5cf6'
             : isSelected
               ? '#3b82f6'
-              : '#ED7D31'
+              : wallTypeStroke
           const strokeWidth = isSelected || isCurveAnchor ? 5 : isHovered ? 5 : 4
           const startIsCorner = wall.startJunction.type === 'corner'
           const endIsCorner = wall.endJunction.type === 'corner'

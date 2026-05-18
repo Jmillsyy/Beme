@@ -105,6 +105,7 @@ import {
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions, snapEndpointToThroughWallFace } from '../lib/junctions'
+import { wallTypeColor } from '../lib/wallTypeColors'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 import { getEstimateRequestByProjectId } from '../lib/estimateRequests'
 import type { EstimateRequest } from '../types/estimateRequests'
@@ -734,6 +735,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       brickLibraryVersion,
     ]
   )
+
+  // Per-wall colour from the wall-type palette. Brick walls (no makeupId) get
+  // the brand orange fallback. The canvas reads this to colour each wall's
+  // body so users can tell types apart at a glance; the WallTypesPanel reads
+  // the same helper directly for the swatches in its list.
+  const wallColorByWallId = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const w of allWalls) {
+      map[w.id] = w.makeupId ? wallTypeColor(w.makeupId, makeups) : '#ED7D31'
+    }
+    return map
+  }, [allWalls, makeups])
 
   const selectedWall = useMemo(
     () => (selectedWallId ? currentPageWalls.find((w) => w.id === selectedWallId) : null),
@@ -3136,6 +3149,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   selectedWallIds={selectedWallIds}
                   selectedOpeningIds={selectedOpeningIds}
                   selectedPierIds={selectedPierIds}
+                  wallColorByWallId={wallColorByWallId}
                   onWallToggleSelect={toggleSelectedWallId}
                   onOpeningToggleSelect={toggleSelectedOpeningId}
                   onPierToggleSelect={toggleSelectedPierId}

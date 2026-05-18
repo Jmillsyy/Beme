@@ -7,6 +7,7 @@ import type {
 } from '../types/walls'
 import type { BlockCode } from '../types/blocks'
 import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
+import { wallTypeColor } from '../lib/wallTypeColors'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -103,7 +104,16 @@ export default function WallTypesPanel({
                   Active
                 </span>
               )}
-              <div className="text-sm font-medium text-ink-100 mb-1 pr-12 truncate">{m.name}</div>
+              <div className="flex items-center gap-2 mb-1 pr-12">
+                {/* Swatch that matches the colour walls of this type are drawn in
+                    on the plan. Picked deterministically from a palette by index. */}
+                <span
+                  className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+                  style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
+                  aria-hidden
+                />
+                <div className="text-sm font-medium text-ink-100 truncate">{m.name}</div>
+              </div>
               <div className="text-xs text-ink-400">
                 {m.bondType} bond · {m.heightMm}mm ·{' '}
                 {m.cornerBlockCode === '20.21' ? 'knockout corners' : 'standard corners'} ·{' '}
