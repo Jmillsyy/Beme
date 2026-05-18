@@ -284,8 +284,14 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         if (a.status !== b.status) return a.status === 'pending' ? -1 : 1
         return b.updatedAt.localeCompare(a.updatedAt)
       })
+    // Recently-completed is personal: only requests the current user was
+    // assigned to. Org-wide completed work lives behind a filter on the
+    // /requests page ('By person' dropdown there can surface a teammate's
+    // recent completions on demand). The dashboard should be 'your stuff'.
     const completed = requests
-      .filter((r) => r.status === 'completed')
+      .filter(
+        (r) => r.status === 'completed' && r.assignedToUserId === userId
+      )
       .sort(
         (a, b) =>
           new Date(b.completedAt ?? b.updatedAt).getTime() -
@@ -474,23 +480,22 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         </section>
       )}
 
-      {/* ── Recently completed ──
-          3-up grid of small cards. Each card shows the customer, who
-          finished it, and the turnaround in days. Saves vertical space
-          on a dashboard that's already inbox-heavy, and surfaces team
-          throughput (who's getting things done, how long things are
-          taking) as a glanceable metric. */}
+      {/* ── Recently completed (yours) ──
+          Personal-only: shows requests YOU finished. Org-wide completed
+          work lives on /requests (filter by person + date) so a teammate
+          can audit anyone's recent throughput without it bloating the
+          home page. */}
       {recentlyCompleted.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-              Recently completed
+              Your recently completed
             </h3>
             <Link
-              to="/requests"
+              to="/requests?scope=all&status=completed"
               className="text-xs text-beme-300 hover:text-beme-200"
             >
-              View all →
+              View team activity →
             </Link>
           </div>
           {/* Auto-fit + 1fr: cards stretch to fill the row evenly no matter
