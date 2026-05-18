@@ -33,6 +33,50 @@ export interface CourseOverride {
 }
 
 /**
+ * A contiguous run of courses that uses a different block series than the rest
+ * of the wall.
+ *
+ * Lets a user say "the bottom 5 courses use the wider 300 series for engineering
+ * (290 mm-deep blocks), and everything above sits on the standard 200 series".
+ * Each range carries its own overrides for the role-based block picks the calc
+ * engine makes (body, corner, end-termination half, base-course cleanout/tile,
+ * and the half-height makeup row). Anything not specified falls back to the
+ * makeup's top-level default — so a range is "additive": only set the codes
+ * that differ from the rest of the wall.
+ *
+ * Course numbers are 1-indexed from the base. Ranges must not overlap; the
+ * calc engine takes the FIRST matching range when looking up a block code for
+ * a given course, so overlap would be ambiguous. The UI enforces this.
+ */
+export interface CourseSeriesRange {
+  /** First course (1-indexed) in this range, inclusive. */
+  fromCourse: number
+  /**
+   * Last course (1-indexed) in this range, inclusive. Use a value greater than
+   * the wall's total course count to mean "to the top" — the calc engine just
+   * checks `course >= fromCourse && course <= toCourse`, so any large number
+   * (e.g. 9999) works as an open-ended upper bound.
+   */
+  toCourse: number
+  /** Body block (e.g. 30.48 in a 300-series range). */
+  bodyBlockCode?: BlockCode
+  /** Full end / corner block (e.g. 30.01). Used at both corners and as the
+   *  odd-course end in stretcher bond. */
+  cornerBlockCode?: BlockCode
+  /** Half block used on even courses in stretcher bond (e.g. 30.03). Falls back
+   *  to 20.03 when not set. */
+  halfBlockCode?: BlockCode
+  /** Base-course cleanout block. Only consulted when the range covers course 1. */
+  baseCourseBlockCode?: BlockCode
+  /** Tile paired with the base-course cleanout. Only consulted when the range
+   *  covers course 1. */
+  baseCourseTileCode?: BlockCode
+  /** 90 mm half-height makeup block (e.g. 30.71). Used when the height-makeup
+   *  row for this wall falls inside this range. Falls back to 20.71. */
+  heightMakeup71BlockCode?: BlockCode
+}
+
+/**
  * Pier configurations supported by beme.
  *
  * - 'tied': pier built into the wall. 40.925 every 2nd course with 20.01 the others.
@@ -72,6 +116,16 @@ export interface WallMakeup {
    * Useful for intermediate bond beams or height-makeup rows.
    */
   courseOverrides?: CourseOverride[]
+
+  /**
+   * Optional list of course-series ranges. When present, courses inside a range
+   * pick their body / end / corner / base / height-makeup blocks from the
+   * range's overrides instead of the makeup defaults. Used to mix 300 series
+   * (wider, engineering-required base courses) with standard 200 series above,
+   * or any analogous mix. Empty / undefined → wall uses the makeup defaults
+   * for every course (legacy behaviour).
+   */
+  courseSeriesRanges?: CourseSeriesRange[]
 
   // ---- Corner / termination preferences ----
   /**
