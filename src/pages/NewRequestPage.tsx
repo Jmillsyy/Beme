@@ -48,10 +48,14 @@ export default function NewRequestPage() {
       if (cancelled) return
       setMembers(list)
       setMembersLoading(false)
-      // Default the assignee to the first estimator in the org if any exists.
-      // Saves a click on the most common case ("send to our estimator team").
-      const firstEstimator = list.find((m) => m.role === 'estimator')
-      if (firstEstimator) setAssignedToUserId(firstEstimator.userId)
+      // Default the assignee to the first estimator/sales in the org if any
+      // exists. Saves a click on the most common case ("send to our team").
+      // Treats estimator + sales as equivalent — both roles handle takeoffs
+      // in this product.
+      const firstAssignable = list.find(
+        (m) => m.role === 'estimator' || m.role === 'sales'
+      )
+      if (firstAssignable) setAssignedToUserId(firstAssignable.userId)
     })
     return () => {
       cancelled = true
@@ -84,12 +88,11 @@ export default function NewRequestPage() {
     )
   }
 
-  // Only org members with 'estimator' or 'admin' role are valid assignees.
-  // Sales reps don't receive their own work; admins might pinch-hit on
-  // takeoffs in smaller orgs.
-  const assignableMembers = members.filter(
-    (m) => m.role === 'estimator' || m.role === 'admin'
-  )
+  // Anyone in the org is a valid assignee — sales and estimator have
+  // identical privileges in this product, and admins might pinch-hit on
+  // takeoffs in smaller orgs. (If we ever want to gate sales out of the
+  // takeoff workflow, this is the right place to add a role filter back.)
+  const assignableMembers = members
 
   const canSubmit =
     customerName.trim().length > 0 &&
