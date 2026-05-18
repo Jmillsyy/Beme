@@ -113,6 +113,12 @@ create policy "Users delete own PDFs"
 -- find the project's organisation_id and check membership. Keeps the
 -- existing user-scoped INSERT/UPDATE/DELETE in place — only the owner
 -- uploads or replaces, teammates only read.
+--
+-- DROP-then-CREATE pattern so re-running this block on an already-migrated
+-- deployment doesn't error with "policy already exists". Same applies to
+-- any of the create-policy blocks below — guard them this way if you ever
+-- need to re-run.
+drop policy if exists "Org members read project PDFs" on storage.objects;
 create policy "Org members read project PDFs"
   on storage.objects for select
   using (
