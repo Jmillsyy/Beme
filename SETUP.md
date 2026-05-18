@@ -365,6 +365,11 @@ create table public.estimate_requests (
   inclusion_notes        text,
   plan_pdf_path          text,
   plan_pdf_file_name     text,
+  -- Additional reference PDFs attached to the request (engineering specs etc.).
+  -- Each entry: { path: string, fileName: string }. Walls only get drawn on
+  -- the PRIMARY plan (plan_pdf_path); these are view-only attachments the
+  -- estimator can flip to in the workspace.
+  additional_pdfs        jsonb,
   created_at             timestamptz not null default now(),
   updated_at             timestamptz not null default now(),
   completed_at           timestamptz
@@ -430,6 +435,15 @@ create policy "Admins delete request plans"
     bucket_id = 'estimate-request-plans'
     and public.is_org_admin(((storage.foldername(name))[1])::uuid)
   );
+
+-- ─── multi-file uploads on estimate requests (existing deployments) ────────
+-- Run this once on any deployment that was set up before the multi-PDF
+-- feature landed. Fresh installs already get the column from the create
+-- table above. The storage RLS policies don't need to change — reference
+-- PDFs upload under the same <organisation_id>/... path scope as the
+-- primary plan and inherit the existing org-member access rules.
+alter table public.estimate_requests
+  add column if not exists additional_pdfs jsonb;
 ```
 
 ---
