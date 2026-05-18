@@ -48,6 +48,21 @@ export type ProjectStatus = 'in-progress' | 'completed'
  */
 export type ProjectOutcome = 'won' | 'lost'
 
+/**
+ * A reference PDF attached to a project — view-only material the estimator
+ * flips to while working (e.g. engineering specs). `blob` is the runtime
+ * file used by the workspace; `path` is the storage key in the
+ * `project-pdfs` bucket so the row knows where to re-download the bytes on
+ * the next load. Both are optional so a freshly-attached file (blob set,
+ * path not yet known) round-trips through saveProject() cleanly.
+ */
+export interface ReferencePdf {
+  fileName: string
+  blob?: Blob
+  /** Storage path inside the project-pdfs bucket. Populated by saveProject. */
+  path?: string
+}
+
 /** What we save per page about the PDF (e.g. scale calibration). */
 export interface SavedPageData {
   /**
@@ -91,9 +106,23 @@ export interface SavedProject {
   outcome?: ProjectOutcome
 
   projectDetails: ProjectDetails
-  /** Optional — projects can be saved before a PDF is uploaded. */
+  /** Optional — projects can be saved before a PDF is uploaded.
+   *  This is the PRIMARY PDF — the one walls / openings / piers are drawn on
+   *  (usually the architectural). Reference PDFs (engineering specs etc.)
+   *  go on `referencePdfs` below. */
   pdfBlob?: Blob
   pdfFileName?: string
+  /**
+   * Extra PDFs the estimator can flip to while working on this project —
+   * typically engineering specs or notes that inform wall types but aren't
+   * drawn on. Walls, openings, and piers all live against the primary PDF
+   * above; reference PDFs are view-only. Ordering reflects the order they
+   * were attached to the originating estimate request.
+   *
+   * Optional + defaulted-empty so projects saved before multi-file support
+   * still load cleanly.
+   */
+  referencePdfs?: ReferencePdf[]
 
   pagesData: Record<number, SavedPageData>
   wallsByPage: Record<number, Wall[]>
@@ -189,6 +218,9 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
   // Anything that isn't a top-level column lives inside `data`. We deliberately
   // exclude pdfBlob (binary, stored in Storage) and pdfFileName (separate column
   // so we can read it from the project list without parsing JSON).
+  //
+  // Reference PDFs go into `data` as { fileName, path } pairs — the blob lives
+  // in storage at `path`, we don't serialise the bytes into JSONB.
   const {
     id,
     type,
@@ -199,9 +231,11 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
     completedAt,
     pdfBlob: _pdfBlob,
     pdfFileName,
+    referencePdfs,
     ...rest
   } = p
   void _pdfBlob
+  const referencePdfMeta = referencePdfs?.map((r) => ({ fileName: r.fileName, path: r.path }))
   return {
     id,
     user_id: userId,
@@ -211,7 +245,7 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
     created_at: createdAt,
     updated_at: updatedAt,
     completed_at: completedAt ?? null,
-    data: rest,
+    data: { ...rest, referencePdfs: referencePdfMeta },
     pdf_path: pdfPath,
     pdf_file_name: pdfFileName ?? null,
   }
@@ -270,7 +304,31 @@ async function cloudSaveProject(p: SavedProject, userId: string): Promise<void> 
     if (uploadErr) throw new Error(`PDF upload failed: ${uploadErr.message}`)
   }
 
-  const row = projectToCloudRow(p, userId, pdfPath)
+  // Reference PDFs (engineering specs etc.) — upload any whose blob hasn't yet
+  // been persisted (path missing) and record their storage path back on the
+  // SavedProject before serialising the row. Path scheme:
+  //   `${userId}/${projectId}-ref-${index}.pdf`
+  // keeps them under the same RLS scope as the primary PDF and trivially
+  // collectable on delete.
+  const refUploaded: ReferencePdf[] = []
+  if (p.referencePdfs && p.referencePdfs.length > 0) {
+    for (let i = 0; i < p.referencePdfs.length; i++) {
+      const ref = p.referencePdfs[i]
+      let path = ref.path
+      if (ref.blob && !path) {
+        path = `${userId}/${p.id}-ref-${i}.pdf`
+        const { error: refErr } = await client.storage.from(PDF_BUCKET).upload(path, ref.blob, {
+          upsert: true,
+          contentType: ref.blob.type || 'application/pdf',
+        })
+        if (refErr) throw new Error(`Reference PDF upload failed (${ref.fileName}): ${refErr.message}`)
+      }
+      refUploaded.push({ fileName: ref.fileName, blob: ref.blob, path })
+    }
+  }
+
+  const projectForRow: SavedProject = { ...p, referencePdfs: refUploaded }
+  const row = projectToCloudRow(projectForRow, userId, pdfPath)
   const { error } = await client.from('projects').upsert(row, { onConflict: 'id' })
   if (error) throw new Error(`Project save failed: ${error.message}`)
 }
@@ -301,6 +359,31 @@ async function cloudGetProject(id: string, _userId: string): Promise<SavedProjec
     }
   }
 
+  // Reference PDFs — download each one so the workspace can switch to it.
+  // A failed download on a single reference doesn't block the project load;
+  // the entry stays in the array without a blob and the workspace shows a
+  // "(file unavailable)" hint on that tab.
+  if (project.referencePdfs && project.referencePdfs.length > 0) {
+    const downloaded: ReferencePdf[] = []
+    for (const ref of project.referencePdfs) {
+      if (!ref.path) {
+        downloaded.push(ref)
+        continue
+      }
+      const { data: refBlob, error: refErr } = await client.storage
+        .from(PDF_BUCKET)
+        .download(ref.path)
+      if (refErr) {
+        // eslint-disable-next-line no-console
+        console.warn(`Failed to download reference PDF ${ref.fileName}:`, refErr.message)
+        downloaded.push({ ...ref, blob: undefined })
+      } else {
+        downloaded.push({ ...ref, blob: refBlob ?? undefined })
+      }
+    }
+    project.referencePdfs = downloaded
+  }
+
   return project
 }
 
@@ -317,20 +400,27 @@ async function cloudListProjects(_userId: string): Promise<SavedProject[]> {
 
 async function cloudDeleteProject(id: string, userId: string): Promise<void> {
   const client = supabase()
-  // Pull the row first so we know if there's a PDF to remove from storage.
+  // Pull the row first so we know what to remove from storage — both the
+  // primary PDF and any reference PDFs (engineering specs etc.) attached to
+  // the project. Reference paths live inside the `data` JSON column.
   const { data, error: getErr } = await client
     .from('projects')
-    .select('pdf_path')
+    .select('pdf_path, data')
     .eq('id', id)
     .maybeSingle()
   if (getErr) throw new Error(`Project lookup failed: ${getErr.message}`)
 
-  const pdfPath = (data as { pdf_path: string | null } | null)?.pdf_path
-  if (pdfPath) {
-    const { error: rmErr } = await client.storage.from(PDF_BUCKET).remove([pdfPath])
+  const row = data as { pdf_path: string | null; data: { referencePdfs?: { path?: string }[] } } | null
+  const toRemove: string[] = []
+  if (row?.pdf_path) toRemove.push(row.pdf_path)
+  for (const ref of row?.data?.referencePdfs ?? []) {
+    if (ref.path) toRemove.push(ref.path)
+  }
+  if (toRemove.length > 0) {
+    const { error: rmErr } = await client.storage.from(PDF_BUCKET).remove(toRemove)
     if (rmErr) {
       // eslint-disable-next-line no-console
-      console.warn(`Failed to remove PDF for ${id}:`, rmErr.message)
+      console.warn(`Failed to remove PDFs for ${id}:`, rmErr.message)
     }
   }
 

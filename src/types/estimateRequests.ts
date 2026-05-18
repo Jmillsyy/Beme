@@ -70,9 +70,19 @@ export interface EstimateRequest {
    */
   inclusionNotes?: string
 
-  /** Storage path of the plan PDF the customer supplied. Null if no plan yet. */
+  /** Storage path of the PRIMARY plan PDF the customer supplied (the
+   *  architectural — the one walls get drawn against on pickup). Null if no
+   *  plan was attached yet. */
   planPdfPath?: string
   planPdfFileName?: string
+  /**
+   * Additional PDFs attached to the request (engineering specs, notes,
+   * etc.). On pickup they become the project's referencePdfs — the
+   * estimator can flip to them in the workspace but walls are still drawn
+   * only on the primary plan above. Empty / undefined when the request
+   * was created with a single file (or none).
+   */
+  additionalPdfs?: { path: string; fileName: string }[]
 
   createdAt: string
   updatedAt: string
@@ -88,5 +98,8 @@ export interface EstimateRequestDraft {
   customerPhone?: string
   customerCompany?: string
   inclusionNotes?: string
+  /** Primary plan (architectural — the one walls will be drawn on). */
   planFile?: File
+  /** Reference PDFs (engineering specs etc.) — view-only after pickup. */
+  additionalFiles?: File[]
 }

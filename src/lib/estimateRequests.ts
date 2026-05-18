@@ -44,6 +44,12 @@ interface RequestRow {
   inclusion_notes: string | null
   plan_pdf_path: string | null
   plan_pdf_file_name: string | null
+  /**
+   * Stored as a JSONB column. Old requests created before multi-file
+   * support don't have this — read as undefined → no additional PDFs.
+   * Schema migration in SETUP.md.
+   */
+  additional_pdfs: { path: string; fileName: string }[] | null
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -65,6 +71,7 @@ function rowToRequest(row: RequestRow): EstimateRequest {
     inclusionNotes: row.inclusion_notes ?? undefined,
     planPdfPath: row.plan_pdf_path ?? undefined,
     planPdfFileName: row.plan_pdf_file_name ?? undefined,
+    additionalPdfs: row.additional_pdfs ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at ?? undefined,
@@ -117,6 +124,34 @@ export async function createEstimateRequest(
     }
   }
 
+  // Additional PDFs (engineering, etc.) — uploaded after the primary so we
+  // can include their paths on the row insert below. Each file gets a
+  // sequential suffix under the same RLS scope as the primary, so they
+  // share the row's permissions and clean up as a unit when the request is
+  // deleted.
+  const additionalUploaded: { path: string; fileName: string }[] = []
+  const uploadedPaths: string[] = []
+  for (let i = 0; i < (draft.additionalFiles ?? []).length; i++) {
+    const file = draft.additionalFiles![i]
+    const path = `${orgId}/${requestId}-ref-${i}.pdf`
+    const { error: refErr } = await client.storage
+      .from(PLANS_BUCKET)
+      .upload(path, file, {
+        contentType: file.type || 'application/pdf',
+        upsert: false,
+      })
+    if (refErr) {
+      // Roll back everything uploaded so far so we never leave orphans.
+      const allPaths = [...uploadedPaths, ...(planPath ? [planPath] : [])]
+      if (allPaths.length > 0) {
+        await client.storage.from(PLANS_BUCKET).remove(allPaths).catch(() => {})
+      }
+      throw new Error(`Reference PDF upload failed (${file.name}): ${refErr.message}`)
+    }
+    uploadedPaths.push(path)
+    additionalUploaded.push({ path, fileName: file.name })
+  }
+
   const insertRow = {
     id: requestId,
     organisation_id: orgId,
@@ -131,6 +166,7 @@ export async function createEstimateRequest(
     inclusion_notes: draft.inclusionNotes ?? null,
     plan_pdf_path: planPath,
     plan_pdf_file_name: planFileName,
+    additional_pdfs: additionalUploaded.length > 0 ? additionalUploaded : null,
   }
 
   const { data, error } = await client
@@ -139,10 +175,11 @@ export async function createEstimateRequest(
     .select()
     .single()
   if (error) {
-    // Roll back the storage upload if the row insert failed so we don't leave
-    // orphaned PDFs in the bucket.
-    if (planPath) {
-      await client.storage.from(PLANS_BUCKET).remove([planPath]).catch(() => {})
+    // Roll back every storage upload if the row insert failed so we don't
+    // leave orphaned PDFs in the bucket.
+    const allPaths = [...uploadedPaths, ...(planPath ? [planPath] : [])]
+    if (allPaths.length > 0) {
+      await client.storage.from(PLANS_BUCKET).remove(allPaths).catch(() => {})
     }
     throw new Error(`Couldn't create request: ${error.message}`)
   }
@@ -299,25 +336,33 @@ export async function deleteEstimateRequest(id: string): Promise<void> {
   }
   const client = supabase()
 
-  // Look up the row first so we can remove its plan PDF from storage
-  // alongside the row delete. Reading the row also gives RLS a chance to
-  // reject early when the caller can't see this request — better error
-  // than a silent no-op on the delete.
+  // Look up the row first so we can remove its plan PDF + any additional
+  // attachments from storage alongside the row delete. Reading the row also
+  // gives RLS a chance to reject early when the caller can't see this
+  // request — better error than a silent no-op on the delete.
   const { data, error: fetchErr } = await client
     .from('estimate_requests')
-    .select('plan_pdf_path')
+    .select('plan_pdf_path, additional_pdfs')
     .eq('id', id)
     .maybeSingle()
   if (fetchErr) {
     throw new Error(`Couldn't load request to delete: ${fetchErr.message}`)
   }
-  const planPath = (data as { plan_pdf_path: string | null } | null)?.plan_pdf_path ?? null
+  const row = data as {
+    plan_pdf_path: string | null
+    additional_pdfs: { path: string; fileName: string }[] | null
+  } | null
+  const pathsToRemove: string[] = []
+  if (row?.plan_pdf_path) pathsToRemove.push(row.plan_pdf_path)
+  for (const a of row?.additional_pdfs ?? []) {
+    if (a.path) pathsToRemove.push(a.path)
+  }
 
-  // Remove the plan PDF first. If the storage call fails (e.g. the file is
+  // Remove the plan PDFs first. If the storage call fails (e.g. files are
   // already gone) we still want to drop the row, so swallow non-fatal
   // errors and surface only the row-delete failure to the caller.
-  if (planPath) {
-    await client.storage.from(PLANS_BUCKET).remove([planPath]).catch(() => {})
+  if (pathsToRemove.length > 0) {
+    await client.storage.from(PLANS_BUCKET).remove(pathsToRemove).catch(() => {})
   }
 
   const { error: deleteErr } = await client
@@ -380,6 +425,30 @@ export async function pickUpEstimateRequest(request: EstimateRequest): Promise<s
     planBlob = await downloadRequestPlan(request)
   }
 
+  // Download any additional reference PDFs (engineering specs etc.) so the
+  // estimator can flip to them in the workspace. Failures here are
+  // non-fatal — the corresponding entry on the project will have no blob,
+  // and the workspace tab can show "(file unavailable)" rather than
+  // blocking the whole pickup.
+  const client = supabase()
+  const referencePdfBlobs: { fileName: string; blob?: Blob }[] = []
+  for (const ref of request.additionalPdfs ?? []) {
+    try {
+      const { data: blob, error } = await client.storage
+        .from(PLANS_BUCKET)
+        .download(ref.path)
+      if (error || !blob) {
+        // eslint-disable-next-line no-console
+        console.warn(`Failed to download additional PDF ${ref.fileName}:`, error?.message)
+        referencePdfBlobs.push({ fileName: ref.fileName })
+      } else {
+        referencePdfBlobs.push({ fileName: ref.fileName, blob })
+      }
+    } catch {
+      referencePdfBlobs.push({ fileName: ref.fileName })
+    }
+  }
+
   const projectId = generateProjectId()
   const nowIso = new Date().toISOString()
 
@@ -408,6 +477,7 @@ export async function pickUpEstimateRequest(request: EstimateRequest): Promise<s
         )
       : undefined,
     pdfFileName: request.planPdfFileName,
+    referencePdfs: referencePdfBlobs.length > 0 ? referencePdfBlobs : undefined,
     pagesData: {},
     wallsByPage: {},
     openingsByPage: {},
