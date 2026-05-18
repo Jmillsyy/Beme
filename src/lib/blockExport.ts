@@ -32,7 +32,7 @@ import {
   curveZoneForRadius,
   wallLengthMm,
 } from './blockCalc'
-import { arcFromThreePoints, isCurvedWall } from './curveGeom'
+import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
 import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
 
@@ -112,6 +112,182 @@ function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
   return (Object.entries(tally) as Array<[BlockCode, number]>)
     .filter(([, c]) => c > 0)
     .sort(([, a], [, b]) => b - a)
+}
+
+/**
+ * Build the Wall Layout page — an SVG diagram of every wall, pier and
+ * curved arc as drawn on the plan, with each wall labelled 1..N so the
+ * tally tables further down the document can be cross-referenced visually.
+ *
+ * The SVG uses millimetre coordinates as its viewBox so we can place
+ * shapes directly from the wall data. The print stylesheet sizes the SVG
+ * to fill a landscape A4 content area with `preserveAspectRatio='xMidYMid
+ * meet'`, so plans of any aspect ratio fit cleanly without distortion.
+ *
+ * Walls: orange thick lines (straight) or polylines (curves, sampled from
+ *        arcFromThreePoints to avoid SVG arc-flag pitfalls). Stroke width
+ *        equals the wall's real-world thickness.
+ * Piers: blue 400 × 400 squares centred on the pier position.
+ * Labels: white-on-orange numbered circles at each wall's midpoint.
+ *
+ * Returns an empty string when there are no walls — no point in a blank
+ * overview page.
+ */
+function buildPlanOverviewPage(
+  walls: Wall[],
+  piers: Pier[],
+  thicknessByWallId: Record<string, number>,
+  pageHeader: string
+): string {
+  if (walls.length === 0) return ''
+
+  // Bounding box of everything we're about to draw (walls + curve midpoints +
+  // freestanding pier positions), so the SVG viewBox covers the whole plan.
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  const expand = (x: number, y: number) => {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  for (const w of walls) {
+    expand(w.startX, w.startY)
+    expand(w.endX, w.endY)
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      // The arc bulges past the chord — sample a few points to capture the
+      // extent. Sampling is cheap and covers any arc geometry correctly.
+      const geom = arcFromThreePoints(
+        { x: w.startX, y: w.startY },
+        { x: w.midX, y: w.midY },
+        { x: w.endX, y: w.endY }
+      )
+      if (geom) {
+        for (const p of sampleArc(geom, 12)) expand(p.x, p.y)
+      } else {
+        expand(w.midX, w.midY)
+      }
+    }
+  }
+  for (const p of piers) {
+    if (p.type === 'freestanding') expand(p.x, p.y)
+  }
+  if (!isFinite(minX) || !isFinite(maxX)) return ''
+
+  // Pad by a multiple of the thickest wall so the wall edges don't bleed
+  // against the SVG viewBox. Minimum 500 mm so a single-wall plan still
+  // has breathing room.
+  const maxThick = Math.max(
+    190,
+    ...Object.values(thicknessByWallId).filter((v) => v > 0)
+  )
+  const pad = Math.max(500, maxThick * 4)
+  const viewMinX = minX - pad
+  const viewMinY = minY - pad
+  const viewW = maxX - minX + pad * 2
+  const viewH = maxY - minY + pad * 2
+
+  // Numbered wall labels — size scales with the larger of plan-extent and
+  // wall thickness so the labels read at the printed size regardless of
+  // how big the plan is.
+  const labelDiameter = Math.max(maxThick * 2.2, Math.min(viewW, viewH) * 0.04)
+  const labelFontSize = labelDiameter * 0.55
+
+  // Wall bodies — semi-transparent orange fill with rounded ends. We render
+  // walls as a STROKE on a line/polyline with stroke-width equal to the
+  // thickness, which is simpler than computing per-corner mitres and is
+  // accurate enough for an at-a-glance overview.
+  const wallShapes: string[] = []
+  for (const w of walls) {
+    const thickness = thicknessByWallId[w.id] || 190
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      const geom = arcFromThreePoints(
+        { x: w.startX, y: w.startY },
+        { x: w.midX, y: w.midY },
+        { x: w.endX, y: w.endY }
+      )
+      if (!geom) {
+        wallShapes.push(
+          `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="rgba(237,125,49,0.55)" stroke-width="${thickness}" stroke-linecap="butt"/>`
+        )
+        continue
+      }
+      // Sample the arc into a polyline — sidesteps SVG arc flag bugs and
+      // matches exactly what's rendered in the live canvas (which uses the
+      // same sampleArc helper).
+      const samples = sampleArc(geom, 48)
+      const pts = samples.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+      wallShapes.push(
+        `<polyline points="${pts}" stroke="rgba(237,125,49,0.55)" stroke-width="${thickness}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`
+      )
+    } else {
+      wallShapes.push(
+        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="rgba(237,125,49,0.55)" stroke-width="${thickness}" stroke-linecap="butt"/>`
+      )
+    }
+  }
+
+  // Pier squares — 400 × 400 mm centred on the pier position. For tied piers
+  // we resolve the (along-wall mm) into an x/y from the host wall's geometry.
+  const pierShapes: string[] = []
+  for (const p of piers) {
+    let cx: number
+    let cy: number
+    if (p.type === 'freestanding') {
+      cx = p.x
+      cy = p.y
+    } else {
+      const wall = walls.find((w) => w.id === p.wallId)
+      if (!wall) continue
+      const dx = wall.endX - wall.startX
+      const dy = wall.endY - wall.startY
+      const len = Math.sqrt(dx * dx + dy * dy)
+      if (len === 0) continue
+      const t = p.alongMm / len
+      cx = wall.startX + t * dx
+      cy = wall.startY + t * dy
+    }
+    const s = 400
+    pierShapes.push(
+      `<rect x="${cx - s / 2}" y="${cy - s / 2}" width="${s}" height="${s}" fill="#3b82f6" stroke="#1e40af" stroke-width="${maxThick * 0.1}"/>`
+    )
+  }
+
+  // Numbered labels at each wall's midpoint (chord midpoint for straight,
+  // user-clicked midpoint for curves). White text inside an orange circle
+  // so it reads on top of the wall fill.
+  const wallLabels: string[] = walls.map((w, i) => {
+    let cx: number
+    let cy: number
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      cx = w.midX
+      cy = w.midY
+    } else {
+      cx = (w.startX + w.endX) / 2
+      cy = (w.startY + w.endY) / 2
+    }
+    return `
+      <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="#9A3F08" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
+      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${labelFontSize}" font-weight="700" fill="#fff">${i + 1}</text>
+    `
+  })
+
+  return `
+    <section class="page">
+      ${pageHeader}
+      <h2 class="section-title">Wall Layout</h2>
+      <p class="page-intro">Diagram of every wall as drawn on the plan. Numbered labels match the wall references in the breakdown tables. Walls are shown in orange at their real-world thickness; piers in blue.</p>
+      <div class="plan-overview-wrap">
+        <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+          ${wallShapes.join('\n          ')}
+          ${pierShapes.join('\n          ')}
+          ${wallLabels.join('\n          ')}
+        </svg>
+      </div>
+    </section>
+  `
 }
 
 function buildAssumptions(
@@ -414,6 +590,18 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
       </section>
     `
     : ''
+
+  // Plan-overview page — an SVG diagram of the walls + piers as drawn,
+  // sized to fit the landscape A4 content area. Goes between the Assumptions
+  // and the first quantities page so the bricklayer can eyeball the layout
+  // before getting into numbers, and to verify which wall maps to which
+  // number reference in the breakdown tables.
+  const planOverviewPage = buildPlanOverviewPage(
+    walls,
+    piers,
+    thicknessByWallId,
+    pageHeader
+  )
 
   // Page 3: Wall-type breakdown
   // Combined totals per block code across all makeups — pre-corner-dedup, so these are the
@@ -748,6 +936,26 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     break-inside: avoid;
   }
 
+  /* Wall-layout SVG fills the page below the heading + intro. The fixed
+     height keeps the diagram from snapping to whatever the SVG's intrinsic
+     size happens to be on a given browser. preserveAspectRatio in the SVG
+     itself keeps the plan undistorted regardless of how stretched this
+     wrapper is. */
+  .plan-overview-wrap {
+    width: 100%;
+    height: 160mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .plan-overview-wrap svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
   table {
     width: 100%;
     border-collapse: collapse;
@@ -880,6 +1088,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 </head>
 <body>
   ${assumptionsPage}
+  ${planOverviewPage}
   ${schedulePage}
   ${breakdownPages}
   ${openingsPage}
