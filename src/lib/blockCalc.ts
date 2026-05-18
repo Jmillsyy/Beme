@@ -25,7 +25,14 @@
  */
 
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import {
+  BLOCK_LIBRARY,
+  pickCurveWedge,
+  pickHalfBlock,
+  pickHeightMakeupBlock,
+  pickLintelBlock,
+  pickPierBlock,
+} from '../data/blockLibrary'
 import type { BlockCode, BlockDimensions } from '../types/blocks'
 import type {
   BlockTally,
@@ -121,10 +128,16 @@ export const CURVED_WALL_WEDGE_RADIUS_MM = 1500
  * r_outer = 190 × 200 / 50 = 760 mm, centreline ≈ 665 mm.
  */
 export const CURVED_WALL_MIN_FEASIBLE_RADIUS_MM = (() => {
-  const block = BLOCK_LIBRARY['20.03CW'].dimensions
-  if (!block.rearWidthMm) return 0
+  // Pick the curve-wedge block by role so a US / UK / custom library with a
+  // differently-named tapered block (or no wedge at all) still resolves.
+  // If the user has no curve-wedge block defined, every curve is treated as
+  // custom-cut — which is the safe fallback.
+  const wedge = pickCurveWedge()
+  if (!wedge) return Number.POSITIVE_INFINITY
+  const block = wedge.dimensions
+  if (!block.rearWidthMm) return Number.POSITIVE_INFINITY
   const diff = block.widthMm - block.rearWidthMm
-  if (diff <= 0) return 0
+  if (diff <= 0) return Number.POSITIVE_INFINITY
   const rOuter = (block.depthMm * (block.widthMm + MORTAR_MM)) / diff
   return Math.round(rOuter - HALF_BLOCK_DEPTH_MM(block))
 })()
@@ -183,14 +196,26 @@ const SHORT_WALL_THRESHOLD_MM = 800
 const SINGLE_BLOCK_WALL_THRESHOLD_MM = 400
 
 /**
- * Single-block options for the very-short-wall rule, by face width (mm).
+ * Single-block options for the very-short-wall rule, derived from the live
+ * library by role. We collect anything that can play `end-termination`,
+ * `corner`, or `fraction` — those are the blocks a mason would reach for to
+ * build a single-block-wide stub course. Sorted by face width ascending so
+ * the picker walks small → large.
+ *
+ * Calling this lazily (inside the packer) means library edits flow through
+ * without an app restart.
  */
-const SINGLE_BLOCK_OPTIONS: Array<{ code: BlockCode; faceWidthMm: number }> = [
-  { code: '20.03', faceWidthMm: 190 },
-  { code: '20.02', faceWidthMm: 290 },
-  { code: '20.22', faceWidthMm: 340 },
-  { code: '20.01', faceWidthMm: 390 },
-]
+function singleBlockOptions(): Array<{ code: BlockCode; faceWidthMm: number }> {
+  return Object.values(BLOCK_LIBRARY)
+    .filter(
+      (b) =>
+        b.roles.includes('end-termination') ||
+        b.roles.includes('corner') ||
+        b.roles.includes('fraction')
+    )
+    .map((b) => ({ code: b.code, faceWidthMm: b.dimensions.widthMm }))
+    .sort((a, b) => a.faceWidthMm - b.faceWidthMm)
+}
 
 // ---------- Tally helpers ----------
 
@@ -409,9 +434,16 @@ export function fitCourseLength(
  * block per course. Start/end blocks are NOT added when the WallPlan has `noEndBlocks`.
  */
 function fitSingleBlockWall(wallLengthMm: number): CourseLengthFit {
-  let best = SINGLE_BLOCK_OPTIONS[0]
+  const options = singleBlockOptions()
+  if (options.length === 0) {
+    // Library has no end / corner / fraction blocks at all — fall back to a
+    // safe zero so the caller doesn't crash. The user will see no blocks
+    // counted for this stub, which is the visible signal to add a block.
+    return { bodyCount: 0, fractions: [], actualLengthMm: 0, overshootMm: 0 } as CourseLengthFit
+  }
+  let best = options[0]
   let bestDiff = Math.abs(best.faceWidthMm - wallLengthMm)
-  for (const opt of SINGLE_BLOCK_OPTIONS) {
+  for (const opt of options) {
     const diff = Math.abs(opt.faceWidthMm - wallLengthMm)
     if (diff < bestDiff) {
       best = opt
@@ -564,9 +596,11 @@ export function planEnd(
     }
     // Free, T-junction, control-joint: alternating in stretcher — the stem has its own
     // complete end termination at the T, treated identically to a free end.
+    // Half block is picked by role so US / UK libraries with their own half-block work.
+    const halfBlock = pickHalfBlock()
     return {
       oddBlock: fullEndBlock,
-      evenBlock: '20.03',
+      evenBlock: halfBlock?.code ?? '20.03',
       oddModular: FULL_END_MODULE_MM,
       evenModular: HALF_END_MODULE_MM,
     }
@@ -762,12 +796,15 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
 
   // ---- Height-makeup courses (placed before the top, so they end up "second from top") ----
   if (stack.has140) {
-    // 20.140 has no 300-series equivalent in the catalogue, so it stays 20.140
-    // even if the course lands inside a 300-series range. Document the gap if
-    // a user ever asks for it.
+    // Pick the 140 mm height-makeup block by role — falls back to the SEQ
+    // 20.140 in AU libraries (which is role-tagged), and a US / UK user can
+    // tag their equivalent (e.g. a 4" tall CMU) to make this work.
     const courseNumber = courses.length + 1
     void courseNumber
-    courses.push({ type: 'height-140', bodyBlock: '20.140' })
+    const block140 = pickHeightMakeupBlock(140)
+    if (block140) {
+      courses.push({ type: 'height-140', bodyBlock: block140.code })
+    }
   }
   if (stack.has71) {
     const courseNumber = courses.length + 1
@@ -1154,8 +1191,13 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   // cuts are required so the supplier doesn't see "20.48" on a curve and
   // assume zero modification.
   const zone = curveZoneForRadius(geom.radiusMm)
-  const useWedge = zone === 'wedge'
-  const bodyCode: BlockCode = useWedge ? '20.03CW' : makeup.bodyBlockCode
+  // Use the wedge block when the curve is tight enough — picked by role so a
+  // US / UK / custom library with a non-SEQ wedge still works. If no wedge
+  // is defined we fall back to the makeup's body block (the tally will be
+  // slightly over but the user is alerted via the curve-zone export note).
+  const wedge = pickCurveWedge()
+  const useWedge = zone === 'wedge' && !!wedge
+  const bodyCode: BlockCode = useWedge && wedge ? wedge.code : makeup.bodyBlockCode
   // Modular face width: 20.03CW front face is 190 + 10 mortar = 200;
   // standard body block is 390 + 10 = 400. For the cut zone the block
   // face stays 390mm — only the back is shaved — so still 400 modular.
@@ -1173,9 +1215,26 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
 
 // ---------- Pier tally ----------
 
-/** Default course pattern when a pier has no PierMakeup attached. */
-const DEFAULT_TIED_PIER_PATTERN: BlockCode[] = ['40.925', '20.01']
-const DEFAULT_FREESTANDING_PIER_PATTERN: BlockCode[] = ['40.925']
+/**
+ * Default course pattern when a pier has no PierMakeup attached.
+ *
+ * Derived from the live library by role: pier-tagged block for the pier
+ * course, corner-tagged block for the alternating tie course. Falls back to
+ * SEQ codes (40.925 / 20.01) if the library has nothing tagged with those
+ * roles — keeps existing AU projects working unchanged.
+ *
+ * Computed lazily inside helpers so library edits flow through without an
+ * app restart.
+ */
+function defaultTiedPierPattern(): BlockCode[] {
+  const pier = pickPierBlock()
+  const corner = Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('corner'))
+  return [pier?.code ?? '40.925', corner?.code ?? '20.01']
+}
+function defaultFreestandingPierPattern(): BlockCode[] {
+  const pier = pickPierBlock()
+  return [pier?.code ?? '40.925']
+}
 
 /**
  * Sum a repeating block pattern over a given number of courses. The pattern repeats
@@ -1214,7 +1273,7 @@ export function calculateTiedPierTally(
   if (N <= 0) return {}
   const pattern = pierMakeup?.coursePattern?.length
     ? pierMakeup.coursePattern
-    : DEFAULT_TIED_PIER_PATTERN
+    : defaultTiedPierPattern()
   void pier
   return tallyFromCoursePattern(pattern, N)
 }
@@ -1234,7 +1293,7 @@ export function calculateFreestandingPierTally(
   if (courseCount <= 0) return {}
   const pattern = pierMakeup?.coursePattern?.length
     ? pierMakeup.coursePattern
-    : DEFAULT_FREESTANDING_PIER_PATTERN
+    : defaultFreestandingPierPattern()
   return tallyFromCoursePattern(pattern, courseCount)
 }
 
@@ -1334,7 +1393,7 @@ export function calculateProjectTally(
     const pattern =
       pierMakeup?.coursePattern?.length
         ? pierMakeup.coursePattern
-        : DEFAULT_TIED_PIER_PATTERN
+        : defaultTiedPierPattern()
     const wallBodyDepth =
       BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ?? 190
 
@@ -1422,7 +1481,12 @@ export function calculateCornerAdjustment(
       addToTally(adjustment, resolved.heightMakeup71BlockCode, n - 1)
     }
     if (stack.has140) {
-      addToTally(adjustment, '20.140', n - 1)
+      // Look up the 140 mm height-makeup block by role so corner-column
+      // dedup works for any region's library, not just SEQ 20.140.
+      const block140 = pickHeightMakeupBlock(140)
+      if (block140) {
+        addToTally(adjustment, block140.code, n - 1)
+      }
     }
   }
 

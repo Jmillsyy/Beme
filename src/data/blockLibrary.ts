@@ -444,10 +444,141 @@ export function getBlocksByRole(role: BlockRole): Block[] {
 
 /**
  * Fraction blocks available for length makeup, in ascending order of fraction.
- * Excludes 20.03 — it's technically a 1/2 fraction but reserved for end terminations.
+ * Excludes blocks ALSO tagged `end-termination` — those (like the SEQ 20.03)
+ * are technically half blocks but reserved for end-termination duty, not
+ * length packing.
  */
 export function getFractionBlocksForLengthMakeup(): Block[] {
   return Object.values(BLOCK_LIBRARY)
-    .filter((b) => b.fraction !== undefined && b.code !== '20.03')
+    .filter(
+      (b) =>
+        b.fraction !== undefined &&
+        b.roles.includes('fraction') &&
+        !b.roles.includes('end-termination')
+    )
     .sort((a, b) => (a.fraction ?? 0) - (b.fraction ?? 0))
+}
+
+// ─── Role-based resolvers ───────────────────────────────────────────────────
+//
+// Region-agnostic picks for slots the calc engine needs to fill. Each
+// resolver searches the live library by role + dimensions instead of by
+// hardcoded code, so the engine works for any user-defined library:
+//
+//   - AU users get their existing 20.XX blocks (already role-tagged in the
+//     seed library, so behaviour is unchanged).
+//   - US / UK / EU users tag their own blocks with the same roles and the
+//     engine finds them automatically.
+//
+// All resolvers come in two flavours:
+//   - `pickXxxIn(library)` — pure form that takes a library reference.
+//     Useful when the caller already has the library via useBlockLibrary
+//     or in tests.
+//   - `pickXxx()` — convenience that reads from the BLOCK_LIBRARY
+//     singleton.
+
+/**
+ * The "half block" used at end terminations on alternating courses in
+ * stretcher bond. Role `end-termination` with `fraction: 0.5`.
+ */
+export function pickHalfBlockIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find(
+    (b) => b.roles.includes('end-termination') && b.fraction === 0.5
+  )
+}
+export function pickHalfBlock(): Block | undefined {
+  return pickHalfBlockIn(BLOCK_LIBRARY)
+}
+
+/**
+ * Fraction blocks available for length makeup. Excludes end-termination
+ * blocks (those are reserved). Sorted by face width descending so a packer
+ * tries the biggest piece first.
+ */
+export function pickFractionBlocksIn(
+  library: Record<BlockCode, Block>
+): Block[] {
+  return Object.values(library)
+    .filter(
+      (b) =>
+        b.roles.includes('fraction') &&
+        !b.roles.includes('end-termination') &&
+        b.fraction !== undefined
+    )
+    .sort((a, b) => b.dimensions.widthMm - a.dimensions.widthMm)
+}
+export function pickFractionBlocks(): Block[] {
+  return pickFractionBlocksIn(BLOCK_LIBRARY)
+}
+
+/**
+ * Height-makeup block whose height exactly equals `targetHeightMm`, or the
+ * closest under it if no exact match exists. Returns undefined if no
+ * height-makeup blocks are defined.
+ */
+export function pickHeightMakeupBlockIn(
+  library: Record<BlockCode, Block>,
+  targetHeightMm: number
+): Block | undefined {
+  const candidates = Object.values(library)
+    .filter((b) => b.roles.includes('height-makeup'))
+    .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
+  return (
+    candidates.find((b) => b.dimensions.heightMm === targetHeightMm) ??
+    candidates.find((b) => b.dimensions.heightMm <= targetHeightMm)
+  )
+}
+export function pickHeightMakeupBlock(targetHeightMm: number): Block | undefined {
+  return pickHeightMakeupBlockIn(BLOCK_LIBRARY, targetHeightMm)
+}
+
+/**
+ * Curve-wedge block — tapered face for tight-radius curved walls. Single
+ * match expected; returns undefined if none defined.
+ */
+export function pickCurveWedgeIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('curve-tight'))
+}
+export function pickCurveWedge(): Block | undefined {
+  return pickCurveWedgeIn(BLOCK_LIBRARY)
+}
+
+/**
+ * Pier block — the column block used in tied and freestanding piers.
+ * Single match expected; returns undefined if none defined.
+ */
+export function pickPierBlockIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('pier'))
+}
+export function pickPierBlock(): Block | undefined {
+  return pickPierBlockIn(BLOCK_LIBRARY)
+}
+
+/**
+ * Lintel block sized to support a given opening height. Picks the lintel
+ * with the largest vertical module that's still <= the requirement. Returns
+ * undefined if no lintel blocks are defined or the opening is impossibly
+ * small.
+ *
+ * The "vertical module" is derived from the block's heightMm — a 200 mm
+ * lintel block lives on a 200 mm vertical module, a 300 mm block on 300
+ * etc. Callers needing the precise module read it from the returned block.
+ */
+export function pickLintelBlockIn(
+  library: Record<BlockCode, Block>,
+  openingHeightMm: number
+): Block | undefined {
+  const candidates = Object.values(library)
+    .filter((b) => b.roles.includes('lintel'))
+    .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
+  return candidates.find((b) => b.dimensions.heightMm <= openingHeightMm) ?? candidates[candidates.length - 1]
+}
+export function pickLintelBlock(openingHeightMm: number): Block | undefined {
+  return pickLintelBlockIn(BLOCK_LIBRARY, openingHeightMm)
 }

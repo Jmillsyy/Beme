@@ -12,6 +12,7 @@ import {
   listProjects,
   saveProject,
 } from '../lib/projectStorage'
+import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import { useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
@@ -441,6 +442,41 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           </div>
         </section>
       )}
+
+      {/* Your Library — block catalogue, shared across the org. Only org
+          admins can edit (add / edit / delete / reset); other members see
+          the list in read-only mode. The role comes from the org members
+          list that was loaded above. */}
+      {(() => {
+        const myMembership = userId
+          ? members.find((m) => m.userId === userId)
+          : null
+        const isAdmin = myMembership?.role === 'admin'
+        return (
+          <section className="mt-10">
+            <div className="flex items-end justify-between flex-wrap gap-3 mb-3">
+              <div>
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+                  Your library
+                </h3>
+                <p className="text-sm text-ink-400 mt-1">
+                  {isAdmin
+                    ? 'Every block type used by your team, with dimensions and roles. Edit, add, or reset to defaults.'
+                    : 'Every block type used by your team. Only an org admin can edit this list.'}
+                </p>
+              </div>
+              {!isAdmin && (
+                <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded border border-ink-600 text-ink-400">
+                  Read-only · admin to edit
+                </span>
+              )}
+            </div>
+            <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+              <BlockLibraryPanel defaultExpanded hideChrome readOnly={!isAdmin} />
+            </div>
+          </section>
+        )
+      })()}
     </>
   )
 }
@@ -986,6 +1022,26 @@ function PersonalDashboard() {
             ))}
           </ul>
         )}
+      </section>
+
+      {/* Your Library — block catalogue. A single-user account's owner is
+          always the admin, so editing is unrestricted here. */}
+      <section className="mt-10">
+        <div className="flex items-end justify-between flex-wrap gap-3 mb-3">
+          <div>
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Your library
+            </h3>
+            <p className="text-sm text-ink-400 mt-1">
+              Every block type you use, with dimensions and where they're typically used.
+              Edit a block to change its name, dimensions, or role; add new ones for blocks
+              specific to your supplier.
+            </p>
+          </div>
+        </div>
+        <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+          <BlockLibraryPanel defaultExpanded hideChrome />
+        </div>
       </section>
     </>
   )

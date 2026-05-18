@@ -15,6 +15,8 @@
  */
 
 import type { BlockCode } from '../types/blocks'
+import { pickLintelBlockIn, BLOCK_LIBRARY, DEFAULT_BLOCK_LIBRARY } from '../data/blockLibrary'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 
 // ---------- Block walls: lintel spec by head height ----------
 
@@ -29,10 +31,35 @@ export interface LintelSpec {
 
 /**
  * Choose the appropriate lintel for an opening's head height.
- * Returns the block code AND its modular dimensions so the calculation engine can compute
- * vertical (stacking) and horizontal (span) counts.
+ *
+ * Now role-based: looks up every block tagged with role `lintel` and picks
+ * the tallest one whose height fits the head. Modular dims are derived from
+ * the block's actual dimensions + mortar joint, so a US 8" lintel or a UK
+ * concrete lintel works the same as the SEQ 20.13 / 20.18 / 20.25 set.
+ *
+ * Falls back to the SEQ defaults if the user's library has no lintel blocks
+ * defined — keeps existing AU projects unchanged.
  */
 export function selectBlockLintel(headHeightMm: number): LintelSpec {
+  const block = pickLintelBlockIn(BLOCK_LIBRARY, headHeightMm)
+  if (block) {
+    return {
+      code: block.code,
+      verticalModuleMm: block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
+      horizontalModuleMm: block.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
+    }
+  }
+  // Library has no lintel blocks at all — fall back to the SEQ default set so
+  // older AU projects opened against a stripped library still report sensibly.
+  const fallback = pickLintelBlockIn(DEFAULT_BLOCK_LIBRARY, headHeightMm)
+  if (fallback) {
+    return {
+      code: fallback.code,
+      verticalModuleMm: fallback.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
+      horizontalModuleMm: fallback.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
+    }
+  }
+  // Ultimate fallback — hardcoded SEQ values matching the original brief.
   if (headHeightMm >= 300) {
     return { code: '20.18', verticalModuleMm: 400, horizontalModuleMm: 200 }
   }

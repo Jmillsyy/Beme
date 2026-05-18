@@ -41,12 +41,33 @@ interface BlockLibraryPanelProps {
    * (the user can switch to "All blocks"). Otherwise shows all blocks.
    */
   scope?: 'block' | 'brick'
+  /**
+   * When true, the panel renders the block list in view-only mode — no
+   * + Add button, no Edit / Delete on rows, no Reset link. Used on the
+   * dashboard for non-admin org members.
+   */
+  readOnly?: boolean
+  /**
+   * Start expanded instead of collapsed. Useful on the dashboard where
+   * the library IS the main content of its section.
+   */
+  defaultExpanded?: boolean
+  /**
+   * Whether to render the panel chrome (border, expand toggle, header).
+   * Set to false when the parent already provides its own header.
+   */
+  hideChrome?: boolean
 }
 
-export default function BlockLibraryPanel({ scope: _scope }: BlockLibraryPanelProps = {}) {
+export default function BlockLibraryPanel({
+  scope: _scope,
+  readOnly = false,
+  defaultExpanded = false,
+  hideChrome = false,
+}: BlockLibraryPanelProps = {}) {
   void _scope // reserved for future filtering
   const { library } = useBlockLibrary()
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BlockCode | 'new' | null>(null)
   const [filter, setFilter] = useState<'all' | BlockRole>('all')
 
@@ -56,34 +77,48 @@ export default function BlockLibraryPanel({ scope: _scope }: BlockLibraryPanelPr
     return all.filter((b) => b.roles.includes(filter)).sort((a, b) => a.code.localeCompare(b.code))
   }, [library, filter])
 
+  const showAddButton = expanded && !readOnly
+
   return (
-    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="flex items-center gap-2 text-left flex-1 min-w-0 group"
-        >
-          <span className="text-ink-400 group-hover:text-ink-200 text-xs">
-            {expanded ? '▾' : '▸'}
-          </span>
-          <h3 className="text-sm font-semibold text-ink-50 group-hover:text-beme-300">
-            Block library
-          </h3>
-          <span className="text-xs text-ink-400 truncate">
-            · {Object.keys(library).length} blocks
-          </span>
-        </button>
-        {expanded && (
+    <div className={hideChrome ? '' : 'my-4 border border-ink-600 rounded-xl bg-ink-800 p-3'}>
+      {!hideChrome && (
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-center gap-2 text-left flex-1 min-w-0 group"
+          >
+            <span className="text-ink-400 group-hover:text-ink-200 text-xs">
+              {expanded ? '▾' : '▸'}
+            </span>
+            <h3 className="text-sm font-semibold text-ink-50 group-hover:text-beme-300">
+              Block library
+            </h3>
+            <span className="text-xs text-ink-400 truncate">
+              · {Object.keys(library).length} blocks
+            </span>
+          </button>
+          {showAddButton && (
+            <button
+              onClick={() => setEditingCode('new')}
+              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          )}
+        </div>
+      )}
+      {hideChrome && !readOnly && (
+        <div className="flex justify-end mb-2">
           <button
             onClick={() => setEditingCode('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
+            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors"
           >
-            + Add
+            + Add block
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
-      {expanded && (
+      {(expanded || hideChrome) && (
         <div className="flex flex-col gap-2">
           {/* Filter row */}
           <div className="flex items-center gap-2 text-xs text-ink-300">
@@ -111,6 +146,7 @@ export default function BlockLibraryPanel({ scope: _scope }: BlockLibraryPanelPr
               <BlockRow
                 key={block.code}
                 block={block}
+                readOnly={readOnly}
                 onEdit={() => setEditingCode(block.code)}
                 onDelete={() => {
                   if (PROTECTED_BLOCK_CODES.has(block.code)) return
@@ -122,26 +158,29 @@ export default function BlockLibraryPanel({ scope: _scope }: BlockLibraryPanelPr
             ))}
           </div>
 
-          {/* Reset to defaults */}
-          <button
-            onClick={() => {
-              if (
-                window.confirm(
-                  'Reset the entire block library to SEQ QLD defaults? Custom blocks will be removed and renames lost.'
-                )
-              ) {
-                resetBlockLibrary()
-              }
-            }}
-            className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
-          >
-            ↺ Reset to defaults
-          </button>
+          {/* Reset to defaults — admins only. */}
+          {!readOnly && (
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Reset the entire block library to SEQ QLD defaults? Custom blocks will be removed and renames lost.'
+                  )
+                ) {
+                  resetBlockLibrary()
+                }
+              }}
+              className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
+            >
+              ↺ Reset to defaults
+            </button>
+          )}
         </div>
       )}
 
-      {/* Editor modal — both for adding new and editing existing */}
-      {editingCode !== null && (
+      {/* Editor modal — both for adding new and editing existing. Hidden in
+          read-only mode (the buttons that would open it aren't rendered). */}
+      {!readOnly && editingCode !== null && (
         <BlockEditor
           existing={editingCode === 'new' ? null : library[editingCode] ?? null}
           existingCodes={Object.keys(library)}
@@ -162,10 +201,12 @@ function BlockRow({
   block,
   onEdit,
   onDelete,
+  readOnly = false,
 }: {
   block: Block
   onEdit: () => void
   onDelete: () => void
+  readOnly?: boolean
 }) {
   const protectedBlock = PROTECTED_BLOCK_CODES.has(block.code)
   const dims = `${block.dimensions.widthMm}×${block.dimensions.heightMm}×${block.dimensions.depthMm}mm`
@@ -190,20 +231,24 @@ function BlockRow({
           {block.roles.length > 0 && <span> · {block.roles.join(', ')}</span>}
         </div>
       </div>
-      <button
-        onClick={onEdit}
-        className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-ink-700 transition-colors"
-      >
-        Edit
-      </button>
-      <button
-        onClick={onDelete}
-        disabled={protectedBlock}
-        title={protectedBlock ? 'Built-in blocks can be renamed but not deleted' : 'Delete this block'}
-        className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      >
-        Delete
-      </button>
+      {!readOnly && (
+        <>
+          <button
+            onClick={onEdit}
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-ink-700 transition-colors"
+          >
+            Edit
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={protectedBlock}
+            title={protectedBlock ? 'Built-in blocks can be renamed but not deleted' : 'Delete this block'}
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            Delete
+          </button>
+        </>
+      )}
     </div>
   )
 }
