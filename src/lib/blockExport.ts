@@ -557,7 +557,7 @@ function buildPlanOverviewPage(
     : 'Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the breakdown tables.'
 
   return `
-    <section class="page">
+    <section class="page plan-overview-page">
       ${pageHeader}
       <h2 class="section-title">Wall Layout</h2>
       <p class="page-intro">${intro}</p>
@@ -1258,24 +1258,33 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 
   /* ── Wall layout page ─────────────────────────────────────────────
      Stats strip across the top, SVG diagram in the middle, legend at
-     the bottom. The SVG height is reduced from the original 160mm to
-     leave room for the stats and legend on the same page. */
+     the bottom. Sizes are tuned to keep the whole section on a single
+     landscape A4 page — content area is ≈ 165 mm tall after page
+     margins + footer, and the stats + intro + legend take ~40 mm of
+     that, leaving ~95 mm for the diagram. Don't increase any of
+     these without re-checking the one-page fit. */
+  .plan-overview-page h2.section-title {
+    margin: 12px 0 4px;
+  }
+  .plan-overview-page .page-intro {
+    margin-bottom: 6px;
+  }
   .plan-overview-stats {
     display: flex;
-    gap: 12px;
-    margin: 8px 0 12px;
+    gap: 10px;
+    margin: 4px 0 6px;
     flex-wrap: wrap;
   }
   .plan-stat {
     flex: 1 1 0;
-    min-width: 110px;
-    padding: 8px 12px;
+    min-width: 100px;
+    padding: 6px 10px;
     border: 1px solid #e5e7eb;
     border-radius: 6px;
     background: #fafafa;
   }
   .plan-stat-value {
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 700;
     color: #1f2937;
     font-variant-numeric: tabular-nums;
@@ -1290,14 +1299,14 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     margin-top: 2px;
   }
   .plan-stat-sub {
-    font-size: 10px;
+    font-size: 9px;
     color: #6b7280;
-    margin-top: 2px;
+    margin-top: 1px;
   }
 
   .plan-overview-wrap {
     width: 100%;
-    height: 120mm;
+    height: 95mm;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1315,10 +1324,10 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
 
   .plan-overview-legend {
     display: flex;
-    gap: 18px;
+    gap: 14px;
     align-items: center;
-    margin-top: 10px;
-    font-size: 11px;
+    margin-top: 6px;
+    font-size: 10px;
     color: #4b5563;
     flex-wrap: wrap;
   }
