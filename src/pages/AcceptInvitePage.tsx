@@ -326,10 +326,6 @@ export default function AcceptInvitePage() {
                 />
               </label>
 
-              {submitError && (
-                <p className="text-sm text-rose-300">{submitError}</p>
-              )}
-
               <button
                 type="submit"
                 disabled={submitting || password.length < 8 || password !== passwordConfirm}
@@ -343,6 +339,18 @@ export default function AcceptInvitePage() {
                 the regular sign-in page.
               </p>
             </form>
+          )}
+
+          {/* Errors render at the bottom of the card regardless of which path
+              is active — Path A's 'Join' button and Path B's 'Sign out and
+              continue' button both run async work that can fail, so we need a
+              single visible feedback channel for all three. Previously the
+              error was only inside the form (Path C), so a Path A failure
+              looked like 'the button doesn't do anything'. */}
+          {submitError && (
+            <p className="text-sm text-rose-300 mt-4 px-4 py-3 rounded-lg border border-rose-500/40 bg-rose-500/10">
+              {submitError}
+            </p>
           )}
         </div>
       </main>
