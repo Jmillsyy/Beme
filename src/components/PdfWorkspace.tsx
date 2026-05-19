@@ -2012,11 +2012,33 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [calInput, setCalInput] = useState('')
 
   const containerRef = useRef<HTMLDivElement>(null)
+  /**
+   * Ref on the page wrapper div (the element whose explicit width/height
+   * holds the page's visual dimensions at the current zoom). Read in the
+   * wheel-zoom handler to query the page's real DOM position via
+   * getBoundingClientRect, instead of trying to derive it from flex +
+   * padding + min-width math — those interactions don't always match the
+   * mental model when zoom changes the page size across the centring
+   * threshold, which caused the cursor to drift mid-zoom.
+   */
+  const pageWrapperRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
+  /**
+   * Cursor anchor for wheel zoom — stores the world-space (zoom-independent)
+   * coordinates of the cursor at wheel time and the cursor's viewport
+   * position. The layout effect that fires after the zoom commits reads
+   * this and adjusts scrollLeft/scrollTop so that the same world point
+   * lands back under the cursor.
+   */
+  const zoomAnchorRef = useRef<{
+    cursorClientX: number
+    cursorClientY: number
+    worldX: number
+    worldY: number
+  } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const zoomRef = useRef(zoom)
-  const pendingScrollRef = useRef<{ x: number; y: number } | null>(null)
 
   // Pan (click-and-drag) state
   const isPanningRef = useRef(false)
@@ -2217,74 +2239,50 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM)
       if (newZoom === oldZoom) return
 
-      // Zoom-to-cursor: keep the point under the cursor stationary across the zoom change.
-      // The page wrapper sits inside a flex container whose min-width/min-height is the
-      // container size + a pan buffer (so click-drag pan always has scroll room even
-      // when the page fits in view). The page itself is centred within that wrapper, so
-      // the cursor-anchor math has to add half the buffer back to get correct page coords.
-      const rect = container.getBoundingClientRect()
-      const cursorXInViewport = pendingClientX - rect.left
-      const cursorYInViewport = pendingClientY - rect.top
+      // Zoom-to-cursor: anchor the page point under the cursor so it stays
+      // there after the zoom. We do this by reading the page wrapper's
+      // ACTUAL DOM position (via getBoundingClientRect) instead of trying
+      // to derive it from flex / padding / min-width math. Layout
+      // interactions across the centring threshold (small page vs large
+      // page) were causing the previous closed-form math to drift; reading
+      // the DOM is robust to any layout the browser actually computed.
+      //
+      // Steps:
+      //   1. Capture the cursor's WORLD position over the page (in the
+      //      zoom-independent baseWidth units) at the current zoom.
+      //   2. Stash that anchor plus the cursor's viewport position.
+      //   3. Bump zoom state.
+      //   4. After the new zoom commits and the page wrapper resizes
+      //      (handled in the layout effect on [zoom]), measure where the
+      //      same world point is now and shift scroll so the cursor and
+      //      that point realign.
+      const pageEl = pageWrapperRef.current
+      if (!pageEl) {
+        // Page wrapper not mounted (upload zone, etc.) — just apply zoom
+        // without anchoring.
+        zoomRef.current = newZoom
+        setZoom(newZoom)
+        return
+      }
+      const pageRect = pageEl.getBoundingClientRect()
+      // Cursor offset from page-start in visual pixels at the current zoom.
+      const cursorOnPageVisualX = pendingClientX - pageRect.left
+      const cursorOnPageVisualY = pendingClientY - pageRect.top
+      // Convert to world (base) units so the anchor is zoom-independent.
+      // oldZoom can't be zero (clamped to MIN_ZOOM > 0).
+      const worldX = cursorOnPageVisualX / oldZoom
+      const worldY = cursorOnPageVisualY / oldZoom
 
-      // PAN_PADDING_PX must match the padding on the flex spacer below in the
-      // workspace render — keep them in sync. The spacer also has min-width
-      // / min-height = container + 800/600, so at low zoom there's extra
-      // centring margin INSIDE the padding. The unified formula:
-      //   marginX = PAN_PADDING_PX + max(0, (containerW - pageW) / 2)
-      // - High zoom: pageW exceeds containerW, the second term is 0,
-      //   marginX = PAN_PADDING_PX (page sits at padding from scroll edge).
-      // - Low zoom: pageW is small, the second term centres the page inside
-      //   the min-width buffer.
-      const PAN_PADDING_PX = 400
-      const containerW = container.clientWidth
-      const containerH = container.clientHeight
-      const oldPageW = baseWidth * oldZoom
-      const newPageW = baseWidth * newZoom
-      // Page height derived from the active page's aspect ratio (set after PDF
-      // load). Falls back to 0 if metadata isn't ready yet.
-      const pageAspect = aspectRatio ?? 0
-      const oldPageH = oldPageW * pageAspect
-      const newPageH = newPageW * pageAspect
-      const oldMarginX = PAN_PADDING_PX + Math.max(0, (containerW - oldPageW) / 2)
-      const newMarginX = PAN_PADDING_PX + Math.max(0, (containerW - newPageW) / 2)
-      const oldMarginY = PAN_PADDING_PX + Math.max(0, (containerH - oldPageH) / 2)
-      const newMarginY = PAN_PADDING_PX + Math.max(0, (containerH - newPageH) / 2)
-
-      // CRITICAL: on fast scrolls, the wheel fires faster than React can
-      // commit zoom state changes — so the DOM's scrollLeft hasn't yet
-      // caught up to the previous tick's pendingScrollRef target. Reading
-      // container.scrollLeft directly would feed stale data into the
-      // cursor-anchor math, which is what causes the "cursor jumps around"
-      // feel when wheeling rapidly. Prefer the most recently *intended*
-      // scroll target (set by a previous tick of this same handler) when
-      // there is one; fall back to the DOM's current scroll otherwise.
-      const scrollLeft = pendingScrollRef.current?.x ?? container.scrollLeft
-      const scrollTop = pendingScrollRef.current?.y ?? container.scrollTop
-
-      // Cursor position on the page itself (in current visual pixels).
-      const pageX = scrollLeft + cursorXInViewport - oldMarginX
-      const pageY = scrollTop + cursorYInViewport - oldMarginY
-
-      const ratio = newZoom / oldZoom
-      const newPageX = pageX * ratio
-      const newPageY = pageY * ratio
-
-      // Convert back to scrollable-content coords (with the new centring margins).
-      const newContentX = newPageX + newMarginX
-      const newContentY = newPageY + newMarginY
-
-      // Scroll can't go negative; if the page is still narrower than the container after
-      // zooming, the cursor anchor saturates at the page's edge.
-      pendingScrollRef.current = {
-        x: Math.max(0, newContentX - cursorXInViewport),
-        y: Math.max(0, newContentY - cursorYInViewport),
+      zoomAnchorRef.current = {
+        cursorClientX: pendingClientX,
+        cursorClientY: pendingClientY,
+        worldX,
+        worldY,
       }
 
       // Synchronously bump the zoom ref so the NEXT wheel tick (which might
       // fire before React commits this update) reads our new zoom, not the
-      // stale committed one. Without this, multiple wheel events in flight
-      // all compute against the same `oldZoom` and the zoom levels stack
-      // up wrong — another source of the "jumps around" behaviour.
+      // stale committed one.
       zoomRef.current = newZoom
       setZoom(newZoom)
     }
@@ -2443,13 +2441,38 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
   }
 
-  // Apply the pending scroll position after the zoom-induced resize has been laid out
+  // Apply cursor-anchored zoom: after the new zoom commits, read where the
+  // anchored world point IS NOW and shift scroll so that point lands back
+  // under the cursor. This is the second half of the wheel-zoom flow — the
+  // wheel handler stashes the anchor (cursor position + world coords), this
+  // effect reconciles the scroll position after layout has updated.
   useLayoutEffect(() => {
-    if (pendingScrollRef.current && containerRef.current) {
-      containerRef.current.scrollLeft = pendingScrollRef.current.x
-      containerRef.current.scrollTop = pendingScrollRef.current.y
-      pendingScrollRef.current = null
-    }
+    const anchor = zoomAnchorRef.current
+    const container = containerRef.current
+    const pageEl = pageWrapperRef.current
+    if (!anchor || !container || !pageEl) return
+    // Where the anchored world point currently sits in viewport coords:
+    //   pageRect.left + worldX * newZoom
+    // Where we want it: anchor.cursorClientX. Difference is the shift to
+    // apply to scrollLeft. Same for Y. Increasing scrollLeft moves content
+    // LEFT in the viewport (positive scroll = positive content shift left)
+    // so adding the deficit to scrollLeft brings the world point back
+    // under the cursor.
+    const pageRect = pageEl.getBoundingClientRect()
+    const currentWorldVisualLeft = pageRect.left + anchor.worldX * zoom
+    const currentWorldVisualTop = pageRect.top + anchor.worldY * zoom
+    const deltaX = currentWorldVisualLeft - anchor.cursorClientX
+    const deltaY = currentWorldVisualTop - anchor.cursorClientY
+    const targetLeft = container.scrollLeft + deltaX
+    const targetTop = container.scrollTop + deltaY
+    // Clamp to valid scroll range — going past the edges is fine but the
+    // browser will clamp anyway, so we do it explicitly for clarity.
+    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
+    container.scrollLeft = Math.max(0, Math.min(maxLeft, targetLeft))
+    container.scrollTop = Math.max(0, Math.min(maxTop, targetTop))
+    // Single-shot — don't re-apply on subsequent renders that aren't a zoom.
+    zoomAnchorRef.current = null
   }, [zoom])
 
   // Center the page in the scroll area on initial PDF load. The flex
@@ -4521,6 +4544,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
           <div
+            ref={pageWrapperRef}
             className="relative"
             style={{
               width: visualPageWidth || undefined,
