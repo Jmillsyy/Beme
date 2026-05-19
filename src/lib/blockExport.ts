@@ -1814,7 +1814,10 @@ export function createDefaultBlockExportInclusions(): BlockExportInclusions {
     wallSpecs: true,
     blockSchedule: true,
     wallTypeBreakdown: true,
-    openingsList: true,
+    // Openings & lintels section is removed from the export options UI and
+    // defaults off — keep the flag in the type for backward-compat with
+    // already-saved projects so older saves still load cleanly.
+    openingsList: false,
     disclaimer: true,
   }
 }

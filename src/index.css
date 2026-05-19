@@ -180,18 +180,20 @@ body,
   height: 100%;
 }
 
-/* Default page zoom — equivalent to the user hitting Cmd/Ctrl+Minus once
-   on first load. Keeps the bumped-up type scale's proportions (so headings
-   and buttons still feel proportionally sized) but shrinks the whole UI to
-   fit ~25% more content per viewport without having to manually zoom every
-   session.
+/* Default page zoom — shrinks the whole UI slightly so more content fits
+   per viewport without the user having to manually zoom every session.
+   Set to 0.88 (= the old 0.8 default × 110% browser zoom, which testing
+   showed reads better for typical workflow density). If you change this,
+   update the matching `h-[calc(100vh/N)]` on the estimate page wrappers
+   so the workspace still fills the visual viewport — the compensation
+   factor is 1/zoom.
 
    `zoom` is the right tool here — it scales BOTH content and layout boxes
    so scrollbars / fixed-position elements stay correct, unlike
    `transform: scale()` which leaves them at their original size and
    creates a viewport overflow. Standard in WebKit/Blink/Firefox now. */
 html {
-  zoom: 0.8;
+  zoom: 0.88;
 }
 
 body {

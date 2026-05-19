@@ -204,13 +204,6 @@ export default function BlockExportPanel({
               disabledHint="Define at least one wall type first"
             />
             <Toggle
-              label="Openings & lintels"
-              checked={inclusions.openingsList}
-              onChange={(v) => patch({ openingsList: v })}
-              disabled={filteredOpenings.length === 0}
-              disabledHint="Add at least one opening first"
-            />
-            <Toggle
               label="Disclaimer page"
               checked={inclusions.disclaimer}
               onChange={(v) => patch({ disclaimer: v })}

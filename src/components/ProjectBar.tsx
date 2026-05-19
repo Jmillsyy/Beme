@@ -118,10 +118,23 @@ export default function ProjectBar({
   })()
 
   return (
-    <div className="bg-ink-800/60 border-b border-ink-600 px-6 py-4 mb-6 flex items-center gap-3 flex-wrap">
-      {/* LEFT — request-back pill, when this project came from a request.
-          Without a source request the project identity gets the left slot
-          instead so the bar never looks empty. */}
+    // Full-width bar with px-20 so the back-to-dashboard pill, breadcrumb,
+    // project identity, and save actions line up with the workspace columns
+    // below and the Beme logo + org/user pills in the header above. Matches
+    // the estimate workspace's px-20 outer padding.
+    <div className="bg-ink-800/60 border-b border-ink-600 px-20 py-2 flex items-center gap-3 flex-wrap">
+      {/* LEFT — always a back-to-dashboard pill so the user can hop out of
+          a project from anywhere. Followed by an optional request pill when
+          the project came from an estimate request, so the breadcrumb reads
+          Dashboard ← Request ← Project naturally from left to right. */}
+      <Link
+        to="/"
+        className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
+        title="Back to dashboard"
+      >
+        <span className="text-base leading-none">←</span>
+        <span className="hidden md:inline">Dashboard</span>
+      </Link>
       {sourceRequest ? (
         <Link
           to={`/requests/${sourceRequest.id}`}

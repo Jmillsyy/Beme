@@ -130,13 +130,29 @@ export default function NewRequestPage() {
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
       <main className="max-w-[1600px] mx-auto px-6 py-10">
-        <Link
-          to="/requests"
-          className="text-xs text-ink-400 hover:text-ink-100 transition-colors"
-        >
-          ← Back to requests
-        </Link>
-        <h2 className="text-4xl font-extrabold tracking-tight mt-2">
+        {/* Breadcrumb pills — matches the back-to-dashboard styling on the
+            ProjectBar so navigation feels consistent across the app. Two
+            choices because users get here from either /requests (existing
+            list) or / (dashboard sidebar's + New request shortcut). */}
+        <div className="flex items-center gap-2 flex-wrap mb-6">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+            title="Back to dashboard"
+          >
+            <span className="text-base leading-none">←</span>
+            <span>Dashboard</span>
+          </Link>
+          <Link
+            to="/requests"
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+            title="Back to all requests"
+          >
+            <span className="text-base leading-none">←</span>
+            <span>All requests</span>
+          </Link>
+        </div>
+        <h2 className="text-4xl font-extrabold tracking-tight">
           New estimate request
         </h2>
         <p className="text-ink-300 text-sm mt-2 mb-8">

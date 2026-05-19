@@ -420,11 +420,21 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const canSave = name.trim().length > 0 && heightMm >= 200
 
   return (
-    <div className="mt-4 p-4 border border-ink-600 rounded-lg bg-ink-700/40">
-      <h4 className="text-sm font-semibold mb-3 text-ink-200">
-        {existing ? `Edit "${existing.name}"` : 'New wall type'}
-      </h4>
-
+    // When editing an existing wall type, the form reads as a dropdown of
+    // the card above: a subtle left-border accent in the active beme colour
+    // and no separate frame / background. When creating a new wall type
+    // it still gets a faint border + heading so the user knows they're
+    // filling in a fresh entry rather than editing one.
+    <div
+      className={
+        existing
+          ? 'mt-1 mb-2 pl-3 pr-1 py-2 border-l-2 border-beme-500/40'
+          : 'mt-2 mb-3 p-3 border border-ink-600/60 rounded-lg bg-ink-700/30'
+      }
+    >
+      {!existing && (
+        <h4 className="text-sm font-semibold mb-3 text-ink-200">New wall type</h4>
+      )}
       <div className="grid grid-cols-1 gap-4">
         <label className="text-sm">
           <span className="block text-ink-300 mb-1">Name</span>

@@ -1026,8 +1026,27 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // memoised, this means the wall overlay doesn't re-render on every wheel-zoom tick.
   const handleWallSelect = useCallback((id: string | null) => {
     setSelectedWallId(id)
-    if (id) setSelectedOpeningId(null)
-  }, [])
+    if (id) {
+      setSelectedOpeningId(null)
+      // Surface the selected wall's makeup in the Wall types panel so the
+      // user can see at a glance which type the wall belongs to (and tweak
+      // it in place). Looks the wall up across every page since the
+      // selection-id callback doesn't carry the page index.
+      let foundMakeupId: string | undefined
+      for (const ws of Object.values(wallsByPage)) {
+        const w = ws.find((x) => x.id === id)
+        if (w) {
+          foundMakeupId = w.makeupId
+          break
+        }
+      }
+      if (foundMakeupId) {
+        if (mode === 'brick') setActiveBrickMakeupId(foundMakeupId)
+        else setActiveMakeupId(foundMakeupId)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallsByPage, mode])
   const handleOpeningSelect = useCallback((id: string | null) => {
     setSelectedOpeningId(id)
     if (id) setSelectedWallId(null)
@@ -1521,22 +1540,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }
 
   /**
-   * Setting a wall type active also selects every wall of that type on the
-   * current page. That gives the user clear visual feedback for "this is
-   * the type I'm working with" — the selected walls light up with the
-   * blue selection halo so it's obvious which walls map to which entry in
-   * the panel. Clicking elsewhere on the canvas deselects in the usual way.
+   * Setting a wall type active just sets the active makeup id — nothing
+   * else. The earlier behaviour also multi-selected every wall of the type
+   * on the current page, but that promoted the toolbar into multi-select
+   * mode (Reassign / Delete all) every time the user just wanted to pick
+   * the type they were about to draw with. Now activation is purely a
+   * "what type will I draw next" toggle and doesn't touch the selection.
    */
   function handleActivateMakeup(id: string) {
     setActiveMakeupId(id)
-    const pageWalls = wallsByPage[currentPage] ?? []
-    const matchingIds = pageWalls.filter((w) => w.makeupId === id).map((w) => w.id)
-    _setSelectedWallIds(new Set(matchingIds))
-    // Deselect any opening / pier that was held alongside an old wall
-    // selection — keeps the selection bar consistent with "you're now
-    // working with this wall type".
-    _setSelectedOpeningIds(new Set())
-    _setSelectedPierIds(new Set())
   }
 
   // ---------- Brick makeup CRUD ----------
@@ -1566,11 +1578,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    */
   function handleActivateBrickMakeup(id: string) {
     setActiveBrickMakeupId(id)
-    const pageWalls = wallsByPage[currentPage] ?? []
-    const matchingIds = pageWalls.filter((w) => w.makeupId === id).map((w) => w.id)
-    _setSelectedWallIds(new Set(matchingIds))
-    _setSelectedOpeningIds(new Set())
-    _setSelectedPierIds(new Set())
   }
 
   function handleReassignWallMakeup(wallId: string, makeupId: string) {
@@ -2037,6 +2044,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // During interactive zoom we apply (zoom / renderedZoom) via CSS transform for smooth, flicker-free scaling.
   const [zoom, setZoom] = useState(1)
   const [renderedZoom, setRenderedZoom] = useState(1)
+  /**
+   * Tracks whether we've already auto-fit zoom for the current PDF file. The
+   * first time a PDF's first page reports its intrinsic dimensions we compute
+   * the largest zoom that fits the page in the visible canvas and apply it,
+   * so the user lands on the biggest possible view of their plan instead of
+   * a stamp-sized 100% rendering inside a vast canvas. Reset to false when
+   * the PDF file changes (or empty workspace mode is entered).
+   */
+  const hasAutoFitRef = useRef(false)
   // Canvas width sizing — favours landscape plans because that's what most
   // building drawings are. The cap (1140px) is sized so on a typical 24"
   // monitor the canvas fills most of the available horizontal room rather
@@ -2242,6 +2258,34 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     cancelCalibration()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, pdfFile])
+
+  // Reset the auto-fit guard whenever the displayed PDF or workspace mode
+  // changes — opening a new file or flipping into empty-workspace mode is a
+  // fresh "first view" and deserves another fit-to-canvas.
+  useEffect(() => {
+    hasAutoFitRef.current = false
+  }, [pdfFile, isEmptyWorkspace])
+
+  // Auto-fit zoom on first render after page dimensions are known. We watch
+  // aspectRatio (and the container ref's measured size via a microtask after
+  // layout) and apply the largest zoom that fits the page in the visible
+  // canvas. Runs exactly once per PDF load so the user can manually zoom and
+  // it won't snap back.
+  useEffect(() => {
+    if (hasAutoFitRef.current) return
+    if (!aspectRatio) return
+    // Wait one frame for the container to lay out; clientWidth/Height are
+    // 0 if we measure synchronously inside the render that creates them.
+    const raf = requestAnimationFrame(() => {
+      const fit = computeFitZoom()
+      if (fit !== null) {
+        hasAutoFitRef.current = true
+        setZoom(fit)
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aspectRatio, pdfFile, isEmptyWorkspace])
 
   // After the user stops zooming, re-rasterise the PDF at the new resolution
   // so the canvas is crisp instead of relying on the CSS transform upscale —
@@ -2712,8 +2756,32 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (prev) setZoom(prev)
   }
 
+  /**
+   * Compute the largest zoom that fits the current page within the visible
+   * canvas viewport (with ~5% breathing room) and return it. Returns null if
+   * we don't have enough information yet (page not measured, container not
+   * laid out). Doesn't apply the zoom — callers can decide whether to.
+   */
+  function computeFitZoom(): number | null {
+    const cw = containerRef.current?.clientWidth ?? 0
+    const ch = containerRef.current?.clientHeight ?? 0
+    if (cw <= 0 || ch <= 0 || baseWidth <= 0) return null
+    const ar = aspectRatio
+    if (!ar) return null
+    // Page natural dimensions at zoom = 1: baseWidth × baseWidth*ar.
+    const fitW = cw / baseWidth
+    const fitH = ch / (baseWidth * ar)
+    const fit = Math.min(fitW, fitH) * 0.95
+    return clamp(fit, MIN_ZOOM, MAX_ZOOM)
+  }
+
   function resetZoom() {
-    setZoom(1)
+    // "Reset" now means "fit the page" — the user clicking 100% in a viewport
+    // that's bigger than the page itself just leaves a wall of grey on either
+    // side, so let them re-fit instead. Falls through to a true 100% if the
+    // canvas isn't measured yet (very rare on a sized viewport).
+    const fit = computeFitZoom()
+    setZoom(fit ?? 1)
   }
 
   // ---------- Calibration: click two points ----------
@@ -3079,9 +3147,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   if (!pdfFile && !isEmptyWorkspace) {
     return (
-      <div className="max-w-[1600px] mx-auto">
+      // Upload zone mirrors the workspace layout: full-bleed flex column with
+      // ProjectBar at top, a flex-row body where the drop zone occupies the
+      // canvas area on the left and the same right rail (wall types / pier
+      // types / library) on the right. Heights stretch all the way to the
+      // viewport bottom, matching the post-PDF view so the transition is
+      // seamless.
+      <div className="flex-1 min-h-0 w-full flex flex-col">
         {pagePickerModal}
-        {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
         {(mode === 'block' || mode === 'brick') && (
           <ProjectBar
             details={projectDetails}
@@ -3107,110 +3180,115 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           onClose={() => setDetailsDrawerOpen(false)}
         />
 
-        <div className="px-6 py-4">
+        <div className="flex-1 min-h-0 relative flex flex-col px-20 pt-2 pb-4">
+          <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
-          <div className="flex flex-col lg:flex-row gap-2 items-start">
-
-            {/* ── Left: drop zone + onboarding hints ── */}
-            <div className="flex-1 min-w-0 w-full">
+            {/* ── Canvas area: drop zone fills the height ── */}
+            <div className="flex-1 min-w-0 min-h-0 w-full flex flex-col gap-3">
               <div
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
-                className={`border-2 border-dashed rounded-xl p-12 text-center bg-ink-800 transition-colors ${
+                className={`flex-1 min-h-0 border-2 border-dashed rounded-xl flex items-center justify-center bg-ink-800 transition-colors ${
                   isDragging
                     ? 'border-beme-500 bg-beme-500/10'
                     : 'border-ink-600 hover:border-beme-400'
                 }`}
               >
-                <div className="mx-auto w-12 h-12 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4 text-2xl">
-                  📄
-                </div>
-                <p className="text-lg text-ink-100 mb-1 font-semibold">
-                  Drop your building plan PDF here
-                </p>
-                <p className="text-sm text-ink-400 mb-5">
-                  or upload a file to start drawing walls over the plan
-                </p>
-                <label className="inline-block px-6 py-2.5 bg-beme-500 text-black rounded-lg cursor-pointer hover:bg-beme-400 transition-colors font-semibold text-sm">
-                  Choose a PDF
-                  <input
-                    type="file"
-                    accept="application/pdf"
-                    className="hidden"
-                    onChange={handleFileChange}
-                  />
-                </label>
-                <p className="text-xs text-ink-500 mt-5">
-                  Multi-page plans are supported. Each page is calibrated separately.
-                </p>
-                <div className="mt-6 pt-5 border-t border-ink-700">
-                  <p className="text-xs text-ink-400 mb-2">
-                    No plan to work from?
+                <div className="text-center max-w-md px-6 py-8">
+                  <div className="mx-auto w-12 h-12 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4 text-2xl">
+                    📄
+                  </div>
+                  <p className="text-lg text-ink-100 mb-1 font-semibold">
+                    Drop your building plan PDF here
                   </p>
-                  <button
-                    onClick={startEmptyWorkspace}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-ink-600 text-sm text-ink-200 hover:border-beme-500/60 hover:text-beme-300 transition-colors"
-                  >
-                    <span className="text-base leading-none">📐</span>
-                    Start with an empty workspace
-                  </button>
-                  <p className="text-[11px] text-ink-500 mt-2">
-                    Fixed at 1:100 metric — great for quick what-ifs and
-                    sample walls. You can change the ratio anytime.
+                  <p className="text-sm text-ink-400 mb-5">
+                    or upload a file to start drawing walls over the plan
                   </p>
+                  <label className="inline-block px-6 py-2.5 bg-beme-500 text-black rounded-lg cursor-pointer hover:bg-beme-400 transition-colors font-semibold text-sm">
+                    Choose a PDF
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      className="hidden"
+                      onChange={handleFileChange}
+                    />
+                  </label>
+                  <p className="text-xs text-ink-500 mt-5">
+                    Multi-page plans are supported. Each page is calibrated separately.
+                  </p>
+                  <div className="mt-6 pt-5 border-t border-ink-700">
+                    <p className="text-xs text-ink-400 mb-2">
+                      No plan to work from?
+                    </p>
+                    <button
+                      onClick={startEmptyWorkspace}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-ink-600 text-sm text-ink-200 hover:border-beme-500/60 hover:text-beme-300 transition-colors"
+                    >
+                      <span className="text-base leading-none">📐</span>
+                      Start with an empty workspace
+                    </button>
+                    <p className="text-[11px] text-ink-500 mt-2">
+                      Fixed at 1:100 metric — great for quick what-ifs and
+                      sample walls. You can change the ratio anytime.
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              {/* Quick-start steps */}
-              <div className="mt-4 border border-ink-600 rounded-xl bg-ink-800 p-5">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+              {/* Quick-start steps — compact horizontal strip below the drop
+                  zone so the canvas area stays roomy. flex-shrink-0 keeps the
+                  drop zone in charge of stretching to fill vertical space. */}
+              <div className="flex-shrink-0 border border-ink-600 rounded-xl bg-ink-800 px-4 py-3">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                   How a {mode === 'brick' ? 'brick' : 'block'} estimate works
                 </h3>
-                <ol className="space-y-3 text-sm text-ink-200">
-                  <li className="flex gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                <ol className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-x-5 gap-y-2 text-sm text-ink-200">
+                  <li className="flex gap-2.5">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-[11px] font-bold">
                       1
                     </span>
-                    <span>
+                    <span className="text-xs leading-relaxed">
                       {mode === 'block'
-                        ? 'Define wall types in the side rail — bond, height, body / corner blocks, fractions.'
+                        ? 'Define wall types in the side rail — bond, height, body / corner blocks.'
                         : 'Set defaults in the side rail — wall height, bricks per m², ties, plascourse.'}
-                      {' '}You can do this before uploading a plan.
                     </span>
                   </li>
-                  <li className="flex gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                  <li className="flex gap-2.5">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-[11px] font-bold">
                       2
                     </span>
-                    <span>Upload the building-plan PDF and calibrate the scale by clicking two points of a known dimension.</span>
+                    <span className="text-xs leading-relaxed">
+                      Upload the plan and calibrate the scale by clicking two
+                      points of a known dimension.
+                    </span>
                   </li>
-                  <li className="flex gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                  <li className="flex gap-2.5">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-[11px] font-bold">
                       3
                     </span>
-                    <span>
+                    <span className="text-xs leading-relaxed">
                       {mode === 'block'
-                        ? 'Draw walls over the plan — Beme handles corners, T-junctions, control joints, and openings automatically.'
-                        : 'Trace brick walls over the plan and subtract openings — Beme calculates the brickwork area (length × height) from your dimensions.'}
+                        ? 'Draw walls over the plan — corners, T-junctions, joints, and openings are automatic.'
+                        : 'Trace brick walls and subtract openings — area is auto-calculated.'}
                     </span>
                   </li>
-                  <li className="flex gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-xs font-bold">
+                  <li className="flex gap-2.5">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-beme-500/15 border border-beme-500/40 text-beme-300 flex items-center justify-center text-[11px] font-bold">
                       4
                     </span>
-                    <span>
+                    <span className="text-xs leading-relaxed">
                       {mode === 'block'
-                        ? <>The block tally updates live in the side rail. Click <em>Export estimate</em> when you're ready to print.</>
-                        : <>Bricks (m² × bricks per m²), ties, plascourse, and lintels are tallied automatically. Click <em>Export estimate</em> to print.</>}
+                        ? <>Tally updates live. Click <em>Export estimate</em> to print.</>
+                        : <>Bricks, ties, plascourse, lintels tally live. Click <em>Export estimate</em>.</>}
                     </span>
                   </li>
                 </ol>
               </div>
             </div>
 
-            {/* ── Right: side rail (block: wall + pier types · brick: settings) ── */}
-            <aside className="w-full lg:w-[260px] lg:flex-shrink-0">
+            {/* ── Right rail: same as workspace mode ── */}
+            <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
                 <>
                   <WallTypesPanel
@@ -3257,9 +3335,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Render: workspace ----------
 
   return (
-    <div className="max-w-[1600px] mx-auto">
+    <div className="flex-1 min-h-0 w-full flex flex-col">
       {pagePickerModal}
-      {/* Slim project bar — Studio Black header */}
+      {/* Slim project bar — sits at the top above the floating-panel
+          workspace. Takes its natural height; the workspace area below
+          flex-fills the remaining viewport. */}
       {(mode === 'block' || mode === 'brick') && (
         <ProjectBar
           details={projectDetails}
@@ -3285,195 +3365,153 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
-      <div className="px-3 py-2">
+      {/* Workspace area — fills the viewport below the project bar. The
+          canvas and right rail sit in a flex row below the top chrome,
+          and each flex-fills the remaining vertical space. 80px L/R padding
+          + 16px bottom keeps the columns well off the viewport edges (so
+          the workspace reads as a contained card with the project bar
+          flush above it), with a tighter 8px top so the chrome doesn't
+          drift away from the bar. */}
+      <div className="flex-1 min-h-0 relative flex flex-col px-20 pt-2 pb-4">
 
-      {/* File switcher — always renders when a primary PDF is loaded so the
-          user can attach extra reference PDFs (engineering specs, architectural
-          plans etc.) and flip between them. Walls / pages / calibration stay
-          locked to the primary; reference PDFs are view-only.
-          Hidden in empty-workspace mode — there's no primary file to switch
-          to or away from. */}
-      {pdfFile && !isEmptyWorkspace && (
-        <div className="flex items-center mb-3 px-1 gap-2 overflow-x-auto">
-          <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
-            File
-          </span>
-          <button
-            onClick={() => switchPdf(null)}
-            className={`px-3 py-1.5 rounded-lg text-sm border whitespace-nowrap transition-colors ${
-              !isReferenceView
-                ? 'bg-beme-500/15 border-beme-500/40 text-beme-300 font-medium'
-                : 'border-ink-600 text-ink-200 hover:bg-ink-700'
-            }`}
-            title={pdfFile?.name ?? 'Primary plan'}
-          >
-            <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
-              Primary
+      {/* Unified toolbar — file tabs · page nav · zoom · scale · replace in
+          one row. The old separate file-switcher row was redundant because
+          its PRIMARY tab already shows the active file name; merging into
+          this row saves ~40px of vertical space above the canvas. */}
+      <div className="flex items-center mb-2 px-3 py-1.5 bg-ink-800 border border-ink-600 rounded-lg gap-3 flex-wrap">
+
+        {/* File tabs OR empty-workspace label */}
+        {isEmptyWorkspace ? (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm font-medium text-ink-200 inline-flex items-center gap-2">
+              <span className="text-base leading-none">📐</span>
+              Empty workspace
             </span>
-            <span className="truncate max-w-[14rem] inline-block align-middle">
-              {pdfFile?.name ?? '(no primary)'}
+            <button
+              onClick={() => {
+                // Switch out of empty-workspace mode → land back in the upload
+                // zone with everything reset. Walls/openings/piers persist so
+                // the user can still upload a PDF underneath them later if
+                // they change their mind (they'll just need to calibrate).
+                setIsEmptyWorkspace(false)
+                setNumPages(0)
+                setCurrentPage(1)
+                setPagesData({})
+                setZoom(1)
+                cancelCalibration()
+              }}
+              className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
+              title="Attach a PDF instead — drawing keeps any existing walls"
+            >
+              Attach a PDF
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 min-w-0 overflow-x-auto">
+            <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
+              File
             </span>
-          </button>
-          {referencePdfFiles.map((f, i) => {
-            const active = activeReferenceIndex === i
-            return (
-              <span
-                key={`${f.name}-${i}`}
-                className={`group inline-flex items-center rounded-lg border whitespace-nowrap transition-colors ${
-                  active
-                    ? 'bg-beme-500/15 border-beme-500/40 text-beme-300'
-                    : 'border-ink-600 text-ink-200 hover:bg-ink-700'
-                }`}
-              >
-                <button
-                  onClick={() => switchPdf(i)}
-                  className={`pl-3 pr-1.5 py-1.5 text-sm ${active ? 'font-medium' : ''}`}
-                  title={f.name}
-                >
-                  <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
-                    Ref
-                  </span>
-                  <span className="truncate max-w-[14rem] inline-block align-middle">
-                    {f.name}
-                  </span>
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (!window.confirm(`Remove "${f.name}" from this project?`)) return
-                    // If we're currently viewing the one being removed, hop back
-                    // to the primary first so we don't end up on a missing index.
-                    if (activeReferenceIndex === i) switchPdf(null)
-                    else if (activeReferenceIndex !== null && activeReferenceIndex > i) {
-                      // Indices after the removed one shift down by 1 — keep the
-                      // displayed PDF stable across the change.
-                      setActiveReferenceIndex(activeReferenceIndex - 1)
-                    }
-                    setReferencePdfFiles((prev) => prev.filter((_, idx) => idx !== i))
-                    setReferencePdfPaths((prev) => prev.filter((_, idx) => idx !== i))
-                  }}
-                  title={`Remove ${f.name}`}
-                  className="px-2 py-1.5 text-ink-400 hover:text-rose-300 text-sm"
-                  aria-label={`Remove ${f.name}`}
-                >
-                  ×
-                </button>
+            <button
+              onClick={() => switchPdf(null)}
+              className={`px-3 py-1 rounded-md text-sm border whitespace-nowrap transition-colors ${
+                !isReferenceView
+                  ? 'bg-beme-500/15 border-beme-500/40 text-beme-300 font-medium'
+                  : 'border-ink-600 text-ink-200 hover:bg-ink-700'
+              }`}
+              title={pdfFile?.name ?? 'Primary plan'}
+            >
+              <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
+                Primary
               </span>
-            )
-          })}
-          {/* Hidden file input drives the + Add reference button. Accepts
-              multiple PDFs in one shot. */}
-          <input
-            id="reference-pdf-input"
-            type="file"
-            accept="application/pdf"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const picked = Array.from(e.target.files ?? []).filter(
-                (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+              <span className="truncate max-w-[12rem] inline-block align-middle">
+                {pdfFile?.name ?? '(no primary)'}
+              </span>
+            </button>
+            {referencePdfFiles.map((f, i) => {
+              const active = activeReferenceIndex === i
+              return (
+                <span
+                  key={`${f.name}-${i}`}
+                  className={`group inline-flex items-center rounded-md border whitespace-nowrap transition-colors ${
+                    active
+                      ? 'bg-beme-500/15 border-beme-500/40 text-beme-300'
+                      : 'border-ink-600 text-ink-200 hover:bg-ink-700'
+                  }`}
+                >
+                  <button
+                    onClick={() => switchPdf(i)}
+                    className={`pl-3 pr-1.5 py-1 text-sm ${active ? 'font-medium' : ''}`}
+                    title={f.name}
+                  >
+                    <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
+                      Ref
+                    </span>
+                    <span className="truncate max-w-[12rem] inline-block align-middle">
+                      {f.name}
+                    </span>
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (!window.confirm(`Remove "${f.name}" from this project?`)) return
+                      // If we're currently viewing the one being removed, hop back
+                      // to the primary first so we don't end up on a missing index.
+                      if (activeReferenceIndex === i) switchPdf(null)
+                      else if (activeReferenceIndex !== null && activeReferenceIndex > i) {
+                        // Indices after the removed one shift down by 1 — keep
+                        // the displayed PDF stable across the change.
+                        setActiveReferenceIndex(activeReferenceIndex - 1)
+                      }
+                      setReferencePdfFiles((prev) => prev.filter((_, idx) => idx !== i))
+                      setReferencePdfPaths((prev) => prev.filter((_, idx) => idx !== i))
+                    }}
+                    title={`Remove ${f.name}`}
+                    className="px-2 py-1 text-ink-400 hover:text-rose-300 text-sm"
+                    aria-label={`Remove ${f.name}`}
+                  >
+                    ×
+                  </button>
+                </span>
               )
-              if (picked.length === 0) return
-              setReferencePdfFiles((prev) => [...prev, ...picked])
-              setReferencePdfPaths((prev) => [
-                ...prev,
-                ...picked.map(() => undefined as string | undefined),
-              ])
-              // Reset the input so picking the same file again still fires change.
-              e.target.value = ''
-            }}
-          />
-          <button
-            onClick={() =>
-              document.getElementById('reference-pdf-input')?.click()
-            }
-            className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-ink-600 text-ink-300 hover:border-beme-500/60 hover:text-beme-300 transition-colors whitespace-nowrap shrink-0"
-            title="Attach another PDF — engineering, architectural, etc."
-          >
-            + Add reference
-          </button>
-          {isReferenceView && (
-            <span className="text-xs text-ink-400 italic shrink-0 ml-2">
-              view-only · walls are on the primary
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Compact toolbar row — filename · page nav · zoom · scale all in one bar */}
-      <div className="flex items-center mb-4 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg gap-4 flex-wrap">
-        {/* PDF filename + Replace, OR empty-workspace label + Attach a PDF */}
-        <div className="flex items-center gap-2 min-w-0">
-          {isEmptyWorkspace ? (
-            <>
-              <span className="text-sm font-medium text-ink-200 inline-flex items-center gap-2">
-                <span className="text-base leading-none">📐</span>
-                Empty workspace
+            })}
+            {/* Hidden file input drives the + Add reference button. Accepts
+                multiple PDFs in one shot. */}
+            <input
+              id="reference-pdf-input"
+              type="file"
+              accept="application/pdf"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []).filter(
+                  (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+                )
+                if (picked.length === 0) return
+                setReferencePdfFiles((prev) => [...prev, ...picked])
+                setReferencePdfPaths((prev) => [
+                  ...prev,
+                  ...picked.map(() => undefined as string | undefined),
+                ])
+                // Reset the input so picking the same file again still fires change.
+                e.target.value = ''
+              }}
+            />
+            <button
+              onClick={() =>
+                document.getElementById('reference-pdf-input')?.click()
+              }
+              className="px-3 py-1 rounded-md text-sm border border-dashed border-ink-600 text-ink-300 hover:border-beme-500/60 hover:text-beme-300 transition-colors whitespace-nowrap shrink-0"
+              title="Attach another PDF — engineering, architectural, etc."
+            >
+              + Add reference
+            </button>
+            {isReferenceView && (
+              <span className="text-xs text-ink-400 italic shrink-0 ml-1">
+                view-only
               </span>
-              <button
-                onClick={() => {
-                  // Switch out of empty-workspace mode → land back in the upload
-                  // zone with everything reset. Walls/openings/piers persist so
-                  // the user can still upload a PDF underneath them later if
-                  // they change their mind (they'll just need to calibrate).
-                  setIsEmptyWorkspace(false)
-                  setNumPages(0)
-                  setCurrentPage(1)
-                  setPagesData({})
-                  setZoom(1)
-                  cancelCalibration()
-                }}
-                className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
-                title="Attach a PDF instead — drawing keeps any existing walls"
-              >
-                Attach a PDF
-              </button>
-            </>
-          ) : (
-            <>
-              <span className="text-sm font-medium text-ink-200 truncate max-w-[16rem]">
-                {displayedPdfFile?.name ?? pdfFile?.name ?? '(no file)'}
-              </span>
-              {/* Replace only swaps out the PRIMARY — reference PDFs come from
-                  the originating estimate request and aren't editable here.
-                  Wipes every page's drawn data so the new PDF starts clean:
-                  walls drawn on the OLD plan would otherwise sit silently in
-                  the project and creep back into exports / tallies even
-                  though they're meaningless against the new plan. */}
-              {!isReferenceView && (
-                <button
-                  onClick={() => {
-                    const hasDrawnData =
-                      Object.values(wallsByPage).some((ws) => ws.length > 0) ||
-                      Object.values(openingsByPage).some((os) => os.length > 0) ||
-                      Object.values(piersByPage).some((ps) => ps.length > 0)
-                    if (hasDrawnData) {
-                      const ok = window.confirm(
-                        'Replace the plan? All walls, openings, piers, and page calibrations will be cleared so the new PDF starts fresh. Wall types and pier types stay.'
-                      )
-                      if (!ok) return
-                    }
-                    setPdfFile(null)
-                    setNumPages(0)
-                    setCurrentPage(1)
-                    setPagesData({})
-                    setWallsByPage({})
-                    setOpeningsByPage({})
-                    setPiersByPage({})
-                    _setSelectedWallIds(new Set())
-                    _setSelectedOpeningIds(new Set())
-                    _setSelectedPierIds(new Set())
-                    setZoom(1)
-                    cancelCalibration()
-                  }}
-                  className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
-                >
-                  Replace
-                </button>
-              )}
-            </>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         <div className="h-5 w-px bg-ink-600" />
 
@@ -3519,7 +3557,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           <button
             onClick={resetZoom}
             className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 transition-colors min-w-[3.5rem] tabular-nums"
-            title="Scroll to zoom · Click and drag to pan · Click to reset"
+            title="Scroll to zoom · Click and drag to pan · Click to fit page to canvas"
           >
             {Math.round(zoom * 100)}%
           </button>
@@ -3644,21 +3682,65 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             )}
           </div>
         )}
+
+        {/* Replace primary — right-aligned with ml-auto so it sits opposite
+            the file tabs at the start of the row. Only meaningful when a
+            primary PDF is loaded and the user isn't currently viewing a
+            reference (refs are inherited from the originating request and
+            aren't editable here). Wipes drawn data on confirm so a fresh PDF
+            starts clean. */}
+        {!isReferenceView && !isEmptyWorkspace && pdfFile && (
+          <button
+            onClick={() => {
+              const hasDrawnData =
+                Object.values(wallsByPage).some((ws) => ws.length > 0) ||
+                Object.values(openingsByPage).some((os) => os.length > 0) ||
+                Object.values(piersByPage).some((ps) => ps.length > 0)
+              if (hasDrawnData) {
+                const ok = window.confirm(
+                  'Replace the plan? All walls, openings, piers, and page calibrations will be cleared so the new PDF starts fresh. Wall types and pier types stay.'
+                )
+                if (!ok) return
+              }
+              setPdfFile(null)
+              setNumPages(0)
+              setCurrentPage(1)
+              setPagesData({})
+              setWallsByPage({})
+              setOpeningsByPage({})
+              setPiersByPage({})
+              _setSelectedWallIds(new Set())
+              _setSelectedOpeningIds(new Set())
+              _setSelectedPierIds(new Set())
+              setZoom(1)
+              cancelCalibration()
+            }}
+            className="ml-auto text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
+          >
+            Replace primary
+          </button>
+        )}
       </div>
 
-      {/* ──────────────────── Two-column workspace body ────────────────────
-          Left column = canvas + drawing controls (where your eyes/hands live).
-          Right rail = setup + reference panels (wall types, tally, export).
-          Stacks vertically on screens narrower than `lg`. */}
-      <div className="flex flex-col lg:flex-row gap-2 items-start">
+      {/* ──────────────────── Workspace body ────────────────────
+          Flex column on small screens (canvas stacked above right rail),
+          flex row on lg+ (canvas centre, thumbnails left, rail right). The
+          three areas are clean columns side by side — no overlap. flex-1
+          on the body and `min-h-0` on body + children let the canvas fill
+          all the way to the viewport bottom. The outer padding is on the
+          workspace area; this body just lays its columns out. */}
+      <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
-      {/* ───── Left column: canvas area ───── */}
-      <div className="flex-1 min-w-0 w-full">
+      {/* ───── Canvas area ─────
+          Takes the remaining horizontal space between the thumbnails (if
+          any) and the right rail. Flex column inside so the sticky drawing
+          toolbar sits above the pan container which flex-fills the height. */}
+      <div className="flex-1 min-w-0 min-h-0 w-full flex flex-col">
 
       {/* Sticky action bar — keeps drawing controls + banners glued to the top of the
           viewport while the user scrolls, so they don't need to scroll up to start a new
           wall/opening. Wraps the wall-drawing toolbar and all contextual banners/forms. */}
-      <div className="sticky top-0 z-20 bg-ink-900 pt-2 pb-1 -mx-1 px-1 mb-2 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
+      <div className="sticky top-0 z-20 bg-ink-900 pt-1 pb-1 -mx-1 px-1 mb-1.5 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
 
       {/* Keyboard shortcut help — pinned in the corner of the toolbar area.
           Toggles with the `?` key; click outside the box (or press `?` again)
@@ -3757,10 +3839,53 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         // type or use the Curved wall tool to draw another arc.
         const activeIsCurveMakeup =
           !!activeMakeup && typeof activeMakeup.curveRadiusMm === 'number'
+        // Multi-select state surfaces inline in this toolbar when 2+ items are
+        // selected: prose on the LEFT (replacing the count summary), action
+        // buttons on the RIGHT (replacing the draw buttons). The dedicated
+        // multi-select banner row below is now empty/null in that state — its
+        // content lives here so the user doesn't have an extra row appearing
+        // and disappearing.
+        const wallSelCount = selectedWallIds.size
+        const openingSelCount = selectedOpeningIds.size
+        const pierSelCount = selectedPierIds.size
+        const totalSelected = wallSelCount + openingSelCount + pierSelCount
+        const selectionParts: string[] = []
+        if (wallSelCount > 0)
+          selectionParts.push(`${wallSelCount} wall${wallSelCount === 1 ? '' : 's'}`)
+        if (openingSelCount > 0)
+          selectionParts.push(`${openingSelCount} opening${openingSelCount === 1 ? '' : 's'}`)
+        if (pierSelCount > 0)
+          selectionParts.push(`${pierSelCount} pier${pierSelCount === 1 ? '' : 's'}`)
+        function batchDelete() {
+          const wallIds = Array.from(selectedWallIds)
+          const openingIds = Array.from(selectedOpeningIds)
+          const pierIds = Array.from(selectedPierIds)
+          for (const id of pierIds) handleDeletePier(id)
+          for (const id of openingIds) handleOpeningDelete(id)
+          for (const id of wallIds) handleWallDelete(id)
+        }
+        function batchClear() {
+          setSelectedWallId(null)
+          setSelectedOpeningId(null)
+          setSelectedPierId(null)
+        }
+        function batchReassignMakeup(makeupId: string) {
+          for (const wallId of Array.from(selectedWallIds)) {
+            handleReassignWallMakeup(wallId, makeupId)
+          }
+        }
         return (
-        <div className="flex items-center justify-between mb-3 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-2">
+        <div className="flex items-center justify-between mb-2 px-3 py-1.5 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-2">
           <div className="text-sm">
-            {!currentScale ? (
+            {totalSelected >= 2 ? (
+              <span className="text-sky-200">
+                {selectionParts.join(' + ')} selected. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Del
+                </kbd>{' '}
+                to remove all, or Shift+click to add/remove items.
+              </span>
+            ) : !currentScale ? (
               <span className="text-ink-400">
                 Calibrate the scale on this page before drawing walls.
               </span>
@@ -3829,6 +3954,47 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             })()}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            {totalSelected >= 2 ? (
+              // Multi-select actions take over the toolbar's right side so
+              // there's no separate banner row underneath. When the user
+              // deselects, the normal draw buttons return.
+              <>
+                {mode === 'block' && wallSelCount > 0 && (
+                  <label className="flex items-center gap-2 text-sm text-sky-200">
+                    <span className="whitespace-nowrap">Wall type ({wallSelCount}):</span>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        if (e.target.value) batchReassignMakeup(e.target.value)
+                      }}
+                      className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50"
+                    >
+                      <option value="" disabled>
+                        Reassign to…
+                      </option>
+                      {makeups.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <button
+                  onClick={batchDelete}
+                  className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+                >
+                  Delete all
+                </button>
+                <button
+                  onClick={batchClear}
+                  className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+                >
+                  Deselect
+                </button>
+              </>
+            ) : (
+              <>
             <button
               onClick={() => {
                 setDrawingMode((v) => !v)
@@ -4006,6 +4172,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               >
                 Clear all walls
               </button>
+            )}
+              </>
             )}
           </div>
         </div>
@@ -4442,145 +4610,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         )
       })()}
 
-      {/* Batch multi-selection banner. Shows when 2+ items across walls/openings/
-          piers are selected. Single-item banners only render when their respective
-          "single-selected" ID is non-null (selectedWall, selectedOpening, etc.),
-          which is exactly the case when the user has exactly one of THAT type
-          selected and nothing else. So this batch banner never overlaps with the
-          single-item ones. */}
-      {(() => {
-        const totalSelected =
-          selectedWallIds.size + selectedOpeningIds.size + selectedPierIds.size
-        if (totalSelected < 2) return null
-        const wallCount = selectedWallIds.size
-        const openingCount = selectedOpeningIds.size
-        const pierCount = selectedPierIds.size
-        const parts: string[] = []
-        if (wallCount > 0) parts.push(`${wallCount} wall${wallCount === 1 ? '' : 's'}`)
-        if (openingCount > 0)
-          parts.push(`${openingCount} opening${openingCount === 1 ? '' : 's'}`)
-        if (pierCount > 0) parts.push(`${pierCount} pier${pierCount === 1 ? '' : 's'}`)
-        function batchDelete() {
-          const wallIds = Array.from(selectedWallIds)
-          const openingIds = Array.from(selectedOpeningIds)
-          const pierIds = Array.from(selectedPierIds)
-          for (const id of pierIds) handleDeletePier(id)
-          for (const id of openingIds) handleOpeningDelete(id)
-          for (const id of wallIds) handleWallDelete(id)
-        }
-        function batchClear() {
-          setSelectedWallId(null)
-          setSelectedOpeningId(null)
-          setSelectedPierId(null)
-        }
-        function batchReassignMakeup(makeupId: string) {
-          for (const wallId of Array.from(selectedWallIds)) {
-            handleReassignWallMakeup(wallId, makeupId)
-          }
-        }
-        return (
-          <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-2">
-            <span>
-              {parts.join(' + ')} selected. Press{' '}
-              <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd>{' '}
-              to remove all, or Shift+click to add/remove items.
-            </span>
-            <div className="flex items-center gap-2 flex-wrap">
-              {mode === 'block' && wallCount > 0 && (
-                <label className="flex items-center gap-2 text-sm text-sky-200">
-                  <span>Wall type ({wallCount}):</span>
-                  <select
-                    value=""
-                    onChange={(e) => {
-                      if (e.target.value) batchReassignMakeup(e.target.value)
-                    }}
-                    className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50"
-                  >
-                    <option value="" disabled>
-                      Reassign to…
-                    </option>
-                    {makeups.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <button
-                onClick={batchDelete}
-                className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
-              >
-                Delete all
-              </button>
-              <button
-                onClick={batchClear}
-                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-              >
-                Deselect
-              </button>
-            </div>
-          </div>
-        )
-      })()}
+      {/* Multi-select state (prose + action buttons) lives inline in the
+          wall-drawing toolbar above when 2+ items are selected — the old
+          standalone banner row has been removed so the chrome height
+          doesn't change when a selection is made. */}
 
-      {(mode === 'block' || mode === 'brick') && selectedWall && !drawingMode && (
-        <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-2">
-          <span>
-            1 wall selected. Drag its endpoints to reposition, or press{' '}
-            <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
-          </span>
-          <div className="flex items-center gap-2 flex-wrap">
-            {mode === 'block' && (
-              <label className="flex items-center gap-2 text-sm text-sky-200">
-                <span>Wall type:</span>
-                <select
-                  value={selectedWall.makeupId}
-                  onChange={(e) => handleReassignWallMakeup(selectedWall.id, e.target.value)}
-                  className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50"
-                >
-                  {makeups.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {mode === 'brick' && (
-              <label className="flex items-center gap-2 text-sm text-sky-200">
-                <span>Height:</span>
-                <input
-                  type="number"
-                  min="200"
-                  step="50"
-                  value={selectedWall.heightMmOverride ?? brickSettings.defaultWallHeightMm}
-                  onChange={(e) =>
-                    handleWallHeightChange(
-                      selectedWall.id,
-                      parseInt(e.target.value || '0', 10)
-                    )
-                  }
-                  className="px-2 py-1 border border-sky-500/40 rounded text-sm bg-ink-900 text-ink-50 w-24"
-                />
-                <span>mm</span>
-              </label>
-            )}
-            <button
-              onClick={() => handleWallDelete(selectedWall.id)}
-              className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
-            >
-              Delete wall
-            </button>
-            <button
-              onClick={() => setSelectedWallId(null)}
-              className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-            >
-              Deselect
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Single-wall selection banner removed — clicking a wall now just
+          highlights it on the canvas and activates its makeup in the Wall
+          types panel (so the user can see at a glance which type it is).
+          Press Del to remove, drag endpoints to reposition. The Wall types
+          panel handles reassignment; multi-select handles batch ops. */}
 
       </div>
       {/* End of sticky action bar */}
@@ -4622,8 +4661,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         </div>
       )}
 
-      {/* Page thumbnails + main PDF view */}
-      <div className="flex gap-3">
+      {/* Page thumbnails + main PDF view — sits at the top of the canvas
+          area's flex column and flex-fills the remaining height. Thumbnails
+          on the left, pan container on the right, each a clean column. */}
+      <div className="flex gap-3 flex-1 min-h-0">
         {/* Thumbnail sidebar (multi-page only). Extracted into a memoised
             component so zoom-driven re-renders of PdfWorkspace don't ripple
             through the per-page <Page> rendering — without this, each zoom
@@ -4656,7 +4697,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className="flex-1 border border-ink-600 rounded-xl overflow-auto bg-ink-800 min-h-[400px] max-h-[92vh]"
+        className="flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800"
         style={{
           cursor:
             calibrating ||
@@ -4669,23 +4710,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               : 'grab',
         }}
       >
-        {/* Spacer wrapper with symmetric padding so the user can drag the
-            page in any direction past its natural edges. Padding sits on
-            all four sides of the page, adding 400 / 300 px of pannable
-            buffer to the LEFT and TOP as well as RIGHT and BOTTOM —
-            otherwise the user can only drag the page in one direction
-            (towards whichever side has the buffer). min-width / min-height
-            extend the scroll area further at low zoom so the page +
-            buffer is always larger than the viewport. Initial-scroll
-            useLayoutEffect below targets "page centre = viewport centre",
-            which lands the user looking at the page rather than at the
-            buffer in the corner. */}
+        {/* Spacer wrapper with generous symmetric padding around the page so
+            the user can pan it freely in any direction past its natural
+            edges (Figma-style). Flex-centering keeps the page in the middle
+            of any "extra" scroll area when the spacer is forced wider than
+            its content (e.g. at low zoom where minWidth kicks in) — without
+            justify-center the page sticks to the spacer's left edge and the
+            extra space ends up only on the right, which is what made
+            panning feel one-sided.
+            min-width / min-height ensure the scroll area is bigger than
+            the viewport even at very low zoom, so scrolling still works. */}
         <div
           style={{
-            minWidth: 'calc(100% + 800px)',
-            minHeight: 'calc(100% + 600px)',
-            padding: '300px 400px',
+            minWidth: 'calc(100% + 1600px)',
+            minHeight: 'calc(100% + 1200px)',
+            padding: '600px 800px',
             boxSizing: 'border-box',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
@@ -4910,6 +4953,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   selectedOpeningIds={selectedOpeningIds}
                   selectedPierIds={selectedPierIds}
                   wallColorByWallId={wallColorByWallId}
+                  activeMakeupIdForHighlight={
+                    mode === 'brick' ? activeBrickMakeupId : activeMakeupId
+                  }
                   onWallToggleSelect={toggleSelectedWallId}
                   onOpeningToggleSelect={toggleSelectedOpeningId}
                   onPierToggleSelect={toggleSelectedPierId}
@@ -4935,12 +4981,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       </div>
       {/* ───── End of left column ───── */}
 
-      {/* ───── Right rail: setup + reference panels ─────
-          ~340px wide on lg+ screens, full-width stacked below the canvas on smaller.
-          Each panel handles its own collapse state, so users can hide what they're
-          not actively using and the rail can absorb new panels (selection details,
-          piers, control joints, etc.) without making the page taller. */}
-      <aside className="w-full lg:w-[260px] lg:flex-shrink-0 -mt-4 lg:mt-0">
+      {/* ───── Right rail: separate column on lg+ ─────
+          Fixed-width column sitting beside the canvas, not over it — the
+          plan and the panels each get their own space. Scrolls independently
+          so a tall panel stack doesn't shrink the canvas. Stacks below the
+          canvas on smaller screens. */}
+      <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
         {/* Wall types management panel (block mode) */}
         {mode === 'block' && (
@@ -5120,10 +5166,10 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   return (
     <div
       ref={sidebarRef}
-      className="w-32 flex-shrink-0 max-h-[92vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-1.5"
+      className="w-44 flex-shrink-0 max-h-full overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2 shadow-lg"
     >
       <Document file={pdfFile} loading={null} error={null}>
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
             const isCurrent = pageNum === currentPage
             // "Scaled" if either the new page-ratio is set (post-fix projects)
@@ -5137,7 +5183,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
             return (
               <div
                 key={pageNum}
-                className={`relative group block w-full p-1 rounded-md transition-colors text-left ${
+                className={`relative group block w-full p-1.5 rounded-lg transition-colors text-left ${
                   isCurrent
                     ? 'ring-2 ring-beme-500 bg-beme-500/10'
                     : 'ring-1 ring-ink-600 hover:ring-beme-500/60 bg-ink-700/40'
@@ -5148,12 +5194,12 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                   className="block w-full text-left"
                 >
                   <div
-                    className="bg-ink-800 flex justify-center overflow-hidden rounded-sm"
+                    className="bg-ink-800 flex justify-center overflow-hidden rounded-md"
                     style={{ lineHeight: 0 }}
                   >
                     <Page
                       pageNumber={pageNum}
-                      width={100}
+                      width={148}
                       renderAnnotationLayer={false}
                       renderTextLayer={false}
                     />

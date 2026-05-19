@@ -94,19 +94,148 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
-      <main className="max-w-[1600px] mx-auto px-6 py-12">
+      {/* Two-column dashboard: main content on the left, a sticky sidebar
+          of quick links / shortcuts on the right (lg+ only). Bumped the
+          outer max-width to 1800px so the sidebar adds horizontal density
+          without squeezing the existing content cards. */}
+      <main className="max-w-[1800px] mx-auto px-6 py-12">
         {signedIn && <LocalMigrationBanner />}
         {stillResolving ? (
           <div className="text-sm text-ink-400 py-16 text-center">Loading…</div>
-        ) : currentOrg ? (
-          <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
-        ) : isOrgInvited ? (
-          <NoOrgEmptyState />
         ) : (
-          <PersonalDashboard />
+          <div className="flex flex-col lg:flex-row gap-8 items-start">
+            <div className="flex-1 min-w-0 w-full">
+              {currentOrg ? (
+                <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
+              ) : isOrgInvited ? (
+                <NoOrgEmptyState />
+              ) : (
+                <PersonalDashboard />
+              )}
+            </div>
+            <DashboardSidebar isOrgUser={!!currentOrg} />
+          </div>
         )}
       </main>
     </div>
+  )
+}
+
+/**
+ * Right rail on the dashboard — quick links into the parts of Beme that
+ * don't have a natural surfacing on the dashboard itself, plus the team /
+ * help shortcuts. Sticky on lg+ so it stays visible while the main column
+ * scrolls. Stacks under the main content on smaller viewports.
+ */
+function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
+  return (
+    <aside className="w-full lg:w-[300px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-4">
+      {/* Start something new — anchored at the TOP of the rail so the
+          highest-frequency action (create a new estimate / request) is the
+          first thing the user's eye lands on. Each button uses py-3.5 for a
+          chunkier hit target and a stronger visual presence, with a
+          full-bleed primary "+ New request" button on org accounts. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          Start something new
+        </h3>
+        <div className="flex flex-col gap-2.5">
+          {isOrgUser && (
+            <Link
+              to="/requests/new"
+              className="px-4 py-3 rounded-lg bg-beme-500 text-black text-base hover:bg-beme-400 transition-colors text-center font-semibold"
+            >
+              + New request
+            </Link>
+          )}
+          <Link
+            to="/project/brick"
+            className="px-4 py-3.5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 text-sm hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3"
+          >
+            <span
+              className="inline-block w-1 h-10 rounded-full bg-rose-400/70 flex-shrink-0"
+              aria-hidden
+            />
+            <div className="flex-1 text-left">
+              <div className="font-semibold">Brick estimate</div>
+              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-0.5">
+                Trace walls, calculate brickwork area
+              </div>
+            </div>
+            <span className="text-ink-500 group-hover:text-beme-300">→</span>
+          </Link>
+          <Link
+            to="/project/block"
+            className="px-4 py-3.5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 text-sm hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3"
+          >
+            <span
+              className="inline-block w-1 h-10 rounded-full bg-sky-400/70 flex-shrink-0"
+              aria-hidden
+            />
+            <div className="flex-1 text-left">
+              <div className="font-semibold">Block estimate</div>
+              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-0.5">
+                Draw walls, openings, piers, lintels
+              </div>
+            </div>
+            <span className="text-ink-500 group-hover:text-beme-300">→</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* Shortcuts — secondary nav into the parts of Beme that don't
+          have a natural surfacing on the dashboard itself. Below "Start
+          something new" so the create actions get the prime real estate. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800/60 overflow-hidden">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-4 pt-3 pb-2">
+          Shortcuts
+        </h3>
+        <nav className="flex flex-col">
+          <SidebarLink to="/library" title="Material library" desc="Blocks, bricks, supply items" />
+          <SidebarLink to="/guide" title="Beme guide" desc="Full walkthrough + shortcuts" />
+          {isOrgUser && (
+            <SidebarLink to="/requests" title="All requests" desc="Every estimate across the team" />
+          )}
+          <SidebarLink to="/settings" title="Settings" desc="Defaults, regional features, theme" />
+        </nav>
+      </div>
+
+      {/* Tiny credits / version badge so the rail doesn't end abruptly.
+          Updates the user's sense of where they are in the product
+          (build / branch / status) without taking attention. */}
+      <div className="text-[11px] text-ink-500 px-4">
+        Beme · Building estimates made easy
+      </div>
+    </aside>
+  )
+}
+
+/**
+ * One row in the dashboard sidebar's Shortcuts list. Borderless on top so
+ * each row reads as a section in a list rather than a card of its own.
+ */
+function SidebarLink({
+  to,
+  title,
+  desc,
+}: {
+  to: string
+  title: string
+  desc: string
+}) {
+  return (
+    <Link
+      to={to}
+      className="flex items-start gap-3 px-4 py-2.5 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
+    >
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-ink-100 group-hover:text-beme-300 transition-colors">
+          {title}
+        </div>
+        <div className="text-xs text-ink-400 mt-0.5">{desc}</div>
+      </div>
+      <span className="text-ink-500 group-hover:text-beme-300 transition-colors">→</span>
+    </Link>
   )
 }
 
@@ -371,6 +500,18 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     }
   }, [requests, projects, userId])
 
+  // Look up the current user in the org's member list to surface a real
+  // display name in the welcome strip. Falls back to the email local-part,
+  // then to "there" if neither is available.
+  const currentMember = useMemo(
+    () => members.find((m) => m.userId === userId) ?? null,
+    [members, userId]
+  )
+  const userDisplayName =
+    currentMember?.displayName ||
+    (currentMember?.email ? currentMember.email.split('@')[0] : null)
+  const myActionItems = myPending.length + myInProgress.length
+
   return (
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
@@ -382,32 +523,13 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             Estimate requests and recent activity for {org.name}.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Link
-            to="/requests"
-            className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
-          >
-            All requests
-          </Link>
-          <Link
-            to="/project/brick"
-            className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
-          >
-            + Brick
-          </Link>
-          <Link
-            to="/project/block"
-            className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
-          >
-            + Block
-          </Link>
-          <Link
-            to="/requests/new"
-            className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 transition-colors font-semibold"
-          >
-            + New request
-          </Link>
-        </div>
+        <WelcomeStrip
+          name={userDisplayName}
+          actionItems={myActionItems}
+          actionLabel={
+            myActionItems === 1 ? 'request waiting for you' : 'requests waiting for you'
+          }
+        />
       </div>
 
       {/* ── Stats row ── */}
@@ -626,72 +748,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         )}
       </section>
 
-      {/* Material library tile — full management UI lives at /library, with
-          org-admin gating for edits enforced inside that page. Section
-          heading matches the "Recently completed" pattern so the dashboard
-          reads as a consistent stack of titled bands. */}
-      <section className="mt-10">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Material library
-          </h3>
-          <Link
-            to="/library"
-            className="text-xs text-beme-300 hover:text-beme-200"
-          >
-            Open →
-          </Link>
-        </div>
-        <Link
-          to="/library"
-          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group mb-10"
-        >
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div>
-              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
-                Manage blocks, bricks &amp; supply items →
-              </div>
-              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
-                Your team's catalogue: block types, brick types, and supply
-                items priced per block / brick / m² / lineal m. Only an org
-                admin can edit; everyone can view.
-              </p>
-            </div>
-          </div>
-        </Link>
-      </section>
-
-      {/* Beme guide tile — link to /guide for the full walkthrough. */}
-      <section className="mt-10">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Beme guide
-          </h3>
-          <Link
-            to="/guide"
-            className="text-xs text-beme-300 hover:text-beme-200"
-          >
-            Open →
-          </Link>
-        </div>
-        <Link
-          to="/guide"
-          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
-        >
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div>
-              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
-                Full walkthrough &amp; shortcuts →
-              </div>
-              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
-                Setup your library, draw walls, place openings, export an
-                estimate — step-by-step with tips and shortcuts. Region-
-                agnostic; works no matter where in the world you're laying.
-              </p>
-            </div>
-          </div>
-        </Link>
-      </section>
+      {/* Material library and Beme guide tiles have been promoted to the
+          dashboard sidebar (right rail). They were big banner cards down
+          here; relocating them frees vertical space and gives them a
+          permanent, always-visible spot. */}
     </>
   )
 }
@@ -1052,7 +1112,7 @@ function PersonalDashboard() {
   const [filter, setFilter] = useState<Filter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
-  const { signedIn } = useAuth()
+  const { signedIn, user } = useAuth()
   const { settings } = useUserSettings()
   const primaryProjectType = settings.preferences.defaultProjectType
 
@@ -1157,6 +1217,11 @@ function PersonalDashboard() {
     }
   }
 
+  // Derive a friendly name from the auth user — "joshmills03@hotmail.com"
+  // becomes "joshmills03". Falls through to undefined when not signed in
+  // (the welcome strip then just shows the greeting without a name).
+  const personalName = user?.email ? user.email.split('@')[0] : null
+
   return (
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
@@ -1166,39 +1231,11 @@ function PersonalDashboard() {
             Your estimates, win rate, and current jobs at a glance.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {primaryProjectType === 'brick' ? (
-            <>
-              <Link
-                to="/project/block"
-                className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
-              >
-                + Block estimate
-              </Link>
-              <Link
-                to="/project/brick"
-                className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 transition-colors font-semibold"
-              >
-                + Brick estimate
-              </Link>
-            </>
-          ) : (
-            <>
-              <Link
-                to="/project/brick"
-                className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-100 text-sm hover:bg-ink-700 transition-colors font-medium"
-              >
-                + Brick estimate
-              </Link>
-              <Link
-                to="/project/block"
-                className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 transition-colors font-semibold"
-              >
-                + Block estimate
-              </Link>
-            </>
-          )}
-        </div>
+        <WelcomeStrip
+          name={personalName}
+          actionItems={stats.inProgress}
+          actionLabel={stats.inProgress === 1 ? 'project on the go' : 'projects on the go'}
+        />
       </div>
 
       <section className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1350,76 +1387,58 @@ function PersonalDashboard() {
         )}
       </section>
 
-      {/* Material library tile — links to the dedicated /library page where
-          blocks, bricks, and supply items are all managed. Heading matches
-          the other dashboard bands for consistent rhythm. */}
-      <section className="mt-10">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Material library
-          </h3>
-          <Link
-            to="/library"
-            className="text-xs text-beme-300 hover:text-beme-200"
-          >
-            Open →
-          </Link>
-        </div>
-        <Link
-          to="/library"
-          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
-        >
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div>
-              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
-                Manage blocks, bricks &amp; supply items →
-              </div>
-              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
-                Your full catalogue: block types, brick types, and any custom
-                supply items priced by the block / brick / m² / lineal m.
-                Edits flow straight into every project.
-              </p>
-            </div>
-          </div>
-        </Link>
-      </section>
-
-      {/* Beme guide tile — link to /guide for the full walkthrough. */}
-      <section className="mt-10">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Beme guide
-          </h3>
-          <Link
-            to="/guide"
-            className="text-xs text-beme-300 hover:text-beme-200"
-          >
-            Open →
-          </Link>
-        </div>
-        <Link
-          to="/guide"
-          className="block border border-ink-600 rounded-xl bg-ink-800 p-5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
-        >
-          <div className="flex items-start justify-between gap-3 flex-wrap">
-            <div>
-              <div className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
-                Full walkthrough &amp; shortcuts →
-              </div>
-              <p className="text-sm text-ink-400 mt-2 max-w-2xl">
-                Setup your library, draw walls, place openings, export an
-                estimate — step-by-step with tips and shortcuts. Region-
-                agnostic; works no matter where in the world you're laying.
-              </p>
-            </div>
-          </div>
-        </Link>
-      </section>
+      {/* Material library and Beme guide tiles moved to the dashboard
+          sidebar (right rail) — see DashboardSidebar in HomePage. */}
     </>
   )
 }
 
 // ---------- Shared sub-components ----------
+
+/**
+ * Personalised greeting block shown on the right of the dashboard title
+ * row. Time-aware ("Good morning / afternoon / evening"), shows today's
+ * date, and surfaces an amber action-items pill when the user has work
+ * waiting. Right-aligned so it fills the space the create-action buttons
+ * used to occupy without visually competing with the heading.
+ */
+function WelcomeStrip({
+  name,
+  actionItems,
+  actionLabel,
+}: {
+  name: string | null
+  actionItems: number
+  actionLabel: string
+}) {
+  const hour = new Date().getHours()
+  const greeting =
+    hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+  const today = new Date().toLocaleDateString(undefined, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  })
+  return (
+    <div className="text-right max-w-full">
+      <div className="text-sm text-ink-300">
+        {greeting}
+        {name ? (
+          <>
+            , <span className="text-ink-50 font-semibold">{name}</span>
+          </>
+        ) : null}
+      </div>
+      <div className="text-xs text-ink-400 mt-0.5">{today}</div>
+      {actionItems > 0 && (
+        <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs whitespace-nowrap">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+          {actionItems} {actionLabel}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function StatTile({
   label,

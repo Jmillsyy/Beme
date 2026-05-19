@@ -84,6 +84,14 @@ interface WallDrawingLayerProps {
    * wall type's palette colour. Falls back to the brand orange if missing.
    */
   wallColorByWallId?: Record<string, string>
+  /**
+   * Currently-active wall makeup id. Walls whose `makeupId` matches this get
+   * the same visual halo as a selected wall, so the user sees "these are the
+   * walls of the type I just clicked in the side panel" without those walls
+   * actually being selected (which would flip the toolbar into multi-select
+   * mode). Pass undefined to disable the highlight treatment entirely.
+   */
+  activeMakeupIdForHighlight?: string | null
   onWallAdded: (startMm: Point, endMm: Point) => void
   /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
   onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
@@ -613,6 +621,7 @@ function WallDrawingLayerInner({
   selectedOpeningIds,
   selectedPierIds,
   wallColorByWallId,
+  activeMakeupIdForHighlight = null,
   placingRuler = false,
   rulerAnchorMm = null,
   measurements = [],
@@ -1894,8 +1903,19 @@ function WallDrawingLayerInner({
 
           const isCurved = isCurvedWall(wall)
 
+          // `isSelected` covers BOTH a real selection (the user explicitly
+          // clicked/shift-clicked the wall) AND the "highlighted because its
+          // makeup is the currently-active one" state. Visually identical —
+          // glowing halo, beefier stroke — so the user gets immediate feedback
+          // when they activate a wall type in the side panel. The toolbar's
+          // multi-select check still uses `selectedWallIds` only, so this
+          // visual doesn't promote the toolbar into multi-select mode.
+          const isHighlightedByActive =
+            !!activeMakeupIdForHighlight && wall.makeupId === activeMakeupIdForHighlight
           const isSelected =
-            (selectedWallIds && selectedWallIds.has(wall.id)) || wall.id === selectedWallId
+            (selectedWallIds && selectedWallIds.has(wall.id)) ||
+            wall.id === selectedWallId ||
+            isHighlightedByActive
           const isHovered =
             wall.id === hoveredWallId &&
             !drawingMode &&
