@@ -926,6 +926,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     drawingModeRef.current = drawingMode
   }, [drawingMode])
 
+  // If the user switches to a curve-bound makeup mid-draw, cancel the
+  // straight-wall draw — curve makeups aren't valid for the regular Draw
+  // wall tool, and leaving the tool live would let a stray click create a
+  // straight wall against the curve makeup.
+  useEffect(() => {
+    if (mode !== 'block') return
+    const active = makeupsById[activeMakeupId]
+    if (active && typeof active.curveRadiusMm === 'number') {
+      if (drawingMode) setDrawingMode(false)
+    }
+  }, [activeMakeupId, makeupsById, mode, drawingMode])
+
   useEffect(() => {
     placingOpeningRef.current = placingOpening
   }, [placingOpening])
@@ -1020,6 +1032,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // underlying state DOES change (adding walls, switching modes, etc.).
   const handleWallAdded = useCallback(function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
     const isBrick = mode === 'brick'
+    // Belt-and-braces: a curve makeup is bound to a specific arc geometry —
+    // drawing a straight wall against it would produce a 20.03CW wall with no
+    // radius, which the calc engine can't tally meaningfully. The UI also
+    // disables the Draw wall button when this is the case (see the wall-draw
+    // toolbar below), but a stale keyboard shortcut or a quick double-click
+    // could still get through, so we guard at the action level too.
+    if (!isBrick) {
+      const active = makeupsById[activeMakeupId]
+      if (active && typeof active.curveRadiusMm === 'number') {
+        return
+      }
+    }
     const existing = wallsByPage[currentPage] ?? []
 
     // Thicknesses for snapping — based on the existing walls (the new wall's own
@@ -2988,6 +3012,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const blockModeNeedsType = mode === 'block'
         const activeMakeup = blockModeNeedsType ? makeupsById[activeMakeupId] : null
         const missingActiveType = blockModeNeedsType && !activeMakeup
+        // A curve-bound makeup carries the arc radius — drawing a straight
+        // wall with it would produce a 20.03CW wall with no curve to match,
+        // which the tally can't reason about. Block the straight Draw wall
+        // tool while one is active; the user can switch to a regular wall
+        // type or use the Curved wall tool to draw another arc.
+        const activeIsCurveMakeup =
+          !!activeMakeup && typeof activeMakeup.curveRadiusMm === 'number'
         return (
         <div className="flex items-center justify-between mb-4 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-3">
           <div className="text-sm">
@@ -2998,6 +3029,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             ) : missingActiveType ? (
               <span className="text-amber-300">
                 Select a wall type above before drawing.
+              </span>
+            ) : activeIsCurveMakeup ? (
+              <span className="text-amber-300">
+                "{activeMakeup!.name}" is a curved-wall type — pick a regular wall type to draw a straight wall, or use the Curved wall tool to draw another arc.
               </span>
             ) : (() => {
               // Quick stats — count, run-metres on the current page, and a
@@ -3068,10 +3103,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 setSelectedOpeningId(null)
                 setSelectedPierId(null)
               }}
-              disabled={!currentScale || calibrating || missingActiveType}
+              disabled={
+                !currentScale || calibrating || missingActiveType || activeIsCurveMakeup
+              }
               title={
                 missingActiveType
                   ? 'Pick a wall type in the Wall types panel before drawing.'
+                  : activeIsCurveMakeup
+                  ? 'This wall type is bound to a curve — pick a straight wall type or use the Curved wall tool.'
                   : undefined
               }
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
