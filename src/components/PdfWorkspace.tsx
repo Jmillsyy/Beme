@@ -3876,14 +3876,115 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
         return (
         <div className="flex items-center justify-between mb-2 px-3 py-1.5 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-2">
-          <div className="text-sm">
-            {totalSelected >= 2 ? (
+          <div className="text-sm flex-1 min-w-0">
+            {/* The left slot of the toolbar is the *announcement zone* —
+                whatever mode the user is in surfaces here (calibrate, draw,
+                opening, ruler, etc.) replacing the stats summary. When the
+                user exits the mode the stats come back. Earlier the
+                various Click-here banners rendered as separate rows under
+                this toolbar; that meant the toolbar height jumped each
+                time. Folding everything into this single slot keeps the
+                chrome the same height regardless of state.
+                Priority order: calibrate input > calibrate click prompt >
+                multi-select > drawing/placing modes > setup hints > stats. */}
+            {calibrating && calPoint1 && calPoint2 ? (
+              <div className="flex items-center gap-2 flex-wrap text-beme-200">
+                <span className="font-medium whitespace-nowrap">
+                  Real-world length of that line:
+                </span>
+                <input
+                  ref={inputRef}
+                  type="number"
+                  min="1"
+                  value={calInput}
+                  onChange={(e) => setCalInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') submitCalibration()
+                    if (e.key === 'Escape') cancelCalibration()
+                  }}
+                  placeholder="e.g. 5000"
+                  className="px-2 py-1 border border-beme-500/40 rounded text-sm w-28 bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                />
+                <span>mm</span>
+                <button
+                  onClick={submitCalibration}
+                  disabled={!calInput || parseFloat(calInput) <= 0}
+                  className="px-3 py-1 rounded bg-beme-500 text-black text-xs font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Save scale
+                </button>
+                <button
+                  onClick={cancelCalibration}
+                  className="px-2 py-1 rounded border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : calibrating ? (
+              <span className="text-beme-200">
+                {!calPoint1
+                  ? 'Click the first point along a known dimension on the plan. Zoom in for accuracy.'
+                  : 'Click the second point.'}
+              </span>
+            ) : totalSelected >= 2 ? (
               <span className="text-sky-200">
                 {selectionParts.join(' + ')} selected. Press{' '}
                 <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
                   Del
                 </kbd>{' '}
                 to remove all, or Shift+click to add/remove items.
+              </span>
+            ) : drawingMode ? (
+              <span className="text-beme-200">
+                Click two points on the plan to draw a wall. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-beme-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
+              </span>
+            ) : drawingCurveMode ? (
+              <span className="text-violet-200">
+                Curved wall: click the <strong>first wall</strong>, then the{' '}
+                <strong>second wall</strong>, then a <strong>midpoint</strong> on the arc.
+                Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-violet-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
+              </span>
+            ) : placingOpening ? (
+              <span className="text-amber-200">
+                Click two points along the same wall to define the opening. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-amber-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
+              </span>
+            ) : placingControlJoint ? (
+              <span className="text-rose-200">
+                Click a wall where you want a <strong>control joint</strong>. The wall splits in
+                two there, each with its own end termination. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-rose-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
+              </span>
+            ) : placingFreestandingPier ? (
+              <span className="text-teal-200">
+                Click on a wall for a <strong>tied pier</strong>, or anywhere else for a{' '}
+                <strong>freestanding pier</strong>. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-teal-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
+              </span>
+            ) : placingRuler ? (
+              <span className="text-fuchsia-200">
+                Click two points on the plan to measure the distance between them. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-fuchsia-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
               </span>
             ) : !currentScale ? (
               <span className="text-ink-400">
@@ -4180,46 +4281,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         )
       })()}
 
-      {drawingMode && (
-        <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg text-sm text-beme-200">
-          Click two points on the plan to draw a wall. Press <kbd className="px-1.5 py-0.5 rounded border border-beme-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
-
-      {placingRuler && (
-        <div className="mb-3 px-4 py-3 bg-fuchsia-500/10 border border-fuchsia-500/40 rounded-lg text-sm text-fuchsia-100">
-          Click two points on the plan to measure the distance between them. Each pair drops a measurement that stays on the canvas until you clear it. Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-fuchsia-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
-
-      {drawingCurveMode && (
-        <div className="mb-3 px-4 py-3 bg-violet-500/10 border border-violet-500/40 rounded-lg text-sm text-violet-200">
-          Curved wall: click the <strong>first wall</strong>, then the <strong>second wall</strong>, then a <strong>midpoint</strong> on the arc between them. Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-violet-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
-
-      {placingOpening && (
-        <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
-          Click two points along the same wall to define the opening. Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-amber-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
-
-      {placingControlJoint && (
-        <div className="mb-3 px-4 py-3 bg-rose-500/10 border border-rose-500/40 rounded-lg text-sm text-rose-200">
-          Click a wall where you want a <strong>control joint</strong>. The wall will be split into two walls there — each gets its own end termination. Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-rose-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
-
-      {placingFreestandingPier && (
-        <div className="mb-3 px-4 py-3 bg-teal-500/10 border border-teal-500/40 rounded-lg text-sm text-teal-200">
-          Click on a wall for a <strong>tied pier</strong> (built into the wall, 40.925 / 20.01 alternating courses) — or click anywhere else for a <strong>freestanding pier</strong> ({freestandingPierHeightMm}mm tall, 40.925 stacked; change height in the side panel after placing). Press{' '}
-          <kbd className="px-1.5 py-0.5 rounded border border-teal-300 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd> to cancel.
-        </div>
-      )}
+      {/* drawingMode / drawingCurveMode / placingOpening / placingControlJoint /
+          placingFreestandingPier / placingRuler banners all moved INTO the
+          wall-drawing toolbar's left slot. Chrome height stays the same
+          regardless of which mode the user is in. */}
 
       {/* Pending opening form — block mode (sill + head, opening height computed) */}
       {pendingOpening && pendingOpeningWall && mode === 'block' && (() => {
@@ -4624,42 +4689,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       </div>
       {/* End of sticky action bar */}
 
-      {/* Calibration instructions banner */}
-      {calibrating && !(calPoint1 && calPoint2) && (
-        <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg text-sm text-beme-200">
-          {!calPoint1
-            ? 'Click the first point along a known dimension on the plan. Zoom in for accuracy.'
-            : 'Click the second point.'}
-        </div>
-      )}
-
-      {/* Calibration distance input */}
-      {calibrating && calPoint1 && calPoint2 && (
-        <div className="mb-3 px-4 py-3 bg-beme-500/10 border border-beme-500/40 rounded-lg flex items-center gap-3 flex-wrap">
-          <span className="text-sm text-beme-700 font-medium">Real-world length of that line:</span>
-          <input
-            ref={inputRef}
-            type="number"
-            min="1"
-            value={calInput}
-            onChange={(e) => setCalInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submitCalibration()
-              if (e.key === 'Escape') cancelCalibration()
-            }}
-            placeholder="e.g. 5000"
-            className="px-3 py-1.5 border border-beme-300 rounded-lg text-sm w-32 focus:outline-none focus:border-beme-400"
-          />
-          <span className="text-sm text-beme-700">mm</span>
-          <button
-            onClick={submitCalibration}
-            disabled={!calInput || parseFloat(calInput) <= 0}
-            className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
-          >
-            Save scale
-          </button>
-        </div>
-      )}
+      {/* Calibration prompts + distance input moved INTO the wall-drawing
+          toolbar's left slot, so the toolbar height doesn't change while
+          calibrating. */}
 
       {/* Page thumbnails + main PDF view — sits at the top of the canvas
           area's flex column and flex-fills the remaining height. Thumbnails
