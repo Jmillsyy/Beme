@@ -243,6 +243,36 @@ export async function updatePassword(
 }
 
 /**
+ * Update the signed-in user's email address. Supabase sends a verification
+ * link to the NEW address — until the user clicks it, sign-in continues to
+ * work with the old address. Once verified, the new email replaces the old.
+ *
+ * Same trust model as `updatePassword`: session ownership is taken as proof
+ * of identity, so the current password is not required. Sign-in providers
+ * that supply email automatically (e.g. Microsoft OAuth) usually don't
+ * allow rewriting the email server-side; in that case this call will
+ * succeed in Supabase but Microsoft will still drive the email on the
+ * next sign-in. Surface the message Supabase returns so the user knows
+ * to check their inbox for the verification link.
+ */
+export async function updateEmail(
+  newEmail: string
+): Promise<{ error: Error | null }> {
+  if (!isSupabaseConfigured) {
+    return { error: new Error('Supabase is not configured. See SETUP.md.') }
+  }
+  const trimmed = newEmail.trim()
+  if (!trimmed) {
+    return { error: new Error('Enter an email address.') }
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return { error: new Error("That doesn't look like a valid email.") }
+  }
+  const { error } = await supabase().auth.updateUser({ email: trimmed })
+  return { error }
+}
+
+/**
  * Sign the user out everywhere. Clears the Supabase session and forces a
  * re-render of components subscribed to `useAuth`.
  */

@@ -297,6 +297,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    * reloads land back in this mode instead of bouncing back to the upload zone.
    */
   const [isEmptyWorkspace, setIsEmptyWorkspace] = useState(false)
+  /**
+   * Whether walls of the currently active wall type should glow on the canvas.
+   * Turned ON when the user activates a type (clicking it in the side panel or
+   * clicking a wall on the PDF). Turned OFF when the user presses Esc with
+   * nothing else to cancel — gives them a "clear the canvas" affordance without
+   * losing the active type itself (so they can still draw).
+   */
+  const [showActiveMakeupHighlight, setShowActiveMakeupHighlight] = useState(true)
 
   // ---------- Multi-PDF support ----------
   // `pdfFile` above is the PRIMARY plan — the file walls / openings / piers
@@ -1028,6 +1036,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setSelectedWallId(id)
     if (id) {
       setSelectedOpeningId(null)
+      // Re-enable the active-makeup glow when the user re-engages with a
+      // wall by clicking it (they previously may have hit Esc to dismiss it).
+      setShowActiveMakeupHighlight(true)
       // Surface the selected wall's makeup in the Wall types panel so the
       // user can see at a glance which type the wall belongs to (and tweak
       // it in place). Looks the wall up across every page since the
@@ -1060,6 +1071,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setPlacingFreestandingPier(false)
     setPlacingRuler(false)
     setRulerAnchorMm(null)
+    // Esc with nothing to cancel funnels through here too (see
+    // WallDrawingLayer's keydown). Use that as the signal to dismiss the
+    // active-makeup highlight — the user is saying "I'm not focused on
+    // anything right now". The active type itself stays, so drawing the
+    // next wall just lights it back up via handleWallSelect / handleActivate.
+    setShowActiveMakeupHighlight(false)
   }, [])
 
   async function handleDeleteProject() {
@@ -1549,6 +1566,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    */
   function handleActivateMakeup(id: string) {
     setActiveMakeupId(id)
+    // Picking a type in the panel is an explicit signal of intent to work
+    // with it — light up the matching walls again even if the user had
+    // pressed Esc earlier to dismiss the highlight.
+    setShowActiveMakeupHighlight(true)
   }
 
   // ---------- Brick makeup CRUD ----------
@@ -1578,6 +1599,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    */
   function handleActivateBrickMakeup(id: string) {
     setActiveBrickMakeupId(id)
+    setShowActiveMakeupHighlight(true)
   }
 
   function handleReassignWallMakeup(wallId: string, makeupId: string) {
@@ -4987,7 +5009,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   selectedPierIds={selectedPierIds}
                   wallColorByWallId={wallColorByWallId}
                   activeMakeupIdForHighlight={
-                    mode === 'brick' ? activeBrickMakeupId : activeMakeupId
+                    showActiveMakeupHighlight
+                      ? mode === 'brick'
+                        ? activeBrickMakeupId
+                        : activeMakeupId
+                      : null
                   }
                   onWallToggleSelect={toggleSelectedWallId}
                   onOpeningToggleSelect={toggleSelectedOpeningId}

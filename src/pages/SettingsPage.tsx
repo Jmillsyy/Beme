@@ -7,7 +7,7 @@ import {
   useUserSettings,
 } from '../lib/userSettings'
 import { useTheme } from '../lib/theme'
-import { signOut, updatePassword, useAuth } from '../lib/auth'
+import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
@@ -1243,6 +1243,13 @@ function AccountTab() {
         </PanelCard>
       )}
 
+      {/* Email card — change the signed-in user's email address. Supabase
+          sends a verification link to the new address; once clicked, the
+          new email replaces the old for sign-in. */}
+      {isSupabaseConfigured && signedIn && user && (
+        <EmailCard currentEmail={user.email ?? ''} />
+      )}
+
       {/* Password card — set or change the signed-in user's password.
           Works whether they originally signed in via magic link, Microsoft
           OAuth, or password. After setting, they can also use email +
@@ -1311,6 +1318,107 @@ function AccountTab() {
         </button>
       </PanelCard>
     </div>
+  )
+}
+
+/**
+ * Change the signed-in user's email address. Lives inside the Account tab,
+ * directly below the account header so the user sees the email they're
+ * currently signed in with and can edit it without scrolling. Submitting
+ * triggers a Supabase verification email to the new address — until the
+ * user clicks that link, sign-in keeps working with the old address.
+ *
+ * Heads-up displayed in the card: for users whose auth comes from
+ * Microsoft OAuth, Supabase still accepts the update, but the next OAuth
+ * sign-in will overwrite the email with whatever Microsoft sends — so
+ * for those users the long-term fix is to update the email in their
+ * Microsoft account rather than here.
+ */
+function EmailCard({ currentEmail }: { currentEmail: string }) {
+  const [email, setEmail] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (submitting) return
+    if (!email.trim()) {
+      setError('Enter the new email you want to use.')
+      return
+    }
+    if (email.trim().toLowerCase() === currentEmail.toLowerCase()) {
+      setError("That's already the email on your account.")
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    setSuccess(null)
+    const { error: updateErr } = await updateEmail(email.trim())
+    if (updateErr) {
+      setError(updateErr.message)
+      setSubmitting(false)
+      return
+    }
+    setSuccess(
+      `Verification email sent to ${email.trim()}. Click the link in it to switch over. You'll keep using ${currentEmail} to sign in until then.`
+    )
+    setEmail('')
+    setSubmitting(false)
+  }
+
+  return (
+    <PanelCard
+      title="Email address"
+      description="Change the email Beme uses to sign you in. We'll send a verification link to the new address — until you click it, your current email keeps working."
+    >
+      <div className="space-y-3 max-w-md">
+        <div className="text-xs text-ink-300">
+          Currently signed in as{' '}
+          <span className="font-medium text-ink-50">{currentEmail || '(unknown)'}</span>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <label className="block">
+            <span className="text-xs text-ink-300 mb-1.5 inline-block">
+              New email
+            </span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+              className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+            />
+          </label>
+
+          {error && (
+            <p className="text-sm text-rose-300 px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/10">
+              {error}
+            </p>
+          )}
+          {success && (
+            <p className="text-sm text-emerald-200 px-3 py-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10">
+              {success}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting || !email.trim()}
+            className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {submitting ? 'Sending…' : 'Send verification email'}
+          </button>
+        </form>
+        <p className="text-[11px] text-ink-500">
+          If you signed in with Microsoft, your email comes from Microsoft on
+          every sign-in. Changing it here works, but the next Microsoft
+          sign-in will overwrite it — update it in your Microsoft account
+          for a permanent change.
+        </p>
+      </div>
+    </PanelCard>
   )
 }
 

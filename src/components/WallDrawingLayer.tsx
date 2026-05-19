@@ -1217,16 +1217,31 @@ function WallDrawingLayerInner({
         } else if (placingRuler) {
           // Cancel any in-progress measurement and exit ruler mode entirely.
           onCancelDraw?.()
-        } else if (selectedWallId) {
-          onWallSelect(null)
-        } else if (selectedOpeningId) {
-          onOpeningSelect(null)
+        } else {
+          // No drawing mode active — Escape deselects anything currently
+          // selected (single or multi). Calling each onXxxSelect(null) at
+          // the parent collapses both the single id and the multi-select
+          // set to empty, so one Esc clears everything.
+          const hasWallSelection =
+            !!selectedWallId || (selectedWallIds && selectedWallIds.size > 0)
+          const hasOpeningSelection =
+            !!selectedOpeningId || (selectedOpeningIds && selectedOpeningIds.size > 0)
+          const hasPierSelection =
+            !!selectedPierId || (selectedPierIds && selectedPierIds.size > 0)
+          if (hasWallSelection) onWallSelect(null)
+          if (hasOpeningSelection) onOpeningSelect(null)
+          if (hasPierSelection && onPierSelect) onPierSelect(null)
+          // Even when there's nothing selected, funnel through onCancelDraw
+          // so the parent gets a "Esc was pressed" signal — it uses that to
+          // dismiss the active-makeup glow so the user can press Esc to
+          // clear the highlighted walls.
+          onCancelDraw?.()
         }
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, onCancelDraw, onWallSelect, onOpeningSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -1990,13 +2005,13 @@ function WallDrawingLayerInner({
                 closed
                 fill={
                   isSelected
-                    ? hexToRgba(wallTypeStroke, 0.6)
+                    ? hexToRgba(wallTypeStroke, 0.4)
                     : isCurveAnchor
                       ? 'rgba(139, 92, 246, 0.22)'
                       : hexToRgba(wallTypeStroke, 0.2)
                 }
                 stroke={strokeColor}
-                strokeWidth={isSelected ? 5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
+                strokeWidth={isSelected ? 3.5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
                 hitStrokeWidth={8}
                 lineJoin="miter"
                 // Selected walls get a soft glow IN THEIR OWN COLOUR so the
@@ -2008,10 +2023,15 @@ function WallDrawingLayerInner({
                 // highlight stroke itself casts the halo — on thick block
                 // walls the fill alone wasn't visible enough against the PDF
                 // underneath, but a glowing stroke reads cleanly in both
-                // modes.
+                // modes. Dialled the blur and opacity down from
+                // 16/0.85 → 8/0.45 because the original glow was overpowering
+                // when the user activates a wall type and every wall of that
+                // type lights up at once — felt aggressive. The current
+                // values still clearly differentiate selected walls from
+                // unselected without dominating the canvas.
                 shadowColor={isSelected ? wallTypeStroke : undefined}
-                shadowBlur={isSelected ? 16 : 0}
-                shadowOpacity={isSelected ? 0.85 : 0}
+                shadowBlur={isSelected ? 8 : 0}
+                shadowOpacity={isSelected ? 0.45 : 0}
                 // Konva perf flags. perfectDrawEnabled forces an offscreen
                 // buffer when a shape has both fill and stroke (so the stroke
                 // doesn't tint the fill at the edges); with semi-transparent
