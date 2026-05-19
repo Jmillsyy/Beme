@@ -2494,18 +2494,22 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (!pdfFile && !isEmptyWorkspace) return
     const raf = requestAnimationFrame(() => {
       if (!container) return
-      // Use the page wrapper's offset within the scroll content to align
-      // the viewport centre with the page centre. Falls back to scroll-
-      // content centring if the page wrapper hasn't mounted yet.
+      // Use the page wrapper's actual position in scroll-content coords to
+      // align the viewport centre with the page centre. pageEl.offsetLeft
+      // depends on offsetParent and isn't reliable when no ancestor is
+      // positioned — use bounding rects instead, taking the difference
+      // between page and container to get the scroll-content offset.
       let targetLeft = 0
       let targetTop = 0
       if (pageEl) {
-        const pageOffsetLeft = pageEl.offsetLeft
-        const pageOffsetTop = pageEl.offsetTop
-        const pageW = pageEl.offsetWidth
-        const pageH = pageEl.offsetHeight
-        targetLeft = pageOffsetLeft + pageW / 2 - container.clientWidth / 2
-        targetTop = pageOffsetTop + pageH / 2 - container.clientHeight / 2
+        const pageRect = pageEl.getBoundingClientRect()
+        const containerRect = container.getBoundingClientRect()
+        // Page's left in scroll-content coords:
+        //   (page-left in viewport) - (container-left in viewport) + scrollLeft
+        const pageInScrollLeft = pageRect.left - containerRect.left + container.scrollLeft
+        const pageInScrollTop = pageRect.top - containerRect.top + container.scrollTop
+        targetLeft = pageInScrollLeft + pageRect.width / 2 - container.clientWidth / 2
+        targetTop = pageInScrollTop + pageRect.height / 2 - container.clientHeight / 2
       } else {
         targetLeft = (container.scrollWidth - container.clientWidth) / 2
         targetTop = (container.scrollHeight - container.clientHeight) / 2
@@ -4544,23 +4548,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               : 'grab',
         }}
       >
-        {/* Spacer wrapper: page sits at the TOP-LEFT of the scroll content
-            (scroll-x=0, scroll-y=0) so scrollLeft=0 / scrollTop=0 always
-            puts the PDF's true top-left edge at the viewport's top-left.
-            min-width / min-height extend the scroll area by 400/300 px
-            past the page on the right and bottom so click-drag pan has
-            scroll room even when the page fits inside the container at low
-            zoom — without it, drag-pan no-ops when there's no overflow.
-            At high zoom the page itself exceeds the viewport on both axes
-            and scrollWidth=pageW, so the user can drag straight from
-            page-left edge (scrollLeft=0) to page-right edge (scrollLeft=
-            max). The initial centring useLayoutEffect below scrolls to
-            roughly the middle of the page on PDF load so the user sees
-            the page rather than the empty buffer. */}
+        {/* Spacer wrapper with symmetric padding so the user can drag the
+            page in any direction past its natural edges. Padding sits on
+            all four sides of the page, adding 400 / 300 px of pannable
+            buffer to the LEFT and TOP as well as RIGHT and BOTTOM —
+            otherwise the user can only drag the page in one direction
+            (towards whichever side has the buffer). min-width / min-height
+            extend the scroll area further at low zoom so the page +
+            buffer is always larger than the viewport. Initial-scroll
+            useLayoutEffect below targets "page centre = viewport centre",
+            which lands the user looking at the page rather than at the
+            buffer in the corner. */}
         <div
           style={{
-            minWidth: 'calc(100% + 400px)',
-            minHeight: 'calc(100% + 300px)',
+            minWidth: 'calc(100% + 800px)',
+            minHeight: 'calc(100% + 600px)',
+            padding: '300px 400px',
+            boxSizing: 'border-box',
           }}
         >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
