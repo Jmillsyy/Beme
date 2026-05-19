@@ -678,7 +678,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
         }
         if (proj.brickSettings) setBrickSettings(proj.brickSettings)
-        if (proj.exportInclusions) setExportInclusions(proj.exportInclusions)
+        if (proj.exportInclusions) {
+          // Merge with defaults so projects saved before a new inclusion
+          // toggle was added still get the new section (defaulted on).
+          // Mirrors the block-side merge — without it, e.g. wallLayout
+          // missing on an older save silently leaves it unchecked.
+          setExportInclusions({
+            ...createDefaultExportInclusions(),
+            ...proj.exportInclusions,
+            // Wall layout pages should be ticked by default for every brick
+            // export — the diagram is the most useful page in the PDF.
+            // Force it ON regardless of what the saved project carried, so
+            // any old project where it was off comes back ticked on next
+            // load. Users can still untick it before exporting if they
+            // don't want it for a specific job.
+            wallLayout: true,
+          })
+        }
         if (proj.blockExportInclusions) {
           // Merge with defaults so projects saved before a new inclusion
           // toggle was added still get the new section (defaulted on). Without
@@ -3169,13 +3185,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   if (!pdfFile && !isEmptyWorkspace) {
     return (
-      // Upload zone mirrors the workspace layout: full-bleed flex column with
-      // ProjectBar at top, a flex-row body where the drop zone occupies the
-      // canvas area on the left and the same right rail (wall types / pier
-      // types / library) on the right. Heights stretch all the way to the
-      // viewport bottom, matching the post-PDF view so the transition is
-      // seamless.
-      <div className="flex-1 min-h-0 w-full flex flex-col">
+      // Upload zone mirrors the workspace layout: ProjectBar in normal flow,
+      // sticky workspace area below it taking one visual viewport. The
+      // header + ProjectBar scroll OFF when the user scrolls; the sticky
+      // drop zone + right rail stay pinned.
+      <div className="w-full">
         {pagePickerModal}
         {(mode === 'block' || mode === 'brick') && (
           <ProjectBar
@@ -3202,7 +3216,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           onClose={() => setDetailsDrawerOpen(false)}
         />
 
-        <div className="flex-1 min-h-0 relative flex flex-col px-20 pt-2 pb-4">
+        <div className="sticky top-0 h-[calc(100vh/0.88)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
           <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
             {/* ── Canvas area: drop zone fills the height ── */}
@@ -3357,11 +3371,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // ---------- Render: workspace ----------
 
   return (
-    <div className="flex-1 min-h-0 w-full flex flex-col">
+    // Outer is just normal flow inside the scrollable page wrapper —
+    // ProjectBar takes its natural height, then the workspace area below
+    // sticks to the top of the viewport so it stays visible while the
+    // Beme header + ProjectBar scroll OFF the top when the user scrolls
+    // down. No flex chain needed at this level.
+    <div className="w-full">
       {pagePickerModal}
-      {/* Slim project bar — sits at the top above the floating-panel
-          workspace. Takes its natural height; the workspace area below
-          flex-fills the remaining viewport. */}
+      {/* Slim project bar — sits in normal flow above the workspace so it
+          scrolls away on page-scroll-down, freeing more visual height for
+          the canvas + right rail below. */}
       {(mode === 'block' || mode === 'brick') && (
         <ProjectBar
           details={projectDetails}
@@ -3387,14 +3406,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
-      {/* Workspace area — fills the viewport below the project bar. The
-          canvas and right rail sit in a flex row below the top chrome,
-          and each flex-fills the remaining vertical space. 80px L/R padding
-          + 16px bottom keeps the columns well off the viewport edges (so
-          the workspace reads as a contained card with the project bar
-          flush above it), with a tighter 8px top so the chrome doesn't
-          drift away from the bar. */}
-      <div className="flex-1 min-h-0 relative flex flex-col px-20 pt-2 pb-4">
+      {/* Workspace area — `position: sticky top-0` so it stays pinned to
+          the top of the viewport while the Beme header + ProjectBar
+          scroll OFF when the user scrolls down. Explicit height = one
+          visual viewport (compensates for html zoom 0.88) so the canvas
+          and right rail below take up the full visible area once the
+          header chrome has scrolled away. The PDF pan container still has
+          its own internal scroll for the plan content. */}
+      <div className="sticky top-0 h-[calc(100vh/0.88)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
 
       {/* Unified toolbar — file tabs · page nav · zoom · scale · replace in
           one row. The old separate file-switcher row was redundant because

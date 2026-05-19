@@ -7,16 +7,17 @@ export default function BlockEstimatePage() {
   const projectId = searchParams.get('id')
 
   return (
-    // h-[calc(100vh/0.88)] + overflow-hidden locks the workspace to a
-    // single visual viewport (compensates for `html { zoom: 0.88 }` in
-    // index.css). The canvas pan container inside has its own internal
-    // scrolling so the PDF pans freely without the page itself ever
-    // scrolling — dragging the plan to any edge stays reliable.
-    <div className="h-[calc(100vh/0.88)] flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
+    // Page is taller than the viewport: the Beme header + ProjectBar sit
+    // in normal flow above the workspace, and the workspace area inside
+    // PdfWorkspace uses `position: sticky` so it stays pinned to the top
+    // of the viewport while the header + project bar scroll OFF when the
+    // user scrolls down. min-h-[100vh/0.88] is the visual viewport (with
+    // html zoom 0.88), so the page is at least viewport-tall and grows
+    // by the height of the header + project bar — that's the scroll
+    // budget. No overflow-hidden so the scroll actually works.
+    <div className="min-h-[calc(100vh/0.88)] bg-ink-900 text-ink-50">
       <Header />
-      <div className="flex-1 min-h-0 relative flex flex-col">
-        <PdfWorkspace mode="block" projectId={projectId} />
-      </div>
+      <PdfWorkspace mode="block" projectId={projectId} />
     </div>
   )
 }

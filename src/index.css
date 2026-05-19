@@ -181,12 +181,10 @@ body,
 }
 
 /* Default page zoom — shrinks the whole UI slightly so more content fits
-   per viewport without the user having to manually zoom every session.
-   Set to 0.88 (= the old 0.8 default × 110% browser zoom, which testing
-   showed reads better for typical workflow density). If you change this,
-   update the matching `h-[calc(100vh/N)]` on the estimate page wrappers
-   so the workspace still fills the visual viewport — the compensation
-   factor is 1/zoom.
+   per viewport. Set to 0.88 (the original desktop choice). If you change
+   this, also update the matching `h-[calc(100vh/N)]` on estimate page
+   wrappers so the workspace still fills the visual viewport — the
+   compensation factor is 1/zoom.
 
    `zoom` is the right tool here — it scales BOTH content and layout boxes
    so scrollbars / fixed-position elements stay correct, unlike
