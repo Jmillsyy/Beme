@@ -1829,6 +1829,42 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     })
   }, [currentPage, makeupsById, mode, brickSettings])
 
+  /**
+   * Drop every wall, opening, and pier on the given PDF page so a stale
+   * earlier-attempt page can be cleared from the project (e.g. user
+   * re-imported the plan but the previous attempt's walls were left
+   * behind on an old page). Wall types stay in the project — they're a
+   * library-level concern and might still be in use on other pages.
+   * Selection clears if it was pointing into the page being cleared.
+   */
+  function handleClearPage(pageNum: number) {
+    setWallsByPage((prev) => {
+      if (!prev[pageNum] || prev[pageNum].length === 0) return prev
+      const next = { ...prev }
+      next[pageNum] = []
+      return next
+    })
+    setOpeningsByPage((prev) => {
+      if (!prev[pageNum] || prev[pageNum].length === 0) return prev
+      const next = { ...prev }
+      next[pageNum] = []
+      return next
+    })
+    setPiersByPage((prev) => {
+      if (!prev[pageNum] || prev[pageNum].length === 0) return prev
+      const next = { ...prev }
+      next[pageNum] = []
+      return next
+    })
+    // Clear selection if the user had something selected on the page they
+    // just wiped, since those ids no longer point at anything.
+    if (currentPage === pageNum) {
+      _setSelectedWallIds(new Set())
+      _setSelectedOpeningIds(new Set())
+      _setSelectedPierIds(new Set())
+    }
+  }
+
   function handleWallDelete(wallId: string) {
     setWallsByPage((prev) => {
       const pageWalls = prev[currentPage] ?? []
@@ -4562,6 +4598,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             currentPage={currentPage}
             pagesData={isReferenceView ? {} : pagesData}
             onSelectPage={setCurrentPage}
+            wallCountsByPage={
+              isReferenceView
+                ? {}
+                : Object.fromEntries(
+                    Object.entries(wallsByPage).map(([n, ws]) => [n, ws.length])
+                  )
+            }
+            onClearPage={isReferenceView ? undefined : handleClearPage}
           />
         )}
 
@@ -4952,6 +4996,12 @@ interface ThumbnailSidebarProps {
   currentPage: number
   pagesData: Record<number, { pageScaleRatio?: number; scalePxPerMm?: number }>
   onSelectPage: (pageNum: number) => void
+  /** Wall count per page — drives the "X walls" caption and shows the
+   *  Clear button only for pages that have something to clear. */
+  wallCountsByPage?: Record<number, number>
+  /** Delete every wall, opening, and pier on the given page. Called from
+   *  the per-thumbnail Clear button. Confirmation lives at the call site. */
+  onClearPage?: (pageNum: number) => void
 }
 
 const ThumbnailSidebar = memo(function ThumbnailSidebar({
@@ -4961,6 +5011,8 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   currentPage,
   pagesData,
   onSelectPage,
+  wallCountsByPage,
+  onClearPage,
 }: ThumbnailSidebarProps) {
   return (
     <div
@@ -4977,40 +5029,70 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
             const hasScale =
               !!pagesData[pageNum]?.pageScaleRatio ||
               !!pagesData[pageNum]?.scalePxPerMm
+            const wallCount = wallCountsByPage?.[pageNum] ?? 0
+            const canClear = wallCount > 0 && !!onClearPage
             return (
-              <button
+              <div
                 key={pageNum}
-                onClick={() => onSelectPage(pageNum)}
-                className={`block w-full p-1 rounded-md transition-colors text-left ${
+                className={`relative group block w-full p-1 rounded-md transition-colors text-left ${
                   isCurrent
                     ? 'ring-2 ring-beme-500 bg-beme-500/10'
                     : 'ring-1 ring-ink-600 hover:ring-beme-500/60 bg-ink-700/40'
                 }`}
               >
-                <div
-                  className="bg-ink-800 flex justify-center overflow-hidden rounded-sm"
-                  style={{ lineHeight: 0 }}
+                <button
+                  onClick={() => onSelectPage(pageNum)}
+                  className="block w-full text-left"
                 >
-                  <Page
-                    pageNumber={pageNum}
-                    width={100}
-                    renderAnnotationLayer={false}
-                    renderTextLayer={false}
-                  />
-                </div>
-                <div
-                  className={`mt-1 text-xs flex items-center justify-between px-1 ${
-                    isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
-                  }`}
-                >
-                  <span>Page {pageNum}</span>
-                  {hasScale && (
-                    <span className="text-emerald-300" title="Scale set">
-                      ✓
-                    </span>
+                  <div
+                    className="bg-ink-800 flex justify-center overflow-hidden rounded-sm"
+                    style={{ lineHeight: 0 }}
+                  >
+                    <Page
+                      pageNumber={pageNum}
+                      width={100}
+                      renderAnnotationLayer={false}
+                      renderTextLayer={false}
+                    />
+                  </div>
+                  <div
+                    className={`mt-1 text-xs flex items-center justify-between px-1 ${
+                      isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
+                    }`}
+                  >
+                    <span>Page {pageNum}</span>
+                    {hasScale && (
+                      <span className="text-emerald-300" title="Scale set">
+                        ✓
+                      </span>
+                    )}
+                  </div>
+                  {wallCount > 0 && (
+                    <div className="text-[10px] text-ink-400 px-1">
+                      {wallCount} wall{wallCount === 1 ? '' : 's'}
+                    </div>
                   )}
-                </div>
-              </button>
+                </button>
+                {/* Clear page: removes every wall, opening, and pier on this
+                    page so a stale earlier-attempt page can be dropped
+                    permanently. Hover-visible to avoid mis-clicks during
+                    normal page navigation; confirmation dialog on click. */}
+                {canClear && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const ok = window.confirm(
+                        `Clear all walls, openings and piers from Page ${pageNum}? This can't be undone via the Undo button.`
+                      )
+                      if (ok) onClearPage?.(pageNum)
+                    }}
+                    title="Clear walls on this page"
+                    className="absolute top-1 right-1 w-5 h-5 rounded bg-ink-900/80 text-rose-300 text-xs leading-none opacity-0 group-hover:opacity-100 hover:bg-rose-500 hover:text-ink-50 transition-opacity transition-colors"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             )
           })}
         </div>
