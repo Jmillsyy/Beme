@@ -2687,20 +2687,54 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
   }
 
+  /**
+   * Apply axis-snap to a calibration point relative to the first click —
+   * same 4° orthogonal lock the wall-drawing tool uses. Lets the user
+   * calibrate horizontal/vertical dimensions without nudging the cursor
+   * to a pixel-perfect position. Shift bypasses the snap for cases where
+   * the dimension is genuinely on an angle.
+   */
+  function calibrationAxisSnap(
+    p: Point,
+    anchor: Point | null,
+    shiftKey: boolean
+  ): Point {
+    if (!anchor || shiftKey) return p
+    const dx = p.x - anchor.x
+    const dy = p.y - anchor.y
+    if (dx === 0 && dy === 0) return p
+    const len = Math.sqrt(dx * dx + dy * dy)
+    const angleDeg = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI
+    // Within 4° of horizontal → lock to the anchor's Y.
+    if (angleDeg < 4) {
+      return { x: p.x, y: anchor.y }
+    }
+    // Within 4° of vertical → lock to the anchor's X.
+    if (angleDeg > 90 - 4) {
+      return { x: anchor.x, y: p.y }
+    }
+    // Outside the snap band — keep the cursor exactly where it is. Using
+    // `len` to silence the unused-variable warning on lint configs that
+    // catch dead computations.
+    void len
+    return p
+  }
+
   function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
     if (!calibrating) return
-    const p = svgCoordsFromEvent(e)
+    const raw = svgCoordsFromEvent(e)
     if (!calPoint1) {
-      setCalPoint1(p)
+      setCalPoint1(raw)
     } else if (!calPoint2) {
-      setCalPoint2(p)
+      setCalPoint2(calibrationAxisSnap(raw, calPoint1, e.shiftKey))
     }
   }
 
   function handleSvgMouseMove(e: React.MouseEvent<SVGSVGElement>) {
     if (!calibrating) return
     if (calPoint1 && !calPoint2) {
-      setMousePos(svgCoordsFromEvent(e))
+      const raw = svgCoordsFromEvent(e)
+      setMousePos(calibrationAxisSnap(raw, calPoint1, e.shiftKey))
     }
   }
 
