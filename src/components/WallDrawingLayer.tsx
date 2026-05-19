@@ -1279,6 +1279,12 @@ function WallDrawingLayerInner({
   // ---------- Stage events ----------
 
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>) {
+    // Konva fires the synthetic 'click' event for ANY mouse button, not just
+    // left. Right-click is reserved here for the container's pan handler
+    // (PdfWorkspace), so any non-left click should be a no-op at this layer
+    // — otherwise releasing a right-drag-pan would still drop a wall point
+    // / opening / calibration mark at the cursor's final position.
+    if (e.evt.button !== 0) return
     const stage = e.target.getStage()
     if (!stage) return
     const raw = stage.getPointerPosition()
@@ -1889,6 +1895,8 @@ function WallDrawingLayerInner({
             <Group
               key={wall.id}
               onClick={(e) => {
+                // Right-click is reserved for pan — never selects walls.
+                if (e.evt.button !== 0) return
                 // Curve / control-joint / pier modes: clicks bubble up to the stage handler
                 // (which picks anchors / splits / drops piers). Selection is suppressed.
                 if (
@@ -2058,6 +2066,8 @@ function WallDrawingLayerInner({
             <Group
               key={opening.id}
               onClick={(e) => {
+                // Right-click is reserved for pan — never selects openings.
+                if (e.evt.button !== 0) return
                 if (
                   drawingMode ||
                   placingOpening ||
@@ -2198,6 +2208,8 @@ function WallDrawingLayerInner({
             <Group
               key={pier.id}
               onClick={(e) => {
+                // Right-click is reserved for pan — never selects piers.
+                if (e.evt.button !== 0) return
                 if (
                   drawingMode ||
                   placingOpening ||
