@@ -1947,13 +1947,13 @@ function WallDrawingLayerInner({
                 closed
                 fill={
                   isSelected
-                    ? 'rgba(59, 130, 246, 0.42)'
+                    ? 'rgba(59, 130, 246, 0.6)'
                     : isCurveAnchor
                       ? 'rgba(139, 92, 246, 0.22)'
                       : 'rgba(237, 125, 49, 0.20)'
                 }
                 stroke={strokeColor}
-                strokeWidth={isSelected ? 3.5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
+                strokeWidth={isSelected ? 5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
                 hitStrokeWidth={8}
                 lineJoin="miter"
                 // Selected walls get a soft blue glow so the user can pick
@@ -1961,19 +1961,22 @@ function WallDrawingLayerInner({
                 // canvas click or from the Wall types panel. Non-selected
                 // walls skip shadow entirely (perf). The shadow lands on the
                 // semi-transparent fill which is enough to read as a halo
-                // around the wall.
+                // around the wall. shadowForStrokeEnabled flips on ONLY when
+                // selected so the highlight stroke itself casts the halo —
+                // on thick block walls the fill alone wasn't visible enough
+                // against the PDF underneath, but a glowing stroke reads
+                // cleanly in both modes.
                 shadowColor={isSelected ? '#3b82f6' : undefined}
-                shadowBlur={isSelected ? 14 : 0}
-                shadowOpacity={isSelected ? 0.65 : 0}
+                shadowBlur={isSelected ? 16 : 0}
+                shadowOpacity={isSelected ? 0.85 : 0}
                 // Konva perf flags. perfectDrawEnabled forces an offscreen
                 // buffer when a shape has both fill and stroke (so the stroke
                 // doesn't tint the fill at the edges); with semi-transparent
                 // fills it's barely visible but the buffer cost shows up in
-                // every redraw. shadowForStrokeEnabled is the same idea for
-                // shadows we don't use. Disabling both noticeably speeds up
-                // hover/zoom redraws on plans with lots of walls.
+                // every redraw. shadowForStrokeEnabled — see selection comment
+                // above.
                 perfectDrawEnabled={false}
-                shadowForStrokeEnabled={false}
+                shadowForStrokeEnabled={isSelected}
                 onMouseEnter={(e) => {
                   // During an active zoom gesture the cursor doesn't move on
                   // screen but the canvas CSS-scales — different walls slide

@@ -9,7 +9,7 @@ import BlockTallyPanel from './BlockTallyPanel'
 import BrickLibraryPanel from './BrickLibraryPanel'
 import PierTypesPanel from './PierTypesPanel'
 import WallTypesPanel from './WallTypesPanel'
-import BrickSettingsPanel from './BrickSettingsPanel'
+import BrickAdditionsPanel from './BrickAdditionsPanel'
 import BrickTypesPanel from './BrickTypesPanel'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
@@ -3068,7 +3068,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     onUpdateMakeup={handleUpdateBrickMakeup}
                     onDeleteMakeup={handleDeleteBrickMakeup}
                   />
-                  <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+                  <BrickAdditionsPanel settings={brickSettings} onChange={setBrickSettings} />
                   <BrickLibraryPanel />
                 </>
               )}
@@ -4716,7 +4716,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               onUpdateMakeup={handleUpdateBrickMakeup}
               onDeleteMakeup={handleDeleteBrickMakeup}
             />
-            <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
+            <BrickAdditionsPanel settings={brickSettings} onChange={setBrickSettings} />
             <BrickLibraryPanel />
           </>
         )}
