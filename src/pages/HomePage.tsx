@@ -542,23 +542,35 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           work lives on /requests (filter by person + date) so a teammate
           can audit anyone's recent throughput without it bloating the
           home page. */}
-      {recentlyCompleted.length > 0 && (
-        <section className="mt-8">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-              Your recently completed
-            </h3>
-            <Link
-              to="/requests?scope=all&status=completed"
-              className="text-xs text-beme-300 hover:text-beme-200"
-            >
-              View team activity →
-            </Link>
+      {/* Always-on Recently Completed band. We show a placeholder card when
+          the user hasn't finished anything yet so the dashboard layout is
+          consistent for new and returning users — there's no jarring "where
+          did that section go" once a project gets reopened or deleted. */}
+      <section className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            Your recently completed
+          </h3>
+          <Link
+            to="/requests?scope=all&status=completed"
+            className="text-xs text-beme-300 hover:text-beme-200"
+          >
+            View team activity →
+          </Link>
+        </div>
+        {recentlyCompleted.length === 0 ? (
+          <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 p-6 text-center">
+            <div className="text-sm text-ink-300">
+              Nothing finished yet
+            </div>
+            <p className="text-xs text-ink-500 mt-1 max-w-md mx-auto">
+              When you mark an estimate request as completed, it shows up here so you can find it again without digging.
+            </p>
           </div>
-          {/* Auto-fit + 1fr: cards stretch to fill the row evenly no matter
-              how many there are. 1 card spans the full row, 2 split 50/50,
-              3 split 33/33/33, 4+ wrap to a new row at the min width. No
-              empty gaps on the right, no orphans on the last row. */}
+        ) : (
+          // Auto-fit + 1fr: cards stretch to fill the row evenly no matter
+          // how many there are. 1 card spans the full row, 2 split 50/50,
+          // 3 split 33/33/33, 4+ wrap to a new row at the min width.
           <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
             {recentlyCompleted.map((r) => (
               <CompletedCard
@@ -568,8 +580,8 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               />
             ))}
           </div>
-        </section>
-      )}
+        )}
+      </section>
 
       {/* Material library tile — full management UI lives at /library, with
           org-admin gating for edits enforced inside that page. Section

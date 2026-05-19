@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { PDFDocument } from 'pdf-lib'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -1397,6 +1398,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     })
   }
 
+  /**
+   * Setting a wall type active also selects every wall of that type on the
+   * current page. That gives the user clear visual feedback for "this is
+   * the type I'm working with" — the selected walls light up with the
+   * blue selection halo so it's obvious which walls map to which entry in
+   * the panel. Clicking elsewhere on the canvas deselects in the usual way.
+   */
+  function handleActivateMakeup(id: string) {
+    setActiveMakeupId(id)
+    const pageWalls = wallsByPage[currentPage] ?? []
+    const matchingIds = pageWalls.filter((w) => w.makeupId === id).map((w) => w.id)
+    _setSelectedWallIds(new Set(matchingIds))
+    // Deselect any opening / pier that was held alongside an old wall
+    // selection — keeps the selection bar consistent with "you're now
+    // working with this wall type".
+    _setSelectedOpeningIds(new Set())
+    _setSelectedPierIds(new Set())
+  }
+
   function handleReassignWallMakeup(wallId: string, makeupId: string) {
     setWallsByPage((prev) => {
       const pageWalls = prev[currentPage] ?? []
@@ -2289,26 +2309,112 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   // ---------- File handling ----------
 
-  const acceptFile = (file: File | undefined | null) => {
-    if (file && file.type === 'application/pdf') {
-      setPdfFile(file)
-      setCurrentPage(1)
-      setNumPages(0)
-      setPagesData({})
-      setZoom(1)
-      setRenderedZoom(1)
-      cancelCalibration()
-    }
+  /**
+   * Page-picker state: when a multi-page PDF is uploaded, we hold the raw
+   * file here while the user picks which pages to import. After they
+   * confirm, we use pdf-lib to slice the file down to the chosen pages and
+   * load that smaller PDF into the workspace. Single-page uploads skip the
+   * picker entirely.
+   */
+  const [pagePicker, setPagePicker] = useState<{
+    file: File
+    totalPages: number
+    selected: Set<number>
+  } | null>(null)
+  const [pagePickerBusy, setPagePickerBusy] = useState(false)
+
+  function applyPdfFile(file: File) {
+    setPdfFile(file)
+    setCurrentPage(1)
+    setNumPages(0)
+    setPagesData({})
+    setZoom(1)
+    setRenderedZoom(1)
+    cancelCalibration()
   }
 
+  const acceptFile = async (file: File | undefined | null) => {
+    if (!file || file.type !== 'application/pdf') return
+    // Quick page-count via pdf-lib. Cheap (parses metadata only, no
+    // rendering) and lets us decide whether to show the picker before any
+    // pages have been painted.
+    try {
+      const bytes = await file.arrayBuffer()
+      const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
+      const pageCount = doc.getPageCount()
+      if (pageCount > 1) {
+        // Default selection: all pages selected. The user usually wants
+        // most of them; deselecting one or two is easier than starting
+        // from zero and ticking them all.
+        setPagePicker({
+          file,
+          totalPages: pageCount,
+          selected: new Set(Array.from({ length: pageCount }, (_, i) => i + 1)),
+        })
+        return
+      }
+    } catch (err) {
+      // If pdf-lib can't parse the file (encrypted with a key, malformed,
+      // etc.) we fall through to the normal load — react-pdf gets to try
+      // and the user sees its error message if that fails too.
+      console.warn('Page-count probe failed; loading PDF without page picker', err)
+    }
+    applyPdfFile(file)
+  }
+
+  /**
+   * Slice the originally-uploaded PDF down to the pages the user kept, then
+   * push the smaller blob into the workspace. We always emit a NEW File
+   * (even if the user kept every page) because going through pdf-lib also
+   * strips any auxiliary streams that the rest of the app doesn't use,
+   * which usually shaves a few % off the saved size.
+   */
+  const applyPagePick = useCallback(async () => {
+    if (!pagePicker) return
+    if (pagePicker.selected.size === 0) return
+    setPagePickerBusy(true)
+    try {
+      const bytes = await pagePicker.file.arrayBuffer()
+      const src = await PDFDocument.load(bytes, { ignoreEncryption: true })
+      const dst = await PDFDocument.create()
+      // Preserve the user's chosen order — sorted ascending — so a
+      // selection like {3, 1, 5} comes out as pages 1, 3, 5 in the new
+      // doc rather than the iteration order of a Set.
+      const keepZeroIndexed = Array.from(pagePicker.selected)
+        .sort((a, b) => a - b)
+        .map((n) => n - 1)
+      const copied = await dst.copyPages(src, keepZeroIndexed)
+      copied.forEach((p) => dst.addPage(p))
+      const outBytes = await dst.save()
+      const newFile = new File([outBytes], pagePicker.file.name, {
+        type: 'application/pdf',
+      })
+      applyPdfFile(newFile)
+      setPagePicker(null)
+    } catch (err) {
+      console.error('Failed to slice PDF to selected pages', err)
+      alert('Could not extract those pages. Loading the full PDF instead.')
+      applyPdfFile(pagePicker.file)
+      setPagePicker(null)
+    } finally {
+      setPagePickerBusy(false)
+    }
+    // applyPdfFile / setters are stable; only pagePicker changes drive this
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagePicker])
+
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    acceptFile(e.target.files?.[0])
+    void acceptFile(e.target.files?.[0])
+    // Reset the input so re-selecting the same file fires onChange again.
+    e.target.value = ''
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
-    acceptFile(e.dataTransfer.files?.[0])
+    void acceptFile(e.dataTransfer.files?.[0])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -2456,6 +2562,115 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     cancelCalibration()
   }
 
+  // ---------- Render: PDF page picker ----------
+  //
+  // After the user drops or selects a multi-page PDF we hold the raw file
+  // here and ask which pages they want. The chosen pages get extracted into
+  // a smaller PDF via pdf-lib before being loaded as the workspace's
+  // primary file — so calibration, walls, and saves only ever deal with
+  // pages the user actually cares about. The modal renders on top of the
+  // current view (upload zone or workspace) so the user still sees the
+  // context they came from.
+  const pagePickerModal = pagePicker && (
+    <div className="fixed inset-0 z-50 bg-ink-900/90 flex items-center justify-center p-4">
+      <div className="max-w-lg w-full bg-ink-800 rounded-xl shadow-xl border border-ink-600 max-h-[85vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-ink-600">
+          <h2 className="text-lg font-semibold text-ink-50">
+            Choose pages to import
+          </h2>
+          <p className="text-xs text-ink-400 mt-0.5">
+            {pagePicker.file.name} has {pagePicker.totalPages} pages — tick the ones you want
+            in this estimate. Pages you skip won't be imported.
+          </p>
+        </div>
+        <div className="px-6 py-3 border-b border-ink-600 flex items-center justify-between gap-2 text-xs text-ink-300">
+          <span>
+            {pagePicker.selected.size} of {pagePicker.totalPages} selected
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                setPagePicker((p) =>
+                  p
+                    ? {
+                        ...p,
+                        selected: new Set(
+                          Array.from({ length: p.totalPages }, (_, i) => i + 1)
+                        ),
+                      }
+                    : p
+                )
+              }
+              className="px-2 py-0.5 rounded border border-ink-600 text-ink-200 hover:bg-ink-700"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={() => setPagePicker((p) => (p ? { ...p, selected: new Set() } : p))}
+              className="px-2 py-0.5 rounded border border-ink-600 text-ink-200 hover:bg-ink-700"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-3">
+          <div className="grid grid-cols-2 gap-2">
+            {Array.from({ length: pagePicker.totalPages }, (_, i) => i + 1).map((n) => {
+              const checked = pagePicker.selected.has(n)
+              return (
+                <label
+                  key={n}
+                  className={`flex items-center gap-2 px-3 py-2 rounded border text-sm cursor-pointer ${
+                    checked
+                      ? 'border-beme-500 bg-beme-500/10 text-ink-50'
+                      : 'border-ink-600 bg-ink-900/40 text-ink-300 hover:border-ink-500'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() =>
+                      setPagePicker((p) => {
+                        if (!p) return p
+                        const next = new Set(p.selected)
+                        if (next.has(n)) next.delete(n)
+                        else next.add(n)
+                        return { ...p, selected: next }
+                      })
+                    }
+                  />
+                  <span>Page {n}</span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-ink-600 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setPagePicker(null)}
+            disabled={pagePickerBusy}
+            className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void applyPagePick()}
+            disabled={pagePickerBusy || pagePicker.selected.size === 0}
+            className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {pagePickerBusy
+              ? 'Importing…'
+              : `Import ${pagePicker.selected.size} page${pagePicker.selected.size === 1 ? '' : 's'}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
   // ---------- Render: startup gate ----------
   //
   // First-step modal that captures project + customer info. Renders for brand-
@@ -2557,6 +2772,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   if (!pdfFile && !isEmptyWorkspace) {
     return (
       <div className="max-w-[1600px] mx-auto">
+        {pagePickerModal}
         {/* Slim project bar — visible even before a PDF is uploaded so saving / details still work */}
         {(mode === 'block' || mode === 'brick') && (
           <ProjectBar
@@ -2693,7 +2909,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     makeups={makeups}
                     activeMakeupId={activeMakeupId}
                     wallCountsByMakeupId={wallCountsByMakeupId}
-                    onSetActive={setActiveMakeupId}
+                    onSetActive={handleActivateMakeup}
                     onAddMakeup={handleAddMakeup}
                     onUpdateMakeup={handleUpdateMakeup}
                     onDeleteMakeup={handleDeleteMakeup}
@@ -2725,6 +2941,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   return (
     <div className="max-w-[1600px] mx-auto">
+      {pagePickerModal}
       {/* Slim project bar — Studio Black header */}
       {(mode === 'block' || mode === 'brick') && (
         <ProjectBar

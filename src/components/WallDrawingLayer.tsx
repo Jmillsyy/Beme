@@ -161,12 +161,28 @@ const AXIS_SNAP_DEGREES = 4
 const WALL_LENGTH_SNAP_MM = 5
 
 /**
+ * Openings (doors / windows / brickwork voids) use a coarser 10 mm grid
+ * than walls themselves. Real openings are spec'd in 10 mm steps — 900 mm
+ * doors, 1200 mm windows, never something like 925 mm — and the coarser
+ * grid keeps the user from accidentally landing on an awkward 905 mm width
+ * after a click+drag at a slightly off cursor. Walls still snap to 5 mm
+ * because corner blocks (190 mm + 10 mm mortar) need that finer increment
+ * to absorb leftover length cleanly.
+ */
+const OPENING_SNAP_MM = 10
+
+/**
  * Round a mm length to the nearest WALL_LENGTH_SNAP_MM. Shared by all the
  * placement code paths (walls, openings, control joints, piers) so the user
  * sees a consistent grid no matter what they're dropping onto the plan.
  */
 function snapMmToGrid(mm: number): number {
   return Math.round(mm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
+}
+
+/** Round to the coarser opening grid — see OPENING_SNAP_MM. */
+function snapOpeningMm(mm: number): number {
+  return Math.round(mm / OPENING_SNAP_MM) * OPENING_SNAP_MM
 }
 
 /**
@@ -1339,10 +1355,11 @@ function WallDrawingLayerInner({
       const onlyWall = openingPlacementStart?.wallId
       const proj = findClosestWallProjection(raw, onlyWall)
       if (!proj) return
-      // Round alongMm to the 5 mm grid so both edges of every opening land on
-      // a clean increment and the width comes out as a multiple of 5 mm. The
-      // user can shift-click to bypass.
-      const snappedAlong = useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+      // Round alongMm to the 10 mm OPENING grid so both edges of every
+      // opening land on a clean increment and the width comes out as a
+      // multiple of 10 mm — matches how doors and windows are spec'd in
+      // the real world. Shift-click bypasses for an off-grid placement.
+      const snappedAlong = useGrid ? snapOpeningMm(proj.alongMm) : proj.alongMm
       if (!openingPlacementStart) {
         setOpeningPlacementStart({ wallId: proj.wallId, alongMm: snappedAlong })
         return
@@ -1930,15 +1947,24 @@ function WallDrawingLayerInner({
                 closed
                 fill={
                   isSelected
-                    ? 'rgba(59, 130, 246, 0.22)'
+                    ? 'rgba(59, 130, 246, 0.42)'
                     : isCurveAnchor
                       ? 'rgba(139, 92, 246, 0.22)'
                       : 'rgba(237, 125, 49, 0.20)'
                 }
                 stroke={strokeColor}
-                strokeWidth={isSelected || isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
+                strokeWidth={isSelected ? 3.5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
                 hitStrokeWidth={8}
                 lineJoin="miter"
+                // Selected walls get a soft blue glow so the user can pick
+                // them out at a glance — whether they were selected from a
+                // canvas click or from the Wall types panel. Non-selected
+                // walls skip shadow entirely (perf). The shadow lands on the
+                // semi-transparent fill which is enough to read as a halo
+                // around the wall.
+                shadowColor={isSelected ? '#3b82f6' : undefined}
+                shadowBlur={isSelected ? 14 : 0}
+                shadowOpacity={isSelected ? 0.65 : 0}
                 // Konva perf flags. perfectDrawEnabled forces an offscreen
                 // buffer when a shape has both fill and stroke (so the stroke
                 // doesn't tint the fill at the edges); with semi-transparent
