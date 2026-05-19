@@ -2218,25 +2218,36 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       if (newZoom === oldZoom) return
 
       // Zoom-to-cursor: keep the point under the cursor stationary across the zoom change.
-      // We have to account for the `flex justify-center` wrapper: when the page is narrower
-      // than the container, the page is centred with a margin on each side. As we zoom in,
-      // the page grows and the margin shrinks (to 0 once the page exceeds the container).
-      // The cursor-anchor math has to work in PAGE coords (i.e. minus the centring margin),
-      // not raw scroll coords — otherwise the anchor drifts at low zoom levels where the
-      // margin is non-zero.
+      // The page wrapper sits inside a flex container whose min-width/min-height is the
+      // container size + a pan buffer (so click-drag pan always has scroll room even
+      // when the page fits in view). The page itself is centred within that wrapper, so
+      // the cursor-anchor math has to add half the buffer back to get correct page coords.
       const rect = container.getBoundingClientRect()
       const cursorXInViewport = pendingClientX - rect.left
       const cursorYInViewport = pendingClientY - rect.top
 
-      // The page wrapper is centred HORIZONTALLY by the `flex justify-center` wrapper when
-      // it's narrower than the container — so subtract that centring margin before scaling
-      // and add the new one back. Vertically, the page is top-aligned (flex's main axis is
-      // horizontal, no vertical centring), so there's no Y margin to deal with.
+      // PAN_BUFFER_*_PX must match the calc() values on the flex spacer below in the
+      // workspace render — keep them in sync. Half the buffer is the page's offset from
+      // each edge when the page fits inside the spacer.
+      const PAN_BUFFER_X_PX = 800
+      const PAN_BUFFER_Y_PX = 600
       const containerW = container.clientWidth
+      const containerH = container.clientHeight
       const oldPageW = baseWidth * oldZoom
       const newPageW = baseWidth * newZoom
-      const oldMarginX = Math.max(0, (containerW - oldPageW) / 2)
-      const newMarginX = Math.max(0, (containerW - newPageW) / 2)
+      // Page height derived from the active page's aspect ratio (set after PDF
+      // load). When unknown (page metadata not yet ready) we fall back to 0,
+      // which keeps oldMarginY at half the buffer — the page is roughly
+      // centred so close enough until the next render.
+      const pageAspect = aspectRatio ?? 0
+      const oldPageH = oldPageW * pageAspect
+      const newPageH = newPageW * pageAspect
+      // Centring margin = half the difference between the scrollable area (container + buffer)
+      // and the page. Falls to 0 once the page itself is wider than (container + buffer).
+      const oldMarginX = Math.max(0, (containerW + PAN_BUFFER_X_PX - oldPageW) / 2)
+      const newMarginX = Math.max(0, (containerW + PAN_BUFFER_X_PX - newPageW) / 2)
+      const oldMarginY = Math.max(0, (containerH + PAN_BUFFER_Y_PX - oldPageH) / 2)
+      const newMarginY = Math.max(0, (containerH + PAN_BUFFER_Y_PX - newPageH) / 2)
 
       // CRITICAL: on fast scrolls, the wheel fires faster than React can
       // commit zoom state changes — so the DOM's scrollLeft hasn't yet
@@ -2251,15 +2262,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       // Cursor position on the page itself (in current visual pixels).
       const pageX = scrollLeft + cursorXInViewport - oldMarginX
-      const pageY = scrollTop + cursorYInViewport // top-aligned, no margin
+      const pageY = scrollTop + cursorYInViewport - oldMarginY
 
       const ratio = newZoom / oldZoom
       const newPageX = pageX * ratio
       const newPageY = pageY * ratio
 
-      // Convert back to scrollable-content coords (with the new horizontal centring margin).
+      // Convert back to scrollable-content coords (with the new centring margins).
       const newContentX = newPageX + newMarginX
-      const newContentY = newPageY
+      const newContentY = newPageY + newMarginY
 
       // Scroll can't go negative; if the page is still narrower than the container after
       // zooming, the cursor anchor saturates at the page's edge.
@@ -2291,7 +2302,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       container.removeEventListener('wheel', handler)
       if (rafId !== null) cancelAnimationFrame(rafId)
     }
-  }, [pdfFile, baseWidth])
+  }, [pdfFile, baseWidth, aspectRatio])
 
   // ---------- Thumbnail sidebar: explicit wheel scroll ----------
   // Ensures mouse wheel scrolling works when hovering over thumbnails
@@ -2439,6 +2450,28 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       pendingScrollRef.current = null
     }
   }, [zoom])
+
+  // Center the page in the scroll area on initial PDF load. The flex
+  // spacer's min-width/min-height adds 800/600 px of pan buffer on each
+  // axis, so without re-centring the user would see the empty top-left
+  // buffer at scrollLeft = 0, scrollTop = 0 with the page offset to the
+  // right and down. Re-centring puts the page back in the middle of the
+  // viewport and gives equal scroll room in all four directions for
+  // click-drag pan. Only runs when the PDF file or page changes — zoom
+  // has its own pending-scroll mechanism above.
+  useLayoutEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    if (!pdfFile && !isEmptyWorkspace) return
+    // rAF so the new pageWidth/Height has been applied to the wrapper
+    // before we measure scrollWidth / scrollHeight.
+    const raf = requestAnimationFrame(() => {
+      if (!container) return
+      container.scrollLeft = Math.max(0, (container.scrollWidth - container.clientWidth) / 2)
+      container.scrollTop = Math.max(0, (container.scrollHeight - container.clientHeight) / 2)
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [pdfFile, currentPage, isEmptyWorkspace])
 
   // ---------- File handling ----------
 
@@ -4466,7 +4499,22 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               : 'grab',
         }}
       >
-        <div className="flex justify-center" style={{ minWidth: 'max-content' }}>
+        {/* Spacer that's always larger than the container by PAN_BUFFER_PX
+            on every side. Drag-pan uses container scrolling, which only
+            works when scrollWidth/scrollHeight exceed the container — so
+            without this spacer, zooming out far enough that the page fits
+            inside the viewport leaves nothing to scroll into and the pan
+            gesture silently no-ops. The min-width: calc + min-height: calc
+            guarantees scroll room in both axes regardless of how small the
+            page is. The page wrapper stays centred via flex justify-center
+            + items-center. */}
+        <div
+          className="flex justify-center items-center"
+          style={{
+            minWidth: 'calc(100% + 800px)',
+            minHeight: 'calc(100% + 600px)',
+          }}
+        >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
           <div
             className="relative"
