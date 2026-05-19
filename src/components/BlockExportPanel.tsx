@@ -56,9 +56,46 @@ export default function BlockExportPanel({
   const { settings: userSettings } = useUserSettings()
   const { currentOrg } = useOrganisations()
 
+  /**
+   * Per-page exclusion: when a project carries stale walls on an old PDF
+   * page (e.g. a first-attempt estimate the user moved past, but the walls
+   * weren't deleted), the user can tick those pages OFF here to drop them
+   * from this export entirely — Wall Layout sections AND the project-wide
+   * Block Schedule both use the filtered subset. Default is all pages
+   * included; the state stores the SET of excluded page numbers so adding
+   * a new page automatically opts it in.
+   */
+  const [excludedPages, setExcludedPages] = useState<Set<number>>(new Set())
+
   function patch(p: Partial<BlockExportInclusions>) {
     onChangeInclusions({ ...inclusions, ...p })
   }
+
+  function togglePage(pageNumber: number) {
+    setExcludedPages((prev) => {
+      const next = new Set(prev)
+      if (next.has(pageNumber)) next.delete(pageNumber)
+      else next.add(pageNumber)
+      return next
+    })
+  }
+
+  // Filter walls / openings / piers / pagesInfo down to just the pages the
+  // user wants in this export. The filtered arrays drive both the Wall
+  // Layout sections (per-page) and the project-wide Block Schedule, so
+  // unticking a page genuinely removes its walls from every count.
+  const includedPagesInfo = (pagesInfo ?? []).filter(
+    (p) => !excludedPages.has(p.pageNumber)
+  )
+  const filteredWalls = pagesInfo
+    ? includedPagesInfo.flatMap((p) => p.walls)
+    : walls
+  const filteredOpenings = pagesInfo
+    ? includedPagesInfo.flatMap((p) => p.openings)
+    : openings
+  const filteredPiers = pagesInfo
+    ? includedPagesInfo.flatMap((p) => p.piers)
+    : piers
 
   async function handleExport() {
     if (busy) return
@@ -68,13 +105,13 @@ export default function BlockExportPanel({
       await exportBlockEstimate({
         projectDetails,
         inclusions,
-        walls,
+        walls: filteredWalls,
         makeups,
-        openings,
-        piers,
+        openings: filteredOpenings,
+        piers: filteredPiers,
         pierMakeups,
         pdfFile: pdfFile ?? undefined,
-        pagesInfo,
+        pagesInfo: includedPagesInfo,
         // Pass the user's business identity through so exports become branded.
         // When the user is signed in to an organisation, the org's name takes
         // precedence over the personal business.companyName field — that way
@@ -103,7 +140,7 @@ export default function BlockExportPanel({
     }
   }
 
-  const canExport = walls.length > 0 && !busy
+  const canExport = filteredWalls.length > 0 && !busy
 
   return (
     <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
@@ -170,7 +207,7 @@ export default function BlockExportPanel({
               label="Openings & lintels"
               checked={inclusions.openingsList}
               onChange={(v) => patch({ openingsList: v })}
-              disabled={openings.length === 0}
+              disabled={filteredOpenings.length === 0}
               disabledHint="Add at least one opening first"
             />
             <Toggle
@@ -180,6 +217,46 @@ export default function BlockExportPanel({
             />
           </div>
 
+          {/* Per-page picker — only shown when the project has walls on more
+              than one PDF page. Lets the user drop stale pages (e.g. an
+              earlier estimate attempt whose walls weren't deleted) from
+              this export without touching the underlying project data. */}
+          {pagesInfo && pagesInfo.length > 1 && (
+            <div className="mb-3 p-2 border border-ink-600 rounded-lg bg-ink-700/40">
+              <div className="text-xs font-semibold text-ink-200 mb-1">
+                Include Wall Layout pages
+              </div>
+              <p className="text-[11px] text-ink-400 mb-2">
+                Untick a page to drop its walls from the export entirely —
+                schedule, breakdown, and layout all use only the ticked pages.
+              </p>
+              <div className="flex flex-col gap-1">
+                {pagesInfo.map((p) => {
+                  const checked = !excludedPages.has(p.pageNumber)
+                  const label = p.label?.trim() || `Page ${p.pageNumber}`
+                  return (
+                    <label
+                      key={p.pageNumber}
+                      className="flex items-center gap-2 text-xs cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => togglePage(p.pageNumber)}
+                      />
+                      <span className={checked ? 'text-ink-100' : 'text-ink-500'}>
+                        {label}
+                      </span>
+                      <span className="text-ink-500">
+                        · {p.walls.length} wall{p.walls.length === 1 ? '' : 's'}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <button
             onClick={handleExport}
             disabled={!canExport}
@@ -188,6 +265,11 @@ export default function BlockExportPanel({
             {busy ? 'Opening print dialog…' : 'Save as PDF →'}
           </button>
 
+          {filteredWalls.length === 0 && walls.length > 0 && (
+            <p className="text-xs text-amber-300 mt-2">
+              No walls in the selected pages — tick at least one page above to enable export.
+            </p>
+          )}
           {walls.length === 0 && (
             <p className="text-xs text-ink-400 mt-2">
               Draw at least one wall before exporting.
