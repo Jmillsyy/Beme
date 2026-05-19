@@ -2226,28 +2226,29 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       const cursorXInViewport = pendingClientX - rect.left
       const cursorYInViewport = pendingClientY - rect.top
 
-      // PAN_BUFFER_*_PX must match the calc() values on the flex spacer below in the
-      // workspace render — keep them in sync. Half the buffer is the page's offset from
-      // each edge when the page fits inside the spacer.
-      const PAN_BUFFER_X_PX = 800
-      const PAN_BUFFER_Y_PX = 600
+      // PAN_PADDING_PX must match the padding on the flex spacer below in the
+      // workspace render — keep them in sync. The spacer also has min-width
+      // / min-height = container + 800/600, so at low zoom there's extra
+      // centring margin INSIDE the padding. The unified formula:
+      //   marginX = PAN_PADDING_PX + max(0, (containerW - pageW) / 2)
+      // - High zoom: pageW exceeds containerW, the second term is 0,
+      //   marginX = PAN_PADDING_PX (page sits at padding from scroll edge).
+      // - Low zoom: pageW is small, the second term centres the page inside
+      //   the min-width buffer.
+      const PAN_PADDING_PX = 400
       const containerW = container.clientWidth
       const containerH = container.clientHeight
       const oldPageW = baseWidth * oldZoom
       const newPageW = baseWidth * newZoom
       // Page height derived from the active page's aspect ratio (set after PDF
-      // load). When unknown (page metadata not yet ready) we fall back to 0,
-      // which keeps oldMarginY at half the buffer — the page is roughly
-      // centred so close enough until the next render.
+      // load). Falls back to 0 if metadata isn't ready yet.
       const pageAspect = aspectRatio ?? 0
       const oldPageH = oldPageW * pageAspect
       const newPageH = newPageW * pageAspect
-      // Centring margin = half the difference between the scrollable area (container + buffer)
-      // and the page. Falls to 0 once the page itself is wider than (container + buffer).
-      const oldMarginX = Math.max(0, (containerW + PAN_BUFFER_X_PX - oldPageW) / 2)
-      const newMarginX = Math.max(0, (containerW + PAN_BUFFER_X_PX - newPageW) / 2)
-      const oldMarginY = Math.max(0, (containerH + PAN_BUFFER_Y_PX - oldPageH) / 2)
-      const newMarginY = Math.max(0, (containerH + PAN_BUFFER_Y_PX - newPageH) / 2)
+      const oldMarginX = PAN_PADDING_PX + Math.max(0, (containerW - oldPageW) / 2)
+      const newMarginX = PAN_PADDING_PX + Math.max(0, (containerW - newPageW) / 2)
+      const oldMarginY = PAN_PADDING_PX + Math.max(0, (containerH - oldPageH) / 2)
+      const newMarginY = PAN_PADDING_PX + Math.max(0, (containerH - newPageH) / 2)
 
       // CRITICAL: on fast scrolls, the wheel fires faster than React can
       // commit zoom state changes — so the DOM's scrollLeft hasn't yet
@@ -4499,20 +4500,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               : 'grab',
         }}
       >
-        {/* Spacer that's always larger than the container by PAN_BUFFER_PX
-            on every side. Drag-pan uses container scrolling, which only
-            works when scrollWidth/scrollHeight exceed the container — so
-            without this spacer, zooming out far enough that the page fits
-            inside the viewport leaves nothing to scroll into and the pan
-            gesture silently no-ops. The min-width: calc + min-height: calc
-            guarantees scroll room in both axes regardless of how small the
-            page is. The page wrapper stays centred via flex justify-center
-            + items-center. */}
+        {/* Spacer that always extends the scrollable area beyond the page
+            edges by PAN_BUFFER_PX on every side. Drag-pan uses container
+            scrolling, which only works when scrollWidth/scrollHeight exceed
+            the container — so without buffer, zooming out leaves nothing to
+            scroll into (small page fits in view) AND zooming all the way in
+            also clamps to the page edges (no room past the corners).
+            Padding-box gives a constant buffer regardless of page size:
+            scrollWidth = pageW + 2 * PAN_BUFFER_X_PX. min-width / min-height
+            ensure the flex container also grows large enough when the page
+            itself is tiny, so we keep pan room there too. The page wrapper
+            stays centred via flex justify-center + items-center. */}
         <div
           className="flex justify-center items-center"
           style={{
             minWidth: 'calc(100% + 800px)',
             minHeight: 'calc(100% + 600px)',
+            padding: '400px',
           }}
         >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
