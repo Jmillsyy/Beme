@@ -1529,7 +1529,27 @@ function WallDrawingLayerInner({
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
       const proj = findClosestWallProjection(raw, onlyWall)
-      setOpeningHoverProjection(proj)
+      if (proj) {
+        // Snap the hover preview to the same 10 mm grid the click uses so
+        // the live width readout climbs in 10 mm steps — matches how doors
+        // and windows are spec'd and lets the user dial in 900 / 1200 mm
+        // by sliding the cursor a few millimetres rather than chasing a
+        // sub-pixel position. Shift bypasses the snap for off-grid
+        // placements, mirroring handleStageClick. Also re-project the
+        // snapped alongMm onto the wall so the preview line lands on the
+        // grid visually, not just numerically.
+        const useGrid = !e.evt.shiftKey
+        const snappedAlong = useGrid ? snapOpeningMm(proj.alongMm) : proj.alongMm
+        const wall = wallsById.get(proj.wallId)
+        const snappedPx = wall ? pointAlongWallPx(wall, snappedAlong) : proj.px
+        setOpeningHoverProjection({
+          ...proj,
+          alongMm: snappedAlong,
+          px: snappedPx,
+        })
+      } else {
+        setOpeningHoverProjection(null)
+      }
     } else if (placingControlJoint) {
       const proj = findClosestWallProjection(raw)
       // Don't preview splits on curved walls — control joints only apply to straight walls.
