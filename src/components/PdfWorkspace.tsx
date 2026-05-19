@@ -2585,7 +2585,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
         <div className="px-6 py-4">
 
-          <div className="flex flex-col lg:flex-row gap-4 items-start">
+          <div className="flex flex-col lg:flex-row gap-3 items-start">
 
             {/* ── Left: drop zone + onboarding hints ── */}
             <div className="flex-1 min-w-0 w-full">
@@ -2686,7 +2686,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             </div>
 
             {/* ── Right: side rail (block: wall + pier types · brick: settings) ── */}
-            <aside className="w-full lg:w-[360px] lg:flex-shrink-0">
+            <aside className="w-full lg:w-[300px] lg:flex-shrink-0">
               {mode === 'block' && (
                 <>
                   <WallTypesPanel
@@ -2751,7 +2751,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
-      <div className="px-6 py-5">
+      <div className="px-4 py-3">
 
       {/* File switcher — always renders when a primary PDF is loaded so the
           user can attach extra reference PDFs (engineering specs, architectural
@@ -3096,7 +3096,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           Left column = canvas + drawing controls (where your eyes/hands live).
           Right rail = setup + reference panels (wall types, tally, export).
           Stacks vertically on screens narrower than `lg`. */}
-      <div className="flex flex-col lg:flex-row gap-4 items-start">
+      <div className="flex flex-col lg:flex-row gap-3 items-start">
 
       {/* ───── Left column: canvas area ───── */}
       <div className="flex-1 min-w-0 w-full">
@@ -3204,7 +3204,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const activeIsCurveMakeup =
           !!activeMakeup && typeof activeMakeup.curveRadiusMm === 'number'
         return (
-        <div className="flex items-center justify-between mb-4 px-4 py-3 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-3">
+        <div className="flex items-center justify-between mb-3 px-3 py-2 bg-ink-800 border border-ink-600 rounded-lg flex-wrap gap-2">
           <div className="text-sm">
             {!currentScale ? (
               <span className="text-ink-400">
