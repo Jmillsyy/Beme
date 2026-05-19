@@ -4527,23 +4527,21 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               : 'grab',
         }}
       >
-        {/* Spacer that always extends the scrollable area beyond the page
-            edges by PAN_BUFFER_PX on every side. Drag-pan uses container
-            scrolling, which only works when scrollWidth/scrollHeight exceed
-            the container — so without buffer, zooming out leaves nothing to
-            scroll into (small page fits in view) AND zooming all the way in
-            also clamps to the page edges (no room past the corners).
-            Padding-box gives a constant buffer regardless of page size:
-            scrollWidth = pageW + 2 * PAN_BUFFER_X_PX. min-width / min-height
-            ensure the flex container also grows large enough when the page
-            itself is tiny, so we keep pan room there too. The page wrapper
-            stays centred via flex justify-center + items-center. */}
+        {/* Spacer that extends the scrollable area at LOW zoom so click-drag
+            pan still has scroll room when the page fits inside the
+            container. min-width / min-height are sized to container + 800/600,
+            giving 400/300 px of pan buffer around the centred page when it's
+            small. At high zoom the page itself exceeds the container so
+            scrollWidth = pageWidth and the user can drag straight to either
+            edge without 400 px of padding sitting in the way — that padding
+            was making the leftmost visible scroll position look "cut off"
+            (the page-left edge was 400 px inside the viewport when the
+            scrollbar was at 0). */}
         <div
           className="flex justify-center items-center"
           style={{
             minWidth: 'calc(100% + 800px)',
             minHeight: 'calc(100% + 600px)',
-            padding: '400px',
           }}
         >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
