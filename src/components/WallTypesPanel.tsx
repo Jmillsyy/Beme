@@ -8,6 +8,11 @@ import type {
 import type { BlockCode } from '../types/blocks'
 import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 import { wallTypeColor } from '../lib/wallTypeColors'
+import {
+  CURVED_WALL_WEDGE_RADIUS_MM,
+  CURVED_WALL_MIN_FEASIBLE_RADIUS_MM,
+  curveZoneForRadius,
+} from '../lib/blockCalc'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -337,6 +342,32 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
     setSeriesRanges((prev) => prev.filter((_, i) => i !== index))
   }
 
+  // ---- Curve-makeup state ----
+  // A makeup created from a drawn curved wall carries a `curveRadiusMm` so we
+  // know to render two block-composition sections (wedge / normal) instead of
+  // one. The radius itself is read-only — it's a property of the drawn arc,
+  // not something the user changes here.
+  const curveRadiusMm = existing?.curveRadiusMm
+  const isCurveMakeup = typeof curveRadiusMm === 'number' && isFinite(curveRadiusMm)
+  // A curve below the wedge threshold (1500mm centreline) MUST be built with
+  // 20.03CW wedges — straight 20.48 won't bend tightly enough. A curve above
+  // the threshold uses normal body blocks (cut at the back on the tighter end
+  // of that band, no cuts above 6000mm). The disabled section is greyed out
+  // with a hint explaining why so the user understands the choice was made
+  // for them by the geometry.
+  const wedgeRequired = isCurveMakeup && curveRadiusMm < CURVED_WALL_WEDGE_RADIUS_MM
+  const curveZone = isCurveMakeup ? curveZoneForRadius(curveRadiusMm) : null
+  const wedgeFeasible = isCurveMakeup && curveRadiusMm >= CURVED_WALL_MIN_FEASIBLE_RADIUS_MM
+  // Track wedge / normal body block codes separately so toggling between
+  // sections doesn't lose the user's pick. If the existing makeup already has
+  // a wedge body, seed the wedge state with it; otherwise default to 20.03CW.
+  const [wedgeBodyBlockCode, setWedgeBodyBlockCode] = useState<BlockCode>(
+    existing && wedgeRequired ? existing.bodyBlockCode : '20.03CW'
+  )
+  const [normalBodyBlockCode, setNormalBodyBlockCode] = useState<BlockCode>(
+    existing && !wedgeRequired && isCurveMakeup ? existing.bodyBlockCode : '20.48'
+  )
+
   function handleSave() {
     const id = existing?.id ?? generateMakeupId()
     // Strip any range with from > to (degenerate) and any whose overrides are
@@ -354,6 +385,14 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         r.cornerLeadInBlockCode
       return !!anyOverride
     })
+    // For curve makeups, the body block comes from whichever section is
+    // active (driven by the curve's radius zone). For regular makeups, the
+    // single Body picker drives bodyBlockCode the way it always has.
+    const resolvedBodyBlockCode: BlockCode = isCurveMakeup
+      ? wedgeRequired
+        ? wedgeBodyBlockCode
+        : normalBodyBlockCode
+      : bodyBlockCode
     const updated: WallMakeup = {
       id,
       name: name.trim() || 'New wall type',
@@ -361,12 +400,15 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       heightMm,
       baseCourseBlockCode,
       baseCourseTileCode: baseCourseTileCode || undefined,
-      bodyBlockCode,
+      bodyBlockCode: resolvedBodyBlockCode,
       topCourseBlockCode,
       cornerBlockCode: knockoutCorners ? '20.21' : '20.01',
       useFractions,
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
+      // Preserve the curve marker so editing the makeup doesn't accidentally
+      // convert it into a straight-wall makeup on save.
+      curveRadiusMm: existing?.curveRadiusMm,
     }
     onSave(updated)
   }
@@ -447,11 +489,149 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         </div>
       </div>
 
+      {/* Curve readout — sits above Block composition so the user always
+          knows what radius drove the wedge / normal split, and whether the
+          curve is in a feasible build zone (custom-cut warning for the
+          tightest band). Read-only on purpose — the radius is a geometric
+          property of the drawn arc, edited by moving the curve on the plan. */}
+      {isCurveMakeup && (
+        <div className="mt-5 p-3 border border-ink-600 rounded-lg bg-ink-800/60">
+          <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-1">
+            Curve geometry
+          </div>
+          <div className="text-sm text-ink-200">
+            Centreline radius:{' '}
+            <span className="font-mono">R{Math.round(curveRadiusMm!)}mm</span>
+            <span className="text-ink-400 ml-2">
+              ·{' '}
+              {curveZone === 'standard'
+                ? 'standard 20.48, no cuts'
+                : curveZone === 'cut'
+                ? 'standard 20.48 with rear-corner cuts'
+                : curveZone === 'wedge'
+                ? '20.03CW wedge band'
+                : 'tighter than wedge — custom blocks required'}
+            </span>
+          </div>
+          {curveZone === 'custom' && (
+            <p className="mt-1 text-[11px] text-amber-400">
+              This radius is below the wedge feasibility threshold ({CURVED_WALL_MIN_FEASIBLE_RADIUS_MM}
+              mm). 20.03CW is the closest stock block but custom-cut blocks will be flagged
+              in the estimate.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Block composition */}
       <div className="mt-5">
         <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-2">
           Block composition
         </div>
+
+        {/* Curve makeups: two side-by-side sections so the user sees both
+            paths the wall could take, with the one that doesn't match the
+            radius disabled and explained. Keeps the wedge/normal mental
+            model in front of the user without letting them choose the
+            wrong path for the geometry. */}
+        {isCurveMakeup ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+            {/* Wedge section */}
+            <div
+              className={`p-3 border rounded-lg ${
+                wedgeRequired
+                  ? 'border-beme-500/60 bg-ink-800'
+                  : 'border-ink-600 bg-ink-800/40 opacity-50'
+              }`}
+              aria-disabled={!wedgeRequired}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-ink-200">
+                  Wedge (20.03CW)
+                </span>
+                {wedgeRequired ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-beme-500 text-black font-medium">
+                    Active
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-ink-700 text-ink-400">
+                    Disabled
+                  </span>
+                )}
+              </div>
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1 text-xs">Wedge body block</span>
+                <select
+                  value={wedgeBodyBlockCode}
+                  onChange={(e) => setWedgeBodyBlockCode(e.target.value as BlockCode)}
+                  disabled={!wedgeRequired}
+                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400 disabled:cursor-not-allowed"
+                >
+                  {selectableBlocks.map((code) => (
+                    <option key={code} value={code}>
+                      {blockLabel(code)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="mt-2 text-[11px] text-ink-400 leading-snug">
+                {wedgeRequired
+                  ? wedgeFeasible
+                    ? `Required for R < ${CURVED_WALL_WEDGE_RADIUS_MM}mm — wedge taper absorbs the curve.`
+                    : `R is below the wedge feasibility floor — closest stock block selected; custom cuts will be flagged.`
+                  : `Not applicable at R${Math.round(curveRadiusMm!)}mm — normal blocks fit.`}
+              </p>
+            </div>
+
+            {/* Normal-block section */}
+            <div
+              className={`p-3 border rounded-lg ${
+                !wedgeRequired
+                  ? 'border-beme-500/60 bg-ink-800'
+                  : 'border-ink-600 bg-ink-800/40 opacity-50'
+              }`}
+              aria-disabled={wedgeRequired}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-ink-200">
+                  Normal blocks (20.48)
+                </span>
+                {!wedgeRequired ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-beme-500 text-black font-medium">
+                    Active
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-ink-700 text-ink-400">
+                    Disabled
+                  </span>
+                )}
+              </div>
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1 text-xs">Normal body block</span>
+                <select
+                  value={normalBodyBlockCode}
+                  onChange={(e) => setNormalBodyBlockCode(e.target.value as BlockCode)}
+                  disabled={wedgeRequired}
+                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400 disabled:cursor-not-allowed"
+                >
+                  {selectableBlocks.map((code) => (
+                    <option key={code} value={code}>
+                      {blockLabel(code)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="mt-2 text-[11px] text-ink-400 leading-snug">
+                {!wedgeRequired
+                  ? curveZone === 'cut'
+                    ? `Active at R${Math.round(curveRadiusMm!)}mm — cut at the back of each block (called out in assumptions).`
+                    : `Active at R${Math.round(curveRadiusMm!)}mm — stock blocks fit without cuts.`
+                  : `Not applicable below R${CURVED_WALL_WEDGE_RADIUS_MM}mm — wedge required.`}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
         <div className="grid grid-cols-1 gap-3">
           <label className="text-sm">
             <span className="block text-ink-300 mb-1">Base course block</span>
@@ -484,20 +664,25 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
             </select>
           </label>
 
-          <label className="text-sm">
-            <span className="block text-ink-300 mb-1">Body course block</span>
-            <select
-              value={bodyBlockCode}
-              onChange={(e) => setBodyBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-            >
-              {selectableBlocks.map((code) => (
-                <option key={code} value={code}>
-                  {blockLabel(code)}
-                </option>
-              ))}
-            </select>
-          </label>
+          {/* For curve makeups the single Body picker is hidden — the dual
+              section above replaces it. We still render Base / Top here so the
+              user can tweak the bottom/top of a curved wall. */}
+          {!isCurveMakeup && (
+            <label className="text-sm">
+              <span className="block text-ink-300 mb-1">Body course block</span>
+              <select
+                value={bodyBlockCode}
+                onChange={(e) => setBodyBlockCode(e.target.value as BlockCode)}
+                className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
+              >
+                {selectableBlocks.map((code) => (
+                  <option key={code} value={code}>
+                    {blockLabel(code)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <label className="text-sm">
             <span className="block text-ink-300 mb-1">Top course block</span>

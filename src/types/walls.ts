@@ -160,6 +160,20 @@ export interface WallMakeup {
   // ---- Pier ----
   /** If walls of this makeup contain piers, what type. */
   pierType?: PierType
+
+  /**
+   * Centreline radius (mm) of the curve this makeup was auto-created for. Set
+   * by the curve-placement flow when a curved wall is drawn — present means
+   * "this is a curved-wall makeup". Drives the WallTypeForm's dual section
+   * UI: one section for the 20.03CW wedge composition, one for normal-block
+   * composition. The radius decides which section is editable (the other is
+   * disabled with a hint), so users can't accidentally try to build a wedge
+   * wall with normal blocks (or vice-versa).
+   *
+   * Absent / undefined means this is a regular (non-curved) wall makeup and
+   * the standard single Block Composition section is rendered.
+   */
+  curveRadiusMm?: number
 }
 
 /**

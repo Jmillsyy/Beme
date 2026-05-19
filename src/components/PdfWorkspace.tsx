@@ -1123,6 +1123,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       heightMm: 2400,
     })
     curveMakeup.bodyBlockCode = bodyBlock
+    // Stamp the radius so the Wall Types panel can render the dual
+    // wedge / normal-block composition UI for this makeup and pick
+    // the right section to enable based on the curve's zone.
+    if (isFinite(radiusMm)) {
+      curveMakeup.curveRadiusMm = radiusMm
+    }
 
     const rawWall: Wall = {
       id:
