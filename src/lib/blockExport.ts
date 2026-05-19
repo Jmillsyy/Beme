@@ -33,7 +33,7 @@ import {
   wallLengthMm,
 } from './blockCalc'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
-import { pdfjs } from 'react-pdf'
+import { rasterisePdfPage } from './pdfRaster'
 import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
 
@@ -179,46 +179,8 @@ function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
  * Failures (corrupt file, page not found, render error) resolve to null so
  * the export can fall back to the bare diagram without crashing.
  */
-async function rasterisePdfPage(
-  pdfFile: File,
-  pageNumber: number,
-  scale = 2
-): Promise<{ dataUrl: string; widthMm: number; heightMm: number } | null> {
-  try {
-    const buffer = await pdfFile.arrayBuffer()
-    // Worker is shared with the workspace's react-pdf instance (configured
-    // in PdfWorkspace.tsx at module load), so we don't need to re-init.
-    const pdf = await pdfjs.getDocument({ data: buffer }).promise
-    const page = await pdf.getPage(pageNumber)
-    const baseViewport = page.getViewport({ scale: 1 })
-    // PDF user-space units are 1/72 inch; convert to mm.
-    const widthMm = (baseViewport.width / 72) * 25.4
-    const heightMm = (baseViewport.height / 72) * 25.4
-
-    const renderViewport = page.getViewport({ scale })
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.floor(renderViewport.width)
-    canvas.height = Math.floor(renderViewport.height)
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return null
-    // White background — PDF.js by default renders on transparent, but
-    // most plans assume a white page. Without this, dark PDFs show black
-    // through the transparency where there's no ink.
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    // react-pdf's pdfjs typings are a bit loose around the render params
-    // shape, so cast through any to keep this code building cleanly.
-    await page.render({
-      canvasContext: ctx,
-      viewport: renderViewport,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any).promise
-    const dataUrl = canvas.toDataURL('image/png')
-    return { dataUrl, widthMm, heightMm }
-  } catch {
-    return null
-  }
-}
+// rasterisePdfPage now lives in lib/pdfRaster.ts so the brick export can
+// share it. The signature + behaviour are unchanged.
 
 /**
  * Palette of (stroke, dark) colour pairs used to differentiate wall types on

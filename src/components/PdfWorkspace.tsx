@@ -5022,6 +5022,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             settings={brickSettings}
             walls={allWalls}
             openings={allOpenings}
+            makeups={brickMakeups}
+            pdfFile={pdfFile}
+            // Same pagesInfo shape as the block export so each Wall Layout
+            // section maps to one PDF page that has walls drawn on it. Page
+            // order follows the numeric sort so the export reads bottom-up.
+            pagesInfo={Object.keys(wallsByPage)
+              .map((n) => parseInt(n, 10))
+              .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)
+              .sort((a, b) => a - b)
+              .map((n) => ({
+                pageNumber: n,
+                pageWidthMm: pagesData[n]?.pageWidthMm,
+                pageHeightMm: pagesData[n]?.pageHeightMm,
+                pageScaleRatio: pagesData[n]?.pageScaleRatio,
+                walls: wallsByPage[n] ?? [],
+                openings: openingsByPage[n] ?? [],
+              }))}
           />
         )}
       </aside>

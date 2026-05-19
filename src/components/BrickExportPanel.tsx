@@ -1,12 +1,13 @@
 import { memo, useState } from 'react'
 import type {
   BrickExportInclusions,
+  BrickMakeup,
   BrickSettings,
   Opening,
   ProjectDetails,
   Wall,
 } from '../types/walls'
-import { exportBrickEstimate } from '../lib/brickExport'
+import { exportBrickEstimate, type PageInfo } from '../lib/brickExport'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
 
@@ -17,6 +18,12 @@ interface BrickExportPanelProps {
   settings: BrickSettings
   walls: Wall[]
   openings: Opening[]
+  /** Brick wall types — drives the Wall Layout diagram's per-type colouring. */
+  makeups?: BrickMakeup[]
+  /** Primary PDF — rasterised as the background of each Wall Layout page. */
+  pdfFile?: File | null
+  /** One entry per PDF page with walls; mirrors the block export prop. */
+  pagesInfo?: PageInfo[]
 }
 
 /**
@@ -31,6 +38,9 @@ function BrickExportPanelImpl({
   settings,
   walls,
   openings,
+  makeups = [],
+  pdfFile,
+  pagesInfo,
 }: BrickExportPanelProps) {
   // Collapsed by default in the rail — export is end-of-workflow so it shouldn't
   // take space while you're drawing.
@@ -55,6 +65,9 @@ function BrickExportPanelImpl({
         walls,
         openings,
         settings,
+        makeups,
+        pdfFile: pdfFile ?? undefined,
+        pagesInfo,
         // When the user is inside an org, the org name takes precedence over
         // the personal business.companyName so the export top-left always
         // reads as the supplier the user is acting for. Other contact fields
@@ -124,6 +137,13 @@ function BrickExportPanelImpl({
           label="Assumptions page"
           checked={inclusions.assumptions}
           onChange={(v) => patch({ assumptions: v })}
+        />
+        <Toggle
+          label="Wall layout pages"
+          checked={inclusions.wallLayout}
+          onChange={(v) => patch({ wallLayout: v })}
+          disabled={!pdfFile && (!pagesInfo || pagesInfo.length === 0)}
+          disabledHint="Upload a plan PDF to include layout pages"
         />
         <Toggle
           label="Brick area summary"

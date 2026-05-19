@@ -357,6 +357,13 @@ export interface ProjectDetails {
  */
 export interface BrickExportInclusions {
   assumptions: boolean
+  /**
+   * Per-page "Wall Layout" overview diagrams — one section per PDF page
+   * that has walls drawn on it, with the rasterised plan as the background
+   * and the walls overlaid in colour. Mirrors the block export's layout
+   * pages so the deliverable looks the same across product modes.
+   */
+  wallLayout: boolean
   brickAreaSummary: boolean
   lintels: boolean
   brickTies: boolean

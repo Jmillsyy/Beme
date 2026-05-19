@@ -10,6 +10,7 @@
 
 import type {
   BrickExportInclusions,
+  BrickMakeup,
   BrickSettings,
   Opening,
   ProjectDetails,
@@ -17,7 +18,30 @@ import type {
 } from '../types/walls'
 import { calculateBrickTally } from './brickCalc'
 import { downloadPdfFromHtml } from './pdfExport'
+import { rasterisePdfPage } from './pdfRaster'
 import { getUserSettings } from './userSettings'
+import { BRICK_LIBRARY } from '../data/brickLibrary'
+
+/** Single-skin default — same value PdfWorkspace uses for wall thickness
+ *  when no brick type is selected. Drives the layout-page wall stroke. */
+const DEFAULT_BRICK_WALL_THICKNESS_MM = 110
+
+/**
+ * One entry per PDF page the user has walls drawn on. Same shape as the
+ * block export's PageInfo so the workspace can pass the same data through
+ * to either export. The export builds a separate Wall Layout overview
+ * page from each entry. `label` overrides the auto-generated heading
+ * suffix (e.g. "Ground Floor" instead of "Page 1").
+ */
+export interface PageInfo {
+  pageNumber: number
+  label?: string
+  pageWidthMm?: number
+  pageHeightMm?: number
+  pageScaleRatio?: number
+  walls: Wall[]
+  openings: Opening[]
+}
 
 interface ExportParams {
   projectDetails: ProjectDetails
@@ -25,8 +49,251 @@ interface ExportParams {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
+  /** Brick wall types — used to colour the Wall Layout diagrams and group
+   *  walls for the legend. Optional + defaulted-empty for older callers. */
+  makeups?: BrickMakeup[]
   /** Optional business identity (from user settings). Same shape as block export. */
   business?: BusinessExportInfo
+  /** The primary plan PDF — when supplied alongside pagesInfo, each Wall
+   *  Layout section uses the rasterised page as its background. */
+  pdfFile?: File
+  /** One entry per PDF page that carries walls. The export iterates these
+   *  to build per-page layout sections, identical to the block flow. */
+  pagesInfo?: PageInfo[]
+}
+
+/**
+ * Palette for brick wall-type colouring on the layout pages — same shape
+ * as the block export's palette so the visual style matches.
+ */
+const BRICK_WALL_TYPE_PALETTE: Array<{ body: string; dark: string }> = [
+  { body: '#ED7D31', dark: '#9A3F08' }, // brand orange
+  { body: '#2563eb', dark: '#1e3a8a' }, // blue
+  { body: '#16a34a', dark: '#14532d' }, // green
+  { body: '#7c3aed', dark: '#4c1d95' }, // purple
+  { body: '#db2777', dark: '#831843' }, // pink
+  { body: '#0891b2', dark: '#164e63' }, // teal
+  { body: '#ca8a04', dark: '#713f12' }, // amber
+  { body: '#dc2626', dark: '#7f1d1d' }, // red
+]
+
+/**
+ * Build one Wall Layout overview page for a brick estimate. Mirrors the
+ * block export's buildPlanOverviewPage but simpler:
+ *   - no piers (brick mode doesn't draw them)
+ *   - no curves (brick walls are straight)
+ *   - tally tiles are brickwork-flavoured (area, brick count) instead of
+ *     block-flavoured (total blocks)
+ *
+ * Returns '' when the page has no walls, so the caller can splice the
+ * result into the document unconditionally.
+ */
+function buildBrickPlanOverviewPage(
+  walls: Wall[],
+  openings: Opening[],
+  makeups: BrickMakeup[],
+  pageHeader: string,
+  brickwork: {
+    totalAreaSqMm: number
+    brickCount: number
+  },
+  brickThicknessMm: number,
+  background:
+    | { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number }
+    | null,
+  pageLabelSuffix: string
+): string {
+  if (walls.length === 0) return ''
+
+  // Order makeups by first appearance in walls so the colour assignment
+  // is stable across exports of the same project.
+  const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
+  const colourByMakeupId: Record<string, { body: string; dark: string }> = {}
+  const orderedMakeups: BrickMakeup[] = []
+  const seen = new Set<string>()
+  for (const w of walls) {
+    if (!seen.has(w.makeupId) && makeupsById[w.makeupId]) {
+      seen.add(w.makeupId)
+      orderedMakeups.push(makeupsById[w.makeupId])
+    }
+  }
+  for (const m of makeups) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id)
+      orderedMakeups.push(m)
+    }
+  }
+  for (let i = 0; i < orderedMakeups.length; i++) {
+    colourByMakeupId[orderedMakeups[i].id] =
+      BRICK_WALL_TYPE_PALETTE[i % BRICK_WALL_TYPE_PALETTE.length]
+  }
+  const fallbackColour = BRICK_WALL_TYPE_PALETTE[0]
+  const colourFor = (w: Wall) => colourByMakeupId[w.makeupId] ?? fallbackColour
+
+  const wallLengthsMm = walls.map((w) => {
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    return Math.sqrt(dx * dx + dy * dy)
+  })
+  const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
+  const openingsAreaSqMm = openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
+  const netWallAreaSqMm = Math.max(0, brickwork.totalAreaSqMm)
+  const wallTypeCount = new Set(walls.map((w) => w.makeupId)).size
+
+  const summaryTiles: Array<{ label: string; value: string; sub?: string }> = [
+    {
+      label: 'Walls',
+      value: String(walls.length),
+      sub: `${wallTypeCount} wall type${wallTypeCount === 1 ? '' : 's'}`,
+    },
+    { label: 'Total length', value: `${(totalWallLengthMm / 1000).toFixed(2)} m` },
+    {
+      label: 'Brickwork area',
+      value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`,
+      sub: openings.length > 0 ? 'net of openings' : 'gross area',
+    },
+    {
+      label: 'Bricks',
+      value: formatNumber(brickwork.brickCount),
+    },
+  ]
+  if (openings.length > 0) {
+    summaryTiles.push({
+      label: 'Openings',
+      value: String(openings.length),
+      sub: `${(openingsAreaSqMm / 1_000_000).toFixed(2)} m² deducted`,
+    })
+  }
+  const summaryRow = `
+    <div class="plan-overview-stats">
+      ${summaryTiles
+        .map(
+          (t) => `
+        <div class="plan-stat">
+          <div class="plan-stat-value">${escapeHtml(t.value)}</div>
+          <div class="plan-stat-label">${escapeHtml(t.label)}</div>
+          ${t.sub ? `<div class="plan-stat-sub">${escapeHtml(t.sub)}</div>` : ''}
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+  `
+
+  // Compute the viewBox from the wall extents + padding so the diagram
+  // crops to the relevant region of the plan. With a background image the
+  // crop is clamped to the page bounds so we never show empty SVG space.
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  for (const w of walls) {
+    if (w.startX < minX) minX = w.startX
+    if (w.startX > maxX) maxX = w.startX
+    if (w.endX < minX) minX = w.endX
+    if (w.endX > maxX) maxX = w.endX
+    if (w.startY < minY) minY = w.startY
+    if (w.startY > maxY) maxY = w.startY
+    if (w.endY < minY) minY = w.endY
+    if (w.endY > maxY) maxY = w.endY
+  }
+  if (!isFinite(minX) || !isFinite(maxX)) return ''
+  const pad = Math.max(
+    1000,
+    brickThicknessMm * 4,
+    (maxX - minX) * 0.1,
+    (maxY - minY) * 0.1
+  )
+  let viewMinX = minX - pad
+  let viewMinY = minY - pad
+  let viewW = maxX - minX + pad * 2
+  let viewH = maxY - minY + pad * 2
+  if (background) {
+    const pageRealW = background.pageWidthMm * background.pageScaleRatio
+    const pageRealH = background.pageHeightMm * background.pageScaleRatio
+    viewMinX = Math.max(0, viewMinX)
+    viewMinY = Math.max(0, viewMinY)
+    viewW = Math.min(viewW, pageRealW - viewMinX)
+    viewH = Math.min(viewH, pageRealH - viewMinY)
+  }
+
+  const labelDiameter = Math.max(brickThicknessMm * 2.8, Math.min(viewW, viewH) * 0.045)
+  const labelFontSize = labelDiameter * 0.55
+  const lengthFontSize = labelFontSize * 0.85
+
+  const wallShapes = walls
+    .map((w) => {
+      const c = colourFor(w)
+      return `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`
+    })
+    .join('\n          ')
+
+  const wallLabels = walls
+    .map((w, i) => {
+      const cx = (w.startX + w.endX) / 2
+      const cy = (w.startY + w.endY) / 2
+      const lengthM = (wallLengthsMm[i] / 1000).toFixed(2)
+      const lengthOffsetY = labelDiameter * 0.7 + lengthFontSize * 0.6
+      const c = colourFor(w)
+      return `
+        <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="${c.dark}" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
+        <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${labelFontSize}" font-weight="700" fill="#fff">${i + 1}</text>
+        <text x="${cx}" y="${cy + lengthOffsetY}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.18}" paint-order="stroke">${lengthM} m</text>
+      `
+    })
+    .join('\n          ')
+
+  const legendItems = orderedMakeups
+    .filter((m) => walls.some((w) => w.makeupId === m.id))
+    .map((m) => {
+      const c = colourByMakeupId[m.id] ?? fallbackColour
+      const wallsOfType = walls.filter((w) => w.makeupId === m.id)
+      const totalLenM =
+        wallsOfType.reduce((s, w) => {
+          const idx = walls.indexOf(w)
+          return s + (idx >= 0 ? wallLengthsMm[idx] : 0)
+        }, 0) / 1000
+      return `
+        <span class="legend-item">
+          <span class="legend-swatch" style="background: ${c.body}; opacity: 0.85; border: 1px solid ${c.dark};"></span>
+          <strong>${escapeHtml(m.name)}</strong>
+          <span class="legend-sub">${wallsOfType.length} wall${wallsOfType.length === 1 ? '' : 's'} · ${totalLenM.toFixed(2)} m</span>
+        </span>
+      `
+    })
+    .join('')
+
+  const legend = `
+    <div class="plan-overview-legend">
+      ${legendItems}
+      <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan scaled to fit page.</span>
+    </div>
+  `
+
+  const backgroundSvgElement = background
+    ? `<image href="${background.dataUrl}" x="0" y="0" width="${(background.pageWidthMm * background.pageScaleRatio).toFixed(0)}" height="${(background.pageHeightMm * background.pageScaleRatio).toFixed(0)}" preserveAspectRatio="none" opacity="0.85"/>`
+    : ''
+
+  const intro = background
+    ? 'The plan with the drawn walls overlaid in colour. Numbered labels match the wall references in the brick area summary; the plan is shown at 85 % opacity so the wall fills read clearly.'
+    : 'Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the brick area summary.'
+
+  return `
+    <section class="page plan-overview-page">
+      ${pageHeader}
+      <h2 class="section-title">Wall Layout${escapeHtml(pageLabelSuffix)}</h2>
+      <p class="page-intro">${intro}</p>
+      ${summaryRow}
+      <div class="plan-overview-wrap">
+        <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+          ${backgroundSvgElement}
+          ${wallShapes}
+          ${wallLabels}
+        </svg>
+      </div>
+      ${legend}
+    </section>
+  `
 }
 
 export interface BusinessExportInfo {
@@ -155,7 +422,17 @@ function groupLintels(
 }
 
 export async function exportBrickEstimate(params: ExportParams): Promise<void> {
-  const { projectDetails, inclusions, walls, openings, settings, business } = params
+  const {
+    projectDetails,
+    inclusions,
+    walls,
+    openings,
+    settings,
+    business,
+    makeups = [],
+    pdfFile,
+    pagesInfo,
+  } = params
   const tally = calculateBrickTally(walls, openings, settings)
 
   const headerTitle =
@@ -232,6 +509,67 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     if (rows.length === 0) return ''
     return `<div class="meta">${rows.join('')}</div>`
   })()
+
+  // Per-page Wall Layout overview pages — built upfront so the
+  // async PDF rasterisation completes before the HTML document is
+  // assembled. Each PDF page that has walls becomes one <section> with
+  // its own SVG cropped to the walls + the rasterised plan beneath. The
+  // section is skipped entirely when the wallLayout toggle is off, when
+  // there are no pages with walls, or when the page can't be calibrated.
+  const pagesToShow: PageInfo[] = inclusions.wallLayout && pagesInfo && pagesInfo.length > 0
+    ? pagesInfo.filter((p) => p.walls.length > 0)
+    : []
+  // Resolve a wall thickness for the diagram from the project's brick
+  // type; falls back to the single-skin default. Brick walls all use
+  // the same thickness today (no per-wall-makeup brick type yet).
+  const brickThicknessMm =
+    (settings.brickTypeCode && BRICK_LIBRARY[settings.brickTypeCode]?.depthMm) ||
+    DEFAULT_BRICK_WALL_THICKNESS_MM
+  const planOverviewPagesArr: string[] = []
+  for (const page of pagesToShow) {
+    let pageBackground:
+      | { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number }
+      | null = null
+    if (
+      pdfFile &&
+      page.pageWidthMm &&
+      page.pageHeightMm &&
+      page.pageScaleRatio &&
+      page.pageScaleRatio > 0
+    ) {
+      const rastered = await rasterisePdfPage(pdfFile, page.pageNumber)
+      if (rastered) {
+        pageBackground = {
+          dataUrl: rastered.dataUrl,
+          pageWidthMm: page.pageWidthMm,
+          pageHeightMm: page.pageHeightMm,
+          pageScaleRatio: page.pageScaleRatio,
+        }
+      }
+    }
+    // Tally for JUST this page's walls so the tile reads as the page's
+    // own brickwork rather than the project total. Uses the same calc
+    // engine as the project-wide tally.
+    const pageTally = calculateBrickTally(page.walls, page.openings, settings)
+    const pageLabel = page.label?.trim() || `Page ${page.pageNumber}`
+    const labelSuffix = pagesToShow.length > 1 ? ` — ${pageLabel}` : ''
+    planOverviewPagesArr.push(
+      buildBrickPlanOverviewPage(
+        page.walls,
+        page.openings,
+        makeups,
+        pageHeader,
+        {
+          totalAreaSqMm: pageTally.totalAreaSqMm,
+          brickCount: pageTally.brickCount,
+        },
+        brickThicknessMm,
+        pageBackground,
+        labelSuffix
+      )
+    )
+  }
+  const planOverviewPages = planOverviewPagesArr.join('\n')
 
   // Page 1: Assumptions
   const assumptionsPage = inclusions.assumptions
@@ -358,6 +696,73 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     min-height: 100vh;
   }
   .page:last-child { page-break-after: auto; }
+
+  /* Wall Layout overview pages — mirrored from the block export styles
+     so brick and block exports look like siblings rather than cousins. */
+  .plan-overview-page h2.section-title { margin: 12px 0 4px; }
+  .plan-overview-page .page-intro { margin-bottom: 6px; }
+  .plan-overview-stats {
+    display: flex;
+    gap: 10px;
+    margin: 4px 0 6px;
+    flex-wrap: wrap;
+  }
+  .plan-stat {
+    flex: 1 1 0;
+    min-width: 100px;
+    padding: 6px 10px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+  }
+  .plan-stat-value {
+    font-size: 16px;
+    font-weight: 700;
+    color: #1f2937;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .plan-stat-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+    margin-top: 2px;
+  }
+  .plan-stat-sub { font-size: 9px; color: #6b7280; margin-top: 1px; }
+  .plan-overview-wrap {
+    width: 100%;
+    height: 95mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafaf7;
+  }
+  .plan-overview-wrap svg { width: 100%; height: 100%; display: block; }
+  .plan-overview-legend {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    margin-top: 6px;
+    font-size: 10px;
+    color: #4b5563;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-item strong { font-weight: 600; color: #1f2937; }
+  .legend-sub { color: #6b7280; font-size: 10px; margin-left: 2px; }
+  .legend-swatch {
+    display: inline-block;
+    width: 18px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .legend-note { color: #9ca3af; font-style: italic; }
 
   .page-header {
     display: flex;
@@ -568,6 +973,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
 </head>
 <body>
   ${assumptionsPage}
+  ${planOverviewPages}
   ${tablesPage}
   ${disclaimerPage}
 </body>
@@ -611,6 +1017,7 @@ export function createDefaultExportInclusions(): BrickExportInclusions {
   const regional = getUserSettings().preferences.regionalFeatures
   return {
     assumptions: true,
+    wallLayout: true,
     brickAreaSummary: true,
     lintels: regional.lintels,
     brickTies: regional.brickTies,
