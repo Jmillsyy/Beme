@@ -179,14 +179,52 @@ const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
  */
 const MAX_RENDERED_ZOOM = 3.5
 
+/**
+ * Scale-ratio presets covering the common Australian / metric architectural
+ * + engineering set. Ordered ascending so the dropdown reads naturally.
+ * "Custom…" at the bottom (handled in the dropdown's onChange) prompts the
+ * user to type any integer ratio for plans printed at oddball scales.
+ */
 const RATIO_PRESETS = [
+  { label: '1:5', value: 5 },
+  { label: '1:10', value: 10 },
   { label: '1:20', value: 20 },
+  { label: '1:25', value: 25 },
   { label: '1:50', value: 50 },
+  { label: '1:75', value: 75 },
   { label: '1:100', value: 100 },
+  { label: '1:125', value: 125 },
+  { label: '1:150', value: 150 },
   { label: '1:200', value: 200 },
+  { label: '1:250', value: 250 },
+  { label: '1:300', value: 300 },
+  { label: '1:400', value: 400 },
   { label: '1:500', value: 500 },
+  { label: '1:750', value: 750 },
   { label: '1:1000', value: 1000 },
+  { label: '1:2000', value: 2000 },
+  { label: '1:5000', value: 5000 },
 ]
+
+/**
+ * Prompt the user for an arbitrary integer ratio and return the parsed value.
+ * Returns null if cancelled or invalid (so the caller can no-op the change).
+ * Bounded to a sane range — anything outside it is almost certainly a typo.
+ */
+function promptCustomRatio(): number | null {
+  if (typeof window === 'undefined') return null
+  const raw = window.prompt(
+    'Enter the scale ratio denominator (e.g. 80 for 1:80).',
+    '100'
+  )
+  if (raw === null) return null
+  const n = parseInt(raw.replace(/[^\d]/g, ''), 10)
+  if (!isFinite(n) || n < 1 || n > 100000) {
+    window.alert('Please enter a whole number between 1 and 100000.')
+    return null
+  }
+  return n
+}
 
 function distance(a: Point, b: Point) {
   const dx = b.x - a.x
@@ -2763,7 +2801,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 onChange={(e) => {
                   const v = e.target.value
                   if (!v) return
-                  applyRatioScale(parseFloat(v))
+                  if (v === 'custom') {
+                    const n = promptCustomRatio()
+                    if (n !== null) applyRatioScale(n)
+                  } else {
+                    applyRatioScale(parseFloat(v))
+                  }
                   e.target.value = ''
                 }}
                 className="px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-200 focus:outline-none focus:border-beme-400"
@@ -2775,6 +2818,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     {p.label}
                   </option>
                 ))}
+                <option value="custom">Custom…</option>
               </select>
             ) : (
               <button
@@ -2795,7 +2839,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               onChange={(e) => {
                 const v = e.target.value
                 if (!v) return
-                applyRatioScale(parseFloat(v))
+                if (v === 'custom') {
+                  const n = promptCustomRatio()
+                  if (n !== null) applyRatioScale(n)
+                } else {
+                  applyRatioScale(parseFloat(v))
+                }
                 e.target.value = ''
               }}
               disabled={!pageData?.pageWidthMm}
@@ -2807,6 +2856,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   {p.label}
                 </option>
               ))}
+              <option value="custom">Custom…</option>
             </select>
             <span className="text-xs text-ink-400">or</span>
             <button
