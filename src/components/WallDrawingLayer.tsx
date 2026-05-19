@@ -5,6 +5,7 @@ import type { Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
 import { formatLengthShort } from '../lib/units'
 import { useUserSettings } from '../lib/userSettings'
+import { hexToRgba } from '../lib/wallTypeColors'
 
 interface Point {
   x: number
@@ -1888,13 +1889,15 @@ function WallDrawingLayerInner({
             (curveAnchorA?.wallId === wall.id || curveAnchorB?.wallId === wall.id)
           // Default wall colour comes from the wall-type palette so multiple
           // wall types in the same project are visually distinct on the plan.
-          // Selection (blue) and curve-anchor (purple) overrides still win.
+          // The selection highlight now LEANS INTO that colour rather than
+          // overriding it — a green-coded wall lights up bright green, an
+          // amber-coded wall lights up amber, etc. Same for the halo / glow
+          // shadow further down the Line render. Curve anchors keep their
+          // purple override since that's a tool state, not a wall type.
           const wallTypeStroke = wallColorByWallId?.[wall.id] ?? '#ED7D31'
           const strokeColor = isCurveAnchor
             ? '#8b5cf6'
-            : isSelected
-              ? '#3b82f6'
-              : wallTypeStroke
+            : wallTypeStroke
           const strokeWidth = isSelected || isCurveAnchor ? 5 : isHovered ? 5 : 4
           const startIsCorner = wall.startJunction.type === 'corner'
           const endIsCorner = wall.endJunction.type === 'corner'
@@ -1947,26 +1950,26 @@ function WallDrawingLayerInner({
                 closed
                 fill={
                   isSelected
-                    ? 'rgba(59, 130, 246, 0.6)'
+                    ? hexToRgba(wallTypeStroke, 0.6)
                     : isCurveAnchor
                       ? 'rgba(139, 92, 246, 0.22)'
-                      : 'rgba(237, 125, 49, 0.20)'
+                      : hexToRgba(wallTypeStroke, 0.2)
                 }
                 stroke={strokeColor}
                 strokeWidth={isSelected ? 5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
                 hitStrokeWidth={8}
                 lineJoin="miter"
-                // Selected walls get a soft blue glow so the user can pick
-                // them out at a glance — whether they were selected from a
-                // canvas click or from the Wall types panel. Non-selected
-                // walls skip shadow entirely (perf). The shadow lands on the
-                // semi-transparent fill which is enough to read as a halo
-                // around the wall. shadowForStrokeEnabled flips on ONLY when
-                // selected so the highlight stroke itself casts the halo —
-                // on thick block walls the fill alone wasn't visible enough
-                // against the PDF underneath, but a glowing stroke reads
-                // cleanly in both modes.
-                shadowColor={isSelected ? '#3b82f6' : undefined}
+                // Selected walls get a soft glow IN THEIR OWN COLOUR so the
+                // user can pick them out at a glance — green-coded walls glow
+                // green, amber walls glow amber, etc. — whether selected
+                // from a canvas click or from the Wall types panel.
+                // Non-selected walls skip shadow entirely (perf).
+                // shadowForStrokeEnabled flips on ONLY when selected so the
+                // highlight stroke itself casts the halo — on thick block
+                // walls the fill alone wasn't visible enough against the PDF
+                // underneath, but a glowing stroke reads cleanly in both
+                // modes.
+                shadowColor={isSelected ? wallTypeStroke : undefined}
                 shadowBlur={isSelected ? 16 : 0}
                 shadowOpacity={isSelected ? 0.85 : 0}
                 // Konva perf flags. perfectDrawEnabled forces an offscreen

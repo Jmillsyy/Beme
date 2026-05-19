@@ -43,3 +43,32 @@ export function wallTypeColor(
   if (idx < 0) return WALL_TYPE_PALETTE[0]
   return WALL_TYPE_PALETTE[idx % WALL_TYPE_PALETTE.length]
 }
+
+/**
+ * Convert a `#RRGGBB` (or `#RGB`) hex colour to an rgba() string with the
+ * given alpha. Used by the selection-highlight renderer to fade a wall
+ * type's own colour into the selected-state fill — so a green-coded wall
+ * highlights green, an orange-coded wall highlights orange, etc.
+ *
+ * Returns the original input unchanged when it isn't a hex colour (e.g.
+ * a CSS keyword), so callers can pass user-supplied colours without first
+ * normalising.
+ */
+export function hexToRgba(hex: string, alpha: number): string {
+  if (typeof hex !== 'string' || !hex.startsWith('#')) return hex
+  let r: number, g: number, b: number
+  const stripped = hex.slice(1)
+  if (stripped.length === 3) {
+    r = parseInt(stripped[0] + stripped[0], 16)
+    g = parseInt(stripped[1] + stripped[1], 16)
+    b = parseInt(stripped[2] + stripped[2], 16)
+  } else if (stripped.length === 6) {
+    r = parseInt(stripped.slice(0, 2), 16)
+    g = parseInt(stripped.slice(2, 4), 16)
+    b = parseInt(stripped.slice(4, 6), 16)
+  } else {
+    return hex
+  }
+  if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return hex
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
