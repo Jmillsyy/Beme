@@ -478,6 +478,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [projectDetails, setProjectDetails] = useState<ProjectDetails>(() =>
     createDefaultProjectDetails()
   )
+  /**
+   * Gate: show a startup modal that captures project + customer info BEFORE
+   * the workspace becomes interactive. Previously the project-details drawer
+   * was hidden in a corner of the project bar, so users would draw a whole
+   * estimate, hit Save, and get a cryptic "Fill in a project name or site
+   * address" message they didn't know how to act on. This gate makes the
+   * required step the first one. It's only relevant for brand-new projects
+   * (no id in the URL); loaded projects bypass it since they already have
+   * details. Once the user enters a project name and clicks Start, the
+   * modal closes and they can edit further via the existing drawer.
+   */
+  const [startupGateOpen, setStartupGateOpen] = useState<boolean>(() => !projectId)
   const [exportInclusions, setExportInclusions] = useState<BrickExportInclusions>(() =>
     createDefaultExportInclusions()
   )
@@ -573,6 +585,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           setReferencePdfPaths(paths)
         }
         setProjectDetails(proj.projectDetails)
+        // Loading a saved project bypasses the startup gate — the details
+        // already exist, no need to ask for them again.
+        setStartupGateOpen(false)
         setPagesData(proj.pagesData)
         // Loading a project replaces the workspace state wholesale — wipe the
         // undo / redo stacks so the user can't accidentally "undo" all the way
@@ -824,6 +839,41 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       inFlightProjectIdRef.current = null
     }
   }
+
+  // ---------- Autosave ----------
+  //
+  // Persist every 2 minutes while there are unsaved changes and the project
+  // is in a saveable state. We keep refs to the latest handler + flags so the
+  // interval (set up once) always reads the current version, avoiding stale
+  // closures over projectDetails / walls / etc.
+  const autosaveHandlerRef = useRef(handleSaveProject)
+  const autosaveCanSaveRef = useRef(false)
+  const autosaveDirtyRef = useRef(false)
+  const autosaveGateRef = useRef(false)
+  useEffect(() => {
+    autosaveHandlerRef.current = handleSaveProject
+    autosaveCanSaveRef.current = canSave
+    autosaveDirtyRef.current = hasUnsavedChanges
+    autosaveGateRef.current = startupGateOpen
+  })
+  useEffect(() => {
+    const AUTOSAVE_INTERVAL_MS = 2 * 60 * 1000
+    const id = window.setInterval(() => {
+      // Belt-and-braces: dirty + canSave guard each tick. If the project
+      // has no unsaved changes (idle workspace) we skip, so we don't grind
+      // through identical-content writes. canSave guards the same "name is
+      // required" rule the manual save uses. Gate-open means the user is
+      // still in the startup modal — autosaving a project that has nothing
+      // but a name in it isn't useful, so we hold off until they enter the
+      // workspace proper.
+      if (autosaveGateRef.current) return
+      if (!autosaveDirtyRef.current) return
+      if (!autosaveCanSaveRef.current) return
+      if (savingRef.current) return
+      void autosaveHandlerRef.current()
+    }, AUTOSAVE_INTERVAL_MS)
+    return () => window.clearInterval(id)
+  }, [])
 
   async function handleToggleProjectStatus() {
     if (!currentProjectId) return
@@ -2140,12 +2190,19 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       containerRef.current.scrollTop = start.scrollTop - dy
     }
 
-    const handleDocMouseUp = () => {
+    const handleDocMouseUp = (e: MouseEvent) => {
       if (isPanningRef.current) {
         isPanningRef.current = false
         if (containerRef.current) {
           containerRef.current.style.cursor = ''
         }
+      }
+      // Right-click never fires a 'click' event for the capture-phase
+      // listener to swallow, so clear the pan-during-press flag here on a
+      // right-mouseup — otherwise the next left-click after a right-drag
+      // pan would get swallowed by handleContainerClickCapture.
+      if (e.button === 2) {
+        didPanDuringPressRef.current = false
       }
       panStartRef.current = null
     }
@@ -2161,27 +2218,52 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       }
     }
 
+    // Suppress the browser's right-click context menu over the canvas so
+    // right-drag pan can use button 2 without a menu popping up underneath.
+    // We let the menu through on container chrome by scoping to the
+    // container element itself (the menu only appears in workspace areas
+    // anyway, since right-click on UI buttons isn't typical).
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault()
+    }
+
     document.addEventListener('mousemove', handleDocMouseMove)
     document.addEventListener('mouseup', handleDocMouseUp)
     container.addEventListener('click', handleContainerClickCapture, { capture: true })
+    container.addEventListener('contextmenu', handleContextMenu)
     return () => {
       document.removeEventListener('mousemove', handleDocMouseMove)
       document.removeEventListener('mouseup', handleDocMouseUp)
       container.removeEventListener('click', handleContainerClickCapture, { capture: true })
+      container.removeEventListener('contextmenu', handleContextMenu)
     }
   }, [pdfFile])
 
   function handlePanMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (e.button !== 0) return // only left mouse button
+    // Left-click pans only when no draw tool is grabbing it — we record the
+    // start and let the cursor-move threshold differentiate click vs drag.
+    // Right-click ALWAYS pans regardless of which tool is active, so the
+    // user can move around the canvas while still holding the Draw wall /
+    // Opening / Calibrate tool. We swallow the default contextmenu (the
+    // contextmenu listener below) so right-drag isn't fighting with the
+    // browser's right-click menu.
+    if (e.button !== 0 && e.button !== 2) return
     const container = containerRef.current
     if (!container) return
 
     // Reset pan-during-press flag for this new mouse press.
     didPanDuringPressRef.current = false
 
-    // Just record the start point — pan activates from the document mousemove once the
-    // cursor has moved past the threshold. This way clicks fall through to Konva for
-    // drawing / placing / selecting, and only deliberate drags scroll the view.
+    // For right-button drags, immediately mark the gesture as a pan so even a
+    // single-pixel jiggle doesn't fall through to Konva. For left-button we
+    // still want the click-vs-drag threshold so a regular click can place a
+    // wall point. The threshold check itself lives in handleDocMouseMove.
+    if (e.button === 2) {
+      didPanDuringPressRef.current = true
+      isPanningRef.current = true
+      container.style.cursor = 'grabbing'
+    }
+
     panStartRef.current = {
       x: e.clientX,
       y: e.clientY,
@@ -2366,6 +2448,102 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       },
     })
     cancelCalibration()
+  }
+
+  // ---------- Render: startup gate ----------
+  //
+  // First-step modal that captures project + customer info. Renders for brand-
+  // new projects only (no projectId in URL). Blocks the workspace until the
+  // user supplies at least a project name — the same value the save flow
+  // already required, just collected up front instead of as a mystery error
+  // after an hour of drawing. The user can still edit any of these via the
+  // Project details drawer later. We render BEFORE either the upload-zone
+  // branch or the full workspace, so neither is interactive until the modal
+  // is dismissed.
+  if (startupGateOpen && (mode === 'block' || mode === 'brick')) {
+    return (
+      <div className="max-w-[1600px] mx-auto">
+        <div className="fixed inset-0 z-50 bg-ink-900/95 flex items-center justify-center p-4">
+          <div className="max-w-lg w-full bg-ink-800 rounded-xl shadow-xl border border-ink-600">
+            <div className="px-6 py-4 border-b border-ink-600">
+              <h2 className="text-lg font-semibold text-ink-50">
+                Start a new {mode} estimate
+              </h2>
+              <p className="text-xs text-ink-400 mt-0.5">
+                Fill in the customer + project info first — this lands in the
+                header of the exported estimate, and saving needs at least a
+                project name.
+              </p>
+            </div>
+            <div className="px-6 py-4 space-y-3">
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1">
+                  Project name <span className="text-rose-400">*</span>
+                </span>
+                <input
+                  type="text"
+                  autoFocus
+                  value={projectDetails.projectName}
+                  onChange={(e) =>
+                    setProjectDetails({ ...projectDetails, projectName: e.target.value })
+                  }
+                  placeholder="e.g. Berrinba"
+                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                />
+              </label>
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1">Site address</span>
+                <input
+                  type="text"
+                  value={projectDetails.siteAddress}
+                  onChange={(e) =>
+                    setProjectDetails({ ...projectDetails, siteAddress: e.target.value })
+                  }
+                  placeholder="14 Mothership Drive, Berrinba"
+                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                />
+              </label>
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1">Client name</span>
+                <input
+                  type="text"
+                  value={projectDetails.clientName}
+                  onChange={(e) =>
+                    setProjectDetails({ ...projectDetails, clientName: e.target.value })
+                  }
+                  placeholder="e.g. ABC Group"
+                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                />
+              </label>
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1">Estimator</span>
+                <input
+                  type="text"
+                  value={projectDetails.estimatorName}
+                  onChange={(e) =>
+                    setProjectDetails({ ...projectDetails, estimatorName: e.target.value })
+                  }
+                  placeholder="Your name"
+                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                />
+              </label>
+            </div>
+            <div className="px-6 py-4 border-t border-ink-600 flex items-center justify-between gap-2">
+              <span className="text-xs text-ink-400">
+                You can edit these later from Project details.
+              </span>
+              <button
+                onClick={() => setStartupGateOpen(false)}
+                disabled={!projectDetails.projectName.trim()}
+                className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Start estimate
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   // ---------- Render: upload zone ----------
