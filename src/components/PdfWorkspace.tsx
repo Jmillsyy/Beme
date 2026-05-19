@@ -2479,24 +2479,41 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
   }, [zoom, renderedZoom])
 
-  // Center the page in the scroll area on initial PDF load. The flex
-  // spacer's min-width/min-height adds 800/600 px of pan buffer on each
-  // axis, so without re-centring the user would see the empty top-left
-  // buffer at scrollLeft = 0, scrollTop = 0 with the page offset to the
-  // right and down. Re-centring puts the page back in the middle of the
-  // viewport and gives equal scroll room in all four directions for
-  // click-drag pan. Only runs when the PDF file or page changes — zoom
-  // has its own pending-scroll mechanism above.
+  // Centre the page horizontally and vertically in the viewport on
+  // initial PDF load. The page sits at scroll-content (0,0); without this
+  // the user would land at scrollLeft = 0 / scrollTop = 0 with the page
+  // top-left at the viewport top-left, which is fine for large pages but
+  // visually offset for small ones. We compute the scroll target as
+  // "page centre = viewport centre" which lands the user looking at the
+  // middle of the page regardless of zoom. Clamped to scroll's [0, max]
+  // range so small pages just sit at (0,0) when they can't be centred.
   useLayoutEffect(() => {
     const container = containerRef.current
+    const pageEl = pageWrapperRef.current
     if (!container) return
     if (!pdfFile && !isEmptyWorkspace) return
-    // rAF so the new pageWidth/Height has been applied to the wrapper
-    // before we measure scrollWidth / scrollHeight.
     const raf = requestAnimationFrame(() => {
       if (!container) return
-      container.scrollLeft = Math.max(0, (container.scrollWidth - container.clientWidth) / 2)
-      container.scrollTop = Math.max(0, (container.scrollHeight - container.clientHeight) / 2)
+      // Use the page wrapper's offset within the scroll content to align
+      // the viewport centre with the page centre. Falls back to scroll-
+      // content centring if the page wrapper hasn't mounted yet.
+      let targetLeft = 0
+      let targetTop = 0
+      if (pageEl) {
+        const pageOffsetLeft = pageEl.offsetLeft
+        const pageOffsetTop = pageEl.offsetTop
+        const pageW = pageEl.offsetWidth
+        const pageH = pageEl.offsetHeight
+        targetLeft = pageOffsetLeft + pageW / 2 - container.clientWidth / 2
+        targetTop = pageOffsetTop + pageH / 2 - container.clientHeight / 2
+      } else {
+        targetLeft = (container.scrollWidth - container.clientWidth) / 2
+        targetTop = (container.scrollHeight - container.clientHeight) / 2
+      }
+      const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
+      container.scrollLeft = Math.max(0, Math.min(maxLeft, targetLeft))
+      container.scrollTop = Math.max(0, Math.min(maxTop, targetTop))
     })
     return () => cancelAnimationFrame(raf)
   }, [pdfFile, currentPage, isEmptyWorkspace])
@@ -4527,21 +4544,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               : 'grab',
         }}
       >
-        {/* Spacer that extends the scrollable area at LOW zoom so click-drag
-            pan still has scroll room when the page fits inside the
-            container. min-width / min-height are sized to container + 800/600,
-            giving 400/300 px of pan buffer around the centred page when it's
-            small. At high zoom the page itself exceeds the container so
-            scrollWidth = pageWidth and the user can drag straight to either
-            edge without 400 px of padding sitting in the way — that padding
-            was making the leftmost visible scroll position look "cut off"
-            (the page-left edge was 400 px inside the viewport when the
-            scrollbar was at 0). */}
+        {/* Spacer wrapper: page sits at the TOP-LEFT of the scroll content
+            (scroll-x=0, scroll-y=0) so scrollLeft=0 / scrollTop=0 always
+            puts the PDF's true top-left edge at the viewport's top-left.
+            min-width / min-height extend the scroll area by 400/300 px
+            past the page on the right and bottom so click-drag pan has
+            scroll room even when the page fits inside the container at low
+            zoom — without it, drag-pan no-ops when there's no overflow.
+            At high zoom the page itself exceeds the viewport on both axes
+            and scrollWidth=pageW, so the user can drag straight from
+            page-left edge (scrollLeft=0) to page-right edge (scrollLeft=
+            max). The initial centring useLayoutEffect below scrolls to
+            roughly the middle of the page on PDF load so the user sees
+            the page rather than the empty buffer. */}
         <div
-          className="flex justify-center items-center"
           style={{
-            minWidth: 'calc(100% + 800px)',
-            minHeight: 'calc(100% + 600px)',
+            minWidth: 'calc(100% + 400px)',
+            minHeight: 'calc(100% + 300px)',
           }}
         >
           {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
