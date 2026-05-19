@@ -7,12 +7,11 @@ export default function BlockEstimatePage() {
   const projectId = searchParams.get('id')
 
   return (
-    // h-[calc(100vh/0.88)] compensates for the global `html { zoom: 0.88 }`
-    // in index.css: 100vh × 0.88 = 88% of the visual viewport, which would
-    // leave a strip of dead space at the bottom. Dividing 100vh by the
-    // zoom factor yields a layout-pixel height that renders as exactly the
-    // visual viewport — canvas / thumbnails / rail reach the taskbar.
-    // Update both numbers together if the zoom in index.css changes.
+    // h-[calc(100vh/0.88)] + overflow-hidden locks the workspace to a
+    // single visual viewport (compensates for `html { zoom: 0.88 }` in
+    // index.css). The canvas pan container inside has its own internal
+    // scrolling so the PDF pans freely without the page itself ever
+    // scrolling — dragging the plan to any edge stays reliable.
     <div className="h-[calc(100vh/0.88)] flex flex-col bg-ink-900 text-ink-50 overflow-hidden">
       <Header />
       <div className="flex-1 min-h-0 relative flex flex-col">

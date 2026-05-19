@@ -3725,10 +3725,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       {/* ──────────────────── Workspace body ────────────────────
           Flex column on small screens (canvas stacked above right rail),
           flex row on lg+ (canvas centre, thumbnails left, rail right). The
-          three areas are clean columns side by side — no overlap. flex-1
-          on the body and `min-h-0` on body + children let the canvas fill
-          all the way to the viewport bottom. The outer padding is on the
-          workspace area; this body just lays its columns out. */}
+          three areas are clean columns side by side — no overlap.
+          flex-1 + min-h-0 throughout lets the canvas pan container fill
+          to the bottom of its fixed-height parent. No page-level scroll —
+          all PDF panning happens inside the canvas's own scrollable area,
+          which keeps dragging the plan to any edge reliable. */}
       <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
       {/* ───── Canvas area ─────
