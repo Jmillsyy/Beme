@@ -3412,14 +3412,34 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 {displayedPdfFile?.name ?? pdfFile?.name ?? '(no file)'}
               </span>
               {/* Replace only swaps out the PRIMARY — reference PDFs come from
-                  the originating estimate request and aren't editable here. */}
+                  the originating estimate request and aren't editable here.
+                  Wipes every page's drawn data so the new PDF starts clean:
+                  walls drawn on the OLD plan would otherwise sit silently in
+                  the project and creep back into exports / tallies even
+                  though they're meaningless against the new plan. */}
               {!isReferenceView && (
                 <button
                   onClick={() => {
+                    const hasDrawnData =
+                      Object.values(wallsByPage).some((ws) => ws.length > 0) ||
+                      Object.values(openingsByPage).some((os) => os.length > 0) ||
+                      Object.values(piersByPage).some((ps) => ps.length > 0)
+                    if (hasDrawnData) {
+                      const ok = window.confirm(
+                        'Replace the plan? All walls, openings, piers, and page calibrations will be cleared so the new PDF starts fresh. Wall types and pier types stay.'
+                      )
+                      if (!ok) return
+                    }
                     setPdfFile(null)
                     setNumPages(0)
                     setCurrentPage(1)
                     setPagesData({})
+                    setWallsByPage({})
+                    setOpeningsByPage({})
+                    setPiersByPage({})
+                    _setSelectedWallIds(new Set())
+                    _setSelectedOpeningIds(new Set())
+                    _setSelectedPierIds(new Set())
                     setZoom(1)
                     cancelCalibration()
                   }}
