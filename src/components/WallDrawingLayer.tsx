@@ -117,21 +117,23 @@ interface WallDrawingLayerProps {
   onCancelDraw?: () => void
 }
 
-/** Pixel radius for snapping to an existing wall's endpoint (corner candidate). */
-const SNAP_THRESHOLD_PX = 8
+/** Pixel radius for snapping to an existing wall's endpoint (corner candidate).
+ *  Kept tight so close-but-distinct endpoints (parallel walls a few mm apart)
+ *  don't get pulled into one. The user can hold Shift to bypass snap entirely. */
+const SNAP_THRESHOLD_PX = 5
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
- *  click precision against a visible wall — the user targets the wall on screen. */
-const WALL_PROJECTION_THRESHOLD_PX = 14
+ *  click precision against a visible wall — the user targets the wall on screen. Tightened
+ *  so two adjacent walls don't both claim the cursor on a single click. */
+const WALL_PROJECTION_THRESHOLD_PX = 8
 /**
  * Real-world distance at which a cursor near an existing wall's *face* will snap onto it
  * to form a T-junction. Expressed in mm so the snap feels the same at every zoom level
- * and on every plan — at 1:50 a 20-pixel threshold is hundreds of mm of real space, which
- * is far too sticky. 20 mm is tight enough to leave room to draw walls in dense junctions
- * (where multiple existing walls are close together) without their snap zones swallowing
- * the cursor, while still being forgiving enough to land without millimetre precision.
+ * and on every plan. Tightened to 10 mm so users can lay two parallel walls a few cm
+ * apart without the first wall's snap zone swallowing the cursor — the previous 20 mm
+ * caused stickiness in dense junctions. Shift bypasses the snap entirely.
  */
-const WALL_FACE_SNAP_MM = 20
+const WALL_FACE_SNAP_MM = 10
 
 /**
  * Angular tolerance for orthogonal snap, in degrees.
@@ -856,13 +858,14 @@ function WallDrawingLayerInner({
   function resolveCurveAnchorAtCursor(
     cursorPx: Point
   ): { wallId: string | null; xMm: number; yMm: number } {
-    // Generous threshold so the curve can be anchored well past the end of a
-    // wall — that's the common case for end-face anchoring, where the user's
-    // cursor is in empty space beyond the wall's tip. Outside this radius we
+    // Modest threshold so the curve picks up an existing wall when the user
+    // is clearly targeting one (cursor within ~25 px of the wall's drawn
+    // line), but doesn't reach across dense layouts. Outside this radius we
     // fall through to a 'free' anchor at the raw cursor position so the user
-    // can draw a curve between any two points without needing existing
-    // walls to anchor on.
-    const CURVE_ANCHOR_THRESHOLD_PX = 60
+    // can draw a curve between any two points without needing existing walls
+    // to anchor on — that's the dominant case now that free placement is
+    // supported, so over-snapping costs more than under-snapping.
+    const CURVE_ANCHOR_THRESHOLD_PX = 25
 
     let best: { wallId: string; distPx: number; tUnclamped: number } | null = null
     for (const wall of walls) {

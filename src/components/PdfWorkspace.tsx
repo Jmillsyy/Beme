@@ -3134,17 +3134,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   setSelectedOpeningId(null)
                   setSelectedPierId(null)
                 }}
-                disabled={
-                  !currentScale ||
-                  calibrating ||
-                  currentPageWalls.length < 2 ||
-                  missingActiveType
-                }
+                disabled={!currentScale || calibrating || missingActiveType}
                 title={
                   missingActiveType
                     ? 'Pick a wall type in the Wall types panel before drawing.'
-                    : currentPageWalls.length < 2
-                    ? 'Draw two straight walls first — a curve goes between them'
                     : undefined
                 }
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
