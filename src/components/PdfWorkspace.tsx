@@ -2934,7 +2934,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
         <div className="px-6 py-4">
 
-          <div className="flex flex-col lg:flex-row gap-3 items-start">
+          <div className="flex flex-col lg:flex-row gap-2 items-start">
 
             {/* ── Left: drop zone + onboarding hints ── */}
             <div className="flex-1 min-w-0 w-full">
@@ -3035,7 +3035,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             </div>
 
             {/* ── Right: side rail (block: wall + pier types · brick: settings) ── */}
-            <aside className="w-full lg:w-[300px] lg:flex-shrink-0">
+            <aside className="w-full lg:w-[260px] lg:flex-shrink-0">
               {mode === 'block' && (
                 <>
                   <WallTypesPanel
@@ -3110,7 +3110,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
-      <div className="px-4 py-3">
+      <div className="px-3 py-2">
 
       {/* File switcher — always renders when a primary PDF is loaded so the
           user can attach extra reference PDFs (engineering specs, architectural
@@ -3455,7 +3455,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           Left column = canvas + drawing controls (where your eyes/hands live).
           Right rail = setup + reference panels (wall types, tally, export).
           Stacks vertically on screens narrower than `lg`. */}
-      <div className="flex flex-col lg:flex-row gap-3 items-start">
+      <div className="flex flex-col lg:flex-row gap-2 items-start">
 
       {/* ───── Left column: canvas area ───── */}
       <div className="flex-1 min-w-0 w-full">
@@ -4675,7 +4675,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           Each panel handles its own collapse state, so users can hide what they're
           not actively using and the rail can absorb new panels (selection details,
           piers, control joints, etc.) without making the page taller. */}
-      <aside className="w-full lg:w-[360px] lg:flex-shrink-0 -mt-4 lg:mt-0">
+      <aside className="w-full lg:w-[260px] lg:flex-shrink-0 -mt-4 lg:mt-0">
 
         {/* Wall types management panel (block mode) */}
         {mode === 'block' && (
@@ -4830,7 +4830,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   return (
     <div
       ref={sidebarRef}
-      className="w-40 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2"
+      className="w-32 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-1.5"
     >
       <Document file={pdfFile} loading={null} error={null}>
         <div className="space-y-2">
@@ -4858,7 +4858,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                 >
                   <Page
                     pageNumber={pageNum}
-                    width={130}
+                    width={100}
                     renderAnnotationLayer={false}
                     renderTextLayer={false}
                   />
