@@ -2443,21 +2443,24 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   // Apply cursor-anchored zoom: after the new zoom commits, read where the
   // anchored world point IS NOW and shift scroll so that point lands back
-  // under the cursor. This is the second half of the wheel-zoom flow — the
-  // wheel handler stashes the anchor (cursor position + world coords), this
-  // effect reconciles the scroll position after layout has updated.
+  // under the cursor. The wheel handler stashes the anchor (cursor position
+  // + world coords), this effect reconciles the scroll position after
+  // layout has updated.
+  //
+  // We also depend on renderedZoom: 300 ms after the user stops scrolling,
+  // renderedZoom debounces to match zoom and the PDF re-rasterises at the
+  // new resolution. That re-raster can nudge the page wrapper's position by
+  // a sub-pixel amount due to canvas rendering — small but visible as a
+  // post-freeze "jump". Re-applying the anchor on renderedZoom transitions
+  // keeps the cursor's world point pinned across that re-raster too. The
+  // anchor is consumed only after the FINAL pass (renderedZoom = zoom) so
+  // it survives the in-between render where zoom has changed but
+  // renderedZoom is still catching up.
   useLayoutEffect(() => {
     const anchor = zoomAnchorRef.current
     const container = containerRef.current
     const pageEl = pageWrapperRef.current
     if (!anchor || !container || !pageEl) return
-    // Where the anchored world point currently sits in viewport coords:
-    //   pageRect.left + worldX * newZoom
-    // Where we want it: anchor.cursorClientX. Difference is the shift to
-    // apply to scrollLeft. Same for Y. Increasing scrollLeft moves content
-    // LEFT in the viewport (positive scroll = positive content shift left)
-    // so adding the deficit to scrollLeft brings the world point back
-    // under the cursor.
     const pageRect = pageEl.getBoundingClientRect()
     const currentWorldVisualLeft = pageRect.left + anchor.worldX * zoom
     const currentWorldVisualTop = pageRect.top + anchor.worldY * zoom
@@ -2465,15 +2468,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     const deltaY = currentWorldVisualTop - anchor.cursorClientY
     const targetLeft = container.scrollLeft + deltaX
     const targetTop = container.scrollTop + deltaY
-    // Clamp to valid scroll range — going past the edges is fine but the
-    // browser will clamp anyway, so we do it explicitly for clarity.
     const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
     const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
     container.scrollLeft = Math.max(0, Math.min(maxLeft, targetLeft))
     container.scrollTop = Math.max(0, Math.min(maxTop, targetTop))
-    // Single-shot — don't re-apply on subsequent renders that aren't a zoom.
-    zoomAnchorRef.current = null
-  }, [zoom])
+    // Only consume the anchor once renderedZoom has caught up — until then
+    // a follow-up effect run can re-anchor against the PDF re-raster.
+    if (renderedZoom === Math.min(zoom, MAX_RENDERED_ZOOM)) {
+      zoomAnchorRef.current = null
+    }
+  }, [zoom, renderedZoom])
 
   // Center the page in the scroll area on initial PDF load. The flex
   // spacer's min-width/min-height adds 800/600 px of pan buffer on each
