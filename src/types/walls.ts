@@ -418,3 +418,32 @@ export interface BrickSettings {
     metresPerUnit: number
   }
 }
+
+/**
+ * Brick wall makeup — the per-wall spec for a category of brick wall.
+ *
+ * Parallel to {@link WallMakeup} (block) but with a much smaller field set
+ * because brick walls don't have course composition, corner-block rules,
+ * pier types, or any of the other things that make a block wall layered.
+ * The user defines a handful of named types ("Facework", "Rendered", etc.)
+ * and assigns each drawn brick wall to one. The wall picks up the
+ * makeup's height + brick type at calc time.
+ *
+ * Brick ties / plascourse / per-m² rate stay on the project-level
+ * {@link BrickSettings} — they're job-wide accounting rules, not per-wall.
+ */
+export interface BrickMakeup {
+  /** Unique id within the project. */
+  id: string
+  /** Human-readable name, e.g. "Facework", "Rendered", "Common 76mm". */
+  name: string
+  /**
+   * Brick type code this makeup uses. References a row in the user's
+   * BrickLibrary. Each makeup carries its own brick type so a single
+   * project can mix face brick on the exterior with common brick on the
+   * party walls without retallying.
+   */
+  brickTypeCode: string
+  /** Wall height (mm) applied to walls of this type by default. */
+  heightMm: number
+}

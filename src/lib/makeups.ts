@@ -5,6 +5,7 @@
 
 import type { BlockCode } from '../types/blocks'
 import type {
+  BrickMakeup,
   CourseSeriesRange,
   PierMakeup,
   BondType,
@@ -104,6 +105,44 @@ export function createDefaultFreestandingPierMakeup(
  */
 export function createDefaultPierMakeups(): PierMakeup[] {
   return [createDefaultTiedPierMakeup(), createDefaultFreestandingPierMakeup()]
+}
+
+// ---------- Brick wall makeups ----------
+
+/**
+ * Build a single brick makeup with sensible defaults.
+ *
+ * Brick wall types come pre-seeded for new projects so estimators don't
+ * have to set them up before drawing the first wall. The seeded
+ * `brickTypeCode` is intentionally blank — the user picks an actual brick
+ * type from the project's brick library when they review the makeup. Until
+ * they do, the wall falls back to the project-level `brickSettings.brickTypeCode`
+ * at calc time.
+ */
+export function createDefaultBrickMakeup(opts: {
+  name?: string
+  heightMm?: number
+  brickTypeCode?: string
+} = {}): BrickMakeup {
+  return {
+    id: uid(),
+    name: opts.name ?? 'Facework',
+    brickTypeCode: opts.brickTypeCode ?? '',
+    heightMm: opts.heightMm ?? 2400,
+  }
+}
+
+/**
+ * The default set of brick wall types for a new brick project. Two
+ * sensible categories an estimator will reach for on most jobs:
+ * facework (visible exterior) and rendered (interior or render-coated).
+ * Users add / rename / remove freely.
+ */
+export function createDefaultBrickMakeups(): BrickMakeup[] {
+  return [
+    createDefaultBrickMakeup({ name: 'Facework' }),
+    createDefaultBrickMakeup({ name: 'Rendered' }),
+  ]
 }
 
 // ---------- Course series ranges ----------

@@ -24,6 +24,7 @@
 import type {
   BlockExportInclusions,
   BrickExportInclusions,
+  BrickMakeup,
   BrickSettings,
   Opening,
   Pier,
@@ -148,6 +149,14 @@ export interface SavedProject {
 
   // Brick-mode-specific
   brickSettings?: BrickSettings
+  /**
+   * Brick wall makeups — named categories with their own brick type +
+   * height (e.g. "Facework", "Rendered"). Parallel to `makeups` on block.
+   * Optional + defaulted-empty so projects saved before brick wall types
+   * existed still load cleanly (a default makeup is seeded on hydrate).
+   */
+  brickMakeups?: BrickMakeup[]
+  activeBrickMakeupId?: string
   /** Brick export inclusion tickboxes. (Block has its own `blockExportInclusions`.) */
   exportInclusions?: BrickExportInclusions
 }
@@ -241,6 +250,8 @@ export async function duplicateProject(sourceId: string): Promise<string | null>
     pierMakeups: source.pierMakeups,
     blockExportInclusions: source.blockExportInclusions,
     brickSettings: source.brickSettings,
+    brickMakeups: source.brickMakeups,
+    activeBrickMakeupId: source.activeBrickMakeupId,
     exportInclusions: source.exportInclusions,
   }
   await saveProject(copy)

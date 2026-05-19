@@ -10,6 +10,7 @@ import BrickLibraryPanel from './BrickLibraryPanel'
 import PierTypesPanel from './PierTypesPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickSettingsPanel from './BrickSettingsPanel'
+import BrickTypesPanel from './BrickTypesPanel'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
@@ -26,6 +27,7 @@ import {
 import type {
   BlockExportInclusions,
   BrickExportInclusions,
+  BrickMakeup,
   BrickSettings,
   Opening,
   Pier,
@@ -35,6 +37,7 @@ import type {
   WallMakeup,
 } from '../types/walls'
 import {
+  createDefaultBrickMakeups,
   createDefaultPierMakeups,
   createDefaultTiedPierMakeup,
   createDefaultWallMakeup,
@@ -54,6 +57,28 @@ const DEFAULT_BRICK_WALL_THICKNESS_MM = 110
  * single-skin 110mm if nothing's selected. Available outside React's render loop so
  * event handlers (wall-add, junction recompute) can use it before the next render lands.
  */
+/**
+ * Migrate legacy brick walls (saved with `makeupId === ''`) so every wall
+ * references a real BrickMakeup. Without this, the new wall-types panel
+ * would show "0 walls using this" for every makeup on an existing brick
+ * project, and click-to-select-walls-of-type wouldn't find anything.
+ *
+ * Block walls (or any non-empty makeupId) are passed through unchanged.
+ */
+function migrateBrickWalls(
+  wallsByPage: Record<number, Wall[]>,
+  defaultBrickMakeupId: string
+): Record<number, Wall[]> {
+  if (!defaultBrickMakeupId) return wallsByPage
+  const out: Record<number, Wall[]> = {}
+  for (const [pageStr, walls] of Object.entries(wallsByPage)) {
+    out[Number(pageStr)] = walls.map((w) =>
+      w.makeupId === '' ? { ...w, makeupId: defaultBrickMakeupId } : w
+    )
+  }
+  return out
+}
+
 function computeWallThicknessByWallId(
   walls: Wall[],
   makeupsById: Record<string, WallMakeup>,
@@ -475,6 +500,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
   })
 
+  /**
+   * Brick wall types — parallel to block `makeups`. New brick projects
+   * seed with two sensible defaults ("Facework", "Rendered") which the
+   * user can rename / add to. Each drawn brick wall references a makeup
+   * by id, and the calc engine reads height + brick-type from the makeup
+   * with a fall-back to project-level brickSettings.
+   */
+  const [brickMakeups, setBrickMakeups] = useState<BrickMakeup[]>(() =>
+    createDefaultBrickMakeups()
+  )
+  const [activeBrickMakeupId, setActiveBrickMakeupId] = useState<string>(
+    () => brickMakeups[0]?.id ?? ''
+  )
+
   // Project details + export inclusion tickboxes (brick mode)
   const [projectDetails, setProjectDetails] = useState<ProjectDetails>(() =>
     createDefaultProjectDetails()
@@ -602,7 +641,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           openingsByPage: proj.openingsByPage,
           piersByPage: proj.piersByPage ?? {},
         }
-        setWallsByPage(proj.wallsByPage)
+        // Brick walls used to be saved with makeupId === '' because they
+        // had no per-wall type. Now they reference a BrickMakeup the same way
+        // block walls reference a WallMakeup. Migrate on load: hydrate the
+        // saved brickMakeups (or fall back to the defaults), then rewrite
+        // any wall.makeupId === '' to the default brick makeup so the calc
+        // engine + selection UI find a real makeup. Block walls are unaffected.
+        const hydratedBrickMakeups =
+          proj.brickMakeups && proj.brickMakeups.length > 0
+            ? proj.brickMakeups
+            : createDefaultBrickMakeups()
+        const defaultBrickMakeupId = hydratedBrickMakeups[0]?.id ?? ''
+        setBrickMakeups(hydratedBrickMakeups)
+        setActiveBrickMakeupId(proj.activeBrickMakeupId ?? defaultBrickMakeupId)
+        const migratedWallsByPage = proj.type === 'brick'
+          ? migrateBrickWalls(proj.wallsByPage, defaultBrickMakeupId)
+          : proj.wallsByPage
+        setWallsByPage(migratedWallsByPage)
         setOpeningsByPage(proj.openingsByPage)
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
         if (proj.pierMakeups && proj.pierMakeups.length > 0) setPierMakeups(proj.pierMakeups)
@@ -665,6 +720,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     pierMakeups: typeof pierMakeups
     details: typeof projectDetails
     brick: typeof brickSettings
+    brickMakeups: typeof brickMakeups
   } | null>(null)
 
   /**
@@ -689,6 +745,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       pierMakeups,
       details: projectDetails,
       brick: brickSettings,
+      brickMakeups,
     }
     if (!savedSnapshotRef.current) {
       // First render — seed the snapshot so the very first effect run doesn't
@@ -704,7 +761,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       current.makeups !== snap.makeups ||
       current.pierMakeups !== snap.pierMakeups ||
       current.details !== snap.details ||
-      current.brick !== snap.brick
+      current.brick !== snap.brick ||
+      current.brickMakeups !== snap.brickMakeups
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
     wallsByPage,
@@ -714,6 +772,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     pierMakeups,
     projectDetails,
     brickSettings,
+    brickMakeups,
     hasUnsavedChanges,
   ])
 
@@ -799,7 +858,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       ...(mode === 'block'
         ? { makeups, activeMakeupId, blockExportInclusions, pierMakeups }
         : {}),
-      ...(mode === 'brick' ? { brickSettings, exportInclusions } : {}),
+      ...(mode === 'brick'
+        ? {
+            brickSettings,
+            brickMakeups,
+            activeBrickMakeupId,
+            exportInclusions,
+          }
+        : {}),
     }
     try {
       await saveProjectToStore(project)
@@ -817,6 +883,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         pierMakeups,
         details: projectDetails,
         brick: brickSettings,
+        brickMakeups,
       }
       setHasUnsavedChanges(false)
       // Update URL with the project id (so refresh keeps you in the saved project)
@@ -918,7 +985,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         piersByPage,
         currentPage,
         ...(mode === 'block' ? { makeups, activeMakeupId, pierMakeups } : {}),
-        ...(mode === 'brick' ? { brickSettings, exportInclusions } : {}),
+        ...(mode === 'brick'
+          ? { brickSettings, brickMakeups, activeBrickMakeupId, exportInclusions }
+          : {}),
       }
       try {
         await saveProjectToStore(project)
@@ -1022,6 +1091,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     return counts
   }, [allWalls])
 
+  /** Brick makeups keyed by id. Used by the calc engine + the wall-rendering
+   *  layer to resolve wall.heightMmOverride defaults and per-wall brick types. */
+  const brickMakeupsById = useMemo(() => {
+    const map: Record<string, BrickMakeup> = {}
+    for (const m of brickMakeups) map[m.id] = m
+    return map
+  }, [brickMakeups])
+
   const pierCountsByMakeupId = useMemo(() => {
     const counts: Record<string, number> = {}
     for (const p of allPiers) {
@@ -1062,11 +1139,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // the same helper directly for the swatches in its list.
   const wallColorByWallId = useMemo(() => {
     const map: Record<string, string> = {}
+    // Pick the right makeup list for the active mode — block walls colour by
+    // WallMakeup, brick walls colour by BrickMakeup. Without this brick walls
+    // all fell back to the placeholder orange because their makeupId never
+    // appeared in the block `makeups` list.
+    const palette = mode === 'brick' ? brickMakeups : makeups
     for (const w of allWalls) {
-      map[w.id] = w.makeupId ? wallTypeColor(w.makeupId, makeups) : '#ED7D31'
+      map[w.id] = w.makeupId ? wallTypeColor(w.makeupId, palette) : '#ED7D31'
     }
     return map
-  }, [allWalls, makeups])
+  }, [allWalls, makeups, brickMakeups, mode])
 
   const selectedWall = useMemo(
     () => (selectedWallId ? currentPageWalls.find((w) => w.id === selectedWallId) : null),
@@ -1126,20 +1208,28 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       existingThicknesses
     )
 
+    // Resolve the new wall's makeup id + initial height override based on mode.
+    // Brick walls now reference a BrickMakeup the same way block walls reference
+    // a WallMakeup, and inherit the active makeup's height as the wall's initial
+    // override so per-makeup heights actually apply at draw time. Falls back to
+    // brickSettings.defaultWallHeightMm if no active brick makeup exists yet
+    // (eg. older projects that still need to be migrated).
+    const activeBrickMakeup = brickMakeupsById[activeBrickMakeupId]
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      // Brick walls don't reference a WallMakeup — they use brickSettings instead.
-      makeupId: isBrick ? '' : activeMakeupId,
+      makeupId: isBrick ? activeBrickMakeupId : activeMakeupId,
       startX: snappedStart.x,
       startY: snappedStart.y,
       endX: snappedEnd.x,
       endY: snappedEnd.y,
       startJunction: { type: 'free' },
       endJunction: { type: 'free' },
-      heightMmOverride: isBrick ? brickSettings.defaultWallHeightMm : undefined,
+      heightMmOverride: isBrick
+        ? activeBrickMakeup?.heightMm ?? brickSettings.defaultWallHeightMm
+        : undefined,
     }
 
     // Junction detection only matters for block walls (corners + T-junctions affect tally).
@@ -1154,7 +1244,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       ...prev,
       [currentPage]: recomputed,
     }))
-  }, [wallsByPage, currentPage, makeupsById, mode, brickSettings, activeMakeupId])
+  }, [
+    wallsByPage,
+    currentPage,
+    makeupsById,
+    mode,
+    brickSettings,
+    activeMakeupId,
+    activeBrickMakeupId,
+    brickMakeupsById,
+  ])
 
   /**
    * Add a curved wall from three points (start, mid, end) anchored to two existing walls.
@@ -1413,6 +1512,40 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // Deselect any opening / pier that was held alongside an old wall
     // selection — keeps the selection bar consistent with "you're now
     // working with this wall type".
+    _setSelectedOpeningIds(new Set())
+    _setSelectedPierIds(new Set())
+  }
+
+  // ---------- Brick makeup CRUD ----------
+
+  function handleAddBrickMakeup(makeup: BrickMakeup) {
+    setBrickMakeups((prev) => [...prev, makeup])
+    setActiveBrickMakeupId(makeup.id)
+  }
+
+  function handleUpdateBrickMakeup(updated: BrickMakeup) {
+    setBrickMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+  }
+
+  function handleDeleteBrickMakeup(id: string) {
+    setBrickMakeups((prev) => {
+      const remaining = prev.filter((m) => m.id !== id)
+      if (remaining.length === 0) return prev
+      if (activeBrickMakeupId === id) setActiveBrickMakeupId(remaining[0].id)
+      return remaining
+    })
+  }
+
+  /**
+   * Same "click a brick wall type to select all walls of that type" affordance
+   * as block. Sets active for newly-drawn walls AND lights up matching walls
+   * on the current page so the user sees the mapping at a glance.
+   */
+  function handleActivateBrickMakeup(id: string) {
+    setActiveBrickMakeupId(id)
+    const pageWalls = wallsByPage[currentPage] ?? []
+    const matchingIds = pageWalls.filter((w) => w.makeupId === id).map((w) => w.id)
+    _setSelectedWallIds(new Set(matchingIds))
     _setSelectedOpeningIds(new Set())
     _setSelectedPierIds(new Set())
   }
@@ -2926,6 +3059,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               )}
               {mode === 'brick' && (
                 <>
+                  <BrickTypesPanel
+                    makeups={brickMakeups}
+                    activeMakeupId={activeBrickMakeupId}
+                    wallCountsByMakeupId={wallCountsByMakeupId}
+                    onSetActive={handleActivateBrickMakeup}
+                    onAddMakeup={handleAddBrickMakeup}
+                    onUpdateMakeup={handleUpdateBrickMakeup}
+                    onDeleteMakeup={handleDeleteBrickMakeup}
+                  />
                   <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
                   <BrickLibraryPanel />
                 </>
@@ -4562,9 +4704,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         {/* Block library (block mode) — user-editable catalogue of every block */}
         {mode === 'block' && <BlockLibraryPanel />}
 
-        {/* Brick settings + library (brick mode) */}
+        {/* Brick wall types + settings + library (brick mode) */}
         {mode === 'brick' && (
           <>
+            <BrickTypesPanel
+              makeups={brickMakeups}
+              activeMakeupId={activeBrickMakeupId}
+              wallCountsByMakeupId={wallCountsByMakeupId}
+              onSetActive={handleActivateBrickMakeup}
+              onAddMakeup={handleAddBrickMakeup}
+              onUpdateMakeup={handleUpdateBrickMakeup}
+              onDeleteMakeup={handleDeleteBrickMakeup}
+            />
             <BrickSettingsPanel settings={brickSettings} onChange={setBrickSettings} />
             <BrickLibraryPanel />
           </>
