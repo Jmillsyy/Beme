@@ -251,3 +251,17 @@ button:focus-visible {
   outline: 2px solid var(--color-beme-500);
   outline-offset: 1px;
 }
+
+/**
+ * Force the closed-hand "grabbing" cursor across the whole canvas while
+ * a pan gesture is in progress. The Konva stage and PDF page each set
+ * their own cursor (crosshair while a draw tool is active, default
+ * otherwise), so a container-level style="cursor: grabbing" gets
+ * overridden as soon as the cursor crosses an inner element. The wildcard
+ * with !important on this class wins over those, giving the user clear
+ * feedback that the cursor is panning rather than placing.
+ */
+.beme-pan-active,
+.beme-pan-active * {
+  cursor: grabbing !important;
+}

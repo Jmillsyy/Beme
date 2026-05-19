@@ -2183,7 +2183,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         if (dx * dx + dy * dy < PAN_DRAG_THRESHOLD_PX * PAN_DRAG_THRESHOLD_PX) return
         isPanningRef.current = true
         didPanDuringPressRef.current = true
-        containerRef.current.style.cursor = 'grabbing'
+        // Apply the grabbing class to the whole container so all descendants
+        // (Konva stage, PDF canvas) show the hand cursor regardless of their
+        // own cursor style. See .beme-pan-active in src/index.css.
+        containerRef.current.classList.add('beme-pan-active')
       }
 
       containerRef.current.scrollLeft = start.scrollLeft - dx
@@ -2194,7 +2197,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       if (isPanningRef.current) {
         isPanningRef.current = false
         if (containerRef.current) {
-          containerRef.current.style.cursor = ''
+          containerRef.current.classList.remove('beme-pan-active')
         }
       }
       // Right-click never fires a 'click' event for the capture-phase
@@ -2261,7 +2264,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     if (e.button === 2) {
       didPanDuringPressRef.current = true
       isPanningRef.current = true
-      container.style.cursor = 'grabbing'
+      // Show the closed-hand cursor immediately so the user sees the
+      // distinction between "tool place" and "pan" the moment they press
+      // the right button — even before they've moved the cursor.
+      container.classList.add('beme-pan-active')
     }
 
     panStartRef.current = {
