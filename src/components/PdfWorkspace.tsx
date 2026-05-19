@@ -135,7 +135,10 @@ import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions, snapEndpointToThroughWallFace } from '../lib/junctions'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
-import { getEstimateRequestByProjectId } from '../lib/estimateRequests'
+import {
+  getEstimateRequestByProjectId,
+  updateEstimateRequest,
+} from '../lib/estimateRequests'
 import { getCurrentOrgId } from '../lib/organisations'
 import type { EstimateRequest } from '../types/estimateRequests'
 import { Link } from 'react-router-dom'
@@ -994,6 +997,26 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setLastSavedAt(now)
       } catch (err) {
         console.error('Failed to update project status', err)
+      }
+      // If this project came from an estimate request, propagate the status
+      // change up to the request so the Recently Completed band on the
+      // dashboard (which lists completed requests) sees it. Without this,
+      // marking a project complete from the workspace left the originating
+      // request stuck at 'in_progress' forever.
+      if (sourceRequest) {
+        try {
+          await updateEstimateRequest(
+            sourceRequest.id,
+            nextStatus === 'completed'
+              ? { status: 'completed', completedAt: now }
+              : { status: 'in_progress', completedAt: null }
+          )
+        } catch (err) {
+          // Surfaced via console; not load-blocking — the project status
+          // is already saved at this point and the request can be flipped
+          // manually if the propagation fails.
+          console.error('Failed to propagate status to estimate request', err)
+        }
       }
     }
   }

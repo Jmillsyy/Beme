@@ -316,17 +316,49 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         return b.updatedAt.localeCompare(a.updatedAt)
       })
     // Recently-completed is personal: only requests the current user was
-    // assigned to. Org-wide completed work lives behind a filter on the
-    // /requests page ('By person' dropdown there can surface a teammate's
-    // recent completions on demand). The dashboard should be 'your stuff'.
-    const completed = requests
-      .filter(
-        (r) => r.status === 'completed' && r.assignedToUserId === userId
-      )
+    // assigned to AND projects the current user owns. Org-wide completed
+    // work lives behind a filter on the /requests page.
+    //
+    // Two sources merged into one list:
+    //   1. Estimate requests with status === 'completed' (the workspace's
+    //      status toggle propagates to the linked request now, so a project
+    //      that originated from a request shows up here).
+    //   2. Projects with status === 'completed' that DON'T have a linked
+    //      request — direct '+ Block' / '+ Brick' creates that the user
+    //      finished. Without this, those just disappear after completion.
+    //
+    // De-duplicates by projectId: if a completed project's id appears in
+    // both lists (request flow) we keep the REQUEST entry because the
+    // CompletedCard renders the customer-name header better than the
+    // project's projectDetails.
+    const completedRequests = requests.filter(
+      (r) => r.status === 'completed' && r.assignedToUserId === userId
+    )
+    const requestProjectIds = new Set(
+      completedRequests.map((r) => r.projectId).filter(Boolean)
+    )
+    const orphanCompletedProjects = projects.filter(
+      (p) => p.status === 'completed' && !requestProjectIds.has(p.id)
+    )
+    type CompletedItem =
+      | { kind: 'request'; request: EstimateRequest; completedAt: string }
+      | { kind: 'project'; project: SavedProject; completedAt: string }
+    const merged: CompletedItem[] = [
+      ...completedRequests.map((r) => ({
+        kind: 'request' as const,
+        request: r,
+        completedAt: r.completedAt ?? r.updatedAt,
+      })),
+      ...orphanCompletedProjects.map((p) => ({
+        kind: 'project' as const,
+        project: p,
+        completedAt: p.completedAt ?? p.updatedAt,
+      })),
+    ]
+    const completed = merged
       .sort(
         (a, b) =>
-          new Date(b.completedAt ?? b.updatedAt).getTime() -
-          new Date(a.completedAt ?? a.updatedAt).getTime()
+          new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
       )
       // Cap at 4 so the row fills cleanly on common viewport widths without
       // orphans. "View all →" link surfaces the rest.
@@ -337,7 +369,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       teamActive: team,
       recentlyCompleted: completed,
     }
-  }, [requests, userId])
+  }, [requests, projects, userId])
 
   return (
     <>
@@ -572,13 +604,24 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           // how many there are. 1 card spans the full row, 2 split 50/50,
           // 3 split 33/33/33, 4+ wrap to a new row at the min width.
           <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
-            {recentlyCompleted.map((r) => (
-              <CompletedCard
-                key={r.id}
-                request={r}
-                assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-              />
-            ))}
+            {recentlyCompleted.map((item) =>
+              item.kind === 'request' ? (
+                <CompletedCard
+                  key={`req-${item.request.id}`}
+                  request={item.request}
+                  assignee={
+                    item.request.assignedToUserId
+                      ? memberById.get(item.request.assignedToUserId)
+                      : undefined
+                  }
+                />
+              ) : (
+                <CompletedProjectCard
+                  key={`proj-${item.project.id}`}
+                  project={item.project}
+                />
+              )
+            )}
           </div>
         )}
       </section>
@@ -795,6 +838,64 @@ function CompletedCard({
             {assignee?.displayName || assignee?.email || 'team'}
           </span>
         </span>
+        <span
+          className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-medium tabular-nums"
+          title={`Turnaround: ${turnaroundLabel}`}
+        >
+          ⏱ {turnaroundLabel}
+        </span>
+      </div>
+      <div className="text-[11px] text-ink-500 mt-2">
+        Completed {formatRelative(completedIso)}
+      </div>
+    </Link>
+  )
+}
+
+/**
+ * Recently-completed card for a direct project (one not created from an
+ * estimate request). Same visual shape as CompletedCard but pulls the
+ * customer / site fields from projectDetails instead of the request's
+ * own customer columns, and links back to the project workspace rather
+ * than the request page.
+ */
+function CompletedProjectCard({ project }: { project: SavedProject }) {
+  const created = new Date(project.createdAt).getTime()
+  const completedIso = project.completedAt ?? project.updatedAt
+  const completed = new Date(completedIso).getTime()
+  const turnaroundDays = (completed - created) / (1000 * 60 * 60 * 24)
+  const turnaroundLabel = formatTurnaround(turnaroundDays)
+  const title =
+    project.projectDetails.clientName.trim() ||
+    project.projectDetails.projectName.trim() ||
+    project.projectDetails.siteAddress.trim() ||
+    'Untitled project'
+  const sub = project.projectDetails.siteAddress.trim()
+  const href =
+    project.type === 'brick'
+      ? `/project/brick?id=${project.id}`
+      : `/project/block?id=${project.id}`
+
+  return (
+    <Link
+      to={href}
+      className="block border border-ink-600 rounded-xl bg-ink-800 p-4 hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors group"
+    >
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="min-w-0">
+          <div className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
+            {title}
+          </div>
+          {sub && sub !== title && (
+            <div className="text-xs text-ink-400 truncate">{sub}</div>
+          )}
+        </div>
+        <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-400">
+          {project.type === 'brick' ? 'Brick' : 'Block'}
+        </span>
+      </div>
+      <div className="flex items-center justify-between text-xs text-ink-400 gap-2 flex-wrap">
+        <span className="truncate">Direct estimate</span>
         <span
           className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-medium tabular-nums"
           title={`Turnaround: ${turnaroundLabel}`}
