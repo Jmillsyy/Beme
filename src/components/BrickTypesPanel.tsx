@@ -111,13 +111,18 @@ export default function BrickTypesPanel({
                       Active
                     </span>
                   )}
-                  <div className="flex items-center gap-2 mb-1 pr-12">
+                  <div className="flex items-start gap-2 mb-1 pr-12">
                     <span
-                      className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+                      className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
                       style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
                       aria-hidden
                     />
-                    <div className="text-sm font-medium text-ink-100 truncate">{m.name}</div>
+                    {/* Wrap the name onto multiple lines rather than truncate —
+                        the name is the identity of this entry, so the user
+                        always wants it in full even if the card grows taller. */}
+                    <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                      {m.name}
+                    </div>
                   </div>
                   <div className="text-xs text-ink-400">
                     {m.heightMm}mm · brick {m.brickTypeCode || 'project default'}

@@ -131,25 +131,29 @@ export default function WallTypesPanel({
                   Active
                 </span>
               )}
-              <div className="flex items-center gap-2 mb-1 pr-12">
+              <div className="flex items-start gap-2 mb-1 pr-12">
                 {/* Swatch that matches the colour walls of this type are drawn in
                     on the plan. Picked deterministically from a palette by index. */}
                 <span
-                  className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+                  className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
                   style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
                   aria-hidden
                 />
-                <div className="text-sm font-medium text-ink-100 truncate">{m.name}</div>
+                {/* Allow the name to wrap onto multiple lines rather than
+                    truncate — the wall-type name is the identity of this
+                    entry, so the user always wants it in full even if that
+                    means the card grows taller. break-words handles single
+                    long names without spaces. */}
+                <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                  {m.name}
+                </div>
               </div>
+              {/* Condensed details. Bond + height stay because they're the
+                  two facts an estimator checks first; everything else
+                  (corners, fractions, base/top blocks) lives behind Edit so
+                  the card can give the wall-type NAME the room it needs. */}
               <div className="text-xs text-ink-400">
-                {m.bondType} bond · {m.heightMm}mm ·{' '}
-                {m.cornerBlockCode === '20.21' ? 'knockout corners' : 'standard corners'} ·{' '}
-                fractions {m.useFractions ? 'on' : 'off'}
-              </div>
-              <div className="text-xs text-ink-400 mt-1 font-mono">
-                Base {m.baseCourseBlockCode}
-                {m.baseCourseTileCode ? `+${m.baseCourseTileCode}` : ''} · Body {m.bodyBlockCode} · Top{' '}
-                {m.topCourseBlockCode}
+                {m.bondType} bond · {m.heightMm}mm · Body {m.bodyBlockCode}
               </div>
               {m.courseOverrides && m.courseOverrides.length > 0 && (
                 <div className="text-xs text-ink-400 mt-1">
