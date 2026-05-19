@@ -4759,7 +4759,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 </Document>
               )}
 
-              {/* Calibration overlay — at renderedZoom resolution; scales with parent. */}
+              {/* Calibration overlay — at renderedZoom resolution; scales with parent.
+                  Visuals deliberately mirror the wall-draw preview in WallDrawingLayer:
+                  same dash pattern (6 4), same stroke width (3), same #ED7D31 orange,
+                  same endpoint circles, same midpoint length badge. The label shows
+                  the pixel distance until the second click lands; if there's an
+                  existing scale on this page (the recalibrate case), we ALSO show the
+                  current-scale mm equivalent so the user has context for what they're
+                  about to replace. */}
               <svg
                 ref={svgRef}
                 className="absolute inset-0 w-full h-full"
@@ -4770,27 +4777,63 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 onClick={handleSvgClick}
                 onMouseMove={handleSvgMouseMove}
               >
-                {calibrating && calPoint1 && !calPoint2 && mousePos && (
-                  <line
-                    x1={calPoint1.x}
-                    y1={calPoint1.y}
-                    x2={mousePos.x}
-                    y2={mousePos.y}
-                    stroke="#ED7D31"
-                    strokeWidth="2"
-                    strokeDasharray="4 4"
-                  />
-                )}
-                {calPoint1 && calPoint2 && (
-                  <line
-                    x1={calPoint1.x}
-                    y1={calPoint1.y}
-                    x2={calPoint2.x}
-                    y2={calPoint2.y}
-                    stroke="#ED7D31"
-                    strokeWidth="3"
-                  />
-                )}
+                {(() => {
+                  const showPreview =
+                    calibrating && calPoint1 && !calPoint2 && mousePos
+                  const showCommitted = !!(calPoint1 && calPoint2)
+                  const a = calPoint1
+                  const b = showPreview ? mousePos : showCommitted ? calPoint2 : null
+                  if (!a || !b) return null
+                  // Distance in current renderedZoom px (the SVG coord space).
+                  const dx = b.x - a.x
+                  const dy = b.y - a.y
+                  const pxDist = Math.sqrt(dx * dx + dy * dy)
+                  // Convert to real mm if the page already has a scale. This is the
+                  // recalibrate case — the user can see what the OLD scale called
+                  // this length while drafting the new one. Skips when no scale
+                  // exists yet (first calibration on a fresh page).
+                  let mmEstimate: number | null = null
+                  const pageWidthMm = pageData?.pageWidthMm
+                  const pageScaleRatio = pageData?.pageScaleRatio
+                  if (
+                    pageWidthMm &&
+                    pageScaleRatio &&
+                    baseWidth > 0 &&
+                    renderedZoom > 0
+                  ) {
+                    const pageMm = (pxDist * pageWidthMm) / (baseWidth * renderedZoom)
+                    mmEstimate = pageMm * pageScaleRatio
+                  }
+                  const midX = (a.x + b.x) / 2
+                  const midY = (a.y + b.y) / 2
+                  const label =
+                    mmEstimate !== null
+                      ? `${Math.round(mmEstimate)} mm`
+                      : `${Math.round(pxDist)} px`
+                  return (
+                    <>
+                      <line
+                        x1={a.x}
+                        y1={a.y}
+                        x2={b.x}
+                        y2={b.y}
+                        stroke="#ED7D31"
+                        strokeWidth="3"
+                        strokeDasharray="6 4"
+                      />
+                      <text
+                        x={midX + 8}
+                        y={midY - 12}
+                        fontSize="14"
+                        fontWeight="bold"
+                        fill="#C5530A"
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        {label}
+                      </text>
+                    </>
+                  )
+                })()}
                 {calPoint1 && (
                   <circle cx={calPoint1.x} cy={calPoint1.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
                 )}
