@@ -4453,7 +4453,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className="flex-1 border border-ink-600 rounded-xl overflow-auto bg-ink-800 min-h-[400px] max-h-[80vh]"
+        className="flex-1 border border-ink-600 rounded-xl overflow-auto bg-ink-800 min-h-[400px] max-h-[92vh]"
         style={{
           cursor:
             calibrating ||
@@ -4830,7 +4830,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   return (
     <div
       ref={sidebarRef}
-      className="w-32 flex-shrink-0 max-h-[80vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-1.5"
+      className="w-32 flex-shrink-0 max-h-[92vh] overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-1.5"
     >
       <Document file={pdfFile} loading={null} error={null}>
         <div className="space-y-2">
