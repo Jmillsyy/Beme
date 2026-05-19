@@ -275,7 +275,7 @@ function buildBrickPlanOverviewPage(
     : ''
 
   const intro = background
-    ? 'The plan with the drawn walls overlaid in colour. Numbered labels match the wall references in the brick area summary; the plan is shown at 85 % opacity so the wall fills read clearly.'
+    ? 'The plan with the drawn walls overlaid in colour. Numbered labels match the wall references in the brick area summary.'
     : 'Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the brick area summary.'
 
   return `
