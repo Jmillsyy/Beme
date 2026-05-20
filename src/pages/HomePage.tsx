@@ -367,11 +367,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return m
   }, [members])
 
-  // Stats: pending count, in-progress count, completed-this-week count, and
-  // average turnaround in days for completed requests. Turnaround is
-  // (completedAt − createdAt); we average the last 20 completions so the
-  // metric responds to recent changes in pace rather than dragging on
-  // historical data forever.
+  // Stats: pending count, in-progress count, completed-this-week count.
+  // The fourth tile in the row is the InboxTile, which derives its number
+  // from myActionItems below (myPending + myInProgress) — not part of the
+  // stats memo because it's user-specific rather than org-wide.
   const stats = useMemo(() => {
     const pending = requests.filter((r) => r.status === 'pending').length
     const inProgress = requests.filter((r) => r.status === 'in_progress').length
@@ -382,23 +381,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         r.completedAt &&
         new Date(r.completedAt).getTime() >= weekAgo
     ).length
-    const recentCompletions = requests
-      .filter((r) => r.completedAt)
-      .sort(
-        (a, b) =>
-          new Date(b.completedAt!).getTime() - new Date(a.completedAt!).getTime()
-      )
-      .slice(0, 20)
-    const turnaroundDays = recentCompletions.map((r) => {
-      const created = new Date(r.createdAt).getTime()
-      const completed = new Date(r.completedAt!).getTime()
-      return (completed - created) / (1000 * 60 * 60 * 24)
-    })
-    const avgTurnaround =
-      turnaroundDays.length === 0
-        ? null
-        : turnaroundDays.reduce((a, b) => a + b, 0) / turnaroundDays.length
-    return { pending, inProgress, completedThisWeek, avgTurnaround }
+    return { pending, inProgress, completedThisWeek }
   }, [requests])
 
   // Split the active requests three ways:
@@ -545,15 +528,14 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           value={stats.completedThisWeek}
           accent="emerald"
         />
-        <StatTile
-          label="Avg turnaround"
-          value={
-            stats.avgTurnaround === null
-              ? '—'
-              : formatTurnaround(stats.avgTurnaround)
-          }
-          sub={stats.avgTurnaround === null ? 'No completed requests yet' : 'Recent jobs'}
-        />
+        {/* Inbox jump-tile. Replaces the old 'Avg turnaround' stat — that
+            number wasn't actionable, just a vanity metric. This tile is a
+            clickable shortcut to the requests page filtered to 'assigned
+            to me', which is what the estimator actually wants from the
+            stats row. Shows the live count of items waiting on this user
+            (pending + in-progress) so they have an at-a-glance "how full
+            is my queue" read without scrolling to the inbox below. */}
+        <InboxTile count={myActionItems} />
       </section>
 
       {/* ── Your inbox ──
@@ -1437,6 +1419,40 @@ function WelcomeStrip({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Click-through tile for the user's own inbox. Visually consistent with
+ * StatTile (border, padding, label / value typography) so the stats row
+ * still reads as a four-tile grid, but the whole card is a Link that
+ * lands the user on /requests filtered to 'assigned to me'. Replaces the
+ * old Avg-turnaround stat because that number wasn't actionable —
+ * jumping straight to your own queue is.
+ *
+ * Count accent: beme orange when there's something waiting, ink-50 when
+ * the queue is empty.
+ */
+function InboxTile({ count }: { count: number }) {
+  const accentClass = count > 0 ? 'text-beme-300' : 'text-ink-50'
+  return (
+    <Link
+      to="/requests?scope=mine"
+      className="block border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 flex items-center justify-between gap-2">
+        <span>My inbox</span>
+        <span className="text-ink-500 group-hover:text-beme-300 transition-colors">→</span>
+      </div>
+      <div className={`text-2xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
+        {count}
+      </div>
+      <div className="text-xs text-ink-400 mt-0.5">
+        {count === 0
+          ? 'Nothing assigned to you'
+          : `${count === 1 ? 'request waiting' : 'requests waiting'} for you`}
+      </div>
+    </Link>
   )
 }
 
