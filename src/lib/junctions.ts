@@ -169,52 +169,6 @@ function freeEndCornerPoint(
  * target), OR when both walls' inset points coincide (when both ends were drawn with
  * the inset snap behaviour).
  */
-/**
- * True iff wallA and wallB meet at the given endpoints AND are collinear
- * (parallel, continuing through the shared point). Two such walls can't
- * physically share a corner block — they're a single continuous wall split
- * by a control joint, so the recompute pass tags both ends as control-
- * joint rather than corner. Cos < -0.95 ≈ within 18° of perfectly anti-
- * parallel outward directions, which is enough slack to forgive axis-snap
- * drift while still rejecting anything that's noticeably angled (a real
- * corner sits near cos = 0, perpendicular).
- *
- * Outward direction at an endpoint = endpoint − other_endpoint. When two
- * walls meet end-to-end and continue collinearly, the outward vectors at
- * the shared point point AWAY from each other along the same axis, so
- * their dot product is close to −1.
- */
-export function endpointsFormCollinearButt(
-  wallA: Wall,
-  endA: 'start' | 'end',
-  wallB: Wall,
-  endB: 'start' | 'end'
-): boolean {
-  if (isCurvedWall(wallA) || isCurvedWall(wallB)) return false
-  const aPoint = endA === 'start'
-    ? { x: wallA.startX, y: wallA.startY }
-    : { x: wallA.endX, y: wallA.endY }
-  const bPoint = endB === 'start'
-    ? { x: wallB.startX, y: wallB.startY }
-    : { x: wallB.endX, y: wallB.endY }
-  if (!pointsMatch(aPoint, bPoint)) return false
-  const aOther = endA === 'start'
-    ? { x: wallA.endX, y: wallA.endY }
-    : { x: wallA.startX, y: wallA.startY }
-  const bOther = endB === 'start'
-    ? { x: wallB.endX, y: wallB.endY }
-    : { x: wallB.startX, y: wallB.startY }
-  const aDx = aPoint.x - aOther.x
-  const aDy = aPoint.y - aOther.y
-  const bDx = bPoint.x - bOther.x
-  const bDy = bPoint.y - bOther.y
-  const aLen = Math.sqrt(aDx * aDx + aDy * aDy)
-  const bLen = Math.sqrt(bDx * bDx + bDy * bDy)
-  if (aLen < 0.001 || bLen < 0.001) return false
-  const cos = (aDx * bDx + aDy * bDy) / (aLen * bLen)
-  return cos < -0.95
-}
-
 function endpointsFormCorner(
   wallA: Wall,
   endA: 'start' | 'end',
@@ -448,46 +402,11 @@ export function recomputeAllJunctions(
     preservedControlJoints.map(({ wallId, end }) => `${wallId}|${end}`)
   )
 
-  // ----- Auto-detect collinear butt joints -----
-  // Before the corner-detection pass, scan every pair of walls for endpoints
-  // that coincide AND are collinear (parallel continuations of each other).
-  // These can't be a corner — geometrically they're a single continuous wall
-  // split by a control joint — so tag both endpoints as control-joint and
-  // add them to skipCornerKeys so the corner pass ignores them. This lets
-  // the user just drag two collinear walls together and have it "just work"
-  // as a control-jointed butt, no modifier key needed. Matches what the
-  // user sees in the user's reference plan: a long wall with a small purple
-  // marker where the control joint sits.
-  for (let i = 0; i < reset.length; i++) {
-    for (let j = i + 1; j < reset.length; j++) {
-      const a = reset[i]
-      const b = reset[j]
-      if (isCurvedWall(a) || isCurvedWall(b)) continue
-      for (const aEnd of ['start', 'end'] as const) {
-        for (const bEnd of ['start', 'end'] as const) {
-          if (!endpointsFormCollinearButt(a, aEnd, b, bEnd)) continue
-          // Tag both ends as control-joint (unless one was already preserved
-          // — keep the explicit user tag in that case).
-          if (!skipCornerKeys.has(`${a.id}|${aEnd}`)) {
-            if (aEnd === 'start') {
-              a.startJunction = { type: 'control-joint', connectedWallIds: [] }
-            } else {
-              a.endJunction = { type: 'control-joint', connectedWallIds: [] }
-            }
-            skipCornerKeys.add(`${a.id}|${aEnd}`)
-          }
-          if (!skipCornerKeys.has(`${b.id}|${bEnd}`)) {
-            if (bEnd === 'start') {
-              b.startJunction = { type: 'control-joint', connectedWallIds: [] }
-            } else {
-              b.endJunction = { type: 'control-joint', connectedWallIds: [] }
-            }
-            skipCornerKeys.add(`${b.id}|${bEnd}`)
-          }
-        }
-      }
-    }
-  }
+  // Corners and T-junctions are derived from pure geometry below. No
+  // collinear-butt auto-detection — if the user wants a control joint
+  // they place one explicitly with the Control Joint tool, which splits
+  // a wall in two and tags both halves' inner ends as 'control-joint'
+  // (preserved through the reset above).
 
   // For every pair of walls, check all 4 endpoint combinations
   for (let i = 0; i < reset.length; i++) {
@@ -518,99 +437,10 @@ export function recomputeAllJunctions(
     }
   }
 
-  // ----- T-junction pass -----
-  // For every endpoint still tagged 'free' after corner detection, check whether it lies
-  // on another wall's body. If so, tag it as a t-junction connected to that wall.
-  // Skip endpoints that are reserved as control joints.
-  for (const wall of reset) {
-    if (
-      wall.startJunction.type === 'free' &&
-      !skipCornerKeys.has(`${wall.id}|start`)
-    ) {
-      const throughWallId = findWallWhoseBodyContains(
-        { x: wall.startX, y: wall.startY },
-        reset,
-        thicknessByWallId,
-        wall.id
-      )
-      if (throughWallId) {
-        wall.startJunction = {
-          type: 't-junction',
-          connectedWallIds: [throughWallId],
-        }
-      }
-    }
-    if (
-      wall.endJunction.type === 'free' &&
-      !skipCornerKeys.has(`${wall.id}|end`)
-    ) {
-      const throughWallId = findWallWhoseBodyContains(
-        { x: wall.endX, y: wall.endY },
-        reset,
-        thicknessByWallId,
-        wall.id
-      )
-      if (throughWallId) {
-        wall.endJunction = {
-          type: 't-junction',
-          connectedWallIds: [throughWallId],
-        }
-      }
-    }
-  }
-
-  // ----- Mutual T-junction → corner re-tag -----
-  // If wall A's endpoint sits on wall B's body AND wall B's endpoint sits on wall A's
-  // body, that's not two T-junctions — it's a CORNER (each face-snapped onto the other).
-  // Re-tag both junctions as 'corner' so the mitred rendering and corner-aware tally fire.
-  //
-  // IMPORTANT: we deliberately do NOT move the endpoint coordinates. Wall lengths must
-  // stay exactly what the user drew (a 4600mm wall stays 4600mm). The mitre rendering
-  // works off the face-line geometry rather than the data endpoints, so the L tiles
-  // cleanly even when both walls' endpoints sit at face positions rather than at the
-  // centreline intersection.
-  for (let pass = 0; pass < 2; pass++) {
-    let changed = false
-    for (let i = 0; i < reset.length; i++) {
-      const a = reset[i]
-      if (isCurvedWall(a)) continue
-      for (const aEnd of ['start', 'end'] as const) {
-        const aJunc = aEnd === 'start' ? a.startJunction : a.endJunction
-        if (aJunc.type !== 't-junction') continue
-        const otherId = aJunc.connectedWallIds?.[0]
-        if (!otherId) continue
-        const b = reset.find((w) => w.id === otherId)
-        if (!b || isCurvedWall(b)) continue
-        // Is B's endpoint also t-junctioned onto A?
-        let bEnd: 'start' | 'end' | null = null
-        if (
-          b.startJunction.type === 't-junction' &&
-          b.startJunction.connectedWallIds?.includes(a.id)
-        ) {
-          bEnd = 'start'
-        } else if (
-          b.endJunction.type === 't-junction' &&
-          b.endJunction.connectedWallIds?.includes(a.id)
-        ) {
-          bEnd = 'end'
-        }
-        if (!bEnd) continue
-        // Mutual T-junction: re-tag both as 'corner'. Positions stay put.
-        if (aEnd === 'start') {
-          a.startJunction = { type: 'corner', connectedWallIds: [b.id] }
-        } else {
-          a.endJunction = { type: 'corner', connectedWallIds: [b.id] }
-        }
-        if (bEnd === 'start') {
-          b.startJunction = { type: 'corner', connectedWallIds: [a.id] }
-        } else {
-          b.endJunction = { type: 'corner', connectedWallIds: [a.id] }
-        }
-        changed = true
-      }
-    }
-    if (!changed) break
-  }
+  // No T-junction auto-detection. Free-end endpoints landing on another
+  // wall's face stay 'free' — the face snap during drawing already put
+  // them at the right position. Junction types are corner (endpoints
+  // coincide), control-joint (placed explicitly via the tool), or free.
 
   // ----- Restore preserved control-joint tags -----
   // If the matching counterpart no longer exists (the other half was deleted), the tag

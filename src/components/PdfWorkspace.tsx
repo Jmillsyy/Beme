@@ -132,7 +132,7 @@ import {
   createDefaultProjectDetails,
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
-import { recomputeAllJunctions, snapEndpointToThroughWallFace } from '../lib/junctions'
+import { recomputeAllJunctions } from '../lib/junctions'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
 import {
@@ -1330,8 +1330,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const handleWallAdded = useCallback(function handleWallAdded(
     startMm: { x: number; y: number },
     endMm: { x: number; y: number },
-    forceButtAtEnd?: boolean,
-    forceButtAtStart?: boolean
   ) {
     const isBrick = mode === 'brick'
     // Belt-and-braces: a curve makeup is bound to a specific arc geometry —
@@ -1348,34 +1346,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
     const existing = wallsByPage[currentPage] ?? []
 
-    // Thicknesses for snapping — based on the existing walls (the new wall's own
-    // thickness isn't relevant here; we're only checking which through-wall the
-    // new endpoint lies inside of).
-    const existingThicknesses = computeWallThicknessByWallId(
-      existing,
-      makeupsById,
-      mode,
-      brickSettings.brickTypeCode
-    )
-
-    // If either endpoint landed strictly inside another wall's body, pull it onto the
-    // through-wall's face on the side facing the opposite endpoint. Otherwise the wall
-    // is stored half-a-thickness longer than it visually appears, which then surfaces
-    // as confusing length labels later. See snapEndpointToThroughWallFace for full
-    // rationale. We feed each call the ORIGINAL opposite endpoint so the two snaps
-    // are independent of evaluation order.
-    const snappedStart = snapEndpointToThroughWallFace(
-      startMm,
-      endMm,
-      existing,
-      existingThicknesses
-    )
-    const snappedEnd = snapEndpointToThroughWallFace(
-      endMm,
-      startMm,
-      existing,
-      existingThicknesses
-    )
+    // Endpoint positions are taken as-is from the draw flow. The live face
+    // snap already put them on a face (if the user snapped to one), so no
+    // post-placement adjustment.
+    const snappedStart = startMm
+    const snappedEnd = endMm
 
     // Resolve the new wall's makeup id + initial height override based on mode.
     // Brick walls now reference a BrickMakeup the same way block walls reference
@@ -1394,21 +1369,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       startY: snappedStart.y,
       endX: snappedEnd.x,
       endY: snappedEnd.y,
-      // Alt at the first/last click → user-requested butt joint. Preserved
-      // through recompute. Collinear butts no longer need this flag — the
-      // recompute pass auto-detects collinear coinciding endpoints and tags
-      // them as control-joint regardless of how the wall was created (draw,
-      // drag, etc.). Alt is still meaningful for the perpendicular case
-      // (new wall departs at 90° from a host's end and butts against its
-      // outer face), which the auto-detect doesn't cover because the
-      // endpoints don't coincide there — only the snapped face position
-      // does.
-      startJunction: forceButtAtStart
-        ? { type: 'control-joint', connectedWallIds: [] }
-        : { type: 'free' },
-      endJunction: forceButtAtEnd
-        ? { type: 'control-joint', connectedWallIds: [] }
-        : { type: 'free' },
+      // Junction types are derived from geometry in recomputeAllJunctions
+      // below — corners (endpoints coincide), T-junctions (endpoint lands
+      // on another wall's body), or free. Control joints exist only when
+      // placed explicitly via the Control Joint tool.
+      startJunction: { type: 'free' },
+      endJunction: { type: 'free' },
       heightMmOverride: isBrick
         ? activeBrickMakeup?.heightMm ?? brickSettings.defaultWallHeightMm
         : undefined,
@@ -1969,28 +1935,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       const draggedWall = pageWalls.find((w) => w.id === wallId)
       if (!draggedWall) return prev
 
-      // If the drag finished strictly inside another wall's body, pull the endpoint
-      // onto that wall's face on the side facing the dragged wall's opposite end.
-      // Mirrors the new-wall handler — see snapEndpointToThroughWallFace for the
-      // rationale. Excludes the dragged wall itself so we don't try to snap onto
-      // its own body if the drag wiggled the endpoint past it.
-      const oppositeEnd =
-        which === 'start'
-          ? { x: draggedWall.endX, y: draggedWall.endY }
-          : { x: draggedWall.startX, y: draggedWall.startY }
-      const existingThicknesses = computeWallThicknessByWallId(
-        pageWalls,
-        makeupsById,
-        mode,
-        brickSettings.brickTypeCode
-      )
-      const snapped = snapEndpointToThroughWallFace(
-        newPositionMm,
-        oppositeEnd,
-        pageWalls,
-        existingThicknesses,
-        wallId
-      )
+      // No through-wall face pull. Drag position is taken as-is; the live
+      // face snap during drag already put the cursor on the face.
+      const snapped = newPositionMm
 
       const updated = pageWalls.map((w) => {
         if (w.id !== wallId) return w

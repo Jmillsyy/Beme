@@ -100,22 +100,14 @@ interface WallDrawingLayerProps {
    */
   activeMakeupIdForHighlight?: string | null
   /**
-   * Add a new wall. `forceButtAtEnd` / `forceButtAtStart` are true when the
-   * user held Alt at the corresponding click — that tells the parent to
-   * suppress corner detection at that endpoint, so a new wall whose end
-   * lands on another wall's endpoint becomes a butt joint (both keep free-
-   * end terminations, rendered with the T-junction purple marker) rather
-   * than the default corner. The two flags are independent because the
-   * user can butt either the start or the end (or both) of a new wall
-   * against existing walls' endpoints. This is what masonry calls a
-   * control joint at the intersection.
+   * Add a new wall. Junction types (corner / T-junction / free) are derived
+   * purely from geometry in recomputeAllJunctions — no force-butt flag.
+   * Walls that snap to a face become T-junctions; walls whose endpoints
+   * coincide at the corner-block-centre become corners. Control joints
+   * exist only when placed explicitly by the user via the Control Joint
+   * tool (which splits a wall into two halves).
    */
-  onWallAdded: (
-    startMm: Point,
-    endMm: Point,
-    forceButtAtEnd?: boolean,
-    forceButtAtStart?: boolean,
-  ) => void
+  onWallAdded: (startMm: Point, endMm: Point) => void
   /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
   onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
   onWallSelect: (wallId: string | null) => void
@@ -153,19 +145,6 @@ interface WallDrawingLayerProps {
  *  Kept tight so close-but-distinct endpoints (parallel walls a few mm apart)
  *  don't get pulled into one. The user can hold Shift to bypass snap entirely. */
 const SNAP_THRESHOLD_PX = 5
-/**
- * Pixel radius for the TIP snap — a small fixed circle right at the centre
- * of each wall's end (the data endpoint). When the cursor enters this
- * circle, the snap pulls to the exact data endpoint so a new wall starts/
- * ends there with no inset. Used for butt joints (collinear continuation):
- * the auto-collinear-butt detection downstream then tags the seam as a
- * control joint with no gap. This is geometrically smaller and tighter
- * than the wider endpoint snap above (which targets the inset corner-
- * block-centre for L-corner workflows) and takes precedence within its
- * radius, so the user can land precisely on the tip when they want a
- * butt joint and use the wider zone when they want a corner.
- */
-const TIP_SNAP_RADIUS_PX = 10
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
  *  click precision against a visible wall — the user targets the wall on screen. Tightened
@@ -691,15 +670,6 @@ function WallDrawingLayerInner({
    */
   const [startMm, setStartMm] = useState<Point | null>(null)
   /**
-   * Whether Alt was held when the first click landed. Forwarded to
-   * onWallAdded on the second click so the START junction can be flagged
-   * as a butt joint (control-joint) — otherwise recomputeAllJunctions
-   * would detect a corner where the new wall coincides with the host's
-   * endpoint, sharing a block and mitring the seam instead of leaving a
-   * clean butt. Alt at the second click already handles the END side.
-   */
-  const [startAltHeld, setStartAltHeld] = useState<boolean>(false)
-  /**
    * CAD-style typed length while drawing a wall. After the first click anchors
    * `startMm`, the user can type digits to override the cursor-distance length
    * — direction still comes from the cursor (and axis-snap), but the magnitude
@@ -1070,34 +1040,7 @@ function WallDrawingLayerInner({
     }
     const candidates: Candidate[] = []
 
-    // 1. Tip candidates — small fixed circle at every free end's DATA
-    // endpoint. Snap target = data endpoint (no inset). Enables clean
-    // collinear butt joints (recomputeAllJunctions tags both walls as
-    // control-joint when their endpoints coincide exactly).
-    for (const w of walls) {
-      if (isCurvedWall(w)) continue
-      for (const which of ['start' as const, 'end' as const]) {
-        if (w.id === excludeWallId && which === excludeEnd) continue
-        const junction = which === 'start' ? w.startJunction : w.endJunction
-        if (junction.type !== 'free') continue
-        const tipX = mmToPx(which === 'start' ? w.startX : w.endX)
-        const tipY = mmToPx(which === 'start' ? w.startY : w.endY)
-        const dx = cursor.x - tipX
-        const dy = cursor.y - tipY
-        const distSq = dx * dx + dy * dy
-        if (distSq > TIP_SNAP_RADIUS_PX * TIP_SNAP_RADIUS_PX) continue
-        candidates.push({
-          kind: 'endpoint',
-          x: tipX,
-          y: tipY,
-          wallId: w.id,
-          end: which,
-          distance: Math.sqrt(distSq),
-        })
-      }
-    }
-
-    // 2. Endpoint (corner-block-centre) candidates — anisotropic zone:
+    // 1. Endpoint (corner-block-centre) candidates — anisotropic zone:
     // generous along the wall axis (so the whole end-block area is a
     // corner candidate) but tight across (so a cursor parked beside the
     // end-face still ranks against face snaps below). Final win/lose is
@@ -1120,47 +1063,76 @@ function WallDrawingLayerInner({
       })
     }
 
-    // 3. Face candidates — every existing wall whose face the cursor sits
-    // within WALL_FACE_SNAP_MM of, on EITHER side. We log both sides as
-    // separate candidates so the cursor's perpendicular position picks
-    // which face wins, rather than always returning whichever side the
-    // cursor is on (the previous behaviour). At the end of a wall this
-    // gives the user access to both faces of a neighbouring wall plus
-    // any other walls in the area as independently rankable snaps.
+    // 2. Face candidates — all FOUR faces of every existing wall (the two
+    // long side faces and the two short end faces). Each face is treated
+    // as a line segment in pixel space; the candidate is the closest point
+    // on the segment to the cursor. The closest-snap-wins ranking below
+    // then picks whichever face the cursor is closest to.
+    const faceSnapPx = mmToPx(WALL_FACE_SNAP_MM)
     for (const wall of walls) {
       if (wall.id === excludeWallId) continue
       if (isCurvedWall(wall)) continue
-      const proj = projectOntoWall(cursor, wall)
-      if (!proj) continue
-      const wallLenMm = wallLengthMmOf(wall)
-      if (wallLenMm === 0) continue
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
       const halfThicknessPx = mmToPx(thicknessMm / 2)
-      const perpX = cursor.x - proj.px.x
-      const perpY = cursor.y - proj.px.y
-      const perpDist = Math.sqrt(perpX * perpX + perpY * perpY)
-      const distToFace = Math.abs(perpDist - halfThicknessPx)
-      if (distToFace > mmToPx(WALL_FACE_SNAP_MM)) continue
-      // Cursor's own side of the centreline (unit perpendicular). Falls
-      // back to +Y axis when the cursor is exactly on the centreline so
-      // we still produce a face point.
-      let dirX = 0
-      let dirY = 1
-      if (perpDist > 0.01) {
-        dirX = perpX / perpDist
-        dirY = perpY / perpDist
+      const sx = mmToPx(wall.startX)
+      const sy = mmToPx(wall.startY)
+      const ex = mmToPx(wall.endX)
+      const ey = mmToPx(wall.endY)
+      const wDx = ex - sx
+      const wDy = ey - sy
+      const wLen = Math.sqrt(wDx * wDx + wDy * wDy)
+      if (wLen === 0) continue
+      // Wall direction (unit) and its perpendicular (unit) in pixel space.
+      const ux = wDx / wLen
+      const uy = wDy / wLen
+      const nx = -uy
+      const ny = ux
+      // The four face segments — each defined by two endpoints in px.
+      const faces: Array<{ a: Point; b: Point }> = [
+        // Long side face +N (perpendicular outward, positive)
+        {
+          a: { x: sx + nx * halfThicknessPx, y: sy + ny * halfThicknessPx },
+          b: { x: ex + nx * halfThicknessPx, y: ey + ny * halfThicknessPx },
+        },
+        // Long side face −N
+        {
+          a: { x: sx - nx * halfThicknessPx, y: sy - ny * halfThicknessPx },
+          b: { x: ex - nx * halfThicknessPx, y: ey - ny * halfThicknessPx },
+        },
+        // Start end face (short edge at the start endpoint)
+        {
+          a: { x: sx + nx * halfThicknessPx, y: sy + ny * halfThicknessPx },
+          b: { x: sx - nx * halfThicknessPx, y: sy - ny * halfThicknessPx },
+        },
+        // End end face (short edge at the end endpoint)
+        {
+          a: { x: ex + nx * halfThicknessPx, y: ey + ny * halfThicknessPx },
+          b: { x: ex - nx * halfThicknessPx, y: ey - ny * halfThicknessPx },
+        },
+      ]
+      for (const face of faces) {
+        const fdx = face.b.x - face.a.x
+        const fdy = face.b.y - face.a.y
+        const fLenSq = fdx * fdx + fdy * fdy
+        if (fLenSq <= 0) continue
+        // Closest point on face segment to cursor.
+        let t = ((cursor.x - face.a.x) * fdx + (cursor.y - face.a.y) * fdy) / fLenSq
+        if (t < 0) t = 0
+        if (t > 1) t = 1
+        const cx = face.a.x + t * fdx
+        const cy = face.a.y + t * fdy
+        const ddx = cursor.x - cx
+        const ddy = cursor.y - cy
+        const dist = Math.sqrt(ddx * ddx + ddy * ddy)
+        if (dist > faceSnapPx) continue
+        candidates.push({
+          kind: 'body',
+          x: cx,
+          y: cy,
+          wallId: wall.id,
+          distance: dist,
+        })
       }
-      const faceX = proj.px.x + dirX * halfThicknessPx
-      const faceY = proj.px.y + dirY * halfThicknessPx
-      const dx = cursor.x - faceX
-      const dy = cursor.y - faceY
-      candidates.push({
-        kind: 'body',
-        x: faceX,
-        y: faceY,
-        wallId: wall.id,
-        distance: Math.sqrt(dx * dx + dy * dy),
-      })
     }
 
     if (candidates.length === 0) return null
@@ -1190,7 +1162,6 @@ function WallDrawingLayerInner({
   useEffect(() => {
     if (!drawingMode) {
       setStartMm(null)
-      setStartAltHeld(false)
       setTypedLengthMm('')
       setCursorMm(null)
       setSnapTarget(null)
@@ -1253,6 +1224,38 @@ function WallDrawingLayerInner({
           setTypedLengthMm((prev) => prev.slice(0, -1))
           return
         }
+        if (e.key === 'Enter' && typedLengthMm.trim()) {
+          e.preventDefault()
+          const lengthMm = parseFloat(typedLengthMm)
+          if (
+            cursorMm &&
+            Number.isFinite(lengthMm) &&
+            lengthMm > 0
+          ) {
+            const dx = cursorMm.x - startMm.x
+            const dy = cursorMm.y - startMm.y
+            const cursorDist = Math.sqrt(dx * dx + dy * dy)
+            if (cursorDist > 0.001) {
+              const ux = dx / cursorDist
+              const uy = dy / cursorDist
+              // Typed length is the wall's centreline length — the stored
+              // distance between data endpoints. Simple and predictable;
+              // matches the cursor-distance behaviour.
+              onWallAdded(
+                startMm,
+                {
+                  x: startMm.x + ux * lengthMm,
+                  y: startMm.y + uy * lengthMm,
+                },
+              )
+              setStartMm(null)
+              setCursorMm(null)
+              setSnapTarget(null)
+              setTypedLengthMm('')
+            }
+          }
+          return
+        }
       }
 
       // Same typed-value model for openings — once the first click has
@@ -1299,54 +1302,6 @@ function WallDrawingLayerInner({
           }
           return
         }
-        if (e.key === 'Enter' && typedLengthMm.trim()) {
-          e.preventDefault()
-          const lengthMm = parseFloat(typedLengthMm)
-          if (
-            cursorMm &&
-            Number.isFinite(lengthMm) &&
-            lengthMm > 0
-          ) {
-            const dx = cursorMm.x - startMm.x
-            const dy = cursorMm.y - startMm.y
-            const cursorDist = Math.sqrt(dx * dx + dy * dy)
-            if (cursorDist > 0.001) {
-              const ux = dx / cursorDist
-              const uy = dy / cursorDist
-              // The user's typed length is the wall's DISPLAYED length —
-              // the value they want printed on the plan. When the start
-              // is at a corner the displayed length includes the corner
-              // overlap (+halfThickness), so the stored centreline has
-              // to be SHORTER than the typed value by that overlap. End
-              // is left alone — if it happens to land on another wall's
-              // corner too, the wall ends up displaying typed + endHalf,
-              // but that's a less common case; the start-corner one is
-              // what the user described.
-              const startAdjust = cornerLengthAdjustAt(startMm)
-              const centreLength = Math.max(0, lengthMm - startAdjust)
-              // Forward the Alt-held state on the Enter keystroke too, so a
-              // typed-length wall ending on another wall's endpoint can be a
-              // butt joint the same way a clicked one can. startAltHeld
-              // carries the Alt state from the first click so the START side
-              // can be flagged independently of the keystroke that commits.
-              onWallAdded(
-                startMm,
-                {
-                  x: startMm.x + ux * centreLength,
-                  y: startMm.y + uy * centreLength,
-                },
-                e.altKey,
-                startAltHeld
-              )
-              setStartMm(null)
-              setStartAltHeld(false)
-              setCursorMm(null)
-              setSnapTarget(null)
-              setTypedLengthMm('')
-            }
-          }
-          return
-        }
       }
 
       if (e.key === 'Escape') {
@@ -1358,7 +1313,6 @@ function WallDrawingLayerInner({
 
         // Clear in-progress wall draw state
         setStartMm(null)
-        setStartAltHeld(false)
         setCursorMm(null)
         setSnapTarget(null)
         setTypedLengthMm('')
@@ -1403,46 +1357,6 @@ function WallDrawingLayerInner({
     if (stage) stage.container().style.cursor = cursor
   }
 
-  /**
-   * Returns the post-placement length adjustment (in mm) that a wall
-   * endpoint at this position WILL pick up once the wall is committed —
-   * the same value the length-label code adds for corner junctions in
-   * `recomputeAllJunctions`. Used to translate between the user's typed
-   * "displayed length" and the centreline length the wall is actually
-   * stored at.
-   *
-   * Currently returns halfThickness of the host wall when `pointMm`
-   * coincides with that wall's free-end corner-block-centre (the inset
-   * position where corners form). Zero otherwise. T-junctions / control-
-   * joints don't add this kind of length, so they fall through to zero.
-   */
-  function cornerLengthAdjustAt(pointMm: Point): number {
-    for (const w of walls) {
-      if (isCurvedWall(w)) continue
-      const halfT = (wallThicknessByWallId[w.id] ?? 190) / 2
-      for (const which of ['start' as const, 'end' as const]) {
-        const junction = which === 'start' ? w.startJunction : w.endJunction
-        if (junction.type !== 'free') continue
-        const dataX = which === 'start' ? w.startX : w.endX
-        const dataY = which === 'start' ? w.startY : w.endY
-        const farX = which === 'start' ? w.endX : w.startX
-        const farY = which === 'start' ? w.endY : w.startY
-        const ddx = dataX - farX
-        const ddy = dataY - farY
-        const len = Math.sqrt(ddx * ddx + ddy * ddy)
-        if (len < 0.001) continue
-        const insetX = dataX - (ddx / len) * halfT
-        const insetY = dataY - (ddy / len) * halfT
-        if (
-          Math.abs(pointMm.x - insetX) < 1 &&
-          Math.abs(pointMm.y - insetY) < 1
-        ) {
-          return halfT
-        }
-      }
-    }
-    return 0
-  }
 
   function resolveSnap(pos: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): Point {
     const snap = findSnap(pos, excludeWallId, excludeEnd)
@@ -1471,105 +1385,19 @@ function WallDrawingLayerInner({
     shiftKey: boolean,
     excludeWallId?: string,
     excludeEnd?: 'start' | 'end',
-    altKey: boolean = false
   ): { point: Point; snap: SnapResult | null } {
-    // Shift bypasses ALL snaps — wall-snap, axis-snap, length-snap. This is
-    // the escape hatch the user reaches for when a nearby wall's endpoint
-    // is "eating" a length they want to draw past (the endpoint snap zone
-    // covers half-thickness of along-axis cursor space, which on a 290 mm
-    // wall is 145 mm — wide enough that the cursor can be pulled to the
-    // snap target for a chunk of cursor movement, making the length appear
-    // to skip values). Hold Shift to draw freely past any snap target.
+    // Shift bypasses ALL snaps — wall-snap, axis-snap, length-snap. Escape
+    // hatch for when the endpoint snap is "eating" a length the user wants
+    // to draw past.
     if (shiftKey) {
       return { point: pos, snap: null }
     }
 
     const snap = findSnap(pos, excludeWallId, excludeEnd)
     if (snap) {
-      // When Alt is held AND we're snapping to a free endpoint, butt the new
-      // wall against the host. Two sub-cases:
-      //   - COLLINEAR butt: the new wall continues in line with the host
-      //     (drawn outward along the host's axis). Both walls render as
-      //     rectangles that meet edge-to-edge at the data endpoint — no
-      //     offset needed, otherwise we'd leave a halfThickness gap between
-      //     them.
-      //   - PERPENDICULAR butt: the new wall departs at a right angle from
-      //     the host's end. Snap target is pushed OUTWARD by halfThickness
-      //     so the new wall's data endpoint lands on the host's outer face,
-      //     making its rectangle flush with the face rather than crashing
-      //     through the host's own end block.
-      // Default snap (no Alt) keeps landing at the corner-block-centre (the
-      // host's data endpoint) so corner walls share a column the way the
-      // calc engine expects.
-      if (altKey && snap.kind === 'endpoint' && snap.wallId && snap.end) {
-        const hostWall = walls.find((w) => w.id === snap.wallId)
-        if (hostWall && !isCurvedWall(hostWall)) {
-          const dataX = snap.end === 'start' ? hostWall.startX : hostWall.endX
-          const dataY = snap.end === 'start' ? hostWall.startY : hostWall.endY
-          const farX = snap.end === 'start' ? hostWall.endX : hostWall.startX
-          const farY = snap.end === 'start' ? hostWall.endY : hostWall.startY
-          const dxMm = dataX - farX
-          const dyMm = dataY - farY
-          const lenMm = Math.sqrt(dxMm * dxMm + dyMm * dyMm)
-          if (lenMm > 0) {
-            // Host's outward unit vector at this endpoint (points away
-            // from the host's far endpoint into open space).
-            const ox = dxMm / lenMm
-            const oy = dyMm / lenMm
-
-            // New wall's intended direction. On the second click we know
-            // it directly (anchor → cursor). On the first click we don't,
-            // so we approximate from the cursor's offset relative to the
-            // host's data endpoint — when the user hovers OUTWARD of the
-            // host's end intending to continue collinearly, the cursor
-            // will sit roughly along the outward axis.
-            let drawDx = 0
-            let drawDy = 0
-            if (anchor) {
-              drawDx = pxToMm(pos.x) - pxToMm(anchor.x)
-              drawDy = pxToMm(pos.y) - pxToMm(anchor.y)
-            } else {
-              drawDx = pxToMm(pos.x) - dataX
-              drawDy = pxToMm(pos.y) - dataY
-            }
-            const drawLen = Math.sqrt(drawDx * drawDx + drawDy * drawDy)
-
-            // Dot product of normalised draw direction with host outward.
-            // |cos θ| > 0.7 ≈ angle < 45° from the host's axis → collinear.
-            // We use abs() so a cursor flipped to the wrong side of the
-            // endpoint (e.g. hovering slightly inward of the data point)
-            // still reads as collinear when the magnitude is along the
-            // host's axis.
-            let isCollinear = false
-            if (drawLen > 0.001) {
-              const cos = (drawDx * ox + drawDy * oy) / drawLen
-              isCollinear = Math.abs(cos) > 0.7
-            }
-
-            if (isCollinear) {
-              // Snap exactly to the host's data endpoint — the new wall's
-              // rectangle will start where the host's rectangle ends, no
-              // gap. The control-joint flag at the junction keeps the
-              // calc engine from sharing a corner block here.
-              return {
-                point: { x: mmToPx(dataX), y: mmToPx(dataY) },
-                snap,
-              }
-            }
-
-            // Perpendicular butt — push out by halfThickness so the new
-            // wall's data endpoint sits on the host's outer face.
-            const thicknessMm = wallThicknessByWallId[hostWall.id] ?? 190
-            const halfMm = thicknessMm / 2
-            const outerXmm = dataX + ox * halfMm
-            const outerYmm = dataY + oy * halfMm
-            return {
-              point: { x: mmToPx(outerXmm), y: mmToPx(outerYmm) },
-              snap,
-            }
-          }
-        }
-      }
+      // Snap target is the corner-block-centre (for endpoint snaps) or the
+      // wall's face (for body snaps). Both come straight out of findSnap;
+      // no special-case adjustment.
       return { point: { x: snap.x, y: snap.y }, snap }
     }
     if (!anchor) return { point: pos, snap: null }
@@ -1620,20 +1448,9 @@ function WallDrawingLayerInner({
       // Second click: snap relative to startMm, with shiftKey overriding the
       // ortho lock — see resolveDrawSnap.
       if (!startMm) {
-        // Alt held at first-click time also shifts the snap to the outer face
-        // — lets the user start a wall butted against another wall's end as
-        // well as ending one there.
-        const { point } = resolveDrawSnap(
-          raw,
-          null,
-          e.evt.shiftKey,
-          undefined,
-          undefined,
-          e.evt.altKey
-        )
+        const { point } = resolveDrawSnap(raw, null, e.evt.shiftKey)
         const posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
         setStartMm(posMm)
-        setStartAltHeld(e.evt.altKey)
         setCursorMm(posMm)
         return
       }
@@ -1642,20 +1459,12 @@ function WallDrawingLayerInner({
         raw,
         startPxAnchor,
         e.evt.shiftKey,
-        undefined,
-        undefined,
-        e.evt.altKey
       )
       if (distance(startPxAnchor, point) < 5) return
       let posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
-      // If the user typed a length while aiming, override the cursor-distance
-      // with the typed value while keeping the cursor's direction (which is
-      // already axis-snapped via resolveDrawSnap above). The typed value
-      // represents the DISPLAYED length the user wants on the plan, so
-      // when the start is at a corner (which adds halfThickness to the
-      // displayed length), the stored centreline is the typed value minus
-      // that halfThickness. Without this, a typed "1000" off a 190mm
-      // corner would commit a centreline of 1000 and display as 1095.
+      // If the user typed a length while aiming, override the cursor distance
+      // with the typed value while keeping the cursor's direction. Typed
+      // value is the wall's centreline length — simple and predictable.
       const typedNum = parseFloat(typedLengthMm)
       if (typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0) {
         const dx = posMm.x - startMm.x
@@ -1664,22 +1473,14 @@ function WallDrawingLayerInner({
         if (cursorDist > 0.001) {
           const ux = dx / cursorDist
           const uy = dy / cursorDist
-          const startAdjust = cornerLengthAdjustAt(startMm)
-          const centreLength = Math.max(0, typedNum - startAdjust)
           posMm = {
-            x: startMm.x + ux * centreLength,
-            y: startMm.y + uy * centreLength,
+            x: startMm.x + ux * typedNum,
+            y: startMm.y + uy * typedNum,
           }
         }
       }
-      // Alt at the FIRST click → butt joint at the new wall's START (carried
-      // forward via startAltHeld). Alt at THIS click → butt joint at the
-      // new wall's END. Each side independently flagged so a collinear butt
-      // — where the new wall's data start sits on top of the host's data
-      // endpoint — doesn't get re-detected as a corner downstream.
-      onWallAdded(startMm, posMm, e.evt.altKey, startAltHeld)
+      onWallAdded(startMm, posMm)
       setStartMm(null)
-      setStartAltHeld(false)
       setCursorMm(null)
       setSnapTarget(null)
       setTypedLengthMm('')
@@ -1848,15 +1649,10 @@ function WallDrawingLayerInner({
         ? { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
         : null
       // Alt held during the cursor move also routes through resolveDrawSnap
-      // so the preview wall LIVE-shows the butt-joint snap (outer face)
-      // instead of jumping at click time.
       const { point, snap } = resolveDrawSnap(
         raw,
         startPxAnchor,
         e.evt.shiftKey,
-        undefined,
-        undefined,
-        e.evt.altKey
       )
       setSnapTarget(snap)
       setCursorMm({ x: pxToMm(point.x), y: pxToMm(point.y) })
@@ -2821,28 +2617,19 @@ function WallDrawingLayerInner({
               const dx = cursorMmFromPx.x - startMmFromPx.x
               const dy = cursorMmFromPx.y - startMmFromPx.y
               const cursorDistMm = Math.sqrt(dx * dx + dy * dy)
-              const startAdjust = cornerLengthAdjustAt(startMmFromPx)
-              const endAdjust = hasTyped
-                ? 0
-                : cornerLengthAdjustAt(cursorMmFromPx)
-              // When typing a length, the typed value IS the displayed length
-              // the user wants printed on the plan, so the preview line
-              // (centreline) extends only (typed − startAdjust) mm. Otherwise
-              // the cursor distance IS the centreline and the displayed value
-              // is centreline + adjustments.
+              // Preview length = cursor distance (or typed value). Plain
+              // centreline length, no corner fudge — matches what gets
+              // stored and what the wall label reads back at.
               let endPx = cursorPx
               if (hasTyped && cursorDistMm > 0.001) {
                 const ux = dx / cursorDistMm
                 const uy = dy / cursorDistMm
-                const centreLength = Math.max(0, typedNum - startAdjust)
                 endPx = {
-                  x: mmToPx(startMmFromPx.x + ux * centreLength),
-                  y: mmToPx(startMmFromPx.y + uy * centreLength),
+                  x: mmToPx(startMmFromPx.x + ux * typedNum),
+                  y: mmToPx(startMmFromPx.y + uy * typedNum),
                 }
               }
-              const previewLengthMm = hasTyped
-                ? typedNum
-                : cursorDistMm + startAdjust + endAdjust
+              const previewLengthMm = hasTyped ? typedNum : cursorDistMm
               return (
                 <>
                   <Line
