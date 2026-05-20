@@ -364,6 +364,14 @@ export interface BrickExportInclusions {
    * pages so the deliverable looks the same across product modes.
    */
   wallLayout: boolean
+  /**
+   * Overlay the user's on-canvas ruler measurements (dashed lines with the
+   * measured distance) onto each Wall Layout overview. Useful when sharing
+   * the export with a tradie who needs the same reference dimensions the
+   * estimator was working off. Scoped per page — only the measurements
+   * drawn on a given page appear on that page's overview.
+   */
+  measurements: boolean
   brickAreaSummary: boolean
   lintels: boolean
   brickTies: boolean
@@ -389,6 +397,14 @@ export interface BlockExportInclusions {
   wallTypeBreakdown: boolean
   /** List of openings with dimensions, head, sill, and chosen lintel block. */
   openingsList: boolean
+  /**
+   * Overlay the user's on-canvas ruler measurements (dashed lines with the
+   * measured distance) onto each Wall Layout overview. Useful when sharing
+   * the export with a tradie who needs the same reference dimensions the
+   * estimator was working off. Scoped per page — only the measurements
+   * drawn on a given page appear on that page's overview.
+   */
+  measurements: boolean
   disclaimer: boolean
 }
 

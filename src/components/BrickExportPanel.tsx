@@ -146,6 +146,13 @@ function BrickExportPanelImpl({
           disabledHint="Upload a plan PDF to include layout pages"
         />
         <Toggle
+          label="Ruler measurements on layout"
+          checked={inclusions.measurements}
+          onChange={(v) => patch({ measurements: v })}
+          disabled={!inclusions.wallLayout}
+          disabledHint="Turn on wall layout pages first"
+        />
+        <Toggle
           label="Brick area summary"
           checked={inclusions.brickAreaSummary}
           onChange={(v) => patch({ brickAreaSummary: v })}

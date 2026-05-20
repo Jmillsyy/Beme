@@ -433,24 +433,87 @@ export function fitCourseLength(
     ...FRACTION_OPTIONS.flatMap((f1) => FRACTION_OPTIONS.map((f2) => [f1, f2])),
   ]
 
-  let best: CourseLengthFit | null = null
-
-  for (const fracs of fracCombos) {
+  /** Find the smallest-|delta| fit for a given fraction list, trying both
+   *  the floor and ceil body counts (so under-by-mortar candidates aren't
+   *  silently skipped). Returns null if no candidate fits the underage
+   *  tolerance below. */
+  function bestFitWithFracs(fracs: FractionOption[]): {
+    bodyCount: number
+    fractions: BlockCode[]
+    actualLengthMm: number
+    absDelta: number
+  } | null {
     const fracsTotal = fracs.reduce((s, f) => s + f.modular, 0)
     const remainingForBody = targetTotal - endsTotal - fracsTotal
-    if (remainingForBody < 0) continue
-    const bodyCount = Math.ceil(remainingForBody / BODY_BLOCK_MODULE_MM)
-    const actualModular = endsTotal + fracsTotal + bodyCount * BODY_BLOCK_MODULE_MM
-    const actualLengthMm = actualModular - MORTAR_MM
-    if (actualLengthMm < wallLengthMm) continue // shouldn't happen — defensive
+    const exactBody = remainingForBody / BODY_BLOCK_MODULE_MM
+    const counts = Array.from(
+      new Set([Math.floor(exactBody), Math.ceil(exactBody)])
+    ).filter((n) => n >= 0)
+    let local: { bodyCount: number; actualLengthMm: number; absDelta: number } | null = null
+    for (const bodyCount of counts) {
+      const actualModular = endsTotal + fracsTotal + bodyCount * BODY_BLOCK_MODULE_MM
+      const actualLengthMm = actualModular - MORTAR_MM
+      // Underage tolerance — see comment block below for why this is generous.
+      if (actualLengthMm < wallLengthMm - FRACTION_JUSTIFY_MM) continue
+      const absDelta = Math.abs(actualLengthMm - wallLengthMm)
+      if (!local || absDelta < local.absDelta) {
+        local = { bodyCount, actualLengthMm, absDelta }
+      }
+    }
+    if (!local) return null
+    return {
+      bodyCount: local.bodyCount,
+      fractions: fracs.map((f) => f.code),
+      actualLengthMm: local.actualLengthMm,
+      absDelta: local.absDelta,
+    }
+  }
 
-    const overshoot = actualLengthMm - wallLengthMm
-    const bestOvershoot = best ? best.actualLengthMm - wallLengthMm : Infinity
-    if (overshoot < bestOvershoot) {
+  // 1. Find the best no-fractions fit first. If it gets within
+  //    FRACTION_JUSTIFY_MM (100mm) of the target, USE IT — fractions
+  //    aren't worth supplying for a tiny tweak when the bricklayer can
+  //    absorb that in mortar thickness or end-of-wall position. Walls
+  //    drawn at exact 400mm modular grid (1600, 2000, 2400, ...) hit this
+  //    branch and come out with zero fractions, which is what the user
+  //    expects when they ask for "a 2000mm wall = 5 blocks".
+  // 2. Only if no-fractions misses by more than the threshold do we
+  //    explore the fraction combinations to see if any get closer. The
+  //    fraction has to actually save 100mm+ of delta to be worth the
+  //    extra SKU in the schedule, otherwise we ship the cleaner answer.
+  const FRACTION_JUSTIFY_MM = 100
+  const noFracs = bestFitWithFracs([])
+  if (noFracs && noFracs.absDelta <= FRACTION_JUSTIFY_MM) {
+    return {
+      bodyCount: noFracs.bodyCount,
+      fractions: [],
+      actualLengthMm: noFracs.actualLengthMm,
+      cutBlocks: 0,
+    }
+  }
+
+  // Wall is more than 100mm off modular — fractions might help. Pick the
+  // combination (fractions+bodies) with smallest |delta|, including the
+  // no-fractions candidate so e.g. a wall whose best fit is still no
+  // fractions can win on a tie.
+  let best: CourseLengthFit | null = noFracs
+    ? {
+        bodyCount: noFracs.bodyCount,
+        fractions: [],
+        actualLengthMm: noFracs.actualLengthMm,
+        cutBlocks: 0,
+      }
+    : null
+  let bestAbsDelta = noFracs?.absDelta ?? Infinity
+  for (const fracs of fracCombos) {
+    if (fracs.length === 0) continue // already covered by noFracs
+    const candidate = bestFitWithFracs(fracs)
+    if (!candidate) continue
+    if (candidate.absDelta < bestAbsDelta) {
+      bestAbsDelta = candidate.absDelta
       best = {
-        bodyCount,
-        fractions: fracs.map((f) => f.code),
-        actualLengthMm,
+        bodyCount: candidate.bodyCount,
+        fractions: candidate.fractions,
+        actualLengthMm: candidate.actualLengthMm,
         cutBlocks: 0,
       }
     }

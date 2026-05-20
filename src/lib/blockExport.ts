@@ -86,6 +86,17 @@ export interface PageInfo {
   walls: Wall[]
   openings: Opening[]
   piers: Pier[]
+  /**
+   * Ruler measurements drawn on this page. Rendered as dashed-line overlays
+   * with their lengths labelled when `inclusions.measurements` is on.
+   * Coordinates share the same mm space as the walls so they sit at the
+   * right spot relative to the plan.
+   */
+  measurements?: Array<{
+    id: string
+    startMm: { x: number; y: number }
+    endMm: { x: number; y: number }
+  }>
   /** Optional human label, e.g. "Ground Floor". Falls back to "Page N". */
   label?: string
 }
@@ -215,7 +226,10 @@ function buildPlanOverviewPage(
   background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null,
   /** Suffix on the section heading + intro, e.g. ' — Ground Floor' or ' — Page 9'.
    *  Empty string keeps the original "Wall Layout" heading for single-page exports. */
-  pageLabelSuffix: string = ''
+  pageLabelSuffix: string = '',
+  /** Ruler measurements drawn on this page — rendered as dashed cyan lines
+   *  with the length labelled. Empty array (or omitted) means no overlay. */
+  measurements: Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }> = []
 ): string {
   if (walls.length === 0) return ''
 
@@ -362,6 +376,14 @@ function buildPlanOverviewPage(
   for (const p of piers) {
     if (p.type === 'freestanding') expand(p.x, p.y)
   }
+  // Measurements get included in the bounding box so a ruler drawn off to
+  // the side of the walls still appears on the export — otherwise a
+  // measurement past the wall extents would fall outside the viewBox crop
+  // and be invisible.
+  for (const m of measurements) {
+    expand(m.startMm.x, m.startMm.y)
+    expand(m.endMm.x, m.endMm.y)
+  }
   if (!isFinite(minX) || !isFinite(maxX)) return ''
 
   // Pad by a generous amount so the walls have breathing room AND a bit
@@ -474,6 +496,37 @@ function buildPlanOverviewPage(
     )
   }
 
+  // Measurement overlays — dashed cyan lines with the length labelled at
+  // the midpoint. Cyan reads as "reference / dimension" against the orange/
+  // blue palette of walls and piers without clashing. Stroke-width scales
+  // with the plan extent so the dashes stay visible on small AND large
+  // plans (a tiny gazebo and a multi-storey commercial layout both work).
+  const measurementStrokeWidth = Math.max(maxThick * 0.18, Math.min(viewW, viewH) * 0.004)
+  const measurementFontSize = labelFontSize * 0.7
+  const measurementShapes = measurements
+    .map((m) => {
+      const dx = m.endMm.x - m.startMm.x
+      const dy = m.endMm.y - m.startMm.y
+      const lenMm = Math.sqrt(dx * dx + dy * dy)
+      if (lenMm < 1) return ''
+      const lenM = (lenMm / 1000).toFixed(2)
+      const midX = (m.startMm.x + m.endMm.x) / 2
+      const midY = (m.startMm.y + m.endMm.y) / 2
+      // Dashes scaled to the stroke so they read as a dotted reference line
+      // rather than a continuous mark — keeps the eye distinguishing it
+      // from wall outlines.
+      const dash = measurementStrokeWidth * 4
+      const gap = measurementStrokeWidth * 2
+      const dotR = measurementStrokeWidth * 1.6
+      return `
+        <line x1="${m.startMm.x.toFixed(1)}" y1="${m.startMm.y.toFixed(1)}" x2="${m.endMm.x.toFixed(1)}" y2="${m.endMm.y.toFixed(1)}" stroke="#0891b2" stroke-width="${measurementStrokeWidth.toFixed(1)}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}" stroke-linecap="round"/>
+        <circle cx="${m.startMm.x.toFixed(1)}" cy="${m.startMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
+        <circle cx="${m.endMm.x.toFixed(1)}" cy="${m.endMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
+        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="Inter, system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenM} m</text>
+      `
+    })
+    .join('\n          ')
+
   // Numbered labels at each wall's midpoint with the wall length as a
   // secondary text below the circle. White-on-orange circle for the number
   // so it reads on top of the wall fill; the length text is white with a
@@ -557,6 +610,7 @@ function buildPlanOverviewPage(
           ${backgroundSvgElement}
           ${wallShapes.join('\n          ')}
           ${pierShapes.join('\n          ')}
+          ${measurementShapes}
           ${wallLabels.join('\n          ')}
         </svg>
       </div>
@@ -1117,7 +1171,8 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
         pageBlockTotal,
         pageHeader,
         pageBackground,
-        labelSuffix
+        labelSuffix,
+        inclusions.measurements ? page.measurements ?? [] : []
       )
     )
   }
@@ -1819,6 +1874,10 @@ export function createDefaultBlockExportInclusions(): BlockExportInclusions {
     // defaults off — keep the flag in the type for backward-compat with
     // already-saved projects so older saves still load cleanly.
     openingsList: false,
+    // Ruler measurements default ON — if the user took the trouble to draw
+    // them on the plan they almost certainly want them carried through into
+    // the exported PDF. Toggle hides them when not wanted.
+    measurements: true,
     disclaimer: true,
   }
 }

@@ -80,6 +80,13 @@ interface WallDrawingLayerProps {
   }>
   onRulerClick?: (posMm: Point) => void
   /**
+   * Selected measurement id — when set, that measurement is rendered with
+   * a thicker stroke + halo so the user can see it's picked. Delete key
+   * removes it (handled by the parent's global delete listener).
+   */
+  selectedMeasurementId?: string | null
+  onMeasurementSelect?: (id: string | null) => void
+  /**
    * Per-wall stroke colour, keyed by wall id — set by the parent based on the
    * wall type's palette colour. Falls back to the brand orange if missing.
    */
@@ -92,7 +99,23 @@ interface WallDrawingLayerProps {
    * mode). Pass undefined to disable the highlight treatment entirely.
    */
   activeMakeupIdForHighlight?: string | null
-  onWallAdded: (startMm: Point, endMm: Point) => void
+  /**
+   * Add a new wall. `forceButtAtEnd` / `forceButtAtStart` are true when the
+   * user held Alt at the corresponding click — that tells the parent to
+   * suppress corner detection at that endpoint, so a new wall whose end
+   * lands on another wall's endpoint becomes a butt joint (both keep free-
+   * end terminations, rendered with the T-junction purple marker) rather
+   * than the default corner. The two flags are independent because the
+   * user can butt either the start or the end (or both) of a new wall
+   * against existing walls' endpoints. This is what masonry calls a
+   * control joint at the intersection.
+   */
+  onWallAdded: (
+    startMm: Point,
+    endMm: Point,
+    forceButtAtEnd?: boolean,
+    forceButtAtStart?: boolean,
+  ) => void
   /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
   onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
   onWallSelect: (wallId: string | null) => void
@@ -130,6 +153,19 @@ interface WallDrawingLayerProps {
  *  Kept tight so close-but-distinct endpoints (parallel walls a few mm apart)
  *  don't get pulled into one. The user can hold Shift to bypass snap entirely. */
 const SNAP_THRESHOLD_PX = 5
+/**
+ * Pixel radius for the TIP snap — a small fixed circle right at the centre
+ * of each wall's end (the data endpoint). When the cursor enters this
+ * circle, the snap pulls to the exact data endpoint so a new wall starts/
+ * ends there with no inset. Used for butt joints (collinear continuation):
+ * the auto-collinear-butt detection downstream then tags the seam as a
+ * control joint with no gap. This is geometrically smaller and tighter
+ * than the wider endpoint snap above (which targets the inset corner-
+ * block-centre for L-corner workflows) and takes precedence within its
+ * radius, so the user can land precisely on the tip when they want a
+ * butt joint and use the wider zone when they want a corner.
+ */
+const TIP_SNAP_RADIUS_PX = 10
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
  *  click precision against a visible wall — the user targets the wall on screen. Tightened
@@ -626,6 +662,8 @@ function WallDrawingLayerInner({
   rulerAnchorMm = null,
   measurements = [],
   onRulerClick,
+  selectedMeasurementId = null,
+  onMeasurementSelect,
   onWallAdded,
   onCurvedWallAdded,
   onWallSelect,
@@ -650,6 +688,15 @@ function WallDrawingLayerInner({
    * already placed stays anchored to the same physical point on the plan even if you zoom or pan.
    */
   const [startMm, setStartMm] = useState<Point | null>(null)
+  /**
+   * Whether Alt was held when the first click landed. Forwarded to
+   * onWallAdded on the second click so the START junction can be flagged
+   * as a butt joint (control-joint) — otherwise recomputeAllJunctions
+   * would detect a corner where the new wall coincides with the host's
+   * endpoint, sharing a block and mitring the seam instead of leaving a
+   * clean butt. Alt at the second click already handles the END side.
+   */
+  const [startAltHeld, setStartAltHeld] = useState<boolean>(false)
   /**
    * CAD-style typed length while drawing a wall. After the first click anchors
    * `startMm`, the user can type digits to override the cursor-distance length
@@ -991,7 +1038,49 @@ function WallDrawingLayerInner({
     excludeWallId?: string,
     excludeEnd?: 'start' | 'end'
   ): SnapResult | null {
-    // 1. Endpoint snap (corner candidate) — preferred when in range.
+    // 1a. TIP snap (butt-joint candidate) — small fixed circle right at the
+    // data endpoint of each wall's free end. Tight radius (TIP_SNAP_RADIUS_PX)
+    // so the user has to deliberately aim at the tip; outside that circle the
+    // wider endpoint snap below takes over for the corner workflow.
+    // Returning the data endpoint as the snap target (no inset) lets the
+    // auto-collinear-butt detection in recomputeAllJunctions fire when the
+    // user draws a wall continuing in line off this end — both walls' data
+    // endpoints coincide exactly, tagging the seam as a control joint with
+    // no gap.
+    {
+      let closestTip: { x: number; y: number; wallId: string; end: 'start' | 'end'; distSq: number } | null = null
+      for (const w of walls) {
+        if (isCurvedWall(w)) continue
+        for (const which of ['start' as const, 'end' as const]) {
+          if (w.id === excludeWallId && which === excludeEnd) continue
+          // Tip snap is ONLY relevant for free ends — a corner/T/control-joint
+          // endpoint already has a defined topology and shouldn't be retargeted
+          // by a butt-style tip snap.
+          const junction = which === 'start' ? w.startJunction : w.endJunction
+          if (junction.type !== 'free') continue
+          const tipX = mmToPx(which === 'start' ? w.startX : w.endX)
+          const tipY = mmToPx(which === 'start' ? w.startY : w.endY)
+          const dx = cursor.x - tipX
+          const dy = cursor.y - tipY
+          const distSq = dx * dx + dy * dy
+          if (distSq > TIP_SNAP_RADIUS_PX * TIP_SNAP_RADIUS_PX) continue
+          if (!closestTip || distSq < closestTip.distSq) {
+            closestTip = { x: tipX, y: tipY, wallId: w.id, end: which, distSq }
+          }
+        }
+      }
+      if (closestTip) {
+        return {
+          kind: 'endpoint',
+          x: closestTip.x,
+          y: closestTip.y,
+          wallId: closestTip.wallId,
+          end: closestTip.end,
+        }
+      }
+    }
+
+    // 1b. Endpoint snap (corner candidate) — preferred when in range.
     //
     // The snap zone is anisotropic: GENEROUS along the wall axis (full
     // snapRadiusPx, which on a thick wall is roughly halfThickness, so the
@@ -1099,6 +1188,7 @@ function WallDrawingLayerInner({
   useEffect(() => {
     if (!drawingMode) {
       setStartMm(null)
+      setStartAltHeld(false)
       setTypedLengthMm('')
       setCursorMm(null)
       setSnapTarget(null)
@@ -1174,11 +1264,22 @@ function WallDrawingLayerInner({
             if (cursorDist > 0.001) {
               const ux = dx / cursorDist
               const uy = dy / cursorDist
-              onWallAdded(startMm, {
-                x: startMm.x + ux * lengthMm,
-                y: startMm.y + uy * lengthMm,
-              })
+              // Forward the Alt-held state on the Enter keystroke too, so a
+              // typed-length wall ending on another wall's endpoint can be a
+              // butt joint the same way a clicked one can. startAltHeld
+              // carries the Alt state from the first click so the START side
+              // can be flagged independently of the keystroke that commits.
+              onWallAdded(
+                startMm,
+                {
+                  x: startMm.x + ux * lengthMm,
+                  y: startMm.y + uy * lengthMm,
+                },
+                e.altKey,
+                startAltHeld
+              )
               setStartMm(null)
+              setStartAltHeld(false)
               setCursorMm(null)
               setSnapTarget(null)
               setTypedLengthMm('')
@@ -1189,59 +1290,53 @@ function WallDrawingLayerInner({
       }
 
       if (e.key === 'Escape') {
-        if (drawingMode) {
-          setStartMm(null)
-          setCursorMm(null)
-          setSnapTarget(null)
-          setTypedLengthMm('')
-          onCancelDraw?.()
-        } else if (drawingCurveMode) {
-          setCurveAnchorA(null)
-          setCurveAnchorB(null)
-          setCurveCursorMm(null)
-          setCurveAnchorHoverMm(null)
-          onCancelDraw?.()
-        } else if (placingOpening) {
-          setOpeningPlacementStart(null)
-          setOpeningHoverProjection(null)
-          onCancelDraw?.()
-        } else if (placingControlJoint) {
-          setControlJointHover(null)
-          onCancelDraw?.()
-        } else if (placingTiedPier) {
-          setTiedPierHover(null)
-          onCancelDraw?.()
-        } else if (placingFreestandingPier) {
-          setFreestandingPierHoverMm(null)
-          onCancelDraw?.()
-        } else if (placingRuler) {
-          // Cancel any in-progress measurement and exit ruler mode entirely.
-          onCancelDraw?.()
-        } else {
-          // No drawing mode active — Escape deselects anything currently
-          // selected (single or multi). Calling each onXxxSelect(null) at
-          // the parent collapses both the single id and the multi-select
-          // set to empty, so one Esc clears everything.
-          const hasWallSelection =
-            !!selectedWallId || (selectedWallIds && selectedWallIds.size > 0)
-          const hasOpeningSelection =
-            !!selectedOpeningId || (selectedOpeningIds && selectedOpeningIds.size > 0)
-          const hasPierSelection =
-            !!selectedPierId || (selectedPierIds && selectedPierIds.size > 0)
-          if (hasWallSelection) onWallSelect(null)
-          if (hasOpeningSelection) onOpeningSelect(null)
-          if (hasPierSelection && onPierSelect) onPierSelect(null)
-          // Even when there's nothing selected, funnel through onCancelDraw
-          // so the parent gets a "Esc was pressed" signal — it uses that to
-          // dismiss the active-makeup glow so the user can press Esc to
-          // clear the highlighted walls.
-          onCancelDraw?.()
-        }
+        // Esc is the universal "back to neutral" key — one press exits any
+        // active drawing/placing mode AND clears any in-progress geometry
+        // AND drops any selection AND dismisses the active-makeup glow.
+        // Unconditional so the user can mash Esc from any state and know
+        // they're back to the free-hand view, ready to click around again.
+
+        // Clear in-progress wall draw state
+        setStartMm(null)
+        setStartAltHeld(false)
+        setCursorMm(null)
+        setSnapTarget(null)
+        setTypedLengthMm('')
+
+        // Clear in-progress curve draw state
+        setCurveAnchorA(null)
+        setCurveAnchorB(null)
+        setCurveCursorMm(null)
+        setCurveAnchorHoverMm(null)
+
+        // Clear in-progress placement hovers
+        setOpeningPlacementStart(null)
+        setOpeningHoverProjection(null)
+        setControlJointHover(null)
+        setTiedPierHover(null)
+        setFreestandingPierHoverMm(null)
+
+        // Drop any selection so the canvas is in pure view mode
+        const hasWallSelection =
+          !!selectedWallId || (selectedWallIds && selectedWallIds.size > 0)
+        const hasOpeningSelection =
+          !!selectedOpeningId || (selectedOpeningIds && selectedOpeningIds.size > 0)
+        const hasPierSelection =
+          !!selectedPierId || (selectedPierIds && selectedPierIds.size > 0)
+        if (hasWallSelection) onWallSelect(null)
+        if (hasOpeningSelection) onOpeningSelect(null)
+        if (hasPierSelection && onPierSelect) onPierSelect(null)
+        if (selectedMeasurementId && onMeasurementSelect) onMeasurementSelect(null)
+
+        // Tell the parent to exit every drawing mode and dismiss the
+        // active-makeup glow. Safe to call unconditionally — when nothing
+        // is active it's a no-op.
+        onCancelDraw?.()
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -1267,12 +1362,14 @@ function WallDrawingLayerInner({
    * useful for tracing a plan where one wall is genuinely on an angle but
    * happens to point within a few degrees of horizontal.
    */
+
   function resolveDrawSnap(
     pos: Point,
     anchor: Point | null,
     shiftKey: boolean,
     excludeWallId?: string,
-    excludeEnd?: 'start' | 'end'
+    excludeEnd?: 'start' | 'end',
+    altKey: boolean = false
   ): { point: Point; snap: SnapResult | null } {
     // Shift bypasses ALL snaps — wall-snap, axis-snap, length-snap. This is
     // the escape hatch the user reaches for when a nearby wall's endpoint
@@ -1281,10 +1378,96 @@ function WallDrawingLayerInner({
     // wall is 145 mm — wide enough that the cursor can be pulled to the
     // snap target for a chunk of cursor movement, making the length appear
     // to skip values). Hold Shift to draw freely past any snap target.
-    if (shiftKey) return { point: pos, snap: null }
+    if (shiftKey) {
+      return { point: pos, snap: null }
+    }
 
     const snap = findSnap(pos, excludeWallId, excludeEnd)
     if (snap) {
+      // When Alt is held AND we're snapping to a free endpoint, butt the new
+      // wall against the host. Two sub-cases:
+      //   - COLLINEAR butt: the new wall continues in line with the host
+      //     (drawn outward along the host's axis). Both walls render as
+      //     rectangles that meet edge-to-edge at the data endpoint — no
+      //     offset needed, otherwise we'd leave a halfThickness gap between
+      //     them.
+      //   - PERPENDICULAR butt: the new wall departs at a right angle from
+      //     the host's end. Snap target is pushed OUTWARD by halfThickness
+      //     so the new wall's data endpoint lands on the host's outer face,
+      //     making its rectangle flush with the face rather than crashing
+      //     through the host's own end block.
+      // Default snap (no Alt) keeps landing at the corner-block-centre (the
+      // host's data endpoint) so corner walls share a column the way the
+      // calc engine expects.
+      if (altKey && snap.kind === 'endpoint' && snap.wallId && snap.end) {
+        const hostWall = walls.find((w) => w.id === snap.wallId)
+        if (hostWall && !isCurvedWall(hostWall)) {
+          const dataX = snap.end === 'start' ? hostWall.startX : hostWall.endX
+          const dataY = snap.end === 'start' ? hostWall.startY : hostWall.endY
+          const farX = snap.end === 'start' ? hostWall.endX : hostWall.startX
+          const farY = snap.end === 'start' ? hostWall.endY : hostWall.startY
+          const dxMm = dataX - farX
+          const dyMm = dataY - farY
+          const lenMm = Math.sqrt(dxMm * dxMm + dyMm * dyMm)
+          if (lenMm > 0) {
+            // Host's outward unit vector at this endpoint (points away
+            // from the host's far endpoint into open space).
+            const ox = dxMm / lenMm
+            const oy = dyMm / lenMm
+
+            // New wall's intended direction. On the second click we know
+            // it directly (anchor → cursor). On the first click we don't,
+            // so we approximate from the cursor's offset relative to the
+            // host's data endpoint — when the user hovers OUTWARD of the
+            // host's end intending to continue collinearly, the cursor
+            // will sit roughly along the outward axis.
+            let drawDx = 0
+            let drawDy = 0
+            if (anchor) {
+              drawDx = pxToMm(pos.x) - pxToMm(anchor.x)
+              drawDy = pxToMm(pos.y) - pxToMm(anchor.y)
+            } else {
+              drawDx = pxToMm(pos.x) - dataX
+              drawDy = pxToMm(pos.y) - dataY
+            }
+            const drawLen = Math.sqrt(drawDx * drawDx + drawDy * drawDy)
+
+            // Dot product of normalised draw direction with host outward.
+            // |cos θ| > 0.7 ≈ angle < 45° from the host's axis → collinear.
+            // We use abs() so a cursor flipped to the wrong side of the
+            // endpoint (e.g. hovering slightly inward of the data point)
+            // still reads as collinear when the magnitude is along the
+            // host's axis.
+            let isCollinear = false
+            if (drawLen > 0.001) {
+              const cos = (drawDx * ox + drawDy * oy) / drawLen
+              isCollinear = Math.abs(cos) > 0.7
+            }
+
+            if (isCollinear) {
+              // Snap exactly to the host's data endpoint — the new wall's
+              // rectangle will start where the host's rectangle ends, no
+              // gap. The control-joint flag at the junction keeps the
+              // calc engine from sharing a corner block here.
+              return {
+                point: { x: mmToPx(dataX), y: mmToPx(dataY) },
+                snap,
+              }
+            }
+
+            // Perpendicular butt — push out by halfThickness so the new
+            // wall's data endpoint sits on the host's outer face.
+            const thicknessMm = wallThicknessByWallId[hostWall.id] ?? 190
+            const halfMm = thicknessMm / 2
+            const outerXmm = dataX + ox * halfMm
+            const outerYmm = dataY + oy * halfMm
+            return {
+              point: { x: mmToPx(outerXmm), y: mmToPx(outerYmm) },
+              snap,
+            }
+          }
+        }
+      }
       return { point: { x: snap.x, y: snap.y }, snap }
     }
     if (!anchor) return { point: pos, snap: null }
@@ -1308,13 +1491,11 @@ function WallDrawingLayerInner({
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
-    return {
-      point: {
-        x: anchor.x + dxPx * scale,
-        y: anchor.y + dyPx * scale,
-      },
-      snap: null,
+    const lengthSnapped = {
+      x: anchor.x + dxPx * scale,
+      y: anchor.y + dyPx * scale,
     }
+    return { point: lengthSnapped, snap: null }
   }
 
   // ---------- Stage events ----------
@@ -1337,14 +1518,32 @@ function WallDrawingLayerInner({
       // Second click: snap relative to startMm, with shiftKey overriding the
       // ortho lock — see resolveDrawSnap.
       if (!startMm) {
-        const { point } = resolveDrawSnap(raw, null, e.evt.shiftKey)
+        // Alt held at first-click time also shifts the snap to the outer face
+        // — lets the user start a wall butted against another wall's end as
+        // well as ending one there.
+        const { point } = resolveDrawSnap(
+          raw,
+          null,
+          e.evt.shiftKey,
+          undefined,
+          undefined,
+          e.evt.altKey
+        )
         const posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
         setStartMm(posMm)
+        setStartAltHeld(e.evt.altKey)
         setCursorMm(posMm)
         return
       }
       const startPxAnchor = { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
-      const { point } = resolveDrawSnap(raw, startPxAnchor, e.evt.shiftKey)
+      const { point } = resolveDrawSnap(
+        raw,
+        startPxAnchor,
+        e.evt.shiftKey,
+        undefined,
+        undefined,
+        e.evt.altKey
+      )
       if (distance(startPxAnchor, point) < 5) return
       let posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
       // If the user typed a length while aiming, override the cursor-distance
@@ -1364,8 +1563,14 @@ function WallDrawingLayerInner({
           }
         }
       }
-      onWallAdded(startMm, posMm)
+      // Alt at the FIRST click → butt joint at the new wall's START (carried
+      // forward via startAltHeld). Alt at THIS click → butt joint at the
+      // new wall's END. Each side independently flagged so a collinear butt
+      // — where the new wall's data start sits on top of the host's data
+      // endpoint — doesn't get re-detected as a corner downstream.
+      onWallAdded(startMm, posMm, e.evt.altKey, startAltHeld)
       setStartMm(null)
+      setStartAltHeld(false)
       setCursorMm(null)
       setSnapTarget(null)
       setTypedLengthMm('')
@@ -1469,14 +1674,13 @@ function WallDrawingLayerInner({
     }
 
     if (placingRuler) {
-      // Each click drops a measurement point. Parent state tracks whether
-      // this is the first (sets the anchor) or second (commits a measurement
-      // and clears the anchor for the next pair).
-      const posMm = {
-        x: useGrid ? snapMmToGrid(pxToMm(raw.x)) : pxToMm(raw.x),
-        y: useGrid ? snapMmToGrid(pxToMm(raw.y)) : pxToMm(raw.y),
-      }
-      onRulerClick?.(posMm)
+      // Ruler is intentionally FREE — no snaps. The user is measuring
+      // something on the plan, not aligning new geometry to existing
+      // walls, so endpoint / face / axis snaps would just fight them.
+      // Click lands exactly where the cursor is. Parent tracks whether
+      // this is the first click (sets the anchor) or second (commits the
+      // measurement).
+      onRulerClick?.({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
       return
     }
 
@@ -1515,6 +1719,7 @@ function WallDrawingLayerInner({
       if (selectedWallId) onWallSelect(null)
       if (selectedOpeningId) onOpeningSelect(null)
       if (selectedPierId && onPierSelect) onPierSelect(null)
+      if (selectedMeasurementId && onMeasurementSelect) onMeasurementSelect(null)
     }
   }
 
@@ -1532,10 +1737,16 @@ function WallDrawingLayerInner({
       const startPxAnchor = startMm
         ? { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
         : null
+      // Alt held during the cursor move also routes through resolveDrawSnap
+      // so the preview wall LIVE-shows the butt-joint snap (outer face)
+      // instead of jumping at click time.
       const { point, snap } = resolveDrawSnap(
         raw,
         startPxAnchor,
-        e.evt.shiftKey
+        e.evt.shiftKey,
+        undefined,
+        undefined,
+        e.evt.altKey
       )
       setSnapTarget(snap)
       setCursorMm({ x: pxToMm(point.x), y: pxToMm(point.y) })
@@ -1596,12 +1807,12 @@ function WallDrawingLayerInner({
       }
       setTiedPierHover(proj)
     } else if (placingRuler) {
-      // Track the cursor in mm so the in-progress measurement line follows
-      // the cursor between anchor and click. Snap to the grid for repeatable
-      // measurements when the user is doing layout checks at round numbers.
-      const xMm = useGrid ? snapMmToGrid(pxToMm(raw.x)) : pxToMm(raw.x)
-      const yMm = useGrid ? snapMmToGrid(pxToMm(raw.y)) : pxToMm(raw.y)
-      setCursorMm({ x: xMm, y: yMm })
+      // Ruler runs FREE — no snap. Cursor mm tracks the raw pointer so
+      // the in-progress measurement line follows the cursor exactly.
+      // setSnapTarget(null) keeps any leftover snap ring from a previous
+      // tool from sticking around.
+      setSnapTarget(null)
+      setCursorMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
     } else if (placingFreestandingPier) {
       // Unified pier mode — preview matches what the click would actually do:
       // show the tied-pier hover when the cursor sits inside a straight wall's
@@ -1870,7 +2081,8 @@ function WallDrawingLayerInner({
     drawingCurveMode ||
     placingControlJoint ||
     placingTiedPier ||
-    placingFreestandingPier
+    placingFreestandingPier ||
+    placingRuler
       ? 'crosshair'
       : 'inherit'
 
@@ -1938,7 +2150,8 @@ function WallDrawingLayerInner({
             !drawingCurveMode &&
             !placingControlJoint &&
             !placingTiedPier &&
-            !placingFreestandingPier
+            !placingFreestandingPier &&
+            !placingRuler
           const isCurveAnchor =
             drawingCurveMode &&
             (curveAnchorA?.wallId === wall.id || curveAnchorB?.wallId === wall.id)
@@ -1980,7 +2193,8 @@ function WallDrawingLayerInner({
                   drawingCurveMode ||
                   placingControlJoint ||
                   placingTiedPier ||
-                  placingFreestandingPier
+                  placingFreestandingPier ||
+                  placingRuler
                 ) return
                 // Shift+click = additive multi-select (toggle this wall in/out of the
                 // selection). Plain click = replace whole selection with just this wall.
@@ -1995,7 +2209,8 @@ function WallDrawingLayerInner({
                   drawingCurveMode ||
                   placingControlJoint ||
                   placingTiedPier ||
-                  placingFreestandingPier
+                  placingFreestandingPier ||
+                  placingRuler
                 ) return
                 e.evt.stopPropagation()
               }}
@@ -2055,7 +2270,8 @@ function WallDrawingLayerInner({
                     !drawingCurveMode &&
                     !placingControlJoint &&
                     !placingTiedPier &&
-                    !placingFreestandingPier
+                    !placingFreestandingPier &&
+                    !placingRuler
                   ) {
                     setHoveredWallId(wall.id)
                     setCursor(e.target.getStage(), 'pointer')
@@ -2165,7 +2381,8 @@ function WallDrawingLayerInner({
                   placingOpening ||
                   placingControlJoint ||
                   placingTiedPier ||
-                  placingFreestandingPier
+                  placingFreestandingPier ||
+                  placingRuler
                 ) return
                 if (e.evt.shiftKey && onOpeningToggleSelect) onOpeningToggleSelect(opening.id)
                 else onOpeningSelect(opening.id)
@@ -2177,7 +2394,8 @@ function WallDrawingLayerInner({
                   placingOpening ||
                   placingControlJoint ||
                   placingTiedPier ||
-                  placingFreestandingPier
+                  placingFreestandingPier ||
+                  placingRuler
                 ) return
                 e.evt.stopPropagation()
               }}
@@ -2197,8 +2415,8 @@ function WallDrawingLayerInner({
                 dash={[8, 4]}
                 listening={false}
               />
-              <Circle x={start.x} y={start.y} radius={4} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1.5} listening={false} />
-              <Circle x={end.x} y={end.y} radius={4} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1.5} listening={false} />
+              <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
+              <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
               <Text
                 x={midX - 35}
                 y={midY + 10}
@@ -2222,10 +2440,10 @@ function WallDrawingLayerInner({
               <Circle
                 x={startPosPx.x}
                 y={startPosPx.y}
-                radius={6}
+                radius={4}
                 fill="#D97706"
                 stroke="white"
-                strokeWidth={2}
+                strokeWidth={1.5}
               />
               {openingHoverProjection && openingHoverProjection.wallId === openingPlacementStart.wallId && (
                 <>
@@ -2257,9 +2475,9 @@ function WallDrawingLayerInner({
           <Circle
             x={openingHoverProjection.px.x}
             y={openingHoverProjection.px.y}
-            radius={6}
+            radius={4}
             stroke="#D97706"
-            strokeWidth={2}
+            strokeWidth={1.5}
             fill="rgba(217, 119, 6, 0.3)"
             listening={false}
           />
@@ -2308,7 +2526,8 @@ function WallDrawingLayerInner({
                   drawingCurveMode ||
                   placingControlJoint ||
                   placingTiedPier ||
-                  placingFreestandingPier
+                  placingFreestandingPier ||
+                  placingRuler
                 ) return
                 if (e.evt.shiftKey && onPierToggleSelect) onPierToggleSelect(pier.id)
                 else if (onPierSelect) onPierSelect(pier.id)
@@ -2321,7 +2540,8 @@ function WallDrawingLayerInner({
                   drawingCurveMode ||
                   placingControlJoint ||
                   placingTiedPier ||
-                  placingFreestandingPier
+                  placingFreestandingPier ||
+                  placingRuler
                 ) return
                 e.evt.stopPropagation()
               }}
@@ -2601,9 +2821,14 @@ function WallDrawingLayerInner({
           />
         )}
 
+
         {/* Persistent measurements + in-progress measurement preview. Drawn
             in fuchsia so they pop against the orange walls and don't get
-            mistaken for in-progress drawing. */}
+            mistaken for in-progress drawing. The Line is clickable (wide
+            hit-stroke so the user doesn't have to land pixel-perfectly on
+            the dashed segment) and selecting a measurement halos it so
+            Delete can target it. Suppressed while in any placement mode
+            so clicks pass through to the active tool. */}
         {measurements.map((m) => {
           const startPx = { x: mmToPx(m.startMm.x), y: mmToPx(m.startMm.y) }
           const endPx = { x: mmToPx(m.endMm.x), y: mmToPx(m.endMm.y) }
@@ -2612,16 +2837,60 @@ function WallDrawingLayerInner({
             x: (startPx.x + endPx.x) / 2,
             y: (startPx.y + endPx.y) / 2,
           }
+          const isSelected = m.id === selectedMeasurementId
+          const interactive =
+            !drawingMode &&
+            !placingOpening &&
+            !drawingCurveMode &&
+            !placingControlJoint &&
+            !placingTiedPier &&
+            !placingFreestandingPier &&
+            !placingRuler
           return (
-            <Group key={m.id} listening={false}>
+            <Group key={m.id} listening={interactive}>
               <Line
                 points={[startPx.x, startPx.y, endPx.x, endPx.y]}
-                stroke="#d946ef"
-                strokeWidth={2}
+                stroke={isSelected ? '#a21caf' : '#d946ef'}
+                strokeWidth={isSelected ? 3 : 2}
                 dash={[6, 4]}
+                hitStrokeWidth={12}
+                shadowColor={isSelected ? '#d946ef' : undefined}
+                shadowBlur={isSelected ? 8 : 0}
+                shadowOpacity={isSelected ? 0.5 : 0}
+                onClick={(e) => {
+                  if (e.evt.button !== 0) return
+                  e.cancelBubble = true
+                  onMeasurementSelect?.(m.id)
+                }}
+                onMouseEnter={(ev) => {
+                  if (!interactive) return
+                  const stage = ev.target.getStage()
+                  if (stage) stage.container().style.cursor = 'pointer'
+                }}
+                onMouseLeave={(ev) => {
+                  if (!interactive) return
+                  const stage = ev.target.getStage()
+                  if (stage) stage.container().style.cursor = containerCursor
+                }}
               />
-              <Circle x={startPx.x} y={startPx.y} radius={4} fill="#d946ef" stroke="white" strokeWidth={1.5} />
-              <Circle x={endPx.x} y={endPx.y} radius={4} fill="#d946ef" stroke="white" strokeWidth={1.5} />
+              <Circle
+                x={startPx.x}
+                y={startPx.y}
+                radius={isSelected ? 5 : 4}
+                fill="#d946ef"
+                stroke="white"
+                strokeWidth={1.5}
+                listening={false}
+              />
+              <Circle
+                x={endPx.x}
+                y={endPx.y}
+                radius={isSelected ? 5 : 4}
+                fill="#d946ef"
+                stroke="white"
+                strokeWidth={1.5}
+                listening={false}
+              />
               <Text
                 x={midPx.x + 8}
                 y={midPx.y - 18}
@@ -2629,6 +2898,7 @@ function WallDrawingLayerInner({
                 fontSize={14}
                 fill="#a21caf"
                 fontStyle="bold"
+                listening={false}
               />
             </Group>
           )
@@ -2712,17 +2982,17 @@ function renderEndpointMarker({
 }: EndpointMarkerProps) {
   // Marker sizes are derived from the wall's on-screen thickness so brick
   // walls (thin) get correspondingly small markers and block walls (chunky)
-  // get larger ones. Clamped to [4, 12] px so a wall that's effectively
+  // get larger ones. Clamped to [3, 7] px so a wall that's effectively
   // invisible at low zoom still gets a clickable marker, and so a wall at
-  // 4× zoom doesn't end up with a marker the size of a coin obscuring the
-  // PDF underneath. Selected markers get a slight bump so the drag handle
-  // is easy to find without obscuring the plan.
-  const baseSize = Math.max(4, Math.min(12, wallThicknessPx * 0.95))
-  const radius = (isSelected ? baseSize * 1.3 : baseSize) / 2
-  const cornerSquareSize = isSelected ? Math.min(12, baseSize * 1.2) : baseSize
+  // 4× zoom doesn't end up with markers obscuring the wall ends or PDF
+  // detail underneath. Selected markers get a slight bump so the drag
+  // handle is easy to find without dominating the plan.
+  const baseSize = Math.max(3, Math.min(7, wallThicknessPx * 0.55))
+  const radius = (isSelected ? baseSize * 1.2 : baseSize) / 2
+  const cornerSquareSize = isSelected ? Math.min(8, baseSize * 1.15) : baseSize
   const tjunctionDiamondSize = cornerSquareSize
-  const controlJointOuterRadius = baseSize * 0.6
-  const controlJointInnerRadius = Math.max(1.25, baseSize * 0.22)
+  const controlJointOuterRadius = baseSize * 0.55
+  const controlJointInnerRadius = Math.max(1, baseSize * 0.2)
   const fill = isSelected
     ? '#3b82f6'
     : isCorner

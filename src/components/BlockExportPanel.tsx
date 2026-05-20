@@ -204,6 +204,11 @@ export default function BlockExportPanel({
               disabledHint="Define at least one wall type first"
             />
             <Toggle
+              label="Ruler measurements on layout"
+              checked={inclusions.measurements}
+              onChange={(v) => patch({ measurements: v })}
+            />
+            <Toggle
               label="Disclaimer page"
               checked={inclusions.disclaimer}
               onChange={(v) => patch({ disclaimer: v })}

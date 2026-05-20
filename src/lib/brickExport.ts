@@ -41,6 +41,17 @@ export interface PageInfo {
   pageScaleRatio?: number
   walls: Wall[]
   openings: Opening[]
+  /**
+   * Ruler measurements drawn on this page. Rendered as dashed-line overlays
+   * with their lengths labelled when `inclusions.measurements` is on.
+   * Coordinates share the same mm space as the walls so they sit at the
+   * right spot relative to the plan.
+   */
+  measurements?: Array<{
+    id: string
+    startMm: { x: number; y: number }
+    endMm: { x: number; y: number }
+  }>
 }
 
 interface ExportParams {
@@ -101,7 +112,10 @@ function buildBrickPlanOverviewPage(
   background:
     | { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number }
     | null,
-  pageLabelSuffix: string
+  pageLabelSuffix: string,
+  /** Ruler measurements on this page — rendered as dashed cyan reference
+   *  lines when supplied. Empty array means no overlay. */
+  measurements: Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }> = []
 ): string {
   if (walls.length === 0) return ''
 
@@ -197,6 +211,18 @@ function buildBrickPlanOverviewPage(
     if (w.endY < minY) minY = w.endY
     if (w.endY > maxY) maxY = w.endY
   }
+  // Pull measurements into the bounding box so a ruler that strays past
+  // the wall extents still ends up inside the rendered viewBox.
+  for (const m of measurements) {
+    if (m.startMm.x < minX) minX = m.startMm.x
+    if (m.startMm.x > maxX) maxX = m.startMm.x
+    if (m.endMm.x < minX) minX = m.endMm.x
+    if (m.endMm.x > maxX) maxX = m.endMm.x
+    if (m.startMm.y < minY) minY = m.startMm.y
+    if (m.startMm.y > maxY) maxY = m.startMm.y
+    if (m.endMm.y < minY) minY = m.endMm.y
+    if (m.endMm.y > maxY) maxY = m.endMm.y
+  }
   if (!isFinite(minX) || !isFinite(maxX)) return ''
   const pad = Math.max(
     1000,
@@ -225,6 +251,32 @@ function buildBrickPlanOverviewPage(
     .map((w) => {
       const c = colourFor(w)
       return `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`
+    })
+    .join('\n          ')
+
+  // Measurement overlays — dashed cyan lines with the measured length
+  // labelled at the midpoint. Same visual treatment as the block export
+  // so the deliverables read consistently across product modes.
+  const measurementStrokeWidth = Math.max(brickThicknessMm * 0.18, Math.min(viewW, viewH) * 0.004)
+  const measurementFontSize = labelFontSize * 0.7
+  const measurementShapes = measurements
+    .map((m) => {
+      const dx = m.endMm.x - m.startMm.x
+      const dy = m.endMm.y - m.startMm.y
+      const lenMm = Math.sqrt(dx * dx + dy * dy)
+      if (lenMm < 1) return ''
+      const lenM = (lenMm / 1000).toFixed(2)
+      const midX = (m.startMm.x + m.endMm.x) / 2
+      const midY = (m.startMm.y + m.endMm.y) / 2
+      const dash = measurementStrokeWidth * 4
+      const gap = measurementStrokeWidth * 2
+      const dotR = measurementStrokeWidth * 1.6
+      return `
+        <line x1="${m.startMm.x.toFixed(1)}" y1="${m.startMm.y.toFixed(1)}" x2="${m.endMm.x.toFixed(1)}" y2="${m.endMm.y.toFixed(1)}" stroke="#0891b2" stroke-width="${measurementStrokeWidth.toFixed(1)}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}" stroke-linecap="round"/>
+        <circle cx="${m.startMm.x.toFixed(1)}" cy="${m.startMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
+        <circle cx="${m.endMm.x.toFixed(1)}" cy="${m.endMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
+        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="Inter, system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenM} m</text>
+      `
     })
     .join('\n          ')
 
@@ -288,6 +340,7 @@ function buildBrickPlanOverviewPage(
         <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
           ${backgroundSvgElement}
           ${wallShapes}
+          ${measurementShapes}
           ${wallLabels}
         </svg>
       </div>
@@ -565,7 +618,8 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
         },
         brickThicknessMm,
         pageBackground,
-        labelSuffix
+        labelSuffix,
+        inclusions.measurements ? page.measurements ?? [] : []
       )
     )
   }
@@ -1018,6 +1072,9 @@ export function createDefaultExportInclusions(): BrickExportInclusions {
   return {
     assumptions: true,
     wallLayout: true,
+    // Ruler measurements default ON — same reasoning as the block side:
+    // if the user drew them, they likely want them carried through.
+    measurements: true,
     brickAreaSummary: true,
     lintels: regional.lintels,
     brickTies: regional.brickTies,

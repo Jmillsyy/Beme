@@ -403,6 +403,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     Record<number, Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }>>
   >({})
   const [rulerAnchorMm, setRulerAnchorMm] = useState<{ x: number; y: number } | null>(null)
+  /**
+   * Which persistent measurement is currently selected. Clicking a
+   * measurement on the canvas selects it (visual halo); Delete removes
+   * it; Esc deselects. Single-selection — measurements are lightweight
+   * markers, no need for multi-select.
+   */
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null)
 
   // ---------- Pier state (block mode) ----------
   const [piersByPage, setPiersByPage] = useState<Record<number, Pier[]>>({})
@@ -1052,9 +1059,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setSelectedWallId(id)
     if (id) {
       setSelectedOpeningId(null)
-      // Re-enable the active-makeup glow when the user re-engages with a
-      // wall by clicking it (they previously may have hit Esc to dismiss it).
-      setShowActiveMakeupHighlight(true)
+      setSelectedMeasurementId(null)
+      // Clicking a SINGLE wall should highlight only that wall, not every
+      // wall of the same type. The active-makeup glow is reserved for the
+      // sidebar's wall-type click — that's an explicit "show me everything
+      // of this type" action. Keeping it off here means a click on one wall
+      // gives a focused selection halo on that wall alone, even though we
+      // still surface its makeup as the active one in the panel below.
+      setShowActiveMakeupHighlight(false)
       // Surface the selected wall's makeup in the Wall types panel so the
       // user can see at a glance which type the wall belongs to (and tweak
       // it in place). Looks the wall up across every page since the
@@ -1076,7 +1088,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }, [wallsByPage, mode])
   const handleOpeningSelect = useCallback((id: string | null) => {
     setSelectedOpeningId(id)
-    if (id) setSelectedWallId(null)
+    if (id) {
+      setSelectedWallId(null)
+      setSelectedMeasurementId(null)
+    }
   }, [])
   const handleCancelDraw = useCallback(() => {
     setDrawingMode(false)
@@ -1238,7 +1253,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // on anything with many walls. The deps are deliberately broad so the
   // behaviour is identical to the previous plain-function form when the
   // underlying state DOES change (adding walls, switching modes, etc.).
-  const handleWallAdded = useCallback(function handleWallAdded(startMm: { x: number; y: number }, endMm: { x: number; y: number }) {
+  const handleWallAdded = useCallback(function handleWallAdded(
+    startMm: { x: number; y: number },
+    endMm: { x: number; y: number },
+    forceButtAtEnd?: boolean,
+    forceButtAtStart?: boolean
+  ) {
     const isBrick = mode === 'brick'
     // Belt-and-braces: a curve makeup is bound to a specific arc geometry —
     // drawing a straight wall against it would produce a 20.03CW wall with no
@@ -1300,8 +1320,21 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       startY: snappedStart.y,
       endX: snappedEnd.x,
       endY: snappedEnd.y,
-      startJunction: { type: 'free' },
-      endJunction: { type: 'free' },
+      // Alt at the first/last click → user-requested butt joint. Preserved
+      // through recompute. Collinear butts no longer need this flag — the
+      // recompute pass auto-detects collinear coinciding endpoints and tags
+      // them as control-joint regardless of how the wall was created (draw,
+      // drag, etc.). Alt is still meaningful for the perpendicular case
+      // (new wall departs at 90° from a host's end and butts against its
+      // outer face), which the auto-detect doesn't cover because the
+      // endpoints don't coincide there — only the snapped face position
+      // does.
+      startJunction: forceButtAtStart
+        ? { type: 'control-joint', connectedWallIds: [] }
+        : { type: 'free' },
+      endJunction: forceButtAtEnd
+        ? { type: 'control-joint', connectedWallIds: [] }
+        : { type: 'free' },
       heightMmOverride: isBrick
         ? activeBrickMakeup?.heightMm ?? brickSettings.defaultWallHeightMm
         : undefined,
@@ -2046,29 +2079,93 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // are in a temporal dead zone here so the effect can't reference them yet).
   const [showShortcutHelp, setShowShortcutHelp] = useState(false)
 
-  // Delete / Backspace removes every selected wall, opening, and pier — single-
-  // or multi-selection. Walls are deleted last (so attached openings/piers vanish
-  // along the way without us needing to special-case them).
+  // Delete / Backspace removes every selected wall, opening, pier, and
+  // measurement — single- or multi-selection. Walls are deleted last (so
+  // attached openings/piers vanish along the way without us needing to
+  // special-case them). A ref mirrors the current selection so the
+  // (always-registered) keydown handler reads fresh values without
+  // depending on effect re-registration timing — previously the first
+  // Delete after clicking a measurement could miss because the listener
+  // hadn't re-registered with the new selection in its closure yet.
+  const selectionRef = useRef({
+    wallIds: selectedWallIds,
+    openingIds: selectedOpeningIds,
+    pierIds: selectedPierIds,
+    measurementId: selectedMeasurementId,
+    currentPage,
+  })
+  // useLayoutEffect (not useEffect) so the ref is mirrored synchronously
+  // after every render — before the browser can paint or process the next
+  // keystroke. Stops the keydown listener from reading a stale selection
+  // even if Delete fires immediately after a click.
+  useLayoutEffect(() => {
+    selectionRef.current = {
+      wallIds: selectedWallIds,
+      openingIds: selectedOpeningIds,
+      pierIds: selectedPierIds,
+      measurementId: selectedMeasurementId,
+      currentPage,
+    }
+  }, [selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, currentPage])
+
+  // Refs to the latest deletion handlers — handleWallDelete and friends
+  // close over component-scope state (currentPage, makeupsById, mode, ...)
+  // which changes between renders. If the keydown listener (registered
+  // once with [] deps) called the handlers DIRECTLY, it'd be calling the
+  // initial-render versions with stale closures — leading to "select +
+  // Backspace clears selection but doesn't delete" because the stale
+  // closure operates on the wrong page / makeup data. Routing through
+  // refs that we update every render keeps the listener using fresh
+  // logic without re-registering the listener on every keystroke.
+  const handleWallDeleteRef = useRef(handleWallDelete)
+  const handleOpeningDeleteRef = useRef(handleOpeningDelete)
+  const handleDeletePierRef = useRef(handleDeletePier)
+  handleWallDeleteRef.current = handleWallDelete
+  handleOpeningDeleteRef.current = handleOpeningDelete
+  handleDeletePierRef.current = handleDeletePier
+
   useEffect(() => {
-    if (selectedWallIds.size === 0 && selectedOpeningIds.size === 0 && selectedPierIds.size === 0) return
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        const tgt = e.target as HTMLElement | null
-        if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return
-        e.preventDefault()
-        // Snapshot ids before any deletion handler clears the selection sets.
-        const wallIds = Array.from(selectedWallIds)
-        const openingIds = Array.from(selectedOpeningIds)
-        const pierIds = Array.from(selectedPierIds)
-        for (const id of pierIds) handleDeletePier(id)
-        for (const id of openingIds) handleOpeningDelete(id)
-        for (const id of wallIds) handleWallDelete(id)
+      // Both Delete and Backspace remove selected items — macOS has no
+      // standalone Delete key on most keyboards, and Backspace is the
+      // universal "remove" gesture. The typed-length editor while drawing
+      // a wall only fires when there's an in-progress wall AND no item is
+      // selected (its handler in WallDrawingLayer runs first and consumes
+      // the event in that mode), so the two uses don't conflict in
+      // practice.
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      const tgt = e.target as HTMLElement | null
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return
+      const sel = selectionRef.current
+      if (
+        sel.wallIds.size === 0 &&
+        sel.openingIds.size === 0 &&
+        sel.pierIds.size === 0 &&
+        !sel.measurementId
+      ) return
+      e.preventDefault()
+      const wallIds = Array.from(sel.wallIds)
+      const openingIds = Array.from(sel.openingIds)
+      const pierIds = Array.from(sel.pierIds)
+      const measurementId = sel.measurementId
+      for (const id of pierIds) handleDeletePierRef.current(id)
+      for (const id of openingIds) handleOpeningDeleteRef.current(id)
+      for (const id of wallIds) handleWallDeleteRef.current(id)
+      if (measurementId) {
+        setMeasurementsByPage((all) => {
+          const page = sel.currentPage
+          const pageMs = all[page] ?? []
+          const remaining = pageMs.filter((m) => m.id !== measurementId)
+          if (remaining.length === pageMs.length) return all
+          return { ...all, [page]: remaining }
+        })
+        setSelectedMeasurementId(null)
       }
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWallIds, selectedOpeningIds, selectedPierIds])
+  }, [])
 
   // Clear selection when leaving the page or replacing PDF
   useEffect(() => {
@@ -3858,6 +3955,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Esc</kbd>
               <span className="ml-2">Cancel current tool</span>
             </div>
+            {mode === 'block' && (
+              <div>
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">Alt</kbd>
+                <span className="text-ink-400 mx-1">+</span>
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">click</kbd>
+                <span className="ml-2">Butt-joint at endpoint (no corner)</span>
+              </div>
+            )}
             <div>
               <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">?</kbd>
               <span className="ml-2">Toggle this panel</span>
@@ -4297,7 +4402,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   : 'bg-fuchsia-700 text-white hover:bg-fuchsia-800 disabled:opacity-40 disabled:cursor-not-allowed'
               }`}
             >
-              {placingRuler ? 'Cancel ruler' : '📏 Ruler'}
+              {placingRuler ? 'Stop measuring' : 'Ruler'}
             </button>
             {((measurementsByPage[currentPage] ?? []).length > 0) && (
               <button
@@ -5019,6 +5124,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   rulerAnchorMm={rulerAnchorMm}
                   measurements={measurementsByPage[currentPage] ?? []}
                   onRulerClick={handleRulerClick}
+                  selectedMeasurementId={selectedMeasurementId}
+                  onMeasurementSelect={(id) => {
+                    setSelectedMeasurementId(id)
+                    if (id) {
+                      // Selecting a measurement clears any other selection
+                      // — measurements are mutually exclusive with walls /
+                      // openings / piers so Delete targets the right thing.
+                      setSelectedWallId(null)
+                      setSelectedOpeningId(null)
+                      setSelectedPierId(null)
+                    }
+                  }}
                   piers={currentPagePiers}
                   selectedWallId={selectedWallId}
                   selectedOpeningId={selectedOpeningId}
@@ -5156,6 +5273,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 walls: wallsByPage[n] ?? [],
                 openings: openingsByPage[n] ?? [],
                 piers: piersByPage[n] ?? [],
+                measurements: measurementsByPage[n] ?? [],
               }))}
           />
         )}
@@ -5185,6 +5303,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 pageScaleRatio: pagesData[n]?.pageScaleRatio,
                 walls: wallsByPage[n] ?? [],
                 openings: openingsByPage[n] ?? [],
+                measurements: measurementsByPage[n] ?? [],
               }))}
           />
         )}
