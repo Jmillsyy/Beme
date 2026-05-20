@@ -538,89 +538,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         <InboxTile count={myActionItems} />
       </section>
 
-      {/* ── Your inbox ──
-          Two side-by-side columns so the distinction between 'still needs
-          to be picked up' (urgent / blocking) and 'I've started, finish it'
-          (continue) is obvious without scanning status badges. Each column
-          has its own count + empty state. Stacks to one column under md so
-          the dashboard stays usable on narrower viewports. */}
-      <section className="mt-8">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Your inbox
-          </h3>
-          {(myPending.length + myInProgress.length) > 0 && (
-            <span className="text-xs text-ink-400">
-              {myPending.length + myInProgress.length}{' '}
-              {myPending.length + myInProgress.length === 1 ? 'request' : 'requests'} assigned to you
-            </span>
-          )}
-        </div>
-        {loading ? (
-          <div className="text-sm text-ink-400">Loading…</div>
-        ) : myPending.length === 0 && myInProgress.length === 0 ? (
-          <div className="border border-dashed border-ink-600 rounded-xl p-8 text-center bg-ink-800/40">
-            <p className="text-ink-100 text-sm mb-1">Nothing waiting for you right now.</p>
-            <p className="text-ink-400 text-xs">
-              When sales sends you an estimate it'll show up here. You can also{' '}
-              <Link to="/requests/new" className="text-beme-300 hover:text-beme-200 underline">
-                send one yourself
-              </Link>
-              .
-            </p>
-          </div>
-        ) : (
-          // Self-balancing layout: when BOTH columns have items, split 50/50.
-          // When only one side has items, that side takes the full row so we
-          // never show a thin empty stripe next to a tall populated card.
-          // No lopsidedness — the row width is always evenly consumed.
-          (() => {
-            const bothHaveItems = myPending.length > 0 && myInProgress.length > 0
-            const cols = bothHaveItems ? 'md:grid-cols-2' : 'md:grid-cols-1'
-            return (
-              <div className={`grid grid-cols-1 ${cols} gap-4 items-stretch`}>
-                {myPending.length > 0 && (
-                  <InboxColumn
-                    title="Needs you to pick up"
-                    accent="amber"
-                    count={myPending.length}
-                    empty="Nothing pending in your queue."
-                  >
-                    {myPending.map((r) => (
-                      <InboxRow
-                        key={r.id}
-                        request={r}
-                        assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                        creator={memberById.get(r.createdByUserId)}
-                        onPickUp={() => handlePickUp(r)}
-                        pickingUp={pickingUpId === r.id}
-                        disablePickUp={!!pickingUpId && pickingUpId !== r.id}
-                      />
-                    ))}
-                  </InboxColumn>
-                )}
-                {myInProgress.length > 0 && (
-                  <InboxColumn
-                    title="Currently working on"
-                    accent="blue"
-                    count={myInProgress.length}
-                    empty="You haven't started any requests yet."
-                  >
-                    {myInProgress.map((r) => (
-                      <InboxRow
-                        key={r.id}
-                        request={r}
-                        assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                        creator={memberById.get(r.createdByUserId)}
-                      />
-                    ))}
-                  </InboxColumn>
-                )}
-              </div>
-            )
-          })()
-        )}
-      </section>
+      {/* "Your inbox" used to live here as a two-column 'Needs you to pick
+          up' + 'Currently working on' grid. Replaced by the My Inbox tile
+          in the stats row above, which links to /requests?scope=mine —
+          one source of truth for personal queue instead of two surfaces
+          on the same page showing the same data. */}
 
       {/* ── In-progress projects (not from a request) ──
           Direct '+ Brick / + Block' creates bypass the estimate-request
