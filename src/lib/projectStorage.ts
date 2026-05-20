@@ -103,6 +103,18 @@ export interface SavedProject {
   updatedAt: string
   /** ISO datetime — when status was first set to 'completed'. */
   completedAt?: string
+  /**
+   * User id of whoever first saved this project — the estimator who started
+   * the estimate. Set once at create time and preserved through every
+   * subsequent save (including by other org members). Used to surface
+   * "Started by {name}" in the project bar so teammates can see who picked
+   * up an estimate without having to dig into the row's audit data.
+   *
+   * Optional + missing on saves predating this field — the project-bar
+   * resolver falls back to the cloud row's user_id (the original inserter
+   * by RLS) so older projects still show an author.
+   */
+  createdByUserId?: string
   /** Sales outcome — undefined = pending. See {@link ProjectOutcome}. */
   outcome?: ProjectOutcome
 

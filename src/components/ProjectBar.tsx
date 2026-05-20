@@ -33,6 +33,13 @@ interface ProjectBarProps {
    * request without losing their place in the workspace.
    */
   sourceRequest?: RequestBreadcrumbInfo | null
+  /**
+   * Display name of whoever first saved this project. Surfaced as a "Started
+   * by {name}" pill on the right side of the bar so teammates can see at a
+   * glance who picked up an estimate. Null hides the pill (unsaved project
+   * or unknown author).
+   */
+  createdByDisplayName?: string | null
   onSave: () => void
   onToggleStatus: () => void
   onDelete: () => void
@@ -70,6 +77,7 @@ export default function ProjectBar({
   saveBlockedReason,
   mode,
   sourceRequest,
+  createdByDisplayName,
   onSave,
   onToggleStatus,
   onDelete,
@@ -157,6 +165,15 @@ export default function ProjectBar({
       {/* RIGHT — project identity + actions, all matching pill sizes so the
           right side reads as one cohesive control cluster. */}
       <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+        {createdByDisplayName && (
+          <span
+            className="hidden lg:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-300"
+            title="Estimator who started this project"
+          >
+            <span className="text-ink-500 text-xs uppercase tracking-wider">Started by</span>
+            <span className="font-medium text-ink-100">{createdByDisplayName}</span>
+          </span>
+        )}
         <button
           onClick={onOpenDetails}
           className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 group text-left text-sm hover:bg-ink-700 hover:border-beme-500/50 transition-colors"

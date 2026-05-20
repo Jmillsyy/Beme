@@ -174,11 +174,13 @@ const WALL_PROJECTION_THRESHOLD_PX = 8
 /**
  * Real-world distance at which a cursor near an existing wall's *face* will snap onto it
  * to form a T-junction. Expressed in mm so the snap feels the same at every zoom level
- * and on every plan. Tightened to 10 mm so users can lay two parallel walls a few cm
- * apart without the first wall's snap zone swallowing the cursor — the previous 20 mm
- * caused stickiness in dense junctions. Shift bypasses the snap entirely.
+ * and on every plan. Widened to 25 mm so the T-junction snap catches the cursor from a
+ * comfortable margin — earlier values were precise but required pixel-perfect aim,
+ * especially at low zoom. Closest-snap-wins ranking in findSnap means a wider face zone
+ * doesn't steal cursors that are geometrically closer to a corner or tip target — it
+ * just gives the user more comfortable reach to the face itself. Shift bypasses entirely.
  */
-const WALL_FACE_SNAP_MM = 10
+const WALL_FACE_SNAP_MM = 25
 
 /**
  * Angular tolerance for orthogonal snap, in degrees.
@@ -1047,127 +1049,101 @@ function WallDrawingLayerInner({
     excludeWallId?: string,
     excludeEnd?: 'start' | 'end'
   ): SnapResult | null {
-    // 1a. TIP snap (butt-joint candidate) — small fixed circle right at the
-    // data endpoint of each wall's free end. Tight radius (TIP_SNAP_RADIUS_PX)
-    // so the user has to deliberately aim at the tip; outside that circle the
-    // wider endpoint snap below takes over for the corner workflow.
-    // Returning the data endpoint as the snap target (no inset) lets the
-    // auto-collinear-butt detection in recomputeAllJunctions fire when the
-    // user draws a wall continuing in line off this end — both walls' data
-    // endpoints coincide exactly, tagging the seam as a control joint with
-    // no gap.
-    {
-      let closestTip: { x: number; y: number; wallId: string; end: 'start' | 'end'; distSq: number } | null = null
-      for (const w of walls) {
-        if (isCurvedWall(w)) continue
-        for (const which of ['start' as const, 'end' as const]) {
-          if (w.id === excludeWallId && which === excludeEnd) continue
-          // Tip snap is ONLY relevant for free ends — a corner/T/control-joint
-          // endpoint already has a defined topology and shouldn't be retargeted
-          // by a butt-style tip snap.
-          const junction = which === 'start' ? w.startJunction : w.endJunction
-          if (junction.type !== 'free') continue
-          const tipX = mmToPx(which === 'start' ? w.startX : w.endX)
-          const tipY = mmToPx(which === 'start' ? w.startY : w.endY)
-          const dx = cursor.x - tipX
-          const dy = cursor.y - tipY
-          const distSq = dx * dx + dy * dy
-          if (distSq > TIP_SNAP_RADIUS_PX * TIP_SNAP_RADIUS_PX) continue
-          if (!closestTip || distSq < closestTip.distSq) {
-            closestTip = { x: tipX, y: tipY, wallId: w.id, end: which, distSq }
-          }
-        }
-      }
-      if (closestTip) {
-        return {
+    // Unified snap ranking — collect every snap target whose acceptance
+    // zone the cursor falls inside, then pick the ONE that's geometrically
+    // closest to the cursor. Previously each snap kind ran in order (tip
+    // → endpoint → face) and the first match won, so at the end of a
+    // wall where 3 face snaps and a corner snap all sat within their
+    // respective zones, the user couldn't reach the back ones — the
+    // earlier-checked snap always claimed the cursor first. Picking the
+    // closest target instead means moving the cursor a few px toward
+    // your preferred snap target makes it win, no priority order to
+    // fight against.
+    type Candidate = {
+      kind: 'endpoint' | 'body'
+      x: number
+      y: number
+      wallId: string
+      end?: 'start' | 'end'
+      // Euclidean distance from cursor to snap target — the sort key.
+      distance: number
+    }
+    const candidates: Candidate[] = []
+
+    // 1. Tip candidates — small fixed circle at every free end's DATA
+    // endpoint. Snap target = data endpoint (no inset). Enables clean
+    // collinear butt joints (recomputeAllJunctions tags both walls as
+    // control-joint when their endpoints coincide exactly).
+    for (const w of walls) {
+      if (isCurvedWall(w)) continue
+      for (const which of ['start' as const, 'end' as const]) {
+        if (w.id === excludeWallId && which === excludeEnd) continue
+        const junction = which === 'start' ? w.startJunction : w.endJunction
+        if (junction.type !== 'free') continue
+        const tipX = mmToPx(which === 'start' ? w.startX : w.endX)
+        const tipY = mmToPx(which === 'start' ? w.startY : w.endY)
+        const dx = cursor.x - tipX
+        const dy = cursor.y - tipY
+        const distSq = dx * dx + dy * dy
+        if (distSq > TIP_SNAP_RADIUS_PX * TIP_SNAP_RADIUS_PX) continue
+        candidates.push({
           kind: 'endpoint',
-          x: closestTip.x,
-          y: closestTip.y,
-          wallId: closestTip.wallId,
-          end: closestTip.end,
-        }
+          x: tipX,
+          y: tipY,
+          wallId: w.id,
+          end: which,
+          distance: Math.sqrt(distSq),
+        })
       }
     }
 
-    // 1b. Endpoint snap (corner candidate) — preferred when in range.
-    //
-    // The snap zone is anisotropic: GENEROUS along the wall axis (full
-    // snapRadiusPx, which on a thick wall is roughly halfThickness, so the
-    // whole end-block area snaps) but TIGHT across it (SNAP_THRESHOLD_PX,
-    // 12 px). That way a cursor parked beside the wall's end face — i.e.
-    // the user trying to T-junction at the very tip — escapes the corner
-    // snap and lets the face snap below fire instead. A round radius would
-    // swallow a halfThickness-wide cone of sideways space and force every
-    // wall starting near another wall's end to be a corner.
-    let closestEp: EndpointPixel | null = null
-    let closestEpScore = Infinity
+    // 2. Endpoint (corner-block-centre) candidates — anisotropic zone:
+    // generous along the wall axis (so the whole end-block area is a
+    // corner candidate) but tight across (so a cursor parked beside the
+    // end-face still ranks against face snaps below). Final win/lose is
+    // resolved by total distance-to-target, not by being checked first.
     for (const ep of endpointsPx) {
       if (ep.wallId === excludeWallId && ep.end === excludeEnd) continue
       const vx = cursor.x - ep.x
       const vy = cursor.y - ep.y
-      // Decompose cursor offset into along/across the wall axis.
       const alongAbs = Math.abs(vx * ep.dirX + vy * ep.dirY)
       const perpAbs = Math.abs(vx * -ep.dirY + vy * ep.dirX)
       if (alongAbs > ep.snapRadiusPx) continue
       if (perpAbs > SNAP_THRESHOLD_PX) continue
-      // Pick the closest by combined offset so the tightest endpoint wins
-      // when multiple are eligible (e.g. corner junctions where two snap
-      // targets coincide).
-      const score = alongAbs + perpAbs
-      if (score < closestEpScore) {
-        closestEp = ep
-        closestEpScore = score
-      }
-    }
-    if (closestEp) {
-      return {
+      candidates.push({
         kind: 'endpoint',
-        x: closestEp.x,
-        y: closestEp.y,
-        wallId: closestEp.wallId,
-        end: closestEp.end,
-      }
+        x: ep.x,
+        y: ep.y,
+        wallId: ep.wallId,
+        end: ep.end,
+        distance: Math.sqrt(vx * vx + vy * vy),
+      })
     }
 
-    // 2. Wall-FACE snap (T-junction candidate). With thick walls, the right snap target is
-    // the nearest face — not the centreline. The user clicks somewhere near or inside the
-    // wall body; we snap to the closest face point so the new wall's endpoint lands at the
-    // through-wall's edge.
-    //
-    // No along-wall dead-zone here: a T-junction at the very END of an
-    // existing wall is a legitimate construction (new wall coming off the
-    // side of the host wall's end-face), so face snap is allowed to fire
-    // anywhere along the host's length. The endpoint snap above already
-    // dominates when the cursor is on-axis with the wall end, so this only
-    // kicks in when the cursor is genuinely off to the side.
-    let closestBody: { x: number; y: number; wallId: string; distPx: number } | null = null
+    // 3. Face candidates — every existing wall whose face the cursor sits
+    // within WALL_FACE_SNAP_MM of, on EITHER side. We log both sides as
+    // separate candidates so the cursor's perpendicular position picks
+    // which face wins, rather than always returning whichever side the
+    // cursor is on (the previous behaviour). At the end of a wall this
+    // gives the user access to both faces of a neighbouring wall plus
+    // any other walls in the area as independently rankable snaps.
     for (const wall of walls) {
       if (wall.id === excludeWallId) continue
-      if (isCurvedWall(wall)) continue // curves only connect at endpoints
+      if (isCurvedWall(wall)) continue
       const proj = projectOntoWall(cursor, wall)
       if (!proj) continue
       const wallLenMm = wallLengthMmOf(wall)
       if (wallLenMm === 0) continue
-
-      // Half-thickness in pixels. Convert via mmToPx so it scales with the current zoom.
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
       const halfThicknessPx = mmToPx(thicknessMm / 2)
-
-      // Cursor's perpendicular offset from the centreline projection.
       const perpX = cursor.x - proj.px.x
       const perpY = cursor.y - proj.px.y
       const perpDist = Math.sqrt(perpX * perpX + perpY * perpY)
-
-      // Distance from cursor to the nearest face line. Inside the wall: halfThickness−perp.
-      // Outside the wall: perp−halfThickness. Either way: |perp − halfThickness|.
-      // Threshold lives in mm (WALL_FACE_SNAP_MM) and gets converted to the current zoom
-      // here, so the snap range stays a fixed real-world distance no matter how far the
-      // user has zoomed in or out — see WALL_FACE_SNAP_MM jsdoc for rationale.
       const distToFace = Math.abs(perpDist - halfThicknessPx)
       if (distToFace > mmToPx(WALL_FACE_SNAP_MM)) continue
-
-      // Snap target is the face point: centreline projection + perpendicular_dir × halfThickness.
-      // If perp is near zero (cursor sits ON the centreline), default to one side arbitrarily.
+      // Cursor's own side of the centreline (unit perpendicular). Falls
+      // back to +Y axis when the cursor is exactly on the centreline so
+      // we still produce a face point.
       let dirX = 0
       let dirY = 1
       if (perpDist > 0.01) {
@@ -1176,21 +1152,38 @@ function WallDrawingLayerInner({
       }
       const faceX = proj.px.x + dirX * halfThicknessPx
       const faceY = proj.px.y + dirY * halfThicknessPx
-
-      if (!closestBody || distToFace < closestBody.distPx) {
-        closestBody = { x: faceX, y: faceY, wallId: wall.id, distPx: distToFace }
-      }
-    }
-    if (closestBody) {
-      return {
+      const dx = cursor.x - faceX
+      const dy = cursor.y - faceY
+      candidates.push({
         kind: 'body',
-        x: closestBody.x,
-        y: closestBody.y,
-        wallId: closestBody.wallId,
-      }
+        x: faceX,
+        y: faceY,
+        wallId: wall.id,
+        distance: Math.sqrt(dx * dx + dy * dy),
+      })
     }
 
-    return null
+    if (candidates.length === 0) return null
+    // Lowest-distance candidate wins. Stable across redraws because the
+    // distance is the unambiguous tiebreaker — same cursor position →
+    // same winner.
+    candidates.sort((a, b) => a.distance - b.distance)
+    const best = candidates[0]
+    if (best.kind === 'endpoint' && best.end) {
+      return {
+        kind: 'endpoint',
+        x: best.x,
+        y: best.y,
+        wallId: best.wallId,
+        end: best.end,
+      }
+    }
+    return {
+      kind: 'body',
+      x: best.x,
+      y: best.y,
+      wallId: best.wallId,
+    }
   }
 
   // ---------- Cleanup on mode toggle ----------

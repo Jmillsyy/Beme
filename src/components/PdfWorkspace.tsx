@@ -139,7 +139,8 @@ import {
   getEstimateRequestByProjectId,
   updateEstimateRequest,
 } from '../lib/estimateRequests'
-import { getCurrentOrgId } from '../lib/organisations'
+import { getCurrentOrgId, listOrgMembers } from '../lib/organisations'
+import { useAuth } from '../lib/auth'
 import type { EstimateRequest } from '../types/estimateRequests'
 import { Link } from 'react-router-dom'
 
@@ -287,6 +288,12 @@ const EMPTY_WORKSPACE_PAGE_HEIGHT_MM = 594
 const EMPTY_WORKSPACE_DEFAULT_RATIO = 100
 
 export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}) {
+  const { user: currentUser } = useAuth()
+  // Resolve the author's user id to a friendly display name. For org-scoped
+  // projects we ask the org-members RPC (which returns full names + emails
+  // for everyone in the org). For personal projects, if the author is the
+  // signed-in user we use their own display name; otherwise we surface
+  // "you" / nothing and let the ProjectBar handle the empty case.
   const [pdfFile, setPdfFile] = useState<File | null>(null)
   const [numPages, setNumPages] = useState<number>(0)
   const [currentPage, setCurrentPage] = useState<number>(1)
@@ -571,6 +578,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   /** Outcome ('won' | 'lost' | undefined). Set from the dashboard, round-tripped here so saves preserve it. */
   const [projectOutcome, setProjectOutcome] = useState<'won' | 'lost' | undefined>(undefined)
   const [projectCreatedAt, setProjectCreatedAt] = useState<string | null>(null)
+  /**
+   * Who started this project — the original estimator's user id. Stamped
+   * once when the project is first saved, preserved through every later
+   * save so the field stays as the original author even when another team
+   * member edits the project. Surfaced as the "Started by {name}" pill in
+   * the ProjectBar.
+   */
+  const [createdByUserId, setCreatedByUserId] = useState<string | null>(null)
+  /**
+   * Display name for the project author — resolved from org membership once
+   * the createdByUserId is known. Falls back to the email portion when no
+   * full name is in the directory. Null = unknown / not yet resolved.
+   */
+  const [createdByDisplayName, setCreatedByDisplayName] = useState<string | null>(null)
   const [projectCompletedAt, setProjectCompletedAt] = useState<string | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false)
@@ -718,6 +739,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setProjectStatus(proj.status)
         setProjectOutcome(proj.outcome)
         setProjectCreatedAt(proj.createdAt)
+        setCreatedByUserId(proj.createdByUserId ?? null)
         setProjectCompletedAt(proj.completedAt ?? null)
         setLastSavedAt(proj.updatedAt)
         // Loading a project resets the dirty baseline — fresh open means
@@ -735,6 +757,48 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
+
+  // Resolve the author's user id to a friendly display name whenever the
+  // id (or org context) changes. Three paths:
+  //   1. Author is the signed-in user → use their own display name from
+  //      auth metadata. No network call.
+  //   2. Author is someone else in the project's org → look them up via
+  //      the org-members RPC, which returns full_name + email for every
+  //      member visible to the current user.
+  //   3. No author / no match → null.
+  useEffect(() => {
+    let cancelled = false
+    if (!createdByUserId) {
+      setCreatedByDisplayName(null)
+      return
+    }
+    if (currentUser && createdByUserId === currentUser.id) {
+      const meta = currentUser.user_metadata as
+        | { full_name?: string; name?: string }
+        | undefined
+      const name = meta?.full_name || meta?.name || currentUser.email || null
+      setCreatedByDisplayName(name)
+      return
+    }
+    const orgId = projectOrganisationId ?? getCurrentOrgId()
+    if (!orgId) {
+      setCreatedByDisplayName(null)
+      return
+    }
+    listOrgMembers(orgId)
+      .then((members) => {
+        if (cancelled) return
+        const m = members.find((x) => x.userId === createdByUserId)
+        setCreatedByDisplayName(m?.displayName || m?.email || null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setCreatedByDisplayName(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [createdByUserId, currentUser, projectOrganisationId])
 
   // Tracks whether the in-memory project differs from the last-saved (or
   // last-loaded) state. Set true by the useEffect below whenever any key
@@ -857,6 +921,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // means truly personal, which is the right outcome for users not in any
     // org or who explicitly want a private project.
     const organisationId = projectOrganisationId ?? getCurrentOrgId() ?? undefined
+    // Author stamp — set once on first save, preserved through every later
+    // save by reading the in-state value first. Even when another org
+    // member edits this project, the original author stays.
+    const authorUserId = createdByUserId ?? currentUser?.id
     const project: SavedProject = {
       id,
       type: mode,
@@ -866,6 +934,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       updatedAt: now,
       completedAt: projectCompletedAt ?? undefined,
       outcome: projectOutcome,
+      createdByUserId: authorUserId,
       projectDetails,
       // pdfBlob + pdfFileName are optional now — a project can be saved without a PDF
       ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
@@ -906,6 +975,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       setCurrentProjectId(id)
       setProjectOrganisationId(organisationId ?? null)
       setProjectCreatedAt(project.createdAt)
+      if (authorUserId && !createdByUserId) setCreatedByUserId(authorUserId)
       setLastSavedAt(now)
       // Refresh the dirty-state baseline so the Save changes button greys
       // out until the user actually edits something next.
@@ -989,6 +1059,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       // Same org-id rule as handleSaveProject — preserve any existing link
       // or stamp the current org for brand-new projects flipping status.
       const organisationId = projectOrganisationId ?? getCurrentOrgId() ?? undefined
+      const authorUserId = createdByUserId ?? currentUser?.id
       const project: SavedProject = {
         id: currentProjectId,
         type: mode,
@@ -998,6 +1069,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         updatedAt: now,
         completedAt: nextStatus === 'completed' ? now : projectCompletedAt ?? undefined,
         outcome: projectOutcome,
+        createdByUserId: authorUserId,
         projectDetails,
         ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
         ...(isEmptyWorkspace ? { emptyWorkspace: true } : {}),
@@ -1119,6 +1191,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       setProjectStatus('in-progress')
       setProjectOutcome(undefined)
       setProjectCreatedAt(null)
+      setCreatedByUserId(null)
+      setCreatedByDisplayName(null)
       setProjectCompletedAt(null)
       setLastSavedAt(null)
       if (typeof window !== 'undefined') {
@@ -2938,11 +3012,24 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }
 
   function svgCoordsFromEvent(e: React.MouseEvent<SVGSVGElement>): Point {
-    // The SVG lives inside the CSS-scale-transformed wrapper. Its visual size on screen
-    // is rendered × visualScale, but its internal coordinate system goes 0..renderedPageWidth.
-    // To draw lines/circles at the click position, we need the internal coord — so divide
-    // the cursor-relative-to-element offset by visualScale to undo the parent's CSS scale.
-    const rect = svgRef.current!.getBoundingClientRect()
+    // Use the SVG's native client → user coord transform. createSVGPoint +
+    // getScreenCTM().inverse() handles every CSS transform up the ancestor
+    // chain natively, including the visualScale on the parent wrapper. The
+    // previous (clientX − rect.left) / visualScale form depended on the
+    // ancestor chain only having one scale transform, which broke in subtle
+    // ways when ratios fell out of sync. Falls back to the bounding-rect
+    // calculation if the browser can't resolve a CTM (very rare).
+    const svg = svgRef.current
+    if (!svg) return { x: 0, y: 0 }
+    const ctm = svg.getScreenCTM()
+    if (ctm) {
+      const pt = svg.createSVGPoint()
+      pt.x = e.clientX
+      pt.y = e.clientY
+      const local = pt.matrixTransform(ctm.inverse())
+      return { x: local.x, y: local.y }
+    }
+    const rect = svg.getBoundingClientRect()
     return {
       x: (e.clientX - rect.left) / visualScale,
       y: (e.clientY - rect.top) / visualScale,
@@ -3298,6 +3385,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             saveBlockedReason={saveBlockedReason}
             mode={mode}
             sourceRequest={sourceRequest ?? null}
+            createdByDisplayName={createdByDisplayName}
             onSave={handleSaveProject}
             onToggleStatus={handleToggleProjectStatus}
             onDelete={handleDeleteProject}
@@ -3488,6 +3576,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           saveBlockedReason={saveBlockedReason}
           mode={mode}
           sourceRequest={sourceRequest ?? null}
+          createdByDisplayName={createdByDisplayName}
           onSave={handleSaveProject}
           onToggleStatus={handleToggleProjectStatus}
           onDelete={handleDeleteProject}
@@ -5004,89 +5093,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 </Document>
               )}
 
-              {/* Calibration overlay — at renderedZoom resolution; scales with parent.
-                  Visuals deliberately mirror the wall-draw preview in WallDrawingLayer:
-                  same dash pattern (6 4), same stroke width (3), same #ED7D31 orange,
-                  same endpoint circles, same midpoint length badge. The label shows
-                  the pixel distance until the second click lands; if there's an
-                  existing scale on this page (the recalibrate case), we ALSO show the
-                  current-scale mm equivalent so the user has context for what they're
-                  about to replace. */}
-              <svg
-                ref={svgRef}
-                className="absolute inset-0 w-full h-full"
-                style={{
-                  pointerEvents: calibrating ? 'auto' : 'none',
-                  cursor: calibrating ? 'crosshair' : 'default',
-                }}
-                onClick={handleSvgClick}
-                onMouseMove={handleSvgMouseMove}
-              >
-                {(() => {
-                  const showPreview =
-                    calibrating && calPoint1 && !calPoint2 && mousePos
-                  const showCommitted = !!(calPoint1 && calPoint2)
-                  const a = calPoint1
-                  const b = showPreview ? mousePos : showCommitted ? calPoint2 : null
-                  if (!a || !b) return null
-                  // Distance in current renderedZoom px (the SVG coord space).
-                  const dx = b.x - a.x
-                  const dy = b.y - a.y
-                  const pxDist = Math.sqrt(dx * dx + dy * dy)
-                  // Convert to real mm if the page already has a scale. This is the
-                  // recalibrate case — the user can see what the OLD scale called
-                  // this length while drafting the new one. Skips when no scale
-                  // exists yet (first calibration on a fresh page).
-                  let mmEstimate: number | null = null
-                  const pageWidthMm = pageData?.pageWidthMm
-                  const pageScaleRatio = pageData?.pageScaleRatio
-                  if (
-                    pageWidthMm &&
-                    pageScaleRatio &&
-                    baseWidth > 0 &&
-                    renderedZoom > 0
-                  ) {
-                    const pageMm = (pxDist * pageWidthMm) / (baseWidth * renderedZoom)
-                    mmEstimate = pageMm * pageScaleRatio
-                  }
-                  const midX = (a.x + b.x) / 2
-                  const midY = (a.y + b.y) / 2
-                  const label =
-                    mmEstimate !== null
-                      ? `${Math.round(mmEstimate)} mm`
-                      : `${Math.round(pxDist)} px`
-                  return (
-                    <>
-                      <line
-                        x1={a.x}
-                        y1={a.y}
-                        x2={b.x}
-                        y2={b.y}
-                        stroke="#ED7D31"
-                        strokeWidth="3"
-                        strokeDasharray="6 4"
-                      />
-                      <text
-                        x={midX + 8}
-                        y={midY - 12}
-                        fontSize="14"
-                        fontWeight="bold"
-                        fill="#C5530A"
-                        style={{ pointerEvents: 'none' }}
-                      >
-                        {label}
-                      </text>
-                    </>
-                  )
-                })()}
-                {calPoint1 && (
-                  <circle cx={calPoint1.x} cy={calPoint1.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
-                )}
-                {calPoint2 && (
-                  <circle cx={calPoint2.x} cy={calPoint2.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
-                )}
-              </svg>
-
               {/* Wall drawing layer — at renderedZoom resolution; scales with
                   parent. Hidden when the user is viewing a reference PDF
                   (engineering specs etc.) — walls only live on the primary,
@@ -5167,6 +5173,92 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   onCancelDraw={handleCancelDraw}
                 />
               )}
+
+              {/* Calibration overlay — rendered AFTER WallDrawingLayer so it
+                  sits on top of the Konva canvas. The Konva Stage has
+                  `pointerEvents: 'auto'` and would otherwise intercept the
+                  mouse events the SVG needs for click-to-set-point and the
+                  live preview line. This SVG sets `pointerEvents: 'auto'`
+                  only while calibrating, so it doesn't steal clicks from
+                  walls during normal use.
+
+                  Visuals deliberately mirror the wall-draw preview in
+                  WallDrawingLayer: same dash pattern (6 4), same stroke
+                  width (3), same #ED7D31 orange, same endpoint circles,
+                  same midpoint length badge. The label shows the pixel
+                  distance until the second click lands; if there's an
+                  existing scale on this page (the recalibrate case), we
+                  ALSO show the current-scale mm equivalent so the user has
+                  context for what they're about to replace. */}
+              <svg
+                ref={svgRef}
+                className="absolute inset-0 w-full h-full"
+                style={{
+                  pointerEvents: calibrating ? 'auto' : 'none',
+                  cursor: calibrating ? 'crosshair' : 'default',
+                }}
+                onClick={handleSvgClick}
+                onMouseMove={handleSvgMouseMove}
+              >
+                {(() => {
+                  const showPreview =
+                    calibrating && calPoint1 && !calPoint2 && mousePos
+                  const showCommitted = !!(calPoint1 && calPoint2)
+                  const a = calPoint1
+                  const b = showPreview ? mousePos : showCommitted ? calPoint2 : null
+                  if (!a || !b) return null
+                  const dx = b.x - a.x
+                  const dy = b.y - a.y
+                  const pxDist = Math.sqrt(dx * dx + dy * dy)
+                  let mmEstimate: number | null = null
+                  const pageWidthMm = pageData?.pageWidthMm
+                  const pageScaleRatio = pageData?.pageScaleRatio
+                  if (
+                    pageWidthMm &&
+                    pageScaleRatio &&
+                    baseWidth > 0 &&
+                    renderedZoom > 0
+                  ) {
+                    const pageMm = (pxDist * pageWidthMm) / (baseWidth * renderedZoom)
+                    mmEstimate = pageMm * pageScaleRatio
+                  }
+                  const midX = (a.x + b.x) / 2
+                  const midY = (a.y + b.y) / 2
+                  const label =
+                    mmEstimate !== null
+                      ? `${Math.round(mmEstimate)} mm`
+                      : `${Math.round(pxDist)} px`
+                  return (
+                    <>
+                      <line
+                        x1={a.x}
+                        y1={a.y}
+                        x2={b.x}
+                        y2={b.y}
+                        stroke="#ED7D31"
+                        strokeWidth="3"
+                        strokeDasharray="6 4"
+                      />
+                      <text
+                        x={midX + 8}
+                        y={midY - 12}
+                        fontSize="14"
+                        fontWeight="bold"
+                        fill="#C5530A"
+                        style={{ pointerEvents: 'none' }}
+                      >
+                        {label}
+                      </text>
+                    </>
+                  )
+                })()}
+                {calPoint1 && (
+                  <circle cx={calPoint1.x} cy={calPoint1.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
+                )}
+                {calPoint2 && (
+                  <circle cx={calPoint2.x} cy={calPoint2.y} r="5" fill="#ED7D31" stroke="white" strokeWidth="2" />
+                )}
+              </svg>
             </div>
           </div>
         </div>
