@@ -228,7 +228,11 @@ export function resolveCourseBlocks(
   return {
     bodyBlockCode: range?.bodyBlockCode ?? makeup.bodyBlockCode,
     cornerBlockCode: range?.cornerBlockCode ?? makeup.cornerBlockCode,
-    halfBlockCode: range?.halfBlockCode ?? defaults.halfBlockCode,
+    // Half-block resolution chain: range override → makeup override (new
+    // top-level halfBlockCode field) → constant default. Older makeups
+    // without halfBlockCode set fall straight through to the default so
+    // pre-existing saves render unchanged.
+    halfBlockCode: range?.halfBlockCode ?? makeup.halfBlockCode ?? defaults.halfBlockCode,
     baseCourseBlockCode: range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode,
     baseCourseTileCode: range?.baseCourseTileCode ?? makeup.baseCourseTileCode,
     heightMakeup71BlockCode:

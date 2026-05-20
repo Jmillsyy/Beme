@@ -560,13 +560,19 @@ export function planEnd(
   bondType: BondType,
   junctionType: JunctionType,
   cornerBlockCode: BlockCode,
-  bodyBlockCode: BlockCode = '20.48'
+  bodyBlockCode: BlockCode = '20.48',
+  /**
+   * Optional per-makeup half-block override. When provided, replaces the
+   * library role-based pick — that's what lets a user configure "this
+   * wall type uses 30.03 halves at free ends" without touching the
+   * library. Falls back to pickHalfBlock() then to '20.03' so older
+   * saved makeups (no halfBlockCode yet) keep working unchanged.
+   */
+  halfBlockCode?: BlockCode
 ): EndPlan {
   // bodyBlockCode kept in the signature for compatibility with curved-wall logic;
   // T-junction ends no longer use it (they take a normal end termination).
   void bodyBlockCode
-  // The "full" end block is the makeup's cornerBlockCode (defaults to 20.01; 20.21 when
-  // knockout corners is enabled). That code is used everywhere a full end block sits.
   const fullEndBlock = cornerBlockCode
 
   if (bondType === 'stretcher') {
@@ -580,11 +586,12 @@ export function planEnd(
     }
     // Free, T-junction, control-joint: alternating in stretcher — the stem has its own
     // complete end termination at the T, treated identically to a free end.
-    // Half block is picked by role so US / UK libraries with their own half-block work.
-    const halfBlock = pickHalfBlock()
+    // Half block: per-makeup override → library role pick → '20.03' fallback.
+    const halfFromLib = pickHalfBlock()
+    const resolvedHalf = halfBlockCode ?? halfFromLib?.code ?? '20.03'
     return {
       oddBlock: fullEndBlock,
-      evenBlock: halfBlock?.code ?? '20.03',
+      evenBlock: resolvedHalf,
       oddModular: FULL_END_MODULE_MM,
       evenModular: HALF_END_MODULE_MM,
     }
@@ -678,13 +685,15 @@ export function planWall(
     makeup.bondType,
     wall.startJunction.type,
     makeup.cornerBlockCode,
-    makeup.bodyBlockCode
+    makeup.bodyBlockCode,
+    makeup.halfBlockCode
   )
   const endEnd = planEnd(
     makeup.bondType,
     wall.endJunction.type,
     makeup.cornerBlockCode,
-    makeup.bodyBlockCode
+    makeup.bodyBlockCode,
+    makeup.halfBlockCode
   )
 
   const oddCourseFit = fitCourseLength(

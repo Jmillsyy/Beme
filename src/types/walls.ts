@@ -144,10 +144,21 @@ export interface WallMakeup {
 
   // ---- Corner / termination preferences ----
   /**
-   * Preferred corner block. Defaults to 20.01 (Standard).
-   * Use 20.21 (Knockout Corner) where better corefill is needed.
+   * Full-length end-termination / corner block. Defaults to 20.01 in the
+   * seed library but any block from the user's library can stand in here —
+   * 20.21 (Knockout Corner) for better corefill, a 290 mm short end for
+   * specific suppliers, etc. Used at every corner and on odd courses of
+   * stretcher bond at free / T-junction / control-joint ends.
    */
   cornerBlockCode: BlockCode
+  /**
+   * Half-length end-termination block. Defaults to 20.03 in the seed
+   * library; user-replaceable per makeup. Used on even courses of
+   * stretcher bond at free / T-junction / control-joint ends to maintain
+   * the half-block offset. When unset (older saved projects) the calc
+   * engine falls back to picking the library's role-tagged half block.
+   */
+  halfBlockCode?: BlockCode
 
   // ---- Length-makeup behaviour ----
   /**

@@ -264,7 +264,6 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const [name, setName] = useState(existing?.name ?? 'New wall type')
   const [bondType, setBondType] = useState<BondType>(existing?.bondType ?? 'stretcher')
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
-  const [knockoutCorners, setKnockoutCorners] = useState(existing?.cornerBlockCode === '20.21')
   const [useFractions, setUseFractions] = useState(existing?.useFractions ?? true)
 
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
@@ -278,6 +277,18 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   )
   const [topCourseBlockCode, setTopCourseBlockCode] = useState<BlockCode>(
     existing?.topCourseBlockCode ?? '20.48'
+  )
+  // Full + half end-termination blocks. Seeded with 20.01 / 20.03 so the
+  // standard SEQ behaviour is the out-of-the-box default, but the user can
+  // swap in any block from their library (knockout corners, third-party
+  // blocks, etc.). Replaces the old binary "Knockout corners (20.21)"
+  // checkbox — that was just one specific override hiding the full
+  // freedom this gives.
+  const [cornerBlockCode, setCornerBlockCode] = useState<BlockCode>(
+    existing?.cornerBlockCode ?? '20.01'
+  )
+  const [halfBlockCode, setHalfBlockCode] = useState<BlockCode>(
+    existing?.halfBlockCode ?? '20.03'
   )
 
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(
@@ -406,7 +417,8 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       baseCourseTileCode: baseCourseTileCode || undefined,
       bodyBlockCode: resolvedBodyBlockCode,
       topCourseBlockCode,
-      cornerBlockCode: knockoutCorners ? '20.21' : '20.01',
+      cornerBlockCode,
+      halfBlockCode,
       useFractions,
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
@@ -490,14 +502,6 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                 onChange={(e) => setUseFractions(e.target.checked)}
               />
               <span>Use fractions (20.02 / 20.22)</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={knockoutCorners}
-                onChange={(e) => setKnockoutCorners(e.target.checked)}
-              />
-              <span>Knockout corners (20.21)</span>
             </label>
           </div>
         </div>
@@ -711,6 +715,48 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                 </option>
               ))}
             </select>
+          </label>
+
+          {/* End terminations — full and half. Defaulted to 20.01 / 20.03
+              for SEQ usage but every block in the library is selectable
+              here so an org can wire their preferred terminations in once
+              per wall type. Used at corners (full) and at free /
+              T-junction / control-joint ends (alternating full + half on
+              stretcher bond). */}
+          <label className="text-sm">
+            <span className="block text-ink-300 mb-1">Full end termination</span>
+            <select
+              value={cornerBlockCode}
+              onChange={(e) => setCornerBlockCode(e.target.value as BlockCode)}
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
+            >
+              {selectableBlocks.map((code) => (
+                <option key={code} value={code}>
+                  {blockLabel(code)}
+                </option>
+              ))}
+            </select>
+            <span className="text-[11px] text-ink-400 mt-1 block">
+              Used at corners + on odd courses of stretcher bond at free ends. Default 20.01.
+            </span>
+          </label>
+
+          <label className="text-sm">
+            <span className="block text-ink-300 mb-1">Half end termination</span>
+            <select
+              value={halfBlockCode}
+              onChange={(e) => setHalfBlockCode(e.target.value as BlockCode)}
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
+            >
+              {selectableBlocks.map((code) => (
+                <option key={code} value={code}>
+                  {blockLabel(code)}
+                </option>
+              ))}
+            </select>
+            <span className="text-[11px] text-ink-400 mt-1 block">
+              Alternates with the full end block on even courses of stretcher bond at free ends. Default 20.03.
+            </span>
           </label>
         </div>
       </div>

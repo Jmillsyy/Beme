@@ -659,13 +659,14 @@ function buildWallSpecsPage(
   // straddle a page edge.
   const cards = used
     .map(({ makeup, walls: wallsOfMakeup, totalLenMm }) => {
-      const cornerLabel =
-        makeup.cornerBlockCode === '20.21'
-          ? `${makeup.cornerBlockCode} (knockout)`
-          : makeup.cornerBlockCode
       const baseLabel = makeup.baseCourseTileCode
         ? `${makeup.baseCourseBlockCode} + ${makeup.baseCourseTileCode}`
         : makeup.baseCourseBlockCode
+      // End-termination blocks: full goes at corners + odd courses of
+      // stretcher bond at free ends, half alternates with full on even
+      // courses. Older makeups (no halfBlockCode set) fall back to 20.03.
+      const fullEndLabel = makeup.cornerBlockCode
+      const halfEndLabel = makeup.halfBlockCode ?? '20.03'
 
       // Key/value rows for the always-on fields. Pier type is only shown
       // when the makeup actually opted into piers.
@@ -675,7 +676,8 @@ function buildWallSpecsPage(
         ['Base course', baseLabel],
         ['Body block', makeup.bodyBlockCode],
         ['Top course', makeup.topCourseBlockCode],
-        ['Corner', cornerLabel],
+        ['Full end', fullEndLabel],
+        ['Half end', halfEndLabel],
         ['Fractions', makeup.useFractions ? 'On (20.02 / 20.22)' : 'Off'],
       ]
       if (makeup.pierType) {
