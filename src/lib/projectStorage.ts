@@ -510,8 +510,29 @@ async function cloudDeleteProject(id: string, userId: string): Promise<void> {
     }
   }
 
-  const { error: delErr } = await client.from('projects').delete().eq('id', id).eq('user_id', userId)
+  // Delete the row, gated by RLS. Earlier this also had `.eq('user_id', userId)`,
+  // which silently no-op'd for org-shared projects whose original creator
+  // wasn't the current user — anyone but the project's creator clicked
+  // Delete and nothing happened. RLS ('Owner or org admin delete project')
+  // is the right gate: it lets the owner OR any org admin delete, and
+  // rejects everyone else with a clear error.
+  //
+  // We also ask Supabase to return the deleted row(s) and check the count,
+  // because PostgREST returns success with zero rows when RLS quietly
+  // filters the row out — a silent no-op feels broken to the user. Throwing
+  // surfaces the failure so the UI can show a sensible message.
+  void userId
+  const { data: deleted, error: delErr } = await client
+    .from('projects')
+    .delete()
+    .eq('id', id)
+    .select('id')
   if (delErr) throw new Error(`Project delete failed: ${delErr.message}`)
+  if (!deleted || deleted.length === 0) {
+    throw new Error(
+      'Project not deleted — you may not have permission. Org admins can delete shared projects; otherwise only the owner can.'
+    )
+  }
 }
 
 // ---------- Local (IndexedDB) ----------
