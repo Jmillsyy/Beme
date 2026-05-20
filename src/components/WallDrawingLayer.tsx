@@ -1238,14 +1238,17 @@ function WallDrawingLayerInner({
             if (cursorDist > 0.001) {
               const ux = dx / cursorDist
               const uy = dy / cursorDist
-              // Typed length is the wall's centreline length — the stored
-              // distance between data endpoints. Simple and predictable;
-              // matches the cursor-distance behaviour.
+              // Typed value = intended DISPLAYED length. When the start
+              // is at another wall's corner-block-centre, the corner
+              // adds halfThickness to the displayed length, so the
+              // stored centreline is shorter by that amount.
+              const startAdjust = cornerLengthAdjustAt(startMm)
+              const centreLength = Math.max(0, lengthMm - startAdjust)
               onWallAdded(
                 startMm,
                 {
-                  x: startMm.x + ux * lengthMm,
-                  y: startMm.y + uy * lengthMm,
+                  x: startMm.x + ux * centreLength,
+                  y: startMm.y + uy * centreLength,
                 },
               )
               setStartMm(null)
@@ -1357,6 +1360,42 @@ function WallDrawingLayerInner({
     if (stage) stage.container().style.cursor = cursor
   }
 
+  /**
+   * If `pointMm` coincides with another wall's free-end corner-block-centre
+   * (the inset snap target where corners form), return halfThickness of
+   * that wall — the same value the post-placement length label adds for
+   * the corner block extension. Zero otherwise. Used by the live wall-draw
+   * preview to show the same length the wall will read after the click
+   * commits it.
+   */
+  function cornerLengthAdjustAt(pointMm: Point): number {
+    for (const w of walls) {
+      if (isCurvedWall(w)) continue
+      const halfT = (wallThicknessByWallId[w.id] ?? 190) / 2
+      for (const which of ['start' as const, 'end' as const]) {
+        const junction = which === 'start' ? w.startJunction : w.endJunction
+        if (junction.type !== 'free') continue
+        const dataX = which === 'start' ? w.startX : w.endX
+        const dataY = which === 'start' ? w.startY : w.endY
+        const farX = which === 'start' ? w.endX : w.startX
+        const farY = which === 'start' ? w.endY : w.startY
+        const ddx = dataX - farX
+        const ddy = dataY - farY
+        const len = Math.sqrt(ddx * ddx + ddy * ddy)
+        if (len < 0.001) continue
+        const insetX = dataX - (ddx / len) * halfT
+        const insetY = dataY - (ddy / len) * halfT
+        if (
+          Math.abs(pointMm.x - insetX) < 1 &&
+          Math.abs(pointMm.y - insetY) < 1
+        ) {
+          return halfT
+        }
+      }
+    }
+    return 0
+  }
+
 
   function resolveSnap(pos: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): Point {
     const snap = findSnap(pos, excludeWallId, excludeEnd)
@@ -1462,9 +1501,9 @@ function WallDrawingLayerInner({
       )
       if (distance(startPxAnchor, point) < 5) return
       let posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
-      // If the user typed a length while aiming, override the cursor distance
-      // with the typed value while keeping the cursor's direction. Typed
-      // value is the wall's centreline length — simple and predictable.
+      // Typed value = intended DISPLAYED length. Subtract start corner
+      // extension to get the stored centreline so the post-placement
+      // label reads exactly what the user typed.
       const typedNum = parseFloat(typedLengthMm)
       if (typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0) {
         const dx = posMm.x - startMm.x
@@ -1473,9 +1512,11 @@ function WallDrawingLayerInner({
         if (cursorDist > 0.001) {
           const ux = dx / cursorDist
           const uy = dy / cursorDist
+          const startAdjust = cornerLengthAdjustAt(startMm)
+          const centreLength = Math.max(0, typedNum - startAdjust)
           posMm = {
-            x: startMm.x + ux * typedNum,
-            y: startMm.y + uy * typedNum,
+            x: startMm.x + ux * centreLength,
+            y: startMm.y + uy * centreLength,
           }
         }
       }
@@ -2617,19 +2658,31 @@ function WallDrawingLayerInner({
               const dx = cursorMmFromPx.x - startMmFromPx.x
               const dy = cursorMmFromPx.y - startMmFromPx.y
               const cursorDistMm = Math.sqrt(dx * dx + dy * dy)
-              // Preview length = cursor distance (or typed value). Plain
-              // centreline length, no corner fudge — matches what gets
-              // stored and what the wall label reads back at.
+              const startAdjust = cornerLengthAdjustAt(startMmFromPx)
+              // Typed value represents the WALL'S DISPLAYED LENGTH (the
+              // number a tape measure would read along the outer face),
+              // so the stored centreline has to be SHORTER than the typed
+              // value by any corner extension at the start. End-side
+              // adjust is left alone when typing — the end position is
+              // determined by the typed centreline, and if it happens to
+              // also land on a corner-block-centre the displayed value
+              // will be larger than typed; that's a less common case.
               let endPx = cursorPx
               if (hasTyped && cursorDistMm > 0.001) {
                 const ux = dx / cursorDistMm
                 const uy = dy / cursorDistMm
+                const centreLength = Math.max(0, typedNum - startAdjust)
                 endPx = {
-                  x: mmToPx(startMmFromPx.x + ux * typedNum),
-                  y: mmToPx(startMmFromPx.y + uy * typedNum),
+                  x: mmToPx(startMmFromPx.x + ux * centreLength),
+                  y: mmToPx(startMmFromPx.y + uy * centreLength),
                 }
               }
-              const previewLengthMm = hasTyped ? typedNum : cursorDistMm
+              // Cursor-driven (untyped) label = cursorDist + corner extensions.
+              // Typed-driven label is just the typed value (handled below).
+              const endAdjust = cornerLengthAdjustAt(cursorMmFromPx)
+              const previewLengthMm = hasTyped
+                ? typedNum
+                : cursorDistMm + startAdjust + endAdjust
               return (
                 <>
                   <Line
@@ -2638,10 +2691,12 @@ function WallDrawingLayerInner({
                     strokeWidth={3}
                     dash={[6, 4]}
                   />
-                  {/* When the user is typing, show the digits they've entered
-                      so far in a chunky badge so they know the system has
-                      registered their input. Otherwise show the standard
-                      cursor-distance read-out. */}
+                  {/* Live label shows the wall's final DISPLAYED length —
+                      centreline + corner extension at either end. When
+                      cursor-driven, that means a typed-not-yet-committed
+                      label shows the cursor + extension. When typed, the
+                      typed value IS the intended displayed length, so the
+                      label echoes it back as-is. */}
                   <Text
                     x={(startPx.x + endPx.x) / 2 + 8}
                     y={(startPx.y + endPx.y) / 2 - 18}
