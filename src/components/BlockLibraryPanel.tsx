@@ -67,7 +67,16 @@ export default function BlockLibraryPanel({
   hideChrome = false,
 }: BlockLibraryPanelProps = {}) {
   void _scope // reserved for future filtering
-  const { library } = useBlockLibrary()
+  // BLOCK_LIBRARY is a stable singleton mutated in place — the only thing
+  // that signals "library changed" is `version` from useBlockLibrary. We
+  // MUST pass it into every useMemo that derives from `library`, otherwise
+  // edits look like they revert: the singleton updates, the component
+  // re-renders, but the memoised arrays still reference the pre-edit
+  // values because `library === library` evaluates true and useMemo
+  // short-circuits. This was the cause of the "name changes save but
+  // disappear" bug — the BLOCK_LIBRARY had the new value, but the
+  // rendered list was reading from a stale memo.
+  const { library, version: libraryVersion } = useBlockLibrary()
   const { settings } = useUserSettings()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BlockCode | 'new' | null>(null)
@@ -81,7 +90,8 @@ export default function BlockLibraryPanel({
     const all = Object.values(library)
     if (filter === 'all') return all.sort((a, b) => a.code.localeCompare(b.code))
     return all.filter((b) => b.roles.includes(filter)).sort((a, b) => a.code.localeCompare(b.code))
-  }, [library, filter])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [library, libraryVersion, filter])
 
   // Lintel blocks sorted shortest first — matches the selection order
   // `pickLintelBlockIn` uses at calc time: it walks the list ascending and
@@ -92,7 +102,8 @@ export default function BlockLibraryPanel({
       Object.values(library)
         .filter((b) => b.roles.includes('lintel'))
         .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm),
-    [library]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [library, libraryVersion]
   )
   const useLintels = settings.preferences.regionalFeatures.lintels
 

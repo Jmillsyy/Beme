@@ -30,13 +30,17 @@ function BrickLibraryPanelImpl({
   defaultExpanded = false,
   hideChrome = false,
 }: BrickLibraryPanelProps = {}) {
-  const { library } = useBrickLibrary()
+  // BRICK_LIBRARY is a stable singleton mutated in place — `version` is the
+  // change signal. Pass it into the bricks useMemo so the rendered list
+  // updates after edits (same bug we just fixed on the block side).
+  const { library, version: libraryVersion } = useBrickLibrary()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BrickCode | 'new' | null>(null)
 
   const bricks = useMemo(
     () => Object.values(library).sort((a, b) => a.heightMm - b.heightMm),
-    [library]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [library, libraryVersion]
   )
 
   return (
