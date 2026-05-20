@@ -195,6 +195,30 @@ export default function ProjectBar({
           {isSaved ? 'Save changes' : 'Save'}
         </button>
 
+        {/* Top-level shortcut to flip the project status. Only shown once the
+            project's actually been saved — there's nothing to mark complete
+            before then. Green when moving in-progress → completed (the
+            positive primary action). Muted when reverting completed → in
+            progress so it doesn't visually shout for the less-common path.
+            The same action also lives in the overflow menu for discovery. */}
+        {isSaved && (
+          <button
+            onClick={onToggleStatus}
+            title={
+              status === 'completed'
+                ? 'Reopen this project — moves it back to in progress.'
+                : 'Mark this project complete — it moves to Recently Completed on the dashboard.'
+            }
+            className={
+              status === 'completed'
+                ? 'px-3.5 py-2 rounded-md border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 hover:text-ink-50 transition-colors'
+                : 'px-3.5 py-2 rounded-md bg-emerald-500 text-black text-sm hover:bg-emerald-400 transition-colors font-semibold'
+            }
+          >
+            {status === 'completed' ? 'Mark as in progress' : 'Mark as completed'}
+          </button>
+        )}
+
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}

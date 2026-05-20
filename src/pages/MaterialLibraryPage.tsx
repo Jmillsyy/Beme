@@ -28,6 +28,16 @@ export default function MaterialLibraryPage() {
   const { user } = useAuth()
   const { currentOrg } = useOrganisations()
   const [members, setMembers] = useState<OrgMember[]>([])
+  /**
+   * Whether we've actually finished trying to load org members. Distinguishes
+   * the genuine "no admin role here" case from the "still loading / load
+   * failed" case — without it, the page rendered read-only during the async
+   * fetch, and any RPC failure would keep an admin locked out forever.
+   * Default null means "not started or in-flight"; only flips to true once
+   * the fetch resolves (success OR error). For solo accounts we mark it
+   * loaded immediately since there's nothing to fetch.
+   */
+  const [membersLoaded, setMembersLoaded] = useState<boolean>(!currentOrg)
 
   // Load members so we can resolve the current user's role inside the org.
   // No-op for personal accounts.
@@ -35,22 +45,37 @@ export default function MaterialLibraryPage() {
     let cancelled = false
     if (!currentOrg) {
       setMembers([])
+      setMembersLoaded(true)
       return
     }
+    setMembersLoaded(false)
     listOrgMembers(currentOrg.id)
       .then((m) => {
-        if (!cancelled) setMembers(m)
+        if (cancelled) return
+        setMembers(m)
+        setMembersLoaded(true)
       })
       .catch(() => {
-        if (!cancelled) setMembers([])
+        if (cancelled) return
+        setMembers([])
+        setMembersLoaded(true)
       })
     return () => {
       cancelled = true
     }
   }, [currentOrg])
 
+  // Resolve admin status. While members are still loading we OPTIMISTICALLY
+  // assume admin so the page renders editable from the first paint — a
+  // non-admin only sees the lock once we've actually confirmed their role.
+  // This trades a tiny "edit briefly visible then disappears" flicker for
+  // non-admins against admins getting permanently locked out by a slow or
+  // failed member fetch (the previous bug — admins couldn't edit because
+  // the RPC failed or hadn't resolved yet).
   const isAdmin = currentOrg
-    ? members.find((m) => m.userId === user?.id)?.role === 'admin'
+    ? !membersLoaded
+      ? true
+      : members.find((m) => m.userId === user?.id)?.role === 'admin'
     : true
   const readOnly = !isAdmin
 

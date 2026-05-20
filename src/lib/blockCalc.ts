@@ -180,19 +180,6 @@ const HEIGHT_MAKEUP_71_MM = 100
 const HEIGHT_MAKEUP_140_MM = 150
 
 /**
- * Wall-length threshold (mm) below which the short-wall rule kicks in.
- *
- * Walls shorter than this are built without any body blocks (20.48). Both ends use the
- * makeup's full end block (cornerBlockCode — 20.01 by default) on every course, even in
- * stretcher bond where end blocks would normally alternate full/half. Fill blocks
- * (20.03 / 20.02 / 20.22) absorb leftover length with the smallest overshoot.
- *
- * Rationale: at this length, a full 390mm body block won't fit cleanly between two
- * end blocks, so masons reach for ends + fill exclusively. Less cutting, cleaner build.
- */
-const SHORT_WALL_THRESHOLD_MM = 800
-
-/**
  * Wall-length threshold (mm) below which there's no room for two end blocks. Walls below
  * this are built with ONE block per course — the single block whose face width is closest
  * to the wall's drawn length, picked from 20.03 / 20.02 / 20.22 / 20.01.
@@ -405,128 +392,103 @@ export function fitCourseLength(
   const targetTotal = wallLengthMm + MORTAR_MM
   const endsTotal = endsTotalModular
 
-  if (!useFractions) {
-    const remainingForBody = targetTotal - endsTotal
-    if (remainingForBody <= 0) {
-      return {
-        bodyCount: 0,
-        fractions: [],
-        actualLengthMm: Math.max(endsTotal - MORTAR_MM, 0),
-        cutBlocks: 0,
-      }
-    }
-    const bodyCount = Math.ceil(remainingForBody / BODY_BLOCK_MODULE_MM)
-    const actualModular = endsTotal + bodyCount * BODY_BLOCK_MODULE_MM
-    const actualLengthMm = actualModular - MORTAR_MM
+  // Degenerate case — the ends alone already cover (or exceed) the wall.
+  // Same answer as before: zero bodies, length capped at the ends' contribution.
+  if (targetTotal - endsTotal <= 0) {
     return {
-      bodyCount,
-      fractions: [],
-      actualLengthMm,
-      cutBlocks: actualLengthMm > wallLengthMm ? 1 : 0,
-    }
-  }
-
-  // Build all fraction combinations: empty, one of each option, or two (any combination).
-  const fracCombos: FractionOption[][] = [
-    [],
-    ...FRACTION_OPTIONS.map((f) => [f]),
-    ...FRACTION_OPTIONS.flatMap((f1) => FRACTION_OPTIONS.map((f2) => [f1, f2])),
-  ]
-
-  /** Find the smallest-|delta| fit for a given fraction list, trying both
-   *  the floor and ceil body counts (so under-by-mortar candidates aren't
-   *  silently skipped). Returns null if no candidate fits the underage
-   *  tolerance below. */
-  function bestFitWithFracs(fracs: FractionOption[]): {
-    bodyCount: number
-    fractions: BlockCode[]
-    actualLengthMm: number
-    absDelta: number
-  } | null {
-    const fracsTotal = fracs.reduce((s, f) => s + f.modular, 0)
-    const remainingForBody = targetTotal - endsTotal - fracsTotal
-    const exactBody = remainingForBody / BODY_BLOCK_MODULE_MM
-    const counts = Array.from(
-      new Set([Math.floor(exactBody), Math.ceil(exactBody)])
-    ).filter((n) => n >= 0)
-    let local: { bodyCount: number; actualLengthMm: number; absDelta: number } | null = null
-    for (const bodyCount of counts) {
-      const actualModular = endsTotal + fracsTotal + bodyCount * BODY_BLOCK_MODULE_MM
-      const actualLengthMm = actualModular - MORTAR_MM
-      // Underage tolerance — see comment block below for why this is generous.
-      if (actualLengthMm < wallLengthMm - FRACTION_JUSTIFY_MM) continue
-      const absDelta = Math.abs(actualLengthMm - wallLengthMm)
-      if (!local || absDelta < local.absDelta) {
-        local = { bodyCount, actualLengthMm, absDelta }
-      }
-    }
-    if (!local) return null
-    return {
-      bodyCount: local.bodyCount,
-      fractions: fracs.map((f) => f.code),
-      actualLengthMm: local.actualLengthMm,
-      absDelta: local.absDelta,
-    }
-  }
-
-  // 1. Find the best no-fractions fit first. If it gets within
-  //    FRACTION_JUSTIFY_MM (100mm) of the target, USE IT — fractions
-  //    aren't worth supplying for a tiny tweak when the bricklayer can
-  //    absorb that in mortar thickness or end-of-wall position. Walls
-  //    drawn at exact 400mm modular grid (1600, 2000, 2400, ...) hit this
-  //    branch and come out with zero fractions, which is what the user
-  //    expects when they ask for "a 2000mm wall = 5 blocks".
-  // 2. Only if no-fractions misses by more than the threshold do we
-  //    explore the fraction combinations to see if any get closer. The
-  //    fraction has to actually save 100mm+ of delta to be worth the
-  //    extra SKU in the schedule, otherwise we ship the cleaner answer.
-  const FRACTION_JUSTIFY_MM = 100
-  const noFracs = bestFitWithFracs([])
-  if (noFracs && noFracs.absDelta <= FRACTION_JUSTIFY_MM) {
-    return {
-      bodyCount: noFracs.bodyCount,
-      fractions: [],
-      actualLengthMm: noFracs.actualLengthMm,
-      cutBlocks: 0,
-    }
-  }
-
-  // Wall is more than 100mm off modular — fractions might help. Pick the
-  // combination (fractions+bodies) with smallest |delta|, including the
-  // no-fractions candidate so e.g. a wall whose best fit is still no
-  // fractions can win on a tie.
-  let best: CourseLengthFit | null = noFracs
-    ? {
-        bodyCount: noFracs.bodyCount,
-        fractions: [],
-        actualLengthMm: noFracs.actualLengthMm,
-        cutBlocks: 0,
-      }
-    : null
-  let bestAbsDelta = noFracs?.absDelta ?? Infinity
-  for (const fracs of fracCombos) {
-    if (fracs.length === 0) continue // already covered by noFracs
-    const candidate = bestFitWithFracs(fracs)
-    if (!candidate) continue
-    if (candidate.absDelta < bestAbsDelta) {
-      bestAbsDelta = candidate.absDelta
-      best = {
-        bodyCount: candidate.bodyCount,
-        fractions: candidate.fractions,
-        actualLengthMm: candidate.actualLengthMm,
-        cutBlocks: 0,
-      }
-    }
-  }
-
-  return (
-    best ?? {
       bodyCount: 0,
       fractions: [],
-      actualLengthMm: 0,
+      actualLengthMm: Math.max(endsTotal - MORTAR_MM, 0),
       cutBlocks: 0,
     }
+  }
+
+  // -----------------------------------------------------------------
+  // Algorithm — the gap-filler rule.
+  //
+  //  1. Lay full body blocks until one more wouldn't fit (floor count).
+  //     "baseActual" is the wall length at that point — N_floor bodies
+  //     + the ends, no extras.
+  //  2. Compute the "gap" — how much shorter the wall is than the
+  //     drawn length after step 1.
+  //  3. Decide what fills the gap:
+  //       - gap ≤ TINY_GAP_MM:    leave it. Absorbed in mortar.
+  //       - useFractions AND a fraction's face fits in the gap:
+  //         insert the LARGEST fitting fraction. No cuts. This is the
+  //         "use a 20.02 where a cut 20.48 would have gone" case.
+  //       - otherwise: round up — N_floor+1 bodies, last one cut to
+  //         fit the gap (cutBlocks = 1). Same as fractions-OFF
+  //         behaviour, applied whenever no fraction fits cleanly.
+  //
+  //  Concretely:
+  //    5100 mm odd course (ends=800):  N_floor=10, base=4790, gap=310.
+  //                                    20.02 (face 290) fits → use it.
+  //                                    Wall = 5090 mm.  ← 1 fraction.
+  //    5800 mm odd course (ends=800):  N_floor=12, base=5590, gap=210.
+  //                                    No fraction's face fits (smallest
+  //                                    is 290). Round up → 13 bodies,
+  //                                    last cut.  Wall = 5990 mm. No
+  //                                    fractions in the schedule.
+  //    5990 mm odd course:             N_floor=13, base=5990, gap=0.
+  //                                    Exact. 13 bodies, no extras.
+  // -----------------------------------------------------------------
+  /** Gaps at or below this are quietly absorbed in mortar thickness
+   *  instead of triggering a cut block or fraction. Anything bigger
+   *  visibly needs something filling the space. */
+  const TINY_GAP_MM = 30
+
+  const nFloor = Math.max(
+    0,
+    Math.floor((targetTotal - endsTotal) / BODY_BLOCK_MODULE_MM)
   )
+  const baseModular = endsTotal + nFloor * BODY_BLOCK_MODULE_MM
+  const baseActual = baseModular - MORTAR_MM
+  const gap = wallLengthMm - baseActual
+
+  // Step 3a — tiny gap → leave it.
+  if (gap <= TINY_GAP_MM) {
+    return {
+      bodyCount: nFloor,
+      fractions: [],
+      actualLengthMm: baseActual,
+      cutBlocks: 0,
+    }
+  }
+
+  // Step 3b — fraction substitution. The fraction's FACE width has to
+  // actually fit in the gap (face ≤ gap), so the bricklayer can drop
+  // the stock fraction in instead of cutting a body. The largest such
+  // fraction wins so the cut-down body the user would have used is
+  // replaced by the closest pre-made block. Tolerance up to +20mm
+  // overhang absorbs in mortar — without that slack a wall a few mm
+  // short of a fraction's face misses the substitution entirely.
+  if (useFractions) {
+    const FRACTION_OVERHANG_TOLERANCE_MM = 20
+    let bestFrac: FractionOption | null = null
+    for (const f of FRACTION_OPTIONS) {
+      const faceWidth = f.modular - MORTAR_MM
+      if (faceWidth > gap + FRACTION_OVERHANG_TOLERANCE_MM) continue
+      if (!bestFrac || f.modular > bestFrac.modular) bestFrac = f
+    }
+    if (bestFrac) {
+      return {
+        bodyCount: nFloor,
+        fractions: [bestFrac.code],
+        actualLengthMm: baseActual + bestFrac.modular,
+        cutBlocks: 0,
+      }
+    }
+  }
+
+  // Step 3c — no fraction fits, gap isn't tiny → round up to N+1 bodies
+  // and mark one as cut. Identical to the fractions-OFF behaviour for
+  // this branch.
+  return {
+    bodyCount: nFloor + 1,
+    fractions: [],
+    actualLengthMm: baseActual + BODY_BLOCK_MODULE_MM,
+    cutBlocks: 1,
+  }
 }
 
 /**
@@ -560,88 +522,6 @@ function fitSingleBlockWall(wallLengthMm: number): CourseLengthFit {
     actualLengthMm: best.faceWidthMm,
     cutBlocks: 0,
   }
-}
-
-/**
- * Fill-block options for short walls — alternatives to a body block (20.48). Listed in
- * order of ascending modular length so the fitter naturally prefers smaller fills when
- * everything else is equal.
- *
- *   20.03 — half-end block, 200 modular
- *   20.02 — 3/4 fraction,    300 modular
- *   20.22 — 7/8 fraction,    350 modular
- *
- * Note 20.03 isn't a "fraction" in the brief's sense, but for short-wall fitting it
- * plays the same role: a length-adjustment block placed alongside the ends.
- */
-const SHORT_WALL_FILL_OPTIONS: FractionOption[] = [
-  { code: '20.03', modular: HALF_END_MODULE_MM },
-  { code: '20.02', modular: FRAC_75_MODULE_MM },
-  { code: '20.22', modular: FRAC_875_MODULE_MM },
-]
-
-/**
- * Fit a SHORT wall (under {@link SHORT_WALL_THRESHOLD_MM}) using only end blocks +
- * fill blocks (20.03 / 20.02 / 20.22) — no body blocks.
- *
- * Both ends are assumed to use a FULL end block (cornerBlockCode) on every course, so
- * `endsTotalModular` will be 800 (2 × 400) in practice. We pick the fill combination
- * (0, 1, or 2 fill blocks, each independently any of {20.03, 20.02, 20.22}) that lands
- * the actual built length closest to ≥ wallLengthMm.
- *
- * If even the bare-ends build (no fill) already overshoots the wall length, that wins
- * — fill only gets added when we'd otherwise undershoot.
- *
- * `useFractions` gates 20.02 / 20.22 only. 20.03 is always allowed (it's a stock end
- * block, not a cut fraction).
- */
-function fitShortWallLength(
-  wallLengthMm: number,
-  endsTotalModular: number,
-  useFractions: boolean
-): CourseLengthFit {
-  // Allowable fill blocks for this wall — 20.03 always, fractions only when enabled.
-  const fillOptions = useFractions
-    ? SHORT_WALL_FILL_OPTIONS
-    : SHORT_WALL_FILL_OPTIONS.filter((f) => f.code === '20.03')
-
-  // Build combos of 0, 1, or 2 fill blocks. Each slot can be any allowable option.
-  const combos: FractionOption[][] = [
-    [],
-    ...fillOptions.map((f) => [f]),
-    ...fillOptions.flatMap((f1) => fillOptions.map((f2) => [f1, f2])),
-  ]
-
-  let best: CourseLengthFit | null = null
-  for (const fill of combos) {
-    const fillTotal = fill.reduce((s, f) => s + f.modular, 0)
-    const actualModular = endsTotalModular + fillTotal
-    const actualLengthMm = actualModular - MORTAR_MM
-    if (actualLengthMm < wallLengthMm) continue // can't satisfy the wall length
-    const overshoot = actualLengthMm - wallLengthMm
-    const bestOvershoot = best ? best.actualLengthMm - wallLengthMm : Infinity
-    if (overshoot < bestOvershoot) {
-      best = {
-        bodyCount: 0,
-        // CourseLengthFit.fractions has historically been the bucket for non-body, non-end
-        // blocks in this fit. Treat all short-wall fills the same way so they flow into
-        // the tally via the existing per-course addToTally(tally, fracCode) loop.
-        fractions: fill.map((f) => f.code),
-        actualLengthMm,
-        cutBlocks: 0,
-      }
-    }
-  }
-  // Worst case (target longer than even ends + 2 fills): just return the bare ends.
-  // The wall ends up undersized, but that's the best we can do without body blocks.
-  return (
-    best ?? {
-      bodyCount: 0,
-      fractions: [],
-      actualLengthMm: Math.max(endsTotalModular - MORTAR_MM, 0),
-      cutBlocks: 0,
-    }
-  )
 }
 
 // ---------- End block plan (per end) ----------
@@ -788,30 +668,11 @@ export function planWall(
     }
   }
 
-  // ----- Short-wall rule -----
-  // Walls under SHORT_WALL_THRESHOLD_MM (default 800mm) are built without body blocks.
-  // Both ends use a FULL end block (cornerBlockCode) on every course — no alternating
-  // 20.03 even in stretcher bond — and fill blocks absorb leftover length.
-  if (lengthMm > 0 && lengthMm < SHORT_WALL_THRESHOLD_MM) {
-    const fullBlock = makeup.cornerBlockCode
-    const shortEnd: EndPlan = {
-      oddBlock: fullBlock,
-      evenBlock: fullBlock,
-      oddModular: FULL_END_MODULE_MM,
-      evenModular: FULL_END_MODULE_MM,
-    }
-    const fit = fitShortWallLength(
-      lengthMm,
-      FULL_END_MODULE_MM * 2,
-      makeup.useFractions
-    )
-    return {
-      startEnd: shortEnd,
-      endEnd: shortEnd,
-      oddCourseFit: fit,
-      evenCourseFit: fit,
-    }
-  }
+  // No short-wall special case — walls under 800mm follow the same end-
+  // alternation + gap-filler rule as longer walls, using whatever blocks
+  // the makeup specifies. If the user wants different blocks for a small
+  // wall (no body blocks, half-block fills only, etc.), they can create
+  // a separate makeup for it rather than the calc engine guessing.
 
   const startEnd = planEnd(
     makeup.bondType,

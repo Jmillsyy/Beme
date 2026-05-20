@@ -705,6 +705,15 @@ function WallDrawingLayerInner({
    * Empty string means "use the cursor distance as the length" (default).
    */
   const [typedLengthMm, setTypedLengthMm] = useState<string>('')
+  /**
+   * CAD-style typed width while placing an opening. After the first click
+   * sets `openingPlacementStart`, the user can type digits to override
+   * the cursor-distance width — direction (left or right of the first
+   * point along the wall) still comes from the cursor. `Enter` commits,
+   * `Esc` clears, `Backspace` edits. Same model as `typedLengthMm` for
+   * walls.
+   */
+  const [typedOpeningWidthMm, setTypedOpeningWidthMm] = useState<string>('')
   const [cursorMm, setCursorMm] = useState<Point | null>(null)
   const [snapTarget, setSnapTarget] = useState<SnapResult | null>(null)
   const [hoveredWallId, setHoveredWallId] = useState<string | null>(null)
@@ -1199,6 +1208,7 @@ function WallDrawingLayerInner({
     if (!placingOpening) {
       setOpeningPlacementStart(null)
       setOpeningHoverProjection(null)
+      setTypedOpeningWidthMm('')
     }
   }, [placingOpening])
 
@@ -1250,6 +1260,52 @@ function WallDrawingLayerInner({
           setTypedLengthMm((prev) => prev.slice(0, -1))
           return
         }
+      }
+
+      // Same typed-value model for openings — once the first click has
+      // anchored openingPlacementStart, digits / dot / backspace edit a
+      // typed width that overrides the cursor distance on Enter. Direction
+      // (which side of the anchor along the wall) still comes from the
+      // current hover position so the user can flip it just by moving the
+      // cursor past the anchor before pressing Enter.
+      if (!inField && placingOpening && openingPlacementStart) {
+        if (e.key >= '0' && e.key <= '9') {
+          e.preventDefault()
+          setTypedOpeningWidthMm((prev) => prev + e.key)
+          return
+        }
+        if (e.key === '.' || e.key === ',') {
+          e.preventDefault()
+          setTypedOpeningWidthMm((prev) => (prev.includes('.') ? prev : prev + '.'))
+          return
+        }
+        if (e.key === 'Backspace') {
+          e.preventDefault()
+          setTypedOpeningWidthMm((prev) => prev.slice(0, -1))
+          return
+        }
+        if (e.key === 'Enter' && typedOpeningWidthMm.trim()) {
+          e.preventDefault()
+          const widthMm = parseFloat(typedOpeningWidthMm)
+          if (Number.isFinite(widthMm) && widthMm >= 100) {
+            // Direction from cursor: openingHoverProjection.alongMm > start
+            // means cursor is "past" the anchor → opening extends in that
+            // direction. If the cursor sits on or before the anchor, fall
+            // back to "extend forward" (alongMm + width) which gives the
+            // user a sensible default and matches the typical workflow of
+            // clicking at the opening's left edge.
+            const startAlong = openingPlacementStart.alongMm
+            const cursorAlong = openingHoverProjection?.alongMm ?? startAlong + widthMm
+            const finalStart = cursorAlong >= startAlong
+              ? startAlong
+              : startAlong - widthMm
+            onOpeningPlaced(openingPlacementStart.wallId, finalStart, widthMm)
+            setOpeningPlacementStart(null)
+            setOpeningHoverProjection(null)
+            setTypedOpeningWidthMm('')
+          }
+          return
+        }
         if (e.key === 'Enter' && typedLengthMm.trim()) {
           e.preventDefault()
           const lengthMm = parseFloat(typedLengthMm)
@@ -1264,6 +1320,17 @@ function WallDrawingLayerInner({
             if (cursorDist > 0.001) {
               const ux = dx / cursorDist
               const uy = dy / cursorDist
+              // The user's typed length is the wall's DISPLAYED length —
+              // the value they want printed on the plan. When the start
+              // is at a corner the displayed length includes the corner
+              // overlap (+halfThickness), so the stored centreline has
+              // to be SHORTER than the typed value by that overlap. End
+              // is left alone — if it happens to land on another wall's
+              // corner too, the wall ends up displaying typed + endHalf,
+              // but that's a less common case; the start-corner one is
+              // what the user described.
+              const startAdjust = cornerLengthAdjustAt(startMm)
+              const centreLength = Math.max(0, lengthMm - startAdjust)
               // Forward the Alt-held state on the Enter keystroke too, so a
               // typed-length wall ending on another wall's endpoint can be a
               // butt joint the same way a clicked one can. startAltHeld
@@ -1272,8 +1339,8 @@ function WallDrawingLayerInner({
               onWallAdded(
                 startMm,
                 {
-                  x: startMm.x + ux * lengthMm,
-                  y: startMm.y + uy * lengthMm,
+                  x: startMm.x + ux * centreLength,
+                  y: startMm.y + uy * centreLength,
                 },
                 e.altKey,
                 startAltHeld
@@ -1312,6 +1379,7 @@ function WallDrawingLayerInner({
         // Clear in-progress placement hovers
         setOpeningPlacementStart(null)
         setOpeningHoverProjection(null)
+        setTypedOpeningWidthMm('')
         setControlJointHover(null)
         setTiedPierHover(null)
         setFreestandingPierHoverMm(null)
@@ -1336,10 +1404,51 @@ function WallDrawingLayerInner({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded, openingPlacementStart, openingHoverProjection, typedOpeningWidthMm, onOpeningPlaced])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
+  }
+
+  /**
+   * Returns the post-placement length adjustment (in mm) that a wall
+   * endpoint at this position WILL pick up once the wall is committed —
+   * the same value the length-label code adds for corner junctions in
+   * `recomputeAllJunctions`. Used to translate between the user's typed
+   * "displayed length" and the centreline length the wall is actually
+   * stored at.
+   *
+   * Currently returns halfThickness of the host wall when `pointMm`
+   * coincides with that wall's free-end corner-block-centre (the inset
+   * position where corners form). Zero otherwise. T-junctions / control-
+   * joints don't add this kind of length, so they fall through to zero.
+   */
+  function cornerLengthAdjustAt(pointMm: Point): number {
+    for (const w of walls) {
+      if (isCurvedWall(w)) continue
+      const halfT = (wallThicknessByWallId[w.id] ?? 190) / 2
+      for (const which of ['start' as const, 'end' as const]) {
+        const junction = which === 'start' ? w.startJunction : w.endJunction
+        if (junction.type !== 'free') continue
+        const dataX = which === 'start' ? w.startX : w.endX
+        const dataY = which === 'start' ? w.startY : w.endY
+        const farX = which === 'start' ? w.endX : w.startX
+        const farY = which === 'start' ? w.endY : w.startY
+        const ddx = dataX - farX
+        const ddy = dataY - farY
+        const len = Math.sqrt(ddx * ddx + ddy * ddy)
+        if (len < 0.001) continue
+        const insetX = dataX - (ddx / len) * halfT
+        const insetY = dataY - (ddy / len) * halfT
+        if (
+          Math.abs(pointMm.x - insetX) < 1 &&
+          Math.abs(pointMm.y - insetY) < 1
+        ) {
+          return halfT
+        }
+      }
+    }
+    return 0
   }
 
   function resolveSnap(pos: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): Point {
@@ -1548,7 +1657,12 @@ function WallDrawingLayerInner({
       let posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
       // If the user typed a length while aiming, override the cursor-distance
       // with the typed value while keeping the cursor's direction (which is
-      // already axis-snapped via resolveDrawSnap above).
+      // already axis-snapped via resolveDrawSnap above). The typed value
+      // represents the DISPLAYED length the user wants on the plan, so
+      // when the start is at a corner (which adds halfThickness to the
+      // displayed length), the stored centreline is the typed value minus
+      // that halfThickness. Without this, a typed "1000" off a 190mm
+      // corner would commit a centreline of 1000 and display as 1095.
       const typedNum = parseFloat(typedLengthMm)
       if (typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0) {
         const dx = posMm.x - startMm.x
@@ -1557,9 +1671,11 @@ function WallDrawingLayerInner({
         if (cursorDist > 0.001) {
           const ux = dx / cursorDist
           const uy = dy / cursorDist
+          const startAdjust = cornerLengthAdjustAt(startMm)
+          const centreLength = Math.max(0, typedNum - startAdjust)
           posMm = {
-            x: startMm.x + ux * typedNum,
-            y: startMm.y + uy * typedNum,
+            x: startMm.x + ux * centreLength,
+            y: startMm.y + uy * centreLength,
           }
         }
       }
@@ -1603,6 +1719,7 @@ function WallDrawingLayerInner({
       onOpeningPlaced(proj.wallId, startAlong, widthMm)
       setOpeningPlacementStart(null)
       setOpeningHoverProjection(null)
+      setTypedOpeningWidthMm('')
       return
     }
 
@@ -2220,13 +2337,13 @@ function WallDrawingLayerInner({
                 closed
                 fill={
                   isSelected
-                    ? hexToRgba(wallTypeStroke, 0.4)
+                    ? hexToRgba(wallTypeStroke, 0.55)
                     : isCurveAnchor
-                      ? 'rgba(139, 92, 246, 0.22)'
-                      : hexToRgba(wallTypeStroke, 0.2)
+                      ? 'rgba(139, 92, 246, 0.32)'
+                      : hexToRgba(wallTypeStroke, 0.38)
                 }
                 stroke={strokeColor}
-                strokeWidth={isSelected ? 3.5 : isCurveAnchor ? 2.5 : isHovered ? 2 : 1.5}
+                strokeWidth={isSelected ? 3.5 : isCurveAnchor ? 2.5 : isHovered ? 2.5 : 2}
                 hitStrokeWidth={8}
                 lineJoin="miter"
                 // Selected walls get a soft glow IN THEIR OWN COLOUR so the
@@ -2445,29 +2562,64 @@ function WallDrawingLayerInner({
                 stroke="white"
                 strokeWidth={1.5}
               />
-              {openingHoverProjection && openingHoverProjection.wallId === openingPlacementStart.wallId && (
-                <>
-                  <Line
-                    points={[
-                      startPosPx.x,
-                      startPosPx.y,
-                      openingHoverProjection.px.x,
-                      openingHoverProjection.px.y,
-                    ]}
-                    stroke="#D97706"
-                    strokeWidth={6}
-                    opacity={0.5}
-                  />
-                  <Text
-                    x={(startPosPx.x + openingHoverProjection.px.x) / 2 + 8}
-                    y={(startPosPx.y + openingHoverProjection.px.y) / 2 + 10}
-                    text={`${Math.round(Math.abs(openingHoverProjection.alongMm - openingPlacementStart.alongMm))} mm wide`}
-                    fontSize={12}
-                    fill="#92400E"
-                    fontStyle="bold"
-                  />
-                </>
-              )}
+              {openingHoverProjection && openingHoverProjection.wallId === openingPlacementStart.wallId && (() => {
+                // When the user is typing a width, the preview line snaps to
+                // the typed value (projected from the anchor in the
+                // direction the cursor sits). Cursor-distance width otherwise.
+                const typedNum = parseFloat(typedOpeningWidthMm)
+                const hasTyped =
+                  !!typedOpeningWidthMm.trim() &&
+                  Number.isFinite(typedNum) &&
+                  typedNum > 0
+                const cursorWidthMm = Math.abs(
+                  openingHoverProjection.alongMm - openingPlacementStart.alongMm
+                )
+                let endPx = openingHoverProjection.px
+                if (hasTyped) {
+                  // Build the typed end position along the wall in the
+                  // direction the cursor is past the anchor.
+                  const wall = wallsById.get(openingPlacementStart.wallId)
+                  if (wall) {
+                    const direction =
+                      openingHoverProjection.alongMm >= openingPlacementStart.alongMm
+                        ? 1
+                        : -1
+                    const endAlong =
+                      openingPlacementStart.alongMm + direction * typedNum
+                    endPx = pointAlongWallPx(wall, endAlong)
+                  }
+                }
+                const previewWidth = hasTyped ? typedNum : cursorWidthMm
+                return (
+                  <>
+                    <Line
+                      points={[
+                        startPosPx.x,
+                        startPosPx.y,
+                        endPx.x,
+                        endPx.y,
+                      ]}
+                      stroke="#D97706"
+                      strokeWidth={6}
+                      opacity={0.5}
+                    />
+                    <Text
+                      x={(startPosPx.x + endPx.x) / 2 + 8}
+                      y={(startPosPx.y + endPx.y) / 2 + 10}
+                      text={
+                        hasTyped
+                          ? `${typedOpeningWidthMm} mm ⏎`
+                          : typedOpeningWidthMm.trim()
+                            ? `${typedOpeningWidthMm} mm …`
+                            : `${Math.round(previewWidth)} mm wide`
+                      }
+                      fontSize={12}
+                      fill={hasTyped ? '#3B82F6' : '#92400E'}
+                      fontStyle="bold"
+                    />
+                  </>
+                )
+              })()}
             </Group>
           )
         })()}
@@ -2676,16 +2828,28 @@ function WallDrawingLayerInner({
               const dx = cursorMmFromPx.x - startMmFromPx.x
               const dy = cursorMmFromPx.y - startMmFromPx.y
               const cursorDistMm = Math.sqrt(dx * dx + dy * dy)
+              const startAdjust = cornerLengthAdjustAt(startMmFromPx)
+              const endAdjust = hasTyped
+                ? 0
+                : cornerLengthAdjustAt(cursorMmFromPx)
+              // When typing a length, the typed value IS the displayed length
+              // the user wants printed on the plan, so the preview line
+              // (centreline) extends only (typed − startAdjust) mm. Otherwise
+              // the cursor distance IS the centreline and the displayed value
+              // is centreline + adjustments.
               let endPx = cursorPx
               if (hasTyped && cursorDistMm > 0.001) {
                 const ux = dx / cursorDistMm
                 const uy = dy / cursorDistMm
+                const centreLength = Math.max(0, typedNum - startAdjust)
                 endPx = {
-                  x: mmToPx(startMmFromPx.x + ux * typedNum),
-                  y: mmToPx(startMmFromPx.y + uy * typedNum),
+                  x: mmToPx(startMmFromPx.x + ux * centreLength),
+                  y: mmToPx(startMmFromPx.y + uy * centreLength),
                 }
               }
-              const previewLengthMm = hasTyped ? typedNum : cursorDistMm
+              const previewLengthMm = hasTyped
+                ? typedNum
+                : cursorDistMm + startAdjust + endAdjust
               return (
                 <>
                   <Line
