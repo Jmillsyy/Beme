@@ -50,6 +50,7 @@ import { findCornerPoints } from './junctions'
 import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 import { resolveCourseBlocks } from './makeups'
+import { getUserSettings } from './userSettings'
 
 /**
  * Geometric derivation: a block of front-face width w_f, rear-face width w_r, depth d
@@ -167,9 +168,15 @@ const HALF_END_MODULE_MM = 200
 const FRAC_75_MODULE_MM = 300
 /** Modular length of a 7/8 fraction 20.22 (340 + 10). */
 const FRAC_875_MODULE_MM = 350
-/** Modular height of a 20.71 height-makeup course (90 + 10). */
+/** Modular height of a 20.71 height-makeup course (90 block + 10 mortar
+ *  joint = 100mm). The makeup block sits in a course with its own mortar
+ *  bed, same as a standard. */
 const HEIGHT_MAKEUP_71_MM = 100
-/** Modular height of a 20.140 height-makeup course (140 + 10). */
+/** Modular height of a 20.140 height-makeup course (140 block + 10 mortar
+ *  joint = 150mm). E.g. 13 standards + 1 × 20.140 = 13×200 + 150 = 2750mm,
+ *  which is also the closest achievable height when the user requests
+ *  2740mm — the rounding-up logic in calculateCourseStack applies the
+ *  20.140 and notes the 10 mm overage in the export Assumptions. */
 const HEIGHT_MAKEUP_140_MM = 150
 
 /**
@@ -263,53 +270,87 @@ export interface CourseStack {
   totalCourses: number
   /** True if the wall height could be made up exactly with the available block heights. */
   valid: boolean
+  /** Requested wall height in mm (what the user asked for). */
+  requestedHeightMm: number
+  /** Actual built height in mm given the stack — `standardCount * 200 + has71 * 90 + has140 * 140`. */
+  actualHeightMm: number
+  /** Difference between actual and requested (always ≥ 0 — we round UP). */
+  overageMm: number
 }
 
 /**
  * Decide how the wall height breaks down into courses.
  *
- * Heights per course (modular = block + mortar):
- *   Standard (20.48): 200mm
- *   20.71: 100mm
- *   20.140: 150mm
+ * Modular course heights (block + 10 mm mortar joint):
+ *   Standard (20.48): 200mm (190 + 10)
+ *   20.71:            100mm (90 + 10)
+ *   20.140:           150mm (140 + 10)
  *
- * Tries combinations in order of simplicity: all standards, +20.71, +20.140, +both.
- * Returns the first combination that sums to exactly heightMm.
+ * Rather than failing when the requested height doesn't sum exactly from
+ * the available course heights, we pick the SMALLEST stack whose total is
+ * ≥ the requested height — i.e. round UP to the nearest achievable height.
+ * The closest-size makeup block gets applied and the bricklayer trims
+ * mortar on site to suit. The overage is surfaced in the export's
+ * Assumptions section so the estimator sees they're quoting for slightly
+ * more than requested.
  *
- * Examples (per brief):
- *   3000mm → 15 standard
- *   3100mm → 15 standard + 1× 20.71
- *   3150mm → 15 standard + 1× 20.140
- *   3050mm → 14 standard + 1× 20.71 + 1× 20.140
+ * Examples:
+ *   3000mm → 15 standard (exact, 3000)
+ *   2700mm → 13 standard + 1× 20.71 (exact, 2700)
+ *   2750mm → 13 standard + 1× 20.140 (exact, 2750)
+ *   2740mm → 13 standard + 1× 20.140 (2750, overage 10mm — the 20.140 is
+ *            the closest-size block that gets the wall ≥ the request)
+ *   2850mm → 13 standard + 1× 20.71 + 1× 20.140 (exact, 2850)
+ *   3050mm → 14 standard + 1× 20.71 + 1× 20.140 = 3050 (exact)
  */
 export function calculateCourseStack(heightMm: number): CourseStack {
-  const combos: Array<[number, number]> = [
-    [0, 0],
-    [1, 0],
-    [0, 1],
-    [1, 1],
-  ]
-  for (const [a, b] of combos) {
-    const remaining = heightMm - a * HEIGHT_MAKEUP_71_MM - b * HEIGHT_MAKEUP_140_MM
-    if (remaining >= 0 && remaining % COURSE_MODULE_MM === 0) {
-      const N = remaining / COURSE_MODULE_MM
-      return {
-        standardCount: N,
-        has71: a === 1,
-        has140: b === 1,
-        totalCourses: N + a + b,
-        valid: true,
+  // Enumerate every reasonable combination and pick the smallest total
+  // that's >= requested. Upper bound on N comes from a sanity-check
+  // ceiling of the requested height plus enough headroom for both
+  // makeup blocks; in practice all combinations fit inside a handful
+  // of iterations.
+  const maxN = Math.ceil(heightMm / COURSE_MODULE_MM) + 2
+  let best: { N: number; has71: boolean; has140: boolean; total: number } | null = null
+  for (let N = 0; N <= maxN; N++) {
+    for (const has71 of [false, true]) {
+      for (const has140 of [false, true]) {
+        const total =
+          N * COURSE_MODULE_MM +
+          (has71 ? HEIGHT_MAKEUP_71_MM : 0) +
+          (has140 ? HEIGHT_MAKEUP_140_MM : 0)
+        if (total < heightMm) continue
+        // Prefer smaller total. Tie-break by fewer total courses so e.g.
+        // 14 standards (2800) wins over 13 + 20.71 + 20.140 (2830).
+        if (!best || total < best.total) {
+          best = { N, has71, has140, total }
+        }
       }
     }
   }
-  // Fall back: round down to nearest 200mm and flag as invalid
-  const fallbackN = Math.floor(heightMm / COURSE_MODULE_MM)
+  // best is non-null because N=maxN with both makeup blocks comfortably
+  // exceeds heightMm. Belt-and-braces fallback for paranoia:
+  if (!best) {
+    const fallbackN = Math.ceil(heightMm / COURSE_MODULE_MM)
+    return {
+      standardCount: fallbackN,
+      has71: false,
+      has140: false,
+      totalCourses: fallbackN,
+      valid: false,
+      requestedHeightMm: heightMm,
+      actualHeightMm: fallbackN * COURSE_MODULE_MM,
+      overageMm: fallbackN * COURSE_MODULE_MM - heightMm,
+    }
+  }
   return {
-    standardCount: fallbackN,
-    has71: false,
-    has140: false,
-    totalCourses: fallbackN,
-    valid: false,
+    standardCount: best.N,
+    has71: best.has71,
+    has140: best.has140,
+    totalCourses: best.N + (best.has71 ? 1 : 0) + (best.has140 ? 1 : 0),
+    valid: true,
+    requestedHeightMm: heightMm,
+    actualHeightMm: best.total,
+    overageMm: best.total - heightMm,
   }
 }
 
@@ -1072,13 +1113,23 @@ function applyOpeningAdjustments(
   const headHeightMm = wallHeightMm - opening.sillHeightMm - opening.heightMm
   if (headHeightMm <= 0) return
 
-  const lintel = selectBlockLintel(headHeightMm)
-  const bearingMm = 200
-  const lintelSpanMm = opening.widthMm + 2 * bearingMm
-  const horizontalLintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)
-  const verticalLintelCount = Math.ceil(headHeightMm / lintel.verticalModuleMm)
-  const lintelTotal = horizontalLintelCount * verticalLintelCount
-  addToTally(tally, lintel.code, lintelTotal)
+  // Lintel blocks are only added if the user's regional preference is ON.
+  // When OFF (some US / European markets that leave the head open and
+  // bridge with a structural lintel beam handled elsewhere), the head
+  // courses are still subtracted from the body tally so the wall maths
+  // remains correct — there's just no lintel block line in the schedule.
+  // The toggle lives in Settings → Preferences → Regional features and in
+  // the Block library's Lintel blocks section.
+  const useLintels = getUserSettings().preferences.regionalFeatures.lintels
+  if (useLintels) {
+    const lintel = selectBlockLintel(headHeightMm)
+    const bearingMm = 200
+    const lintelSpanMm = opening.widthMm + 2 * bearingMm
+    const horizontalLintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)
+    const verticalLintelCount = Math.ceil(headHeightMm / lintel.verticalModuleMm)
+    const lintelTotal = horizontalLintelCount * verticalLintelCount
+    addToTally(tally, lintel.code, lintelTotal)
+  }
 
   // Body subtraction in head area — per head course, bodies within the lintel span are replaced
   const headStartIdx = sillCoursesFloor + openingCourses

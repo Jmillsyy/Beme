@@ -752,6 +752,7 @@ function buildAssumptions(
   const items: string[] = [
     'All block sizes are nominal and include a 10 mm mortar joint (200 mm modular face and 200 mm modular course).',
     'Wall heights come from the wall-type definitions unless overridden per wall.',
+    'Wall heights are rounded UP to the nearest achievable course stack — i.e. combinations of 200 mm standard courses plus optional 100 mm (20.71) and 150 mm (20.140) modular makeup courses (each = block + 10 mm mortar joint). When the requested height doesn\'t hit an exact combination, the closest-size makeup block gets applied (typically 10–50 mm overage) and the bricklayer trims mortar to suit on site.',
     'Wall lengths are measured from the drawings supplied. All dimensions in millimetres.',
     'Corner columns shared between two walls are counted once.',
     'T-junctions are treated as two separate walls. The stem terminates against the through-wall face with its own end column (alternating 20.01 / 20.03 in stretcher bond); the through-wall is unaffected.',

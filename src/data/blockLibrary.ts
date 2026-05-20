@@ -161,25 +161,28 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   '20.18': {
     code: '20.18',
     name: '400mm Lintel Block',
-    description: 'Lintel block stacked vertically over openings with head heights greater than 300mm.',
-    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    description:
+      'Lintel block for opening head heights ≥ 300mm. 400mm modular height (190 + 10 mortar = 200 ' +
+      'horizontal, 390 + 10 = 400 vertical). Dimensions are the as-used dimensions — Beme places ' +
+      'them straight as stored, no rotation.',
+    dimensions: { widthMm: 190, heightMm: 390, depthMm: 190 },
     roles: ['lintel'],
   },
   '20.25': {
     code: '20.25',
     name: '300mm Lintel Block',
     description:
-      'Lintel for opening head heights between 200mm and 299mm. Stood upwards so the 290mm ' +
-      'dimension is vertical (300mm modular height).',
-    dimensions: { widthMm: 290, heightMm: 190, depthMm: 190 },
+      'Lintel for opening head heights between 200mm and 299mm. 300mm modular height (190 face × ' +
+      '290 tall). Dimensions are the as-used dimensions — no rotation.',
+    dimensions: { widthMm: 190, heightMm: 290, depthMm: 190 },
     roles: ['lintel'],
   },
   '20.13': {
     code: '20.13',
     name: 'Half Lintel Block',
     description:
-      'Half-height lintel for opening head heights under 200mm. Stood upwards (200mm modular ' +
-      'height). Cubic 190mm block.',
+      'Half-height lintel for opening head heights under 200mm. Cubic 190mm block (200mm modular ' +
+      'each side).',
     dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
     roles: ['lintel'],
   },
@@ -561,13 +564,18 @@ export function pickPierBlock(): Block | undefined {
 }
 
 /**
- * Lintel block sized to support a given opening height. Picks the lintel
- * with the largest vertical module that's still <= the requirement. Returns
- * undefined if no lintel blocks are defined or the opening is impossibly
- * small.
+ * Lintel block sized to cover a given head height. Picks the SMALLEST
+ * lintel whose heightMm ≥ the head height — the lintel has to fully bridge
+ * the head course, so a 290 mm lintel can't be used for a 310 mm head even
+ * though it's the closest in size; you need the 390 instead.
+ *
+ * If no lintel in the library is tall enough on its own, returns the
+ * tallest one so the calc engine can stack multiple vertically to reach
+ * the head height. Returns undefined only if there are no lintel blocks
+ * in the library at all.
  *
  * The "vertical module" is derived from the block's heightMm — a 200 mm
- * lintel block lives on a 200 mm vertical module, a 300 mm block on 300
+ * lintel block lives on a 200 mm vertical module, a 300 mm block on 300,
  * etc. Callers needing the precise module read it from the returned block.
  */
 export function pickLintelBlockIn(
@@ -576,8 +584,13 @@ export function pickLintelBlockIn(
 ): Block | undefined {
   const candidates = Object.values(library)
     .filter((b) => b.roles.includes('lintel'))
-    .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
-  return candidates.find((b) => b.dimensions.heightMm <= openingHeightMm) ?? candidates[candidates.length - 1]
+    .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm)
+  // First lintel ≥ head height. If none, fall back to the tallest — the
+  // calc engine will stack it as many times as needed to span the head.
+  return (
+    candidates.find((b) => b.dimensions.heightMm >= openingHeightMm) ??
+    candidates[candidates.length - 1]
+  )
 }
 export function pickLintelBlock(openingHeightMm: number): Block | undefined {
   return pickLintelBlockIn(BLOCK_LIBRARY, openingHeightMm)

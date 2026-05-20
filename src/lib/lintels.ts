@@ -1,15 +1,22 @@
 /**
  * Lintel rules — pure functions implementing the rules from the Project Brief.
  *
- * Block walls: lintel blocks stood UPWARDS over the opening. Type chosen by head height
- *   (height of wall above the opening). Multiple stood-up lintels are placed side by side
- *   horizontally (each 200mm modular wide) to span the opening + bearing, and stacked
- *   vertically to fill tall heads.
+ * Block walls: lintel blocks fill the head course above each opening. The
+ * library stores each lintel's dimensions in the as-used orientation
+ * (widthMm = horizontal face when placed, heightMm = vertical extent). No
+ * rotation at calc time — Beme just uses width × height as stored and
+ * tallies enough blocks to span (opening + bearing) horizontally × head
+ * height vertically.
  *
- *   Head height       Lintel block   Stood-up dims (face × tall)   Modular (W × H)
- *   ≥ 300mm           20.18          190 × 390 mm                  200 × 400
- *   200 – 299mm       20.25          190 × 290 mm                  200 × 300
- *   < 200mm           20.13          190 × 190 mm                  200 × 200
+ * Selection is by head height: pick the tallest lintel whose heightMm ≤
+ * the opening's head height. Library can hold any number of lintels so
+ * different head heights pick the appropriate block.
+ *
+ * Reference seed sizes (SEQ QLD):
+ *   Head height       Lintel block   Dims (W × H × D)         Modular (W × H)
+ *   ≥ 300mm           20.18          190 × 390 × 190 mm        200 × 400
+ *   200 – 299mm       20.25          190 × 290 × 190 mm        200 × 300
+ *   < 200mm           20.13          190 × 190 × 190 mm        200 × 200
  *
  * Brick walls: steel/concrete lintels calculated by opening width with a bearing rule.
  */
@@ -32,10 +39,17 @@ export interface LintelSpec {
 /**
  * Choose the appropriate lintel for an opening's head height.
  *
- * Now role-based: looks up every block tagged with role `lintel` and picks
- * the tallest one whose height fits the head. Modular dims are derived from
- * the block's actual dimensions + mortar joint, so a US 8" lintel or a UK
- * concrete lintel works the same as the SEQ 20.13 / 20.18 / 20.25 set.
+ * Role-based: looks up every block tagged with role `lintel` and picks the
+ * SMALLEST one whose heightMm ≥ the head height. The lintel has to bridge
+ * the entire head — a 290 mm lintel over a 310 mm head leaves a 20 mm gap,
+ * which doesn't work — so a 20.25 wouldn't be valid there; you'd use a
+ * 20.18 instead. If no lintel is tall enough on its own, the tallest is
+ * returned so the calc engine can stack it vertically to cover.
+ *
+ * Modular dims are derived from the block's actual dimensions + mortar
+ * joint — since the library stores dimensions in the as-used orientation,
+ * heightMm IS the vertical module driver and widthMm IS the horizontal
+ * one. No flipping.
  *
  * Falls back to the SEQ defaults if the user's library has no lintel blocks
  * defined — keeps existing AU projects unchanged.
