@@ -175,6 +175,48 @@ const WALL_FACE_SNAP_MM = 25
 const AXIS_SNAP_DEGREES = 4
 
 /**
+ * Ruler-specific axis snap window. Wider than the wall-drawing AXIS_SNAP_DEGREES
+ * because the ruler is a quick measurement tool — users want a near-horizontal
+ * drag to lock to horizontal without having to be pixel-precise. Set to 8°,
+ * which catches "I dragged across the page roughly horizontally" without
+ * accidentally snapping a deliberate 30° measurement.
+ */
+const RULER_AXIS_SNAP_DEGREES = 8
+
+/**
+ * Snap a ruler endpoint to horizontal / vertical relative to its anchor when
+ * the line between them is within RULER_AXIS_SNAP_DEGREES of an axis. Holding
+ * Shift bypasses the snap so genuine angled measurements still work.
+ *
+ * Used by both the live preview line (so the user can see the snap happening)
+ * and the commit click (so the stored measurement matches what they saw).
+ */
+function snapRulerToAxis(
+  anchor: Point,
+  cursorMm: Point,
+  bypass: boolean
+): Point {
+  if (bypass) return cursorMm
+  const dx = cursorMm.x - anchor.x
+  const dy = cursorMm.y - anchor.y
+  if (dx === 0 && dy === 0) return cursorMm
+  // |angle| from atan2 wraps in [0, π]. We compare absolute values against
+  // 0 (horizontal) and π/2 (vertical) and the wrap-around at π (also
+  // horizontal).
+  const absAngle = Math.abs(Math.atan2(dy, dx))
+  const threshold = (RULER_AXIS_SNAP_DEGREES * Math.PI) / 180
+  // Horizontal — drop the cursor onto the anchor's y.
+  if (absAngle < threshold || Math.abs(absAngle - Math.PI) < threshold) {
+    return { x: cursorMm.x, y: anchor.y }
+  }
+  // Vertical — drop the cursor onto the anchor's x.
+  if (Math.abs(absAngle - Math.PI / 2) < threshold) {
+    return { x: anchor.x, y: cursorMm.y }
+  }
+  return cursorMm
+}
+
+/**
  * Wall length, opening width, control-joint offset, and pier position all
  * snap to multiples of this many millimetres. Real masonry is laid out on
  * coarse increments — nothing's ever spec'd at 357 mm — so always rounding
@@ -1714,13 +1756,15 @@ function WallDrawingLayerInner({
     }
 
     if (placingRuler) {
-      // Ruler is intentionally FREE — no snaps. The user is measuring
-      // something on the plan, not aligning new geometry to existing
-      // walls, so endpoint / face / axis snaps would just fight them.
-      // Click lands exactly where the cursor is. Parent tracks whether
-      // this is the first click (sets the anchor) or second (commits the
-      // measurement).
-      onRulerClick?.({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      // Ruler doesn't snap to existing walls / endpoints — but DOES snap
+      // to horizontal / vertical once an anchor is down, so a near-
+      // axis-aligned drag locks to the exact axis. Shift bypasses the
+      // axis snap for genuinely angled measurements.
+      const rawMm = { x: pxToMm(raw.x), y: pxToMm(raw.y) }
+      const committed = rulerAnchorMm
+        ? snapRulerToAxis(rulerAnchorMm, rawMm, e.evt.shiftKey)
+        : rawMm
+      onRulerClick?.(committed)
       return
     }
 
@@ -1842,12 +1886,16 @@ function WallDrawingLayerInner({
       }
       setTiedPierHover(proj)
     } else if (placingRuler) {
-      // Ruler runs FREE — no snap. Cursor mm tracks the raw pointer so
-      // the in-progress measurement line follows the cursor exactly.
-      // setSnapTarget(null) keeps any leftover snap ring from a previous
-      // tool from sticking around.
+      // Ruler hover: once an anchor is down, the live preview line
+      // axis-snaps to horizontal / vertical when within the snap
+      // window. Shift bypasses. Before the anchor is set the cursor
+      // tracks the raw pointer (nothing to snap relative to).
       setSnapTarget(null)
-      setCursorMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      const rawMm = { x: pxToMm(raw.x), y: pxToMm(raw.y) }
+      const shiftDown = !!(e.evt as MouseEvent & { shiftKey?: boolean }).shiftKey
+      setCursorMm(
+        rulerAnchorMm ? snapRulerToAxis(rulerAnchorMm, rawMm, shiftDown) : rawMm
+      )
     } else if (placingFreestandingPier) {
       // Unified pier mode — preview matches what the click would actually do:
       // show the tied-pier hover when the cursor sits inside a straight wall's

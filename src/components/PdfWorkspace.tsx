@@ -351,6 +351,26 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       setPrimaryCurrentPage(currentPage)
     }
     setActiveReferenceIndex(index)
+
+    // Reference PDFs are read-only (only the ruler is usable on them) so
+    // any drawing mode the user had active on the primary needs to be
+    // turned off before we flip — otherwise the cursor stays crosshair'd
+    // and clicks attempt actions the layer no longer accepts.
+    if (index !== null) {
+      setDrawingMode(false)
+      setDrawingCurveMode(false)
+      setPlacingOpening(false)
+      setPlacingControlJoint(false)
+      setPlacingTiedPier(false)
+      setPlacingFreestandingPier(false)
+    }
+    // Clear ruler anchor whenever the file changes — leftover anchor mm
+    // values are interpreted in the new file's coordinate space, which
+    // is meaningless. Measurements themselves (transient, per-page in
+    // state) also get cleared so the new file starts fresh.
+    setRulerAnchorMm(null)
+    setMeasurementsByPage({})
+
     // Re-entering primary → restore its page.
     if (index === null) {
       setCurrentPage(primaryCurrentPage)
@@ -4398,10 +4418,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 setSelectedPierId(null)
               }}
               disabled={
-                !currentScale || calibrating || missingActiveType || activeIsCurveMakeup
+                !currentScale ||
+                calibrating ||
+                missingActiveType ||
+                activeIsCurveMakeup ||
+                isReferenceView
               }
               title={
-                missingActiveType
+                isReferenceView
+                  ? 'Drawing is disabled on reference PDFs — only the ruler is available. Switch back to the primary plan to draw.'
+                  : missingActiveType
                   ? 'Pick a wall type in the Wall types panel before drawing.'
                   : activeIsCurveMakeup
                   ? 'This wall type is bound to a curve — pick a straight wall type or use the Curved wall tool.'
@@ -4428,9 +4454,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   setSelectedOpeningId(null)
                   setSelectedPierId(null)
                 }}
-                disabled={!currentScale || calibrating || missingActiveType}
+                disabled={
+                  !currentScale || calibrating || missingActiveType || isReferenceView
+                }
                 title={
-                  missingActiveType
+                  isReferenceView
+                    ? 'Reference PDFs are read-only — switch to the primary plan to draw curves.'
+                    : missingActiveType
                     ? 'Pick a wall type in the Wall types panel before drawing.'
                     : undefined
                 }
@@ -4455,7 +4485,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 setSelectedOpeningId(null)
                 setSelectedPierId(null)
               }}
-              disabled={!currentScale || calibrating || currentPageWalls.length === 0}
+              disabled={
+                !currentScale ||
+                calibrating ||
+                currentPageWalls.length === 0 ||
+                isReferenceView
+              }
+              title={
+                isReferenceView
+                  ? 'Reference PDFs are read-only — switch to the primary plan to add openings.'
+                  : undefined
+              }
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 placingOpening
                   ? 'bg-amber-700 text-white hover:bg-amber-800'
@@ -4477,8 +4517,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   setSelectedOpeningId(null)
                   setSelectedPierId(null)
                 }}
-                disabled={!currentScale || calibrating || currentPageWalls.length === 0}
-                title="Click on a wall to split it at that point with a control joint"
+                disabled={
+                  !currentScale ||
+                  calibrating ||
+                  currentPageWalls.length === 0 ||
+                  isReferenceView
+                }
+                title={
+                  isReferenceView
+                    ? 'Reference PDFs are read-only — switch to the primary plan to add control joints.'
+                    : 'Click on a wall to split it at that point with a control joint'
+                }
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   placingControlJoint
                     ? 'bg-rose-700 text-white hover:bg-rose-800'
@@ -4508,8 +4557,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   setSelectedOpeningId(null)
                   setSelectedPierId(null)
                 }}
-                disabled={!currentScale || calibrating}
-                title="Click on a wall for a tied pier; anywhere else for a freestanding pier."
+                disabled={!currentScale || calibrating || isReferenceView}
+                title={
+                  isReferenceView
+                    ? 'Reference PDFs are read-only — switch to the primary plan to add piers.'
+                    : 'Click on a wall for a tied pier; anywhere else for a freestanding pier.'
+                }
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   placingFreestandingPier
                     ? 'bg-teal-800 text-white hover:bg-teal-900'
@@ -5119,6 +5172,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     renderAnnotationLayer={false}
                     renderTextLayer={false}
                     onLoadSuccess={(page) => {
+                      // Reference PDFs are view-only — they don't carry their
+                      // own calibration, and pagesData is keyed by page number
+                      // (which collides between the primary and a reference's
+                      // page 1). Writing the reference's dimensions into
+                      // pagesData would wipe the primary's calibration when
+                      // the user switches back. Skip the write entirely on
+                      // references; the ruler reuses whatever scale the
+                      // primary had, which is an OK approximation when both
+                      // plans are at the same paper size.
+                      if (isReferenceView) return
                       const widthMm = (page.originalWidth / POINTS_PER_INCH) * MM_PER_INCH
                       const heightMm = (page.originalHeight / POINTS_PER_INCH) * MM_PER_INCH
                       setPagesData((prev) => {
@@ -5157,14 +5220,19 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               )}
 
               {/* Wall drawing layer — at renderedZoom resolution; scales with
-                  parent. Hidden when the user is viewing a reference PDF
-                  (engineering specs etc.) — walls only live on the primary,
-                  so overlaying them on a different page geometry would just
-                  be confusing. */}
-              {(mode === 'block' || mode === 'brick') && !isReferenceView && renderedPageHeight !== null && currentScale && (
+                  parent. On reference PDFs the layer ONLY mounts when the user
+                  has the ruler active, so they can measure things on the
+                  reference (e.g. window sizes on an engineering sheet) while
+                  every other tool stays inert. The walls / openings / piers
+                  passed to the layer are empty in reference mode so nothing
+                  from the primary's geometry overlays the reference. */}
+              {(mode === 'block' || mode === 'brick') &&
+                (!isReferenceView || placingRuler) &&
+                renderedPageHeight !== null &&
+                currentScale && (
                 <WallDrawingLayer
-                  walls={currentPageWalls}
-                  openings={currentPageOpenings}
+                  walls={isReferenceView ? [] : currentPageWalls}
+                  openings={isReferenceView ? [] : currentPageOpenings}
                   wallThicknessByWallId={wallThicknessByWallId}
                   visualWidth={renderedPageWidth}
                   visualHeight={renderedPageHeight}
