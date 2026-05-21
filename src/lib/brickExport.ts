@@ -409,7 +409,8 @@ function buildAssumptions(
   settings: BrickSettings,
   totalLinealMm: number,
   plascourseCount: number,
-  customNotes: string
+  customNotes: string,
+  supplyItemNotes: string[] = []
 ): string[] {
   if (!inclusions.assumptions) return []
 
@@ -437,6 +438,12 @@ function buildAssumptions(
       `${plascourseCount} ${plascourseCount === 1 ? 'Roll' : 'Rolls'} of Plascourse allowed for ${formatNumber(totalLengthM, 1)} Lineal Metres of Brickwork.`
     )
   }
+
+  // Supply items contributed from the user's Material library — each item
+  // tells the reader the rate that was applied, in the same plain-English
+  // style as the ties / plascourse lines above. Built by the caller so the
+  // rate text can read off the same item objects that drove the tally.
+  items.push(...supplyItemNotes)
 
   // Custom notes from the user — split on newlines, ignore blank lines
   const customLines = customNotes
@@ -511,12 +518,59 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   const docTitle =
     `${projectDetails.projectName.trim() || projectDetails.siteAddress.trim() || 'Brickwork Takeoff'} — Brickwork Takeoff`
 
+  // Compute supply-item rows + assumption notes in a single pass so the
+  // Accessories table below and the Assumptions section above stay in
+  // lockstep — the user-defined items show up in both places consistently.
+  const supplyItems = getUserSettings().supplyItems ?? []
+  const brickArea_m2 = tally.totalAreaSqMm / 1_000_000
+  const brickRun_m = tally.totalLinealMm / 1000
+  type SupplyRow = { name: string; qty: number; noteRate: string }
+  const supplyRows: SupplyRow[] = []
+  for (const item of supplyItems) {
+    if (!item.appliesTo.includes('brick')) continue
+    if (!item.enabledByDefault) continue
+    let qty = 0
+    let noteRate = ''
+    switch (item.unit) {
+      case 'each':
+        qty = item.rate
+        noteRate = `${item.rate} per project`
+        break
+      case 'per-brick':
+        qty = item.rate * tally.brickCount
+        noteRate = `${item.rate} per brick`
+        break
+      case 'per-m2':
+        qty = item.rate * brickArea_m2
+        noteRate = `${item.rate} per m²`
+        break
+      case 'per-m-lineal':
+        qty = item.rate * brickRun_m
+        noteRate = `${item.rate} per lineal metre`
+        break
+      case 'per-opening':
+        qty = item.rate * tally.openingCount
+        noteRate = `${item.rate} per opening`
+        break
+      case 'per-block':
+        // Brick estimate — block-relative rates don't apply.
+        continue
+    }
+    const rounded = Math.ceil(qty)
+    if (rounded <= 0) continue
+    supplyRows.push({ name: item.name, qty: rounded, noteRate })
+  }
+  const supplyItemNotes = supplyRows.map(
+    (r) => `${r.name} allowance at ${r.noteRate} — ${r.qty.toLocaleString()} included.`
+  )
+
   const assumptions = buildAssumptions(
     inclusions,
     settings,
     tally.totalLinealMm,
     tally.plascourseCount,
-    projectDetails.notes
+    projectDetails.notes,
+    supplyItemNotes
   )
 
   const { groups: lintelGroups, oversizedCount, total: lintelTotal } = groupLintels(
@@ -714,6 +768,15 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     accessoriesRows.push(
       `<tr><td>Plascourse</td><td class="right">${tally.plascourseCount} ${tally.plascourseCount === 1 ? 'roll' : 'rolls'}</td></tr>`
     )
+
+  // Append every user-defined supply item that applied to brick. supplyRows
+  // were computed up top (so the Assumptions section stays in lockstep) —
+  // here we just render them into the Accessories table.
+  for (const row of supplyRows) {
+    accessoriesRows.push(
+      `<tr><td>${escapeHtml(row.name)}</td><td class="right">${row.qty.toLocaleString()}</td></tr>`
+    )
+  }
 
   const accessoriesTable = accessoriesRows.length > 0
     ? `
