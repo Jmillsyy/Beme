@@ -4992,6 +4992,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 />
               ) : (
                 <Document
+                  // `key` forces a full unmount/remount of Document whenever
+                  // the active file changes. Without it react-pdf can leave
+                  // the previous file's canvas on screen — when you toggle
+                  // between primary and a reference PDF, the worker hangs on
+                  // to the prior PDFDocumentProxy and the displayed Page
+                  // doesn't actually re-rasterise. Keying off the file
+                  // selector (primary vs ref-N) makes React's diff treat
+                  // them as separate elements and react-pdf spins up a
+                  // fresh load every time.
+                  key={isReferenceView ? `ref-${activeReferenceIndex}` : 'primary'}
                   file={displayedPdfFile}
                   onLoadSuccess={({ numPages: n }) => setNumPages(n)}
                   loading={<p className="text-ink-400 p-12">Loading PDF…</p>}
@@ -5404,7 +5414,15 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
       ref={sidebarRef}
       className="w-44 flex-shrink-0 max-h-full overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2 shadow-lg"
     >
-      <Document file={pdfFile} loading={null} error={null}>
+      <Document
+        // Same fix as the main viewer: re-mount the thumbnail Document when
+        // the displayed PDF changes so its inner Pages re-rasterise against
+        // the new file instead of showing the previous file's thumbnails.
+        key={pdfFile?.name ?? 'no-file'}
+        file={pdfFile}
+        loading={null}
+        error={null}
+      >
         <div className="space-y-2.5">
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
             const isCurrent = pageNum === currentPage
