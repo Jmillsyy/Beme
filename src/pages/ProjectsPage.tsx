@@ -51,6 +51,15 @@ export default function ProjectsPage() {
     if (p === 'today' || p === 'week' || p === 'month') return p
     return 'all'
   })()
+  // Reference number filter. Whatever the user types is kept as a string
+  // and matched with a substring contains check against the project's
+  // reference number (also stringified), so partial digits like '1234'
+  // narrow to every project whose number includes that run of digits.
+  // We strip leading '#' so paste-from-PDF works.
+  const refFilter: string = (() => {
+    const raw = searchParams.get('ref') ?? ''
+    return raw.replace(/^#/, '').replace(/\s+/g, '')
+  })()
 
   /** Update one filter without losing the others — keeps each onChange one-line. */
   function updateParam(key: string, value: string | null) {
@@ -116,6 +125,17 @@ export default function ProjectsPage() {
         const owner = p.ownerUserId ?? p.createdByUserId ?? null
         if (owner !== ownerFilter) return false
       }
+      if (refFilter.length > 0) {
+        // Substring contains. The ref column is a number — stringify with
+        // 6-digit padding so "100" matches "100123" AND "000100", which
+        // matches the formatting the user sees on PDFs + the project bar.
+        if (typeof p.referenceNumber !== 'number') return false
+        const padded =
+          p.referenceNumber >= 100000
+            ? `${p.referenceNumber}`
+            : String(p.referenceNumber).padStart(6, '0')
+        if (!padded.includes(refFilter)) return false
+      }
       if (lowerBound !== null) {
         const iso =
           p.status === 'completed'
@@ -126,7 +146,7 @@ export default function ProjectsPage() {
       }
       return true
     })
-  }, [projects, statusFilter, typeFilter, ownerFilter, period])
+  }, [projects, statusFilter, typeFilter, ownerFilter, refFilter, period])
 
   // Sort: completed by completedAt desc; in-progress + all by updatedAt desc.
   const sorted = useMemo(() => {
@@ -158,6 +178,14 @@ export default function ProjectsPage() {
         const owner = p.ownerUserId ?? p.createdByUserId ?? null
         if (owner !== ownerFilter) continue
       }
+      if (refFilter.length > 0) {
+        if (typeof p.referenceNumber !== 'number') continue
+        const padded =
+          p.referenceNumber >= 100000
+            ? `${p.referenceNumber}`
+            : String(p.referenceNumber).padStart(6, '0')
+        if (!padded.includes(refFilter)) continue
+      }
       if (lowerBound !== null) {
         const iso =
           p.status === 'completed'
@@ -171,7 +199,7 @@ export default function ProjectsPage() {
       if (p.status === 'completed') acc.completed++
     }
     return acc
-  }, [projects, typeFilter, ownerFilter, period])
+  }, [projects, typeFilter, ownerFilter, refFilter, period])
 
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
@@ -287,10 +315,34 @@ export default function ProjectsPage() {
               </select>
             </div>
 
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-400 mb-1.5">
+                Reference
+              </div>
+              <div className="flex items-stretch">
+                <div className="flex items-center px-2 rounded-l-md border border-ink-600 border-r-0 bg-ink-800 text-ink-400 text-sm">
+                  #
+                </div>
+                <input
+                  value={refFilter}
+                  onChange={(e) =>
+                    updateParam(
+                      'ref',
+                      e.target.value.replace(/^#/, '').replace(/\s+/g, '')
+                    )
+                  }
+                  placeholder="100123"
+                  inputMode="numeric"
+                  className="w-32 px-2 py-1.5 rounded-r-md border border-ink-600 bg-ink-900 text-ink-50 text-sm tabular-nums focus:outline-none focus:border-beme-400"
+                />
+              </div>
+            </div>
+
             {(statusFilter !== 'all' ||
               typeFilter !== 'all' ||
               ownerFilter !== 'any' ||
-              period !== 'all') && (
+              period !== 'all' ||
+              refFilter !== '') && (
               <button
                 onClick={() => setSearchParams({}, { replace: true })}
                 className="text-xs text-ink-400 hover:text-beme-300 ml-auto"
