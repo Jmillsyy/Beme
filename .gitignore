@@ -25,3 +25,4 @@ dist-ssr
 
 # Supabase credentials
 .env.local
+patches-out/

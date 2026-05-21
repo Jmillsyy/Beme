@@ -131,55 +131,67 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
   return (
     <aside className="w-full lg:w-[300px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-4">
       {/* Start something new — anchored at the TOP of the rail so the
-          highest-frequency action (create a new estimate / request) is the
-          first thing the user's eye lands on. Each button uses py-3.5 for a
-          chunkier hit target and a stronger visual presence, with a
-          full-bleed primary "+ New request" button on org accounts. */}
+          highest-frequency action is the first thing the user's eye lands on.
+          The hierarchy is intentional: Block + Brick estimates are the
+          headline actions (this is a brick-and-block estimating app), so
+          they read as big cards with chunkier padding and a larger title.
+          "+ New request" is a useful but secondary feature — for orgs that
+          want to route an estimate through a teammate — so it sits below
+          a divider as a compact pill button. */}
       <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-4">
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
           Start something new
         </h3>
-        <div className="flex flex-col gap-2.5">
-          {isOrgUser && (
-            <Link
-              to="/requests/new"
-              className="px-4 py-3 rounded-lg bg-beme-500 text-black text-base hover:bg-beme-400 transition-colors text-center font-semibold"
-            >
-              + New request
-            </Link>
-          )}
-          <Link
-            to="/project/brick"
-            className="px-4 py-3.5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 text-sm hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3"
-          >
-            <span
-              className="inline-block w-1 h-10 rounded-full bg-rose-400/70 flex-shrink-0"
-              aria-hidden
-            />
-            <div className="flex-1 text-left">
-              <div className="font-semibold">Brick estimate</div>
-              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-0.5">
-                Trace walls, calculate brickwork area
-              </div>
-            </div>
-            <span className="text-ink-500 group-hover:text-beme-300">→</span>
-          </Link>
+        <div className="flex flex-col gap-3">
           <Link
             to="/project/block"
-            className="px-4 py-3.5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 text-sm hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3"
+            className="px-4 py-5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3.5"
           >
             <span
-              className="inline-block w-1 h-10 rounded-full bg-sky-400/70 flex-shrink-0"
+              className="inline-block w-1.5 h-14 rounded-full bg-sky-400/80 flex-shrink-0"
               aria-hidden
             />
             <div className="flex-1 text-left">
-              <div className="font-semibold">Block estimate</div>
-              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-0.5">
+              <div className="font-semibold text-base leading-tight">Block estimate</div>
+              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-1">
                 Draw walls, openings, piers, lintels
               </div>
             </div>
-            <span className="text-ink-500 group-hover:text-beme-300">→</span>
+            <span className="text-ink-500 group-hover:text-beme-300 text-lg">→</span>
           </Link>
+          <Link
+            to="/project/brick"
+            className="px-4 py-5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3.5"
+          >
+            <span
+              className="inline-block w-1.5 h-14 rounded-full bg-rose-400/80 flex-shrink-0"
+              aria-hidden
+            />
+            <div className="flex-1 text-left">
+              <div className="font-semibold text-base leading-tight">Brick estimate</div>
+              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-1">
+                Trace walls, calculate brickwork area
+              </div>
+            </div>
+            <span className="text-ink-500 group-hover:text-beme-300 text-lg">→</span>
+          </Link>
+          {isOrgUser && (
+            <>
+              <div className="flex items-center gap-2 pt-1 pb-0.5">
+                <span className="flex-1 h-px bg-ink-700/60" aria-hidden />
+                <span className="text-[10px] uppercase tracking-[0.12em] text-ink-500">
+                  Or send to a teammate
+                </span>
+                <span className="flex-1 h-px bg-ink-700/60" aria-hidden />
+              </div>
+              <Link
+                to="/requests/new"
+                className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-200 text-xs hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors text-center"
+              >
+                + New request
+              </Link>
+            </>
+          )}
         </div>
       </div>
 
