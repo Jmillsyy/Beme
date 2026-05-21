@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import type { BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
+import { useUserSettings } from '../lib/userSettings'
 
 interface BrickTallyPanelProps {
   walls: Wall[]
@@ -25,10 +26,68 @@ interface LintelGroup {
 function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
   const [detailExpanded, setDetailExpanded] = useState(false)
+  const { settings: userSettings } = useUserSettings()
 
   const tally = useMemo(
     () => calculateBrickTally(walls, openings, settings),
     [walls, openings, settings]
+  )
+
+  /**
+   * Per-supply-item rows pulled from the user's Material library catalogue.
+   * Same math as the brick export — each entry resolves to a whole-unit
+   * count from its unit type and the brick tally. Filtered to items that
+   * apply to brick AND are enabled by default; rows that resolve to zero
+   * are dropped so the table stays tidy. The list is name-deduped against
+   * the legacy ties / plascourse rows below: if a "Brick Tie" supply item
+   * is present, the legacy ties row hides and the supply item takes over.
+   */
+  const supplyRows = useMemo(() => {
+    const items = userSettings.supplyItems ?? []
+    const areaSqM = tally.totalAreaSqMm / 1_000_000
+    const lengthM = tally.totalLinealMm / 1000
+    const rows: { name: string; qty: number; rateLabel: string }[] = []
+    for (const item of items) {
+      if (!item.appliesTo.includes('brick')) continue
+      if (!item.enabledByDefault) continue
+      let qty = 0
+      let rateLabel = ''
+      switch (item.unit) {
+        case 'each':
+          qty = item.rate
+          rateLabel = `${item.rate}/project`
+          break
+        case 'per-brick':
+          qty = item.rate * tally.brickCount
+          rateLabel = `${item.rate}/brick`
+          break
+        case 'per-m2':
+          qty = item.rate * areaSqM
+          rateLabel = `${item.rate}/m²`
+          break
+        case 'per-m-lineal':
+          qty = item.rate * lengthM
+          rateLabel = `${item.rate}/m`
+          break
+        case 'per-opening':
+          qty = item.rate * tally.openingCount
+          rateLabel = `${item.rate}/opening`
+          break
+        case 'per-block':
+          continue
+      }
+      const rounded = Math.ceil(qty)
+      if (rounded <= 0) continue
+      rows.push({ name: item.name, qty: rounded, rateLabel })
+    }
+    return rows
+  }, [userSettings.supplyItems, tally])
+
+  const supplyCoversTies = supplyRows.some((r) =>
+    r.name.toLowerCase().includes('brick tie')
+  )
+  const supplyCoversPlascourse = supplyRows.some((r) =>
+    r.name.toLowerCase().includes('plascourse')
   )
 
   // Group lintels by (length, profile) for an order-style summary
@@ -119,7 +178,7 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
                   {tally.brickCount.toLocaleString()}
                 </td>
               </tr>
-              {settings.ties.enabled && (
+              {settings.ties.enabled && !supplyCoversTies && (
                 <tr className="border-b border-ink-700/60">
                   <td className="px-3 py-1.5 text-ink-300">
                     Brick ties <span className="text-xs text-ink-400">({settings.ties.perSquareMetre}/m²)</span>
@@ -129,7 +188,7 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
                   </td>
                 </tr>
               )}
-              {settings.plascourse.enabled && (
+              {settings.plascourse.enabled && !supplyCoversPlascourse && (
                 <tr className="border-b border-ink-700/60">
                   <td className="px-3 py-1.5 text-ink-300">
                     Plascourse <span className="text-xs text-ink-400">(1/{settings.plascourse.metresPerUnit}m)</span>
@@ -139,6 +198,22 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
                   </td>
                 </tr>
               )}
+              {/* Supply items from the user's Material library — rendered
+                  alongside the legacy ties/plascourse rows so the live
+                  workspace tally matches what the exported PDF will show.
+                  Same name-dedupe rules: a 'Brick Ties' supply item replaces
+                  the legacy ties row above. */}
+              {supplyRows.map((r) => (
+                <tr key={r.name} className="border-b border-ink-700/60">
+                  <td className="px-3 py-1.5 text-ink-300">
+                    {r.name}{' '}
+                    <span className="text-xs text-ink-400">({r.rateLabel})</span>
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+                    {r.qty.toLocaleString()}
+                  </td>
+                </tr>
+              ))}
               {tally.lintels.length > 0 && (
                 <tr className="border-b border-ink-700/60">
                   <td className="px-3 py-1.5 text-ink-300">Total lintel length</td>
