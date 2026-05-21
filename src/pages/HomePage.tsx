@@ -709,7 +709,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               </span>
               {myProjects.length > 5 && (
                 <Link
-                  to="/requests?scope=mine&status=in_progress"
+                  to={`/projects?status=in-progress${userId ? `&owner=${userId}` : ''}`}
                   className="text-xs text-beme-300 hover:text-beme-200"
                 >
                   View all →
@@ -747,7 +747,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               </span>
               {teamProjects.length > 5 && (
                 <Link
-                  to="/requests?scope=all&status=in_progress"
+                  to="/projects?status=in-progress"
                   className="text-xs text-beme-300 hover:text-beme-200"
                 >
                   View all →
@@ -786,7 +786,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             Team — recently completed
           </h3>
           <Link
-            to="/requests?scope=all&status=completed"
+            to="/projects?status=completed"
             className="text-xs text-beme-300 hover:text-beme-200"
           >
             View all →
