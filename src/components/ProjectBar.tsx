@@ -40,10 +40,27 @@ interface ProjectBarProps {
    * or unknown author).
    */
   createdByDisplayName?: string | null
+  /**
+   * Six-digit reference number allocated server-side. Surfaced as a small
+   * "#NNNNNN" pill next to the project title so it's at-hand for quoting
+   * over the phone, copying into emails, or looking up later. Null hides
+   * the pill (pre-save drafts that haven't been allocated a number yet).
+   */
+  referenceNumber?: number | null
   onSave: () => void
   onToggleStatus: () => void
   onDelete: () => void
   onOpenDetails: () => void
+}
+
+/**
+ * Render a 6-digit reference number as a zero-padded string. Used by the
+ * pill in the bar and any tooltip / aria label. Bigger-than-6-digit values
+ * (we won't hit this for a long time) just print as-is rather than
+ * silently truncating.
+ */
+function formatReferenceNumber(n: number): string {
+  return n >= 100000 ? `${n}` : n.toString().padStart(6, '0')
 }
 
 function formatRelativeTime(iso: string): string {
@@ -78,6 +95,7 @@ export default function ProjectBar({
   mode,
   sourceRequest,
   createdByDisplayName,
+  referenceNumber,
   onSave,
   onToggleStatus,
   onDelete,
@@ -188,6 +206,14 @@ export default function ProjectBar({
               }`}
             >
               {mode}
+            </span>
+          )}
+          {typeof referenceNumber === 'number' && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded tabular-nums font-semibold bg-ink-700 text-ink-200 border border-ink-500"
+              title={`Reference number — quote this when looking the project up. #${formatReferenceNumber(referenceNumber)}`}
+            >
+              #{formatReferenceNumber(referenceNumber)}
             </span>
           )}
           <span

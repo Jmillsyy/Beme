@@ -57,6 +57,12 @@ export interface PageInfo {
 interface ExportParams {
   projectDetails: ProjectDetails
   inclusions: BrickExportInclusions
+  /**
+   * Server-allocated 6-digit reference number. Embedded in the exported
+   * document header + meta strip so the reader can quote it back when
+   * looking the job up. Optional for projects predating the rollout.
+   */
+  referenceNumber?: number
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
@@ -478,6 +484,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   const {
     projectDetails,
     inclusions,
+    referenceNumber,
     walls,
     openings,
     settings,
@@ -486,6 +493,15 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     pdfFile,
     pagesInfo,
   } = params
+
+  const referenceText =
+    typeof referenceNumber === 'number'
+      ? `#${
+          referenceNumber >= 100000
+            ? referenceNumber
+            : String(referenceNumber).padStart(6, '0')
+        }`
+      : ''
   const tally = calculateBrickTally(walls, openings, settings)
 
   const headerTitle =
@@ -545,13 +561,17 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
       <div class="brand">${brandBlock}</div>
       <div class="title-block">
         <div class="title-main">Brickwork Takeoff — Material Schedule</div>
-        <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm</div>
+        <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm${
+          referenceText ? ` | Ref ${escapeHtml(referenceText)}` : ''
+        }</div>
       </div>
     </header>
   `
 
   const metaBlock = (() => {
     const rows: string[] = []
+    if (referenceText)
+      rows.push(`<div><span>Reference</span> ${escapeHtml(referenceText)}</div>`)
     if (projectDetails.clientName.trim())
       rows.push(`<div><span>Client</span> ${escapeHtml(projectDetails.clientName)}</div>`)
     if (projectDetails.estimatorName.trim())

@@ -13,6 +13,8 @@ import { useOrganisations } from '../lib/organisations'
 
 interface BrickExportPanelProps {
   projectDetails: ProjectDetails
+  /** 6-digit project reference number forwarded to the export. */
+  referenceNumber?: number | null
   inclusions: BrickExportInclusions
   onChangeInclusions: (inclusions: BrickExportInclusions) => void
   settings: BrickSettings
@@ -33,6 +35,7 @@ interface BrickExportPanelProps {
  */
 function BrickExportPanelImpl({
   projectDetails,
+  referenceNumber,
   inclusions,
   onChangeInclusions,
   settings,
@@ -61,6 +64,7 @@ function BrickExportPanelImpl({
     try {
       await exportBrickEstimate({
         projectDetails,
+        referenceNumber: referenceNumber ?? undefined,
         inclusions,
         walls,
         openings,

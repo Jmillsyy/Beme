@@ -91,6 +91,16 @@ export interface SavedProject {
   type: ProjectType
   status: ProjectStatus
   /**
+   * Six-digit human-readable reference number, allocated by Postgres at
+   * insert time (sequence + trigger). Stable across renames + updates;
+   * unique per project; surfaced in the project bar, in every exported
+   * PDF, and as the lookup key for "find a job by its ref". Optional on
+   * the SavedProject so a fresh in-memory project before its first save
+   * doesn't have to know it yet — the trigger fills it on insert and the
+   * client reads it back on next load.
+   */
+  referenceNumber?: number
+  /**
    * Organisation that owns this project. Null/undefined for personal
    * (single-user) projects. When set, RLS permits any member of the org
    * to see/edit the project, which is how estimate-request work gets
@@ -199,8 +209,12 @@ export function generateProjectId(): string {
   return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-/** Insert or update a saved project. */
-export async function saveProject(project: SavedProject): Promise<void> {
+/**
+ * Insert or update a saved project. Returns the persisted SavedProject so
+ * callers can pick up server-assigned fields — chiefly `referenceNumber`,
+ * which Postgres allocates on first INSERT via a sequence + trigger.
+ */
+export async function saveProject(project: SavedProject): Promise<SavedProject> {
   const uid = await currentUserId()
   if (uid) return cloudSaveProject(project, uid)
   return localSaveProject(project)
@@ -218,6 +232,39 @@ export async function listProjects(): Promise<SavedProject[]> {
   const uid = await currentUserId()
   if (uid) return cloudListProjects(uid)
   return localListProjects()
+}
+
+/**
+ * Look up a project by its 6-digit reference number. Returns the project's
+ * id + type so the caller can navigate directly into the workspace, or null
+ * when no project with that reference number is visible to the user.
+ *
+ * Cloud-only: personal / offline projects don't carry reference numbers.
+ * Falls back to a flat scan of the local store for offline users so the
+ * helper doesn't error in that mode.
+ */
+export async function findProjectByReferenceNumber(
+  referenceNumber: number
+): Promise<{ id: string; type: ProjectType } | null> {
+  if (!isSupabaseConfigured) {
+    const all = await localListProjects()
+    const match = all.find((p) => p.referenceNumber === referenceNumber)
+    return match ? { id: match.id, type: match.type } : null
+  }
+  const uid = await currentUserId()
+  if (!uid) return null
+  const { data, error } = await supabase()
+    .from('projects')
+    .select('id, type')
+    .eq('reference_number', referenceNumber)
+    .maybeSingle()
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.warn('Failed to look up project by reference:', error.message)
+    return null
+  }
+  if (!data) return null
+  return { id: data.id as string, type: data.type as ProjectType }
 }
 
 /** Delete a project by id. */
@@ -331,6 +378,7 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
     updatedAt,
     completedAt,
     ownerUserId,
+    referenceNumber,
     pdfBlob: _pdfBlob,
     pdfFileName,
     referencePdfs,
@@ -342,6 +390,11 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
   // backfills existing rows, but new inserts from app code need to fill
   // the column themselves. Subsequent saves preserve whatever owner the
   // pickup flow or share UI set it to.
+  //
+  // referenceNumber is intentionally NOT sent on save — the DB allocates
+  // it via a trigger on INSERT and the client reads it back on next load.
+  // Sending it would risk clobbering an existing row's number on update.
+  void referenceNumber
   return {
     id,
     user_id: userId,
@@ -363,6 +416,7 @@ interface CloudProjectRow {
   user_id: string
   organisation_id: string | null
   owner_user_id: string | null
+  reference_number: number | null
   type: ProjectType
   status: ProjectStatus
   created_at: string
@@ -375,6 +429,7 @@ interface CloudProjectRow {
     | 'status'
     | 'organisationId'
     | 'ownerUserId'
+    | 'referenceNumber'
     | 'createdAt'
     | 'updatedAt'
     | 'completedAt'
@@ -397,6 +452,7 @@ function rowToProjectMeta(row: CloudProjectRow): SavedProject {
     status: row.status,
     organisationId: row.organisation_id ?? undefined,
     ownerUserId: row.owner_user_id ?? row.user_id,
+    referenceNumber: row.reference_number ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at ?? undefined,
@@ -443,8 +499,24 @@ async function cloudSaveProject(p: SavedProject, userId: string): Promise<void> 
 
   const projectForRow: SavedProject = { ...p, referencePdfs: refUploaded }
   const row = projectToCloudRow(projectForRow, userId, pdfPath)
-  const { error } = await client.from('projects').upsert(row, { onConflict: 'id' })
+  // Ask Supabase to return the saved row so we can pick up server-allocated
+  // fields (referenceNumber, primarily). The .select().single() chain keeps
+  // the upsert atomic and avoids a follow-up SELECT round-trip.
+  const { data, error } = await client
+    .from('projects')
+    .upsert(row, { onConflict: 'id' })
+    .select()
+    .single()
   if (error) throw new Error(`Project save failed: ${error.message}`)
+  const persisted = rowToProjectMeta(data as CloudProjectRow)
+  // Re-attach the in-memory blobs (the cloud row doesn't carry pdfBlob /
+  // referencePdfs.blob), so the caller gets a complete SavedProject with
+  // the new referenceNumber AND its existing file objects.
+  return {
+    ...persisted,
+    pdfBlob: p.pdfBlob,
+    referencePdfs: refUploaded,
+  }
 }
 
 async function cloudGetProject(id: string, _userId: string): Promise<SavedProject | undefined> {
@@ -612,8 +684,9 @@ function withLocalStore<T>(
   )
 }
 
-async function localSaveProject(project: SavedProject): Promise<void> {
+async function localSaveProject(project: SavedProject): Promise<SavedProject> {
   await withLocalStore('readwrite', (s) => s.put(project))
+  return project
 }
 
 async function localGetProject(id: string): Promise<SavedProject | undefined> {

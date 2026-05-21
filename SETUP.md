@@ -895,7 +895,80 @@ edit replicates to all members on their next sign-in / refresh.
 
 ---
 
-## 10. (Per-project access control) ownership + sharing + role rename
+## 10. (Reference numbers) 6-digit IDs stamped on every project
+
+Each project gets a human-readable 6-digit number that appears in the
+workspace project bar, on every exported PDF, and works as the lookup key
+for "find a project by its number." Allocated automatically by Postgres on
+the first INSERT via a sequence + BEFORE INSERT trigger, then read back
+through the upsert response so the workspace shows the real number from
+the moment of save (no reload required).
+
+Run once per Supabase project:
+
+```sql
+-- Sequence starts at 100000 so reference numbers are 6-digit out of the
+-- gate (no awkward "1, 10, 100, 1000" mixed widths in the early days).
+create sequence if not exists public.project_reference_seq
+  start with 100000
+  increment by 1
+  no maxvalue
+  cache 1;
+
+-- Authenticated users need USAGE so the trigger's nextval() call succeeds
+-- when an app-side insert runs as the signed-in user.
+grant usage on sequence public.project_reference_seq to authenticated;
+
+alter table public.projects
+  add column if not exists reference_number bigint;
+
+create unique index if not exists projects_reference_number_idx
+  on public.projects(reference_number)
+  where reference_number is not null;
+
+-- Backfill any existing rows so old projects also get a number on next
+-- view. (Re-running this is a no-op once every row has one.)
+update public.projects
+  set reference_number = nextval('public.project_reference_seq')
+  where reference_number is null;
+
+-- Trigger fills the column on INSERT when the client hasn't provided
+-- one — which is always, in normal app flow. Updates don't touch the
+-- column so the number is stable for the life of the project.
+create or replace function public.assign_project_reference_number()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.reference_number is null then
+    new.reference_number := nextval('public.project_reference_seq');
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists assign_project_reference_number on public.projects;
+create trigger assign_project_reference_number
+  before insert on public.projects
+  for each row
+  execute function public.assign_project_reference_number();
+```
+
+**Looking up a project by number from SQL:**
+
+```sql
+select id, type, organisation_id, owner_user_id, status, updated_at
+from public.projects
+where reference_number = 100123;
+```
+
+The dashboard rail has a Find-by-reference card that does the same lookup
+without leaving the app — useful when a customer quotes a number over the
+phone and you want to jump straight into the workspace.
+
+---
+
+## 11. (Per-project access control) ownership + sharing + role rename
 
 Org-shared projects used to be fully editable by every member — anyone in
 the org could open and modify anyone else's estimate. This migration locks

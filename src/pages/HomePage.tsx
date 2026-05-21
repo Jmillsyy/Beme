@@ -9,6 +9,7 @@ import {
   type SavedProject,
   deleteProject,
   duplicateProject,
+  findProjectByReferenceNumber,
   listProjects,
   saveProject,
 } from '../lib/projectStorage'
@@ -195,6 +196,13 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
         </div>
       </div>
 
+      {/* Find by reference number — every project has a 6-digit ID stamped
+          on its exported PDF + project bar. The estimator (or sales person)
+          types the number a customer quotes them over the phone, hits
+          Enter, and lands on the project. Lives in the rail next to
+          Shortcuts because it's a navigation aid, not a primary action. */}
+      <FindByReferenceCard />
+
       {/* Shortcuts — secondary nav into the parts of Beme that don't
           have a natural surfacing on the dashboard itself. Below "Start
           something new" so the create actions get the prime real estate. */}
@@ -219,6 +227,85 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
         Beme · Building estimates made easy
       </div>
     </aside>
+  )
+}
+
+/**
+ * Sidebar lookup card — type a project's 6-digit reference number, hit
+ * Enter, land on the project. The reference number is stamped on every
+ * exported PDF + shown in the workspace project bar, so this is the
+ * fastest path "customer quotes me a number on the phone → I'm in the
+ * project."
+ */
+function FindByReferenceCard() {
+  const navigate = useNavigate()
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    const cleaned = value.trim().replace(/^#/, '').replace(/\s+/g, '')
+    const n = Number(cleaned)
+    if (!Number.isInteger(n) || n <= 0) {
+      setError('Reference numbers are 6 digits, e.g. 100123.')
+      return
+    }
+    setBusy(true)
+    try {
+      const hit = await findProjectByReferenceNumber(n)
+      if (!hit) {
+        setError(`No project found with reference #${cleaned}.`)
+        return
+      }
+      const url =
+        hit.type === 'brick'
+          ? `/project/brick?id=${hit.id}`
+          : `/project/block?id=${hit.id}`
+      navigate(url)
+    } catch (err) {
+      setError((err as Error).message ?? 'Lookup failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border border-ink-600 rounded-xl bg-ink-800/60 p-4 space-y-2"
+    >
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+        Find by reference
+      </h3>
+      <div className="flex items-stretch gap-2">
+        <div className="flex items-center px-2 rounded-l-md border border-ink-600 border-r-0 bg-ink-800 text-ink-400 text-sm">
+          #
+        </div>
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          inputMode="numeric"
+          placeholder="100123"
+          className="flex-1 min-w-0 px-2 py-1.5 rounded-r-md border border-ink-600 bg-ink-900 text-ink-50 text-sm tabular-nums focus:outline-none focus:border-beme-400"
+        />
+        <button
+          type="submit"
+          disabled={busy || value.trim().length === 0}
+          className="px-3 py-1.5 rounded-md bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {busy ? '…' : 'Open'}
+        </button>
+      </div>
+      {error ? (
+        <p className="text-xs text-rose-300">{error}</p>
+      ) : (
+        <p className="text-[11px] text-ink-500">
+          6-digit number from any Beme-exported PDF.
+        </p>
+      )}
+    </form>
   )
 }
 

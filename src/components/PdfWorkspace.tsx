@@ -687,6 +687,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    */
   const [createdByUserId, setCreatedByUserId] = useState<string | null>(null)
   /**
+   * Six-digit human-readable reference number. Allocated server-side by a
+   * Postgres sequence on the project's first INSERT and returned on the
+   * upsert response, so the workspace shows the real number from the
+   * moment of save (no reload required). Null until the first save resolves.
+   */
+  const [referenceNumber, setReferenceNumber] = useState<number | null>(null)
+  /**
    * Display name for the project author — resolved from org membership once
    * the createdByUserId is known. Falls back to the email portion when no
    * full name is in the directory. Null = unknown / not yet resolved.
@@ -840,6 +847,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setProjectOutcome(proj.outcome)
         setProjectCreatedAt(proj.createdAt)
         setCreatedByUserId(proj.createdByUserId ?? null)
+        setReferenceNumber(proj.referenceNumber ?? null)
         setProjectCompletedAt(proj.completedAt ?? null)
         setLastSavedAt(proj.updatedAt)
         // Loading a project resets the dirty baseline — fresh open means
@@ -1071,11 +1079,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         : {}),
     }
     try {
-      await saveProjectToStore(project)
+      const persisted = await saveProjectToStore(project)
       setCurrentProjectId(id)
       setProjectOrganisationId(organisationId ?? null)
       setProjectCreatedAt(project.createdAt)
       if (authorUserId && !createdByUserId) setCreatedByUserId(authorUserId)
+      // Capture the DB-allocated reference number on first save so the
+      // project bar + exports show the real value immediately. Subsequent
+      // saves preserve the number (cloud upsert returns the same row).
+      if (persisted.referenceNumber !== undefined) {
+        setReferenceNumber(persisted.referenceNumber)
+      }
       setLastSavedAt(now)
       // Refresh the dirty-state baseline so the Save changes button greys
       // out until the user actually edits something next.
@@ -1209,7 +1223,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           : {}),
       }
       try {
-        await saveProjectToStore(project)
+        const persisted = await saveProjectToStore(project)
+        if (persisted.referenceNumber !== undefined) {
+          setReferenceNumber(persisted.referenceNumber)
+        }
         setLastSavedAt(now)
       } catch (err) {
         console.error('Failed to update project status', err)
@@ -3446,6 +3463,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             mode={mode}
             sourceRequest={sourceRequest ?? null}
             createdByDisplayName={createdByDisplayName}
+            referenceNumber={referenceNumber}
             onSave={handleSaveProject}
             onToggleStatus={handleToggleProjectStatus}
             onDelete={handleDeleteProject}
@@ -5470,6 +5488,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         {mode === 'block' && (
           <BlockExportPanel
             projectDetails={projectDetails}
+            referenceNumber={referenceNumber}
             inclusions={blockExportInclusions}
             onChangeInclusions={setBlockExportInclusions}
             walls={allWalls}
@@ -5505,6 +5524,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         {mode === 'brick' && (
           <BrickExportPanel
             projectDetails={projectDetails}
+            referenceNumber={referenceNumber}
             inclusions={exportInclusions}
             onChangeInclusions={setExportInclusions}
             settings={brickSettings}

@@ -40,6 +40,13 @@ import { downloadPdfFromHtml } from './pdfExport'
 interface ExportParams {
   projectDetails: ProjectDetails
   inclusions: BlockExportInclusions
+  /**
+   * Server-allocated reference number for this project. Surfaces in the
+   * cover/header of the exported document so the reader can quote it
+   * back when looking the job up. Optional so projects predating the
+   * reference-number rollout still export cleanly without one.
+   */
+  referenceNumber?: number
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
@@ -863,6 +870,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   const {
     projectDetails,
     inclusions,
+    referenceNumber,
     walls,
     makeups,
     openings,
@@ -872,6 +880,17 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     pdfFile,
     pagesInfo,
   } = params
+
+  // 6-digit zero-padded reference string for inline use in the document.
+  // Empty when no number has been allocated yet (project hasn't been saved).
+  const referenceText =
+    typeof referenceNumber === 'number'
+      ? `#${
+          referenceNumber >= 100000
+            ? referenceNumber
+            : String(referenceNumber).padStart(6, '0')
+        }`
+      : ''
 
   const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
   const pierMakeupsById = Object.fromEntries(pierMakeups.map((m) => [m.id, m]))
@@ -1019,13 +1038,17 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
       <div class="brand">${brandBlock}</div>
       <div class="title-block">
         <div class="title-main">Block Takeoff — Material Schedule</div>
-        <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm</div>
+        <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm${
+          referenceText ? ` | Ref ${escapeHtml(referenceText)}` : ''
+        }</div>
       </div>
     </header>
   `
 
   const metaBlock = (() => {
     const rows: string[] = []
+    if (referenceText)
+      rows.push(`<div><span>Reference</span> ${escapeHtml(referenceText)}</div>`)
     if (projectDetails.clientName.trim())
       rows.push(`<div><span>Client</span> ${escapeHtml(projectDetails.clientName)}</div>`)
     if (projectDetails.estimatorName.trim())
