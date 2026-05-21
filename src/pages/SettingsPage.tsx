@@ -888,8 +888,7 @@ function OrganisationTab() {
                             className="px-2 py-1 rounded border border-ink-600 bg-ink-900 text-ink-50 text-xs focus:outline-none focus:border-beme-400 disabled:opacity-40"
                           >
                             <option value="admin">Admin</option>
-                            <option value="estimator">Estimator</option>
-                            <option value="sales">Sales</option>
+                            <option value="staff">Staff</option>
                           </select>
                         ) : (
                           <span
@@ -959,7 +958,7 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
   const [invitations, setInvitations] = useState<Invitation[]>([])
   const [loading, setLoading] = useState(true)
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<OrgRole>('estimator')
+  const [role, setRole] = useState<OrgRole>('staff')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Most recently created invitation. Its row stays in the table below too,
@@ -1053,8 +1052,7 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
             onChange={(e) => setRole(e.target.value as OrgRole)}
             className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
           >
-            <option value="estimator">Estimator</option>
-            <option value="sales">Sales</option>
+            <option value="staff">Staff</option>
             <option value="admin">Admin</option>
           </select>
         </Field>

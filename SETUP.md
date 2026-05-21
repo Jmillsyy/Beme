@@ -892,3 +892,181 @@ migration runs, the client checks the cloud table — if it's empty AND the
 admin's local library has customisations, the local library is uploaded as
 the org's starting set. After that, the cloud is the source of truth: every
 edit replicates to all members on their next sign-in / refresh.
+
+---
+
+## 10. (Per-project access control) ownership + sharing + role rename
+
+Org-shared projects used to be fully editable by every member — anyone in
+the org could open and modify anyone else's estimate. This migration locks
+that down:
+
+- Every project gets a single **owner**. Only the owner, an admin, or
+  explicitly-invited collaborators can edit; everyone else sees the project
+  read-only.
+- A new **`project_collaborators`** table records explicit access grants
+  (owner / admin invites a teammate to a specific project).
+- The two non-admin roles (`sales`, `estimator`) collapse into a single
+  **`staff`** role. They were functionally equivalent in the product and
+  having both invited confusion.
+
+Run once per Supabase project:
+
+```sql
+-- ─── projects: add owner column + backfill ─────────────────────────────────
+alter table public.projects
+  add column if not exists owner_user_id uuid
+    references auth.users(id) on delete set null;
+
+-- Backfill existing rows. Prefer the createdByUserId in the data JSONB
+-- (that's the field the workspace already stamps when a request is picked
+-- up); fall back to the row's user_id (the original inserter).
+update public.projects
+  set owner_user_id = coalesce((data->>'createdByUserId')::uuid, user_id)
+  where owner_user_id is null;
+
+-- Helps the dashboard / share queries that filter "projects where I'm
+-- the owner".
+create index if not exists projects_owner_idx
+  on public.projects(owner_user_id);
+
+-- ─── project_collaborators ─────────────────────────────────────────────────
+create table if not exists public.project_collaborators (
+  project_id  uuid not null references public.projects(id) on delete cascade,
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  granted_by  uuid references auth.users(id) on delete set null,
+  created_at  timestamptz not null default now(),
+  primary key (project_id, user_id)
+);
+
+create index if not exists project_collaborators_user_idx
+  on public.project_collaborators(user_id);
+
+alter table public.project_collaborators enable row level security;
+
+-- Helper — is the caller the owner of the referenced project? security
+-- definer so the RLS check below can read the row without recursing into
+-- the projects RLS policy (which would fail when called from inside
+-- another policy on the same row).
+create or replace function public.is_project_owner(target_project_id uuid)
+returns boolean
+language sql security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.projects
+    where id = target_project_id
+      and owner_user_id = auth.uid()
+  );
+$$;
+
+-- Helper — does the caller hold an admin role in this project's org?
+create or replace function public.is_project_org_admin(target_project_id uuid)
+returns boolean
+language sql security definer set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.projects p
+    join public.organisation_members m
+      on m.organisation_id = p.organisation_id
+    where p.id = target_project_id
+      and m.user_id = auth.uid()
+      and m.role = 'admin'
+  );
+$$;
+
+-- Helper — is the caller a collaborator on this project?
+create or replace function public.is_project_collaborator(target_project_id uuid)
+returns boolean
+language sql security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.project_collaborators
+    where project_id = target_project_id
+      and user_id = auth.uid()
+  );
+$$;
+
+-- Read: any org member of the project's org. (Visibility stays open so
+-- everyone can SEE everyone else's work — locking is at write time.)
+create policy "Org members read collaborators"
+  on public.project_collaborators for select
+  using (
+    exists (
+      select 1
+      from public.projects p
+      where p.id = project_id
+        and (
+          p.user_id = auth.uid()
+          or (p.organisation_id is not null and public.is_org_member(p.organisation_id))
+        )
+    )
+  );
+
+-- Insert / delete: project owner OR admin of the project's org.
+create policy "Owner or org admin grant collaborator"
+  on public.project_collaborators for insert
+  with check (
+    public.is_project_owner(project_id)
+    or public.is_project_org_admin(project_id)
+  );
+
+create policy "Owner or org admin revoke collaborator"
+  on public.project_collaborators for delete
+  using (
+    public.is_project_owner(project_id)
+    or public.is_project_org_admin(project_id)
+  );
+
+-- ─── projects: tighten UPDATE policy ────────────────────────────────────────
+-- The previous policy let any org member update any org-scoped project.
+-- Replace it with: personal owner OR project owner OR project collaborator
+-- OR org admin.
+drop policy if exists "Owner or org member update project" on public.projects;
+
+create policy "Editor can update project"
+  on public.projects for update
+  using (
+    user_id = auth.uid()
+    or owner_user_id = auth.uid()
+    or (
+      organisation_id is not null
+      and public.is_org_admin(organisation_id)
+    )
+    or exists (
+      select 1 from public.project_collaborators c
+      where c.project_id = projects.id
+        and c.user_id = auth.uid()
+    )
+  );
+
+-- ─── organisation_members: collapse roles to admin / staff ─────────────────
+update public.organisation_members
+  set role = 'staff'
+  where role in ('sales', 'estimator');
+
+alter table public.organisation_members
+  drop constraint if exists organisation_members_role_check;
+
+alter table public.organisation_members
+  add constraint organisation_members_role_check
+  check (role in ('admin', 'staff'));
+
+-- ─── invitations: also tighten the role check (legacy values come back as staff) ──
+update public.invitations
+  set role = 'staff'
+  where role in ('sales', 'estimator');
+
+alter table public.invitations
+  drop constraint if exists invitations_role_check;
+
+alter table public.invitations
+  add constraint invitations_role_check
+  check (role in ('admin', 'staff'));
+```
+
+**Side effect on existing data.** Every project that was created before
+this migration ran ends up owned by whoever first saved it (their user_id).
+Estimate-request projects ended up owned by the picker because the app
+already stamps `createdByUserId` on pickup. After running this once, the
+client app starts enforcing the read-only rule on its next deploy.

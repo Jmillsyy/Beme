@@ -115,6 +115,21 @@ export interface SavedProject {
    * by RLS) so older projects still show an author.
    */
   createdByUserId?: string
+  /**
+   * User id of the current "owner" — the person with edit rights on this
+   * project (in addition to the org admin and anyone they explicitly
+   * shared it with). Starts equal to `createdByUserId` on new projects but
+   * TRANSFERS on estimate-request pickup so the picker becomes the editor
+   * and the original creator drops back to read-only.
+   *
+   * Optional + missing on saves predating the read-only feature — the
+   * server-side migration backfills it to `coalesce(createdByUserId, user_id)`,
+   * so older rows always end up with a sensible owner once the SQL has run.
+   *
+   * `null` is legal for legacy rows where neither field is set; UI treats
+   * that as "fall back to row.user_id (the original inserter)".
+   */
+  ownerUserId?: string
   /** Sales outcome — undefined = pending. See {@link ProjectOutcome}. */
   outcome?: ProjectOutcome
 
@@ -315,6 +330,7 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
     createdAt,
     updatedAt,
     completedAt,
+    ownerUserId,
     pdfBlob: _pdfBlob,
     pdfFileName,
     referencePdfs,
@@ -322,10 +338,15 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
   } = p
   void _pdfBlob
   const referencePdfMeta = referencePdfs?.map((r) => ({ fileName: r.fileName, path: r.path }))
+  // Default owner to the inserting user on first save — the SQL migration
+  // backfills existing rows, but new inserts from app code need to fill
+  // the column themselves. Subsequent saves preserve whatever owner the
+  // pickup flow or share UI set it to.
   return {
     id,
     user_id: userId,
     organisation_id: organisationId ?? null,
+    owner_user_id: ownerUserId ?? userId,
     type,
     status,
     created_at: createdAt,
@@ -341,6 +362,7 @@ interface CloudProjectRow {
   id: string
   user_id: string
   organisation_id: string | null
+  owner_user_id: string | null
   type: ProjectType
   status: ProjectStatus
   created_at: string
@@ -352,6 +374,7 @@ interface CloudProjectRow {
     | 'type'
     | 'status'
     | 'organisationId'
+    | 'ownerUserId'
     | 'createdAt'
     | 'updatedAt'
     | 'completedAt'
@@ -364,11 +387,16 @@ interface CloudProjectRow {
 
 /** Hydrate a row from `projects` back into a SavedProject (without the PDF blob). */
 function rowToProjectMeta(row: CloudProjectRow): SavedProject {
+  // Resolve ownerUserId with a fallback chain. New rows always have
+  // owner_user_id set, but defensively fall back to user_id (the original
+  // inserter) so older / partially-migrated rows still produce a sensible
+  // owner for the permission check.
   return {
     id: row.id,
     type: row.type,
     status: row.status,
     organisationId: row.organisation_id ?? undefined,
+    ownerUserId: row.owner_user_id ?? row.user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at ?? undefined,
@@ -599,4 +627,142 @@ async function localListProjects(): Promise<SavedProject[]> {
 
 async function localDeleteProject(id: string): Promise<void> {
   await withLocalStore('readwrite', (s) => s.delete(id))
+}
+
+// ---------- Per-project collaborators ----------
+//
+// An org member who's neither the owner nor an admin can still be granted
+// edit access on a specific project by the owner (or by an admin acting on
+// the owner's behalf). The grants are stored in a small `project_collaborators`
+// junction table:
+//
+//   project_id  uuid not null references projects(id) on delete cascade
+//   user_id     uuid not null references auth.users(id) on delete cascade
+//   granted_by  uuid (audit only)
+//   created_at  timestamptz
+//   primary key (project_id, user_id)
+//
+// RLS:
+//   - read: any org member of the project's org (so the UI can show a
+//     project's collaborator list to anyone who can see the project).
+//   - insert / delete: owner of the project, or admin of the project's
+//     org. Collaborators themselves CANNOT add other collaborators —
+//     re-share is owner+admin only by product decision.
+//
+// The helpers below are no-ops in offline mode (no Supabase). Local-only
+// users don't have a multi-user concept so collaboration doesn't apply.
+
+export interface ProjectCollaborator {
+  projectId: string
+  userId: string
+  grantedByUserId?: string
+  createdAt: string
+}
+
+/** Fetch the collaborator user ids for a project. Returns [] when offline. */
+export async function listProjectCollaborators(
+  projectId: string
+): Promise<ProjectCollaborator[]> {
+  if (!isSupabaseConfigured) return []
+  const client = supabase()
+  const { data, error } = await client
+    .from('project_collaborators')
+    .select('project_id, user_id, granted_by, created_at')
+    .eq('project_id', projectId)
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.warn('Failed to list project collaborators:', error.message)
+    return []
+  }
+  type Row = {
+    project_id: string
+    user_id: string
+    granted_by: string | null
+    created_at: string
+  }
+  return (data as Row[]).map((r) => ({
+    projectId: r.project_id,
+    userId: r.user_id,
+    grantedByUserId: r.granted_by ?? undefined,
+    createdAt: r.created_at,
+  }))
+}
+
+/** Grant a teammate edit access on a project. */
+export async function addProjectCollaborator(
+  projectId: string,
+  userId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Sharing requires the cloud — not available offline.')
+  }
+  const client = supabase()
+  const {
+    data: { user },
+  } = await client.auth.getUser()
+  const grantedBy = user?.id ?? null
+  const { error } = await client
+    .from('project_collaborators')
+    .upsert(
+      { project_id: projectId, user_id: userId, granted_by: grantedBy },
+      { onConflict: 'project_id,user_id' }
+    )
+  if (error) throw new Error(`Failed to add collaborator: ${error.message}`)
+}
+
+/** Revoke a teammate's edit access. */
+export async function removeProjectCollaborator(
+  projectId: string,
+  userId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Sharing requires the cloud — not available offline.')
+  }
+  const client = supabase()
+  const { error } = await client
+    .from('project_collaborators')
+    .delete()
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+  if (error) throw new Error(`Failed to remove collaborator: ${error.message}`)
+}
+
+// ---------- Permission helper ----------
+
+/**
+ * Centralised "can this user edit this project?" check. Used by the
+ * workspace, the project bar, and anywhere else that needs to gate a
+ * mutation. Encodes the permission model from the brief:
+ *
+ *   1. Personal (no-org) project + you're the user_id author → edit.
+ *   2. Admin in this project's org → edit anything.
+ *   3. ownerUserId matches you → edit your own.
+ *   4. You're listed in `collaboratorUserIds` → edit (granted).
+ *   5. Otherwise → read-only.
+ *
+ * Pass `collaboratorUserIds` from a prior call to listProjectCollaborators
+ * — the helper is pure (no I/O) so it stays cheap to call on every render.
+ */
+export function canEditProject(opts: {
+  project: SavedProject
+  currentUserId: string | null
+  isAdminOfOrg: boolean
+  collaboratorUserIds: string[]
+}): boolean {
+  const { project, currentUserId, isAdminOfOrg, collaboratorUserIds } = opts
+  if (!currentUserId) return false
+  // Personal project (no org) — the original author is the only editor.
+  // Fall back to ownerUserId, then createdByUserId, since older personal
+  // saves never had those set.
+  if (!project.organisationId) {
+    const author = project.ownerUserId ?? project.createdByUserId
+    if (!author) return true // legacy local-only project, no recorded author
+    return author === currentUserId
+  }
+  // Org project — apply the full ladder.
+  if (isAdminOfOrg) return true
+  const owner = project.ownerUserId ?? project.createdByUserId
+  if (owner && owner === currentUserId) return true
+  if (collaboratorUserIds.includes(currentUserId)) return true
+  return false
 }

@@ -524,7 +524,7 @@ function RequestRow({
                 <span className="text-ink-200">
                   {assignee?.displayName ||
                     assignee?.email ||
-                    (request.assignedToUserId ? 'estimator' : 'Unassigned')}
+                    (request.assignedToUserId ? 'a teammate' : 'Unassigned')}
                 </span>
               </span>
               <span>·</span>

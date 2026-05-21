@@ -982,7 +982,7 @@ function InboxRow({
                 <>
                   <span>·</span>
                   <span>
-                    To <span className="text-ink-200">{assignee.displayName || assignee.email || 'estimator'}</span>
+                    To <span className="text-ink-200">{assignee.displayName || assignee.email || 'a teammate'}</span>
                   </span>
                 </>
               ) : (

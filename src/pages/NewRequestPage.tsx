@@ -48,13 +48,12 @@ export default function NewRequestPage() {
       if (cancelled) return
       setMembers(list)
       setMembersLoading(false)
-      // Default the assignee to the first estimator/sales in the org if any
-      // exists. Saves a click on the most common case ("send to our team").
-      // Treats estimator + sales as equivalent — both roles handle takeoffs
-      // in this product.
-      const firstAssignable = list.find(
-        (m) => m.role === 'estimator' || m.role === 'sales'
-      )
+      // Default the assignee to the first non-admin staff member in the org
+      // if any exists. Saves a click on the most common case ("send to our
+      // team"). Admins can still be assigned manually if needed, but the
+      // first-pick is staff so the request gets routed to a takeoff person
+      // by default rather than to an admin who may not be doing estimates.
+      const firstAssignable = list.find((m) => m.role === 'staff')
       if (firstAssignable) setAssignedToUserId(firstAssignable.userId)
     })
     return () => {
