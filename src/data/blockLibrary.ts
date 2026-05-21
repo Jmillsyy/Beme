@@ -19,6 +19,8 @@
 
 import { useEffect, useReducer } from 'react'
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
+import { getOrgState, subscribeToOrgState } from '../lib/organisations'
+import { isSupabaseConfigured, supabase } from '../lib/supabase'
 
 // ─── Seed library ───────────────────────────────────────────────────────────
 
@@ -320,14 +322,14 @@ export function getBlockLibrary(): Record<BlockCode, Block> {
 export function setBlockLibrary(next: Record<BlockCode, Block>): void {
   replaceLibraryContents(next)
   notifyChange()
-  void persistLibrary(BLOCK_LIBRARY)
+  void persistLibraryEverywhere(BLOCK_LIBRARY, { full: true })
 }
 
 /** Upsert a single block by code. Persists. */
 export function upsertBlock(block: Block): void {
   BLOCK_LIBRARY[block.code] = block
   notifyChange()
-  void persistLibrary(BLOCK_LIBRARY)
+  void persistLibraryEverywhere(BLOCK_LIBRARY, { upsertedCodes: [block.code] })
 }
 
 /** Remove a block from the library. No-op for protected codes. */
@@ -336,7 +338,7 @@ export function removeBlock(code: BlockCode): void {
   if (!(code in BLOCK_LIBRARY)) return
   delete BLOCK_LIBRARY[code]
   notifyChange()
-  void persistLibrary(BLOCK_LIBRARY)
+  void persistLibraryEverywhere(BLOCK_LIBRARY, { removedCodes: [code] })
 }
 
 /** Reset the library to the SEQ QLD defaults. Useful "start over" affordance. */
@@ -362,12 +364,35 @@ export function useBlockLibrary(): { library: Record<BlockCode, Block>; version:
   return { library: BLOCK_LIBRARY, version: _version }
 }
 
-// ─── Persistence (IndexedDB) ────────────────────────────────────────────────
+// ─── Persistence ────────────────────────────────────────────────────────────
+//
+// Two backing stores: IndexedDB (browser) and Supabase (cloud, org-scoped).
+//
+//   - Personal / offline users: writes go to IndexedDB only. The library is
+//     "my private library on this browser" — same behaviour as before cloud
+//     sync shipped.
+//   - Org users: writes go to Supabase (table `block_library_items`,
+//     primary-keyed by organisation_id + code) AND to IndexedDB. The
+//     IndexedDB copy is a cache so the next page load can paint immediately
+//     while we re-fetch the cloud rows in the background.
+//
+// The org membership is read at write time from the organisations singleton,
+// so a user who joins an org mid-session immediately starts publishing to
+// cloud without an explicit re-init. A user who switches orgs (via the org
+// indicator in the header) triggers `syncWithOrg(newOrgId)`, which pulls
+// the new org's library down and replaces the in-memory contents.
+//
+// First-time bootstrap: if a user signs in to an empty org library AND
+// their local library has user-added blocks (i.e. differs from the seed
+// library), we PUSH the local library up so their existing customisations
+// become the org's shared library. After that the cloud is the source of
+// truth and the local IndexedDB acts purely as an offline cache.
 
 const DB_NAME = 'beme'
 const DB_VERSION = 2 // bumped from 1 to add the user-data store
 const USER_DATA_STORE = 'userData'
 const LIBRARY_KEY = 'blockLibrary'
+const CLOUD_TABLE = 'block_library_items'
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -386,7 +411,7 @@ function openDb(): Promise<IDBDatabase> {
   })
 }
 
-async function loadLibrary(): Promise<Record<BlockCode, Block> | null> {
+async function loadLibraryLocal(): Promise<Record<BlockCode, Block> | null> {
   try {
     const db = await openDb()
     return await new Promise<Record<BlockCode, Block> | null>((resolve, reject) => {
@@ -403,7 +428,7 @@ async function loadLibrary(): Promise<Record<BlockCode, Block> | null> {
   }
 }
 
-async function persistLibrary(lib: Record<BlockCode, Block>): Promise<void> {
+async function persistLibraryLocal(lib: Record<BlockCode, Block>): Promise<void> {
   try {
     const db = await openDb()
     await new Promise<void>((resolve, reject) => {
@@ -420,17 +445,271 @@ async function persistLibrary(lib: Record<BlockCode, Block>): Promise<void> {
   }
 }
 
+// ---------- Cloud (Supabase) ----------
+
+interface CloudBlockRow {
+  organisation_id: string
+  code: string
+  data: Block
+}
+
+/** Fetch all rows for an org, hydrated as `Record<code, Block>`. */
+async function loadLibraryCloud(orgId: string): Promise<Record<BlockCode, Block> | null> {
+  if (!isSupabaseConfigured) return null
+  try {
+    const { data, error } = await supabase()
+      .from(CLOUD_TABLE)
+      .select('organisation_id, code, data')
+      .eq('organisation_id', orgId)
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[beme] Failed to load block library from cloud:', error.message)
+      return null
+    }
+    const out: Record<BlockCode, Block> = {}
+    for (const row of (data ?? []) as CloudBlockRow[]) {
+      out[row.code] = row.data
+    }
+    return out
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to load block library from cloud:', err)
+    return null
+  }
+}
+
 /**
- * Bootstrap the library from IndexedDB. Call once at app startup (main.tsx)
- * BEFORE any components mount so the first paint already reflects the user's
+ * Replace the cloud-side library for `orgId` with `lib`. Implemented as
+ * "delete all rows for this org, then upsert every code". Used by
+ * setBlockLibrary / resetBlockLibrary and by the first-time bootstrap.
+ */
+async function persistLibraryCloudFull(
+  lib: Record<BlockCode, Block>,
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) return
+  try {
+    const client = supabase()
+    // Wipe everything for this org first — keeps the cloud in lock-step with
+    // the in-memory library even after deletes. (Upsert alone would leave
+    // stale rows behind for codes the user removed.)
+    const { error: delErr } = await client.from(CLOUD_TABLE).delete().eq('organisation_id', orgId)
+    if (delErr) throw new Error(delErr.message)
+    const rows = Object.values(lib).map((b) => ({
+      organisation_id: orgId,
+      code: b.code,
+      data: b,
+    }))
+    if (rows.length > 0) {
+      const { error: upErr } = await client.from(CLOUD_TABLE).upsert(rows, {
+        onConflict: 'organisation_id,code',
+      })
+      if (upErr) throw new Error(upErr.message)
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to persist block library to cloud:', err)
+  }
+}
+
+/** Upsert one or more blocks into the cloud library. */
+async function persistBlocksCloudUpsert(
+  blocks: Block[],
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured || blocks.length === 0) return
+  try {
+    const rows = blocks.map((b) => ({ organisation_id: orgId, code: b.code, data: b }))
+    const { error } = await supabase()
+      .from(CLOUD_TABLE)
+      .upsert(rows, { onConflict: 'organisation_id,code' })
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to upsert block(s) to cloud:', err)
+  }
+}
+
+/** Delete one or more block codes from the cloud library. */
+async function persistBlocksCloudDelete(
+  codes: BlockCode[],
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured || codes.length === 0) return
+  try {
+    const { error } = await supabase()
+      .from(CLOUD_TABLE)
+      .delete()
+      .eq('organisation_id', orgId)
+      .in('code', codes)
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to delete block(s) from cloud:', err)
+  }
+}
+
+// ---------- Unified persistence dispatcher ----------
+
+interface PersistOptions {
+  /** When true, persist the whole library (used by setBlockLibrary / reset). */
+  full?: boolean
+  /** Codes that were just upserted — written as targeted cloud upserts. */
+  upsertedCodes?: BlockCode[]
+  /** Codes that were just removed — written as targeted cloud deletes. */
+  removedCodes?: BlockCode[]
+}
+
+/**
+ * Persist the current library to whichever stores are active:
+ *
+ *   - Always to IndexedDB (so the local snapshot stays fresh; serves as the
+ *     first-paint cache on next load and as the offline fallback).
+ *   - If the user is in an org, also to Supabase. Surgical upserts /
+ *     deletes are preferred when the caller knows which codes changed
+ *     (cheaper round-trip + less to race against other writers); the `full`
+ *     option falls back to delete-then-upsert-all for setBlockLibrary calls.
+ */
+async function persistLibraryEverywhere(
+  lib: Record<BlockCode, Block>,
+  opts: PersistOptions
+): Promise<void> {
+  // Local write — always, regardless of cloud state. Keeps the IndexedDB
+  // copy in sync so a reload-while-offline still shows the latest edits.
+  void persistLibraryLocal(lib)
+
+  const orgId = getOrgState().currentOrgId
+  if (!orgId) return
+
+  if (opts.full) {
+    void persistLibraryCloudFull(lib, orgId)
+    return
+  }
+  if (opts.upsertedCodes && opts.upsertedCodes.length > 0) {
+    const blocks = opts.upsertedCodes
+      .map((code) => lib[code])
+      .filter((b): b is Block => Boolean(b))
+    void persistBlocksCloudUpsert(blocks, orgId)
+  }
+  if (opts.removedCodes && opts.removedCodes.length > 0) {
+    void persistBlocksCloudDelete(opts.removedCodes, orgId)
+  }
+}
+
+// ---------- Sync coordinator ----------
+
+/**
+ * Tracks which org we last synced from. Null = personal / no org. Used to
+ * detect org changes and avoid redundant reloads.
+ */
+let lastSyncedOrgId: string | null = null
+/** Set true once we've completed any sync at least once; gates the bootstrap
+ *  upload so a logged-out app at boot doesn't accidentally wipe a new org's
+ *  cloud library on first sign-in. */
+let initialLocalLoadComplete = false
+
+/**
+ * Compare the current in-memory library against `DEFAULT_BLOCK_LIBRARY` to
+ * decide whether the user has customisations worth uploading on first
+ * bootstrap into an empty org.
+ *
+ * Considered "non-default" if:
+ *   - any key is present in the library but missing from defaults (user added a block), OR
+ *   - any key is missing from the library that exists in defaults (user removed a default), OR
+ *   - any shared key's value differs (user edited a default).
+ */
+function isLibraryCustomised(lib: Record<BlockCode, Block>): boolean {
+  const defaultKeys = Object.keys(DEFAULT_BLOCK_LIBRARY)
+  const libKeys = Object.keys(lib)
+  if (defaultKeys.length !== libKeys.length) return true
+  for (const k of defaultKeys) {
+    if (!(k in lib)) return true
+    if (JSON.stringify(lib[k]) !== JSON.stringify(DEFAULT_BLOCK_LIBRARY[k])) return true
+  }
+  return false
+}
+
+/**
+ * Reload the in-memory library to match a new org context. Called on app
+ * boot (after the org list has loaded) and whenever the user switches orgs.
+ *
+ *   - orgId === null → load from IndexedDB (personal mode)
+ *   - orgId !== null → load from cloud. If the cloud library is empty AND
+ *     the local library has user customisations, bootstrap-upload local to
+ *     cloud so the user doesn't silently lose their existing setup.
+ */
+async function syncWithOrg(orgId: string | null): Promise<void> {
+  if (orgId === lastSyncedOrgId && initialLocalLoadComplete) return
+
+  if (!orgId) {
+    // Personal / offline mode.
+    const saved = await loadLibraryLocal()
+    if (saved && Object.keys(saved).length > 0) {
+      replaceLibraryContents(saved)
+    } else {
+      // First-time user with no saved library — keep defaults already in place.
+    }
+    notifyChange()
+    lastSyncedOrgId = null
+    initialLocalLoadComplete = true
+    return
+  }
+
+  // Org mode.
+  const cloud = await loadLibraryCloud(orgId)
+  if (cloud && Object.keys(cloud).length > 0) {
+    // Cloud has data — that wins. Replace in-memory + sync the local cache.
+    replaceLibraryContents(cloud)
+    void persistLibraryLocal(cloud)
+    notifyChange()
+  } else {
+    // Cloud is empty for this org. Two sub-cases:
+    //   (a) The current in-memory library is the user's customised local
+    //       setup — push it up so their team inherits it (one-time bootstrap).
+    //   (b) It's just the seed defaults — leave cloud empty and proceed.
+    // Either way, the in-memory library stays where it is.
+    if (isLibraryCustomised(BLOCK_LIBRARY)) {
+      void persistLibraryCloudFull(BLOCK_LIBRARY, orgId)
+    }
+    notifyChange() // sync the version even when contents didn't change so
+    // useMemo deps tied to libraryVersion re-run after an org switch.
+  }
+  lastSyncedOrgId = orgId
+  initialLocalLoadComplete = true
+}
+
+/**
+ * Bootstrap the library. Call once at app startup (main.tsx) BEFORE any
+ * components mount so the first paint already reflects the user's
  * customisations.
+ *
+ * Phase 1 — synchronous-ish: read the IndexedDB snapshot so first paint has
+ *   the user's last-known library. Cheap (single key read).
+ * Phase 2 — when the org context resolves: re-sync from cloud if the user
+ *   is in an org. Subscribes to org-state changes so subsequent org
+ *   switches reload the library automatically.
  */
 export async function initBlockLibrary(): Promise<void> {
-  const saved = await loadLibrary()
+  const saved = await loadLibraryLocal()
   if (saved && Object.keys(saved).length > 0) {
     replaceLibraryContents(saved)
     notifyChange()
   }
+  initialLocalLoadComplete = true
+
+  // If org state is already resolved at this point (e.g. fast refresh), do
+  // the initial sync now. Otherwise the subscription below picks it up.
+  const initialOrg = getOrgState()
+  if (!initialOrg.loading) {
+    void syncWithOrg(initialOrg.currentOrgId)
+  }
+
+  // Re-sync whenever the active org changes (sign-in, sign-out, switch).
+  subscribeToOrgState(() => {
+    const s = getOrgState()
+    if (s.loading) return // wait for the fetch to settle
+    void syncWithOrg(s.currentOrgId)
+  })
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

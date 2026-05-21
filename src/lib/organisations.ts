@@ -62,6 +62,19 @@ export function getOrgState(): OrgState {
   return state
 }
 
+/**
+ * Subscribe to org-state changes from a non-React context (e.g. the block /
+ * brick library singletons that need to reload their data when the user
+ * switches orgs or signs in / out). Returns an unsubscribe function.
+ *
+ * The listener fires on any change to {organisations, currentOrgId, loading}
+ * — including the initial fetch completing. Callers typically read
+ * `getOrgState()` from inside the listener to decide what to do.
+ */
+export function subscribeToOrgState(listener: () => void): () => void {
+  return subscribe(listener)
+}
+
 /** The current org id, or null. Synchronous read. */
 export function getCurrentOrgId(): string | null {
   return state.currentOrgId

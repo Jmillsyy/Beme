@@ -10,6 +10,8 @@
 
 import { useEffect, useReducer } from 'react'
 import type { BrickCode, BrickType } from '../types/bricks'
+import { getOrgState, subscribeToOrgState } from '../lib/organisations'
+import { isSupabaseConfigured, supabase } from '../lib/supabase'
 
 // ─── Seed library ───────────────────────────────────────────────────────────
 
@@ -90,13 +92,13 @@ export function getBrickLibrary(): Record<BrickCode, BrickType> {
 export function setBrickLibrary(next: Record<BrickCode, BrickType>): void {
   replaceLibraryContents(next)
   notifyChange()
-  void persistLibrary(BRICK_LIBRARY)
+  void persistLibraryEverywhere(BRICK_LIBRARY, { full: true })
 }
 
 export function upsertBrickType(type: BrickType): void {
   BRICK_LIBRARY[type.code] = type
   notifyChange()
-  void persistLibrary(BRICK_LIBRARY)
+  void persistLibraryEverywhere(BRICK_LIBRARY, { upsertedCodes: [type.code] })
 }
 
 export function removeBrickType(code: BrickCode): void {
@@ -104,7 +106,7 @@ export function removeBrickType(code: BrickCode): void {
   if (!(code in BRICK_LIBRARY)) return
   delete BRICK_LIBRARY[code]
   notifyChange()
-  void persistLibrary(BRICK_LIBRARY)
+  void persistLibraryEverywhere(BRICK_LIBRARY, { removedCodes: [code] })
 }
 
 export function resetBrickLibrary(): void {
@@ -124,12 +126,18 @@ export function useBrickLibrary(): { library: Record<BrickCode, BrickType>; vers
   return { library: BRICK_LIBRARY, version: _version }
 }
 
-// ─── Persistence (IndexedDB) ────────────────────────────────────────────────
+// ─── Persistence ────────────────────────────────────────────────────────────
+// Mirrors the block-library architecture: IndexedDB for personal/offline,
+// Supabase (`brick_library_items` table, primary-keyed by organisation_id +
+// code) when the user is in an org. See blockLibrary.ts for the full
+// rationale; the brick library uses the same dispatch pattern + first-time
+// bootstrap behaviour.
 
 const DB_NAME = 'beme'
 const DB_VERSION = 2 // keep in sync with blockLibrary + projectStorage
 const USER_DATA_STORE = 'userData'
 const LIBRARY_KEY = 'brickLibrary'
+const CLOUD_TABLE = 'brick_library_items'
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -148,7 +156,7 @@ function openDb(): Promise<IDBDatabase> {
   })
 }
 
-async function loadLibrary(): Promise<Record<BrickCode, BrickType> | null> {
+async function loadLibraryLocal(): Promise<Record<BrickCode, BrickType> | null> {
   try {
     const db = await openDb()
     return await new Promise<Record<BrickCode, BrickType> | null>((resolve, reject) => {
@@ -165,7 +173,7 @@ async function loadLibrary(): Promise<Record<BrickCode, BrickType> | null> {
   }
 }
 
-async function persistLibrary(lib: Record<BrickCode, BrickType>): Promise<void> {
+async function persistLibraryLocal(lib: Record<BrickCode, BrickType>): Promise<void> {
   try {
     const db = await openDb()
     await new Promise<void>((resolve, reject) => {
@@ -181,10 +189,188 @@ async function persistLibrary(lib: Record<BrickCode, BrickType>): Promise<void> 
   }
 }
 
+// ---------- Cloud (Supabase) ----------
+
+interface CloudBrickRow {
+  organisation_id: string
+  code: string
+  data: BrickType
+}
+
+async function loadLibraryCloud(orgId: string): Promise<Record<BrickCode, BrickType> | null> {
+  if (!isSupabaseConfigured) return null
+  try {
+    const { data, error } = await supabase()
+      .from(CLOUD_TABLE)
+      .select('organisation_id, code, data')
+      .eq('organisation_id', orgId)
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[beme] Failed to load brick library from cloud:', error.message)
+      return null
+    }
+    const out: Record<BrickCode, BrickType> = {}
+    for (const row of (data ?? []) as CloudBrickRow[]) {
+      out[row.code] = row.data
+    }
+    return out
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to load brick library from cloud:', err)
+    return null
+  }
+}
+
+async function persistLibraryCloudFull(
+  lib: Record<BrickCode, BrickType>,
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) return
+  try {
+    const client = supabase()
+    const { error: delErr } = await client.from(CLOUD_TABLE).delete().eq('organisation_id', orgId)
+    if (delErr) throw new Error(delErr.message)
+    const rows = Object.values(lib).map((b) => ({
+      organisation_id: orgId,
+      code: b.code,
+      data: b,
+    }))
+    if (rows.length > 0) {
+      const { error: upErr } = await client.from(CLOUD_TABLE).upsert(rows, {
+        onConflict: 'organisation_id,code',
+      })
+      if (upErr) throw new Error(upErr.message)
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to persist brick library to cloud:', err)
+  }
+}
+
+async function persistBricksCloudUpsert(
+  bricks: BrickType[],
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured || bricks.length === 0) return
+  try {
+    const rows = bricks.map((b) => ({ organisation_id: orgId, code: b.code, data: b }))
+    const { error } = await supabase()
+      .from(CLOUD_TABLE)
+      .upsert(rows, { onConflict: 'organisation_id,code' })
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to upsert brick(s) to cloud:', err)
+  }
+}
+
+async function persistBricksCloudDelete(codes: BrickCode[], orgId: string): Promise<void> {
+  if (!isSupabaseConfigured || codes.length === 0) return
+  try {
+    const { error } = await supabase()
+      .from(CLOUD_TABLE)
+      .delete()
+      .eq('organisation_id', orgId)
+      .in('code', codes)
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to delete brick(s) from cloud:', err)
+  }
+}
+
+// ---------- Unified persistence dispatcher ----------
+
+interface PersistOptions {
+  full?: boolean
+  upsertedCodes?: BrickCode[]
+  removedCodes?: BrickCode[]
+}
+
+async function persistLibraryEverywhere(
+  lib: Record<BrickCode, BrickType>,
+  opts: PersistOptions
+): Promise<void> {
+  void persistLibraryLocal(lib)
+  const orgId = getOrgState().currentOrgId
+  if (!orgId) return
+
+  if (opts.full) {
+    void persistLibraryCloudFull(lib, orgId)
+    return
+  }
+  if (opts.upsertedCodes && opts.upsertedCodes.length > 0) {
+    const bricks = opts.upsertedCodes
+      .map((code) => lib[code])
+      .filter((b): b is BrickType => Boolean(b))
+    void persistBricksCloudUpsert(bricks, orgId)
+  }
+  if (opts.removedCodes && opts.removedCodes.length > 0) {
+    void persistBricksCloudDelete(opts.removedCodes, orgId)
+  }
+}
+
+// ---------- Sync coordinator ----------
+
+let lastSyncedOrgId: string | null = null
+let initialLocalLoadComplete = false
+
+function isLibraryCustomised(lib: Record<BrickCode, BrickType>): boolean {
+  const defaultKeys = Object.keys(DEFAULT_BRICK_LIBRARY)
+  const libKeys = Object.keys(lib)
+  if (defaultKeys.length !== libKeys.length) return true
+  for (const k of defaultKeys) {
+    if (!(k in lib)) return true
+    if (JSON.stringify(lib[k]) !== JSON.stringify(DEFAULT_BRICK_LIBRARY[k])) return true
+  }
+  return false
+}
+
+async function syncWithOrg(orgId: string | null): Promise<void> {
+  if (orgId === lastSyncedOrgId && initialLocalLoadComplete) return
+
+  if (!orgId) {
+    const saved = await loadLibraryLocal()
+    if (saved && Object.keys(saved).length > 0) {
+      replaceLibraryContents(saved)
+    }
+    notifyChange()
+    lastSyncedOrgId = null
+    initialLocalLoadComplete = true
+    return
+  }
+
+  const cloud = await loadLibraryCloud(orgId)
+  if (cloud && Object.keys(cloud).length > 0) {
+    replaceLibraryContents(cloud)
+    void persistLibraryLocal(cloud)
+    notifyChange()
+  } else {
+    if (isLibraryCustomised(BRICK_LIBRARY)) {
+      void persistLibraryCloudFull(BRICK_LIBRARY, orgId)
+    }
+    notifyChange()
+  }
+  lastSyncedOrgId = orgId
+  initialLocalLoadComplete = true
+}
+
 export async function initBrickLibrary(): Promise<void> {
-  const saved = await loadLibrary()
+  const saved = await loadLibraryLocal()
   if (saved && Object.keys(saved).length > 0) {
     replaceLibraryContents(saved)
     notifyChange()
   }
+  initialLocalLoadComplete = true
+
+  const initialOrg = getOrgState()
+  if (!initialOrg.loading) {
+    void syncWithOrg(initialOrg.currentOrgId)
+  }
+
+  subscribeToOrgState(() => {
+    const s = getOrgState()
+    if (s.loading) return
+    void syncWithOrg(s.currentOrgId)
+  })
 }

@@ -805,3 +805,90 @@ whatever your first org is) up:
 
 3. Refresh Beme — your org name shows in the header next to the user menu,
    and the Settings → Organisation tab lists every member.
+
+---
+
+## 9. (Org-shared library) block + brick library tables
+
+Custom block + brick library entries used to live in browser IndexedDB only,
+which meant teammates in the same org never saw each other's additions. This
+migration moves the libraries into Supabase so any block or brick added by
+one org member shows up in the wall-type editor for every teammate.
+
+Personal (no-org) accounts are unaffected — they continue to keep their
+library in IndexedDB.
+
+Run once per Supabase project:
+
+```sql
+-- ─── block_library_items ────────────────────────────────────────────────────
+create table if not exists public.block_library_items (
+  organisation_id  uuid not null references public.organisations(id) on delete cascade,
+  code             text not null,
+  data             jsonb not null,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  primary key (organisation_id, code)
+);
+
+create index if not exists block_library_items_org_idx
+  on public.block_library_items(organisation_id);
+
+alter table public.block_library_items enable row level security;
+
+-- Any member of the org can read.
+create policy "Org members read block library"
+  on public.block_library_items for select
+  using (public.is_org_member(organisation_id));
+
+-- Only admins can write. Mirrors the UI gating in the Material Library page,
+-- which already hides edit affordances from non-admins.
+create policy "Org admins insert block library"
+  on public.block_library_items for insert
+  with check (public.is_org_admin(organisation_id));
+
+create policy "Org admins update block library"
+  on public.block_library_items for update
+  using (public.is_org_admin(organisation_id));
+
+create policy "Org admins delete block library"
+  on public.block_library_items for delete
+  using (public.is_org_admin(organisation_id));
+
+-- ─── brick_library_items ────────────────────────────────────────────────────
+create table if not exists public.brick_library_items (
+  organisation_id  uuid not null references public.organisations(id) on delete cascade,
+  code             text not null,
+  data             jsonb not null,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  primary key (organisation_id, code)
+);
+
+create index if not exists brick_library_items_org_idx
+  on public.brick_library_items(organisation_id);
+
+alter table public.brick_library_items enable row level security;
+
+create policy "Org members read brick library"
+  on public.brick_library_items for select
+  using (public.is_org_member(organisation_id));
+
+create policy "Org admins insert brick library"
+  on public.brick_library_items for insert
+  with check (public.is_org_admin(organisation_id));
+
+create policy "Org admins update brick library"
+  on public.brick_library_items for update
+  using (public.is_org_admin(organisation_id));
+
+create policy "Org admins delete brick library"
+  on public.brick_library_items for delete
+  using (public.is_org_admin(organisation_id));
+```
+
+**Bootstrap behaviour.** The first time an org admin opens Beme after this
+migration runs, the client checks the cloud table — if it's empty AND the
+admin's local library has customisations, the local library is uploaded as
+the org's starting set. After that, the cloud is the source of truth: every
+edit replicates to all members on their next sign-in / refresh.
