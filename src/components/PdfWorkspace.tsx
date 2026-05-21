@@ -361,6 +361,86 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
   }
 
+  /**
+   * Promote a reference PDF to the new primary plan. Used when sales attached
+   * the wrong file as the primary (or the engineering set arrived after the
+   * estimator started) and the estimator wants to start over on a different
+   * plan without losing the references.
+   *
+   * Because the new plan has its own scale + its own page layout, every wall,
+   * opening, pier, and page calibration tied to the OLD primary is invalid —
+   * we wipe that state on confirm. The old primary moves into the references
+   * list so it's still one click away (e.g. for cross-checking dimensions).
+   *
+   * Confirmation is mandatory and the dialog spells out exactly what gets
+   * deleted, because there's no undo for the wipe — the project would have
+   * to be reloaded from a previous save to recover.
+   */
+  function promoteReferenceToPrimary(index: number) {
+    if (index < 0 || index >= referencePdfFiles.length) return
+    const newPrimary = referencePdfFiles[index]
+    const oldPrimary = pdfFile
+
+    // Count what we're about to nuke so the warning is honest about scale.
+    const wallCount = Object.values(wallsByPage).reduce((s, ws) => s + ws.length, 0)
+    const openingCount = Object.values(openingsByPage).reduce(
+      (s, os) => s + os.length,
+      0
+    )
+    const pierCount = Object.values(piersByPage).reduce((s, ps) => s + ps.length, 0)
+    const total = wallCount + openingCount + pierCount
+
+    const lines = [
+      `Make "${newPrimary.name}" the primary plan?`,
+      '',
+      total > 0
+        ? `This will delete all ${total} drawn item${total === 1 ? '' : 's'} from the current primary (${wallCount} wall${wallCount === 1 ? '' : 's'}, ${openingCount} opening${openingCount === 1 ? '' : 's'}, ${pierCount} pier${pierCount === 1 ? '' : 's'}) because the new plan has its own scale and walls would land in the wrong places.`
+        : 'There are no drawn items on the current primary, so nothing will be lost.',
+      '',
+      'The current primary will move into the references list so it stays one click away.',
+    ]
+    if (!window.confirm(lines.join('\n'))) return
+
+    // Build the new references list: the selected ref gets removed (it's
+    // being promoted), and the old primary slots in at the end (if there
+    // was one — fresh projects without a primary skip this).
+    const nextRefs = referencePdfFiles.filter((_, i) => i !== index)
+    const nextRefPaths = referencePdfPaths.filter((_, i) => i !== index)
+    if (oldPrimary) {
+      nextRefs.push(oldPrimary)
+      // Old primary's storage path is the row's `pdf_path`, which isn't
+      // tracked per-file in workspace state — leave the path undefined so
+      // the next save re-uploads it as a fresh reference. Slightly wasteful
+      // but correct; the old `pdf_path` object stays orphaned in storage
+      // until project delete cleans it up.
+      nextRefPaths.push(undefined)
+    }
+    setReferencePdfFiles(nextRefs)
+    setReferencePdfPaths(nextRefPaths)
+
+    // Swap the primary.
+    setPdfFile(newPrimary)
+
+    // Wipe everything tied to the old primary's scale + page layout.
+    setWallsByPage({})
+    setOpeningsByPage({})
+    setPiersByPage({})
+    setPagesData({})
+
+    // Reset page navigation — we're now showing the new primary from page 1.
+    setActiveReferenceIndex(null)
+    setCurrentPage(1)
+    setPrimaryCurrentPage(1)
+    // Force numPages to refresh — the new Document will set it on load. Keep
+    // it at the current value briefly so the page-nav shell doesn't flicker
+    // empty between primaries.
+    setNumPages(0)
+
+    // Mark dirty so Save changes lights up — the project has materially
+    // changed and the user needs to persist the swap.
+    setHasUnsavedChanges(true)
+  }
+
   // ---------- Wall drawing state (block mode) ----------
   const [wallsByPage, setWallsByPage] = useState<Record<number, Wall[]>>({})
   const [drawingMode, setDrawingMode] = useState(false)
@@ -3692,10 +3772,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             >
               + Add reference
             </button>
-            {isReferenceView && (
-              <span className="text-xs text-ink-400 italic shrink-0 ml-1">
-                view-only
-              </span>
+            {isReferenceView && activeReferenceIndex !== null && (
+              <>
+                {/* Promote: take the active reference and make it the new
+                    primary. Wipes drawn quantities tied to the old primary
+                    (new plan = new scale = walls in wrong places). The old
+                    primary moves into references so it's not lost. */}
+                <button
+                  onClick={() => promoteReferenceToPrimary(activeReferenceIndex)}
+                  className="px-3 py-1 rounded-md text-sm border border-beme-500/40 bg-beme-500/[0.08] text-beme-200 hover:bg-beme-500/[0.15] hover:border-beme-500/70 transition-colors whitespace-nowrap shrink-0"
+                  title="Promote this reference to the primary plan (clears all drawn walls / openings / piers)"
+                >
+                  ↑ Make primary
+                </button>
+                <span className="text-xs text-ink-400 italic shrink-0 ml-1">
+                  view-only
+                </span>
+              </>
             )}
           </div>
         )}
