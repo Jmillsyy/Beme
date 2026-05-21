@@ -83,12 +83,10 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
     return rows
   }, [userSettings.supplyItems, tally])
 
-  const supplyCoversTies = supplyRows.some((r) =>
-    r.name.toLowerCase().includes('brick tie')
-  )
-  const supplyCoversPlascourse = supplyRows.some((r) =>
-    r.name.toLowerCase().includes('plascourse')
-  )
+  // (Legacy dedupe state removed — brick ties + plascourse are now driven
+  // exclusively by the user's supplyItems list. See the rendering block
+  // below where the old BrickSettings.ties + BrickSettings.plascourse rows
+  // were ripped out.)
 
   // Group lintels by (length, profile) for an order-style summary
   const lintelGroups = useMemo<LintelGroup[]>(() => {
@@ -178,31 +176,13 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
                   {tally.brickCount.toLocaleString()}
                 </td>
               </tr>
-              {settings.ties.enabled && !supplyCoversTies && (
-                <tr className="border-b border-ink-700/60">
-                  <td className="px-3 py-1.5 text-ink-300">
-                    Brick ties <span className="text-xs text-ink-400">({settings.ties.perSquareMetre}/m²)</span>
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                    {tally.tiesCount.toLocaleString()}
-                  </td>
-                </tr>
-              )}
-              {settings.plascourse.enabled && !supplyCoversPlascourse && (
-                <tr className="border-b border-ink-700/60">
-                  <td className="px-3 py-1.5 text-ink-300">
-                    Plascourse <span className="text-xs text-ink-400">(1/{settings.plascourse.metresPerUnit}m)</span>
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                    {tally.plascourseCount}
-                  </td>
-                </tr>
-              )}
-              {/* Supply items from the user's Material library — rendered
-                  alongside the legacy ties/plascourse rows so the live
-                  workspace tally matches what the exported PDF will show.
-                  Same name-dedupe rules: a 'Brick Ties' supply item replaces
-                  the legacy ties row above. */}
+              {/* Supply items from the user's Material library — the
+                  single source for accessory rows (ties, plascourse,
+                  cement, anything else the user defines). The legacy
+                  BrickSettings.ties + BrickSettings.plascourse rows have
+                  been removed; the seed catalogue includes Brick Ties and
+                  Plascourse as default items so the same totals show up,
+                  but now driven by the library the user can actually edit. */}
               {supplyRows.map((r) => (
                 <tr key={r.name} className="border-b border-ink-700/60">
                   <td className="px-3 py-1.5 text-ink-300">

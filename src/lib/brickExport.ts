@@ -422,20 +422,18 @@ function buildAssumptions(
     'No waste allowance has been applied. Quantities are net as measured.',
   ]
 
-  if (settings.ties.enabled && inclusions.brickTies) {
-    items.push(`Brick tie rate is ${settings.ties.perSquareMetre} ties per m² of net brickwork.`)
-  }
+  // Brick-tie + plascourse assumption notes used to come from
+  // BrickSettings.ties / BrickSettings.plascourse here. Both moved to the
+  // supply-items catalogue, which means `supplyItemNotes` below now carries
+  // the matching rate-and-quantity line ('Brick Ties allowance at 2 per m²
+  // — 25 included.'). Leaving these blocks out so the document doesn't
+  // print the same fact twice.
+  void totalLinealMm
+  void plascourseCount
 
   if (inclusions.lintels) {
     items.push(
       'Lintels are sized at opening width plus bearing each side: 100mm ≤ 800mm openings, 150mm for 800–4000mm openings, 200mm for openings over 4000mm.'
-    )
-  }
-
-  if (settings.plascourse.enabled && inclusions.plascourse && plascourseCount > 0) {
-    const totalLengthM = totalLinealMm / 1000
-    items.push(
-      `${plascourseCount} ${plascourseCount === 1 ? 'Roll' : 'Rolls'} of Plascourse allowed for ${formatNumber(totalLengthM, 1)} Lineal Metres of Brickwork.`
     )
   }
 
@@ -759,37 +757,19 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
+  // Accessories table is now driven exclusively by the user's supply-item
+  // catalogue (Material library). The legacy BrickSettings.ties +
+  // BrickSettings.plascourse rows have been retired — both are now
+  // default-seeded supply items (Brick Ties, Plascourse) that the user can
+  // edit / disable / rate-tune from one place. Inclusion toggles
+  // (`inclusions.brickTies` / `inclusions.plascourse`) still suppress the
+  // matching row when off, so the existing per-export checkboxes keep
+  // working.
   const accessoriesRows: string[] = []
-  // Detect whether the user's supply-item list already covers ties so we
-  // don't print the legacy BrickSettings.ties row on top of it. Match by
-  // case-insensitive 'brick tie' contains — that catches 'Brick Ties',
-  // 'Brick tie', 'Coloured brick ties', etc. The supply-item row from
-  // supplyRows below takes precedence; legacy ties only show when no
-  // supply item is doing the job.
-  const supplyCoversTies = supplyRows.some((r) =>
-    r.name.toLowerCase().includes('brick tie')
-  )
-  const supplyCoversPlascourse = supplyRows.some((r) =>
-    r.name.toLowerCase().includes('plascourse')
-  )
-  if (inclusions.brickTies && settings.ties.enabled && !supplyCoversTies)
-    accessoriesRows.push(
-      `<tr><td>Brick Ties</td><td class="right">${tally.tiesCount.toLocaleString()}</td></tr>`
-    )
-  if (
-    inclusions.plascourse &&
-    settings.plascourse.enabled &&
-    tally.plascourseCount > 0 &&
-    !supplyCoversPlascourse
-  )
-    accessoriesRows.push(
-      `<tr><td>Plascourse</td><td class="right">${tally.plascourseCount} ${tally.plascourseCount === 1 ? 'roll' : 'rolls'}</td></tr>`
-    )
-
-  // Append every user-defined supply item that applied to brick. supplyRows
-  // were computed up top (so the Assumptions section stays in lockstep) —
-  // here we just render them into the Accessories table.
   for (const row of supplyRows) {
+    const nameLower = row.name.toLowerCase()
+    if (!inclusions.brickTies && nameLower.includes('brick tie')) continue
+    if (!inclusions.plascourse && nameLower.includes('plascourse')) continue
     accessoriesRows.push(
       `<tr><td>${escapeHtml(row.name)}</td><td class="right">${row.qty.toLocaleString()}</td></tr>`
     )

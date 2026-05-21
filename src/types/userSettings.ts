@@ -230,6 +230,16 @@ export function createDefaultSupplyItems(): SupplyItem[] {
       enabledByDefault: true,
     },
     {
+      id: 'seed-plascourse',
+      name: 'Plascourse',
+      description:
+        'Damp-course / plastic course rolls. ~1 roll per 30 lineal metres of brickwork (rate = 1/30 ≈ 0.0333 rolls per m).',
+      unit: 'per-m-lineal',
+      rate: 1 / 30,
+      appliesTo: ['brick'],
+      enabledByDefault: true,
+    },
+    {
       id: 'seed-cement',
       name: 'Cement (bags)',
       description: 'GP cement bags for mortar — adjust the rate to suit your mix.',
