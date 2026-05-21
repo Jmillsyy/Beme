@@ -1000,7 +1000,20 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       }
     } catch (err) {
       console.error('Failed to save project', err)
-      alert('Failed to save the project. Your browser may be low on storage.')
+      // The previous alert blamed the browser unconditionally, which was
+      // misleading for cloud users — most failures here are server-side
+      // (RLS rejection, storage quota on the bucket, network blip during
+      // PDF upload). Surface the underlying error message so the user
+      // can act on it, and only mention browser storage as a fallback
+      // when the error genuinely looks like a quota issue.
+      const msg = (err as Error)?.message ?? String(err)
+      const looksLikeQuota =
+        /quota|QuotaExceeded|storage|exceeded/i.test(msg)
+      alert(
+        looksLikeQuota
+          ? `Failed to save: ${msg}\n\nYour browser or storage bucket may be out of space.`
+          : `Failed to save: ${msg}`
+      )
     } finally {
       // Release the guards regardless of outcome — a failed save should
       // still allow the user to retry. The in-flight id ref stays set on
