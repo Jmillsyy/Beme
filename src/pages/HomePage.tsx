@@ -492,7 +492,15 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   const userDisplayName =
     currentMember?.displayName ||
     (currentMember?.email ? currentMember.email.split('@')[0] : null)
-  const myActionItems = myPending.length + myInProgress.length
+  // "Inbox" is now strictly pending requests — things waiting on the user
+  // to pick up. Picked-up (in-progress) requests live in the In-progress
+  // projects section below, so counting them in the inbox tile too would
+  // double-surface the same work and make a finished pickup feel like
+  // nothing happened ('still 3 in my inbox after I claimed one'). Keep
+  // myInProgress around as a local so the welcome strip can still mention
+  // it if needed, but the headline tile only counts pending.
+  const myActionItems = myPending.length
+  void myInProgress
 
   return (
     <>
@@ -530,10 +538,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         {/* Inbox jump-tile. Replaces the old 'Avg turnaround' stat — that
             number wasn't actionable, just a vanity metric. This tile is a
             clickable shortcut to the requests page filtered to 'assigned
-            to me', which is what the estimator actually wants from the
-            stats row. Shows the live count of items waiting on this user
-            (pending + in-progress) so they have an at-a-glance "how full
-            is my queue" read without scrolling to the inbox below. */}
+            to me + pending'. Shows the live count of PENDING requests
+            (i.e. things waiting on this user to pick up). Once a request
+            is picked up, it leaves the inbox and surfaces in the
+            In-progress projects section instead. */}
         <InboxTile count={myActionItems} />
       </section>
 
@@ -1349,7 +1357,7 @@ function InboxTile({ count }: { count: number }) {
   const accentClass = count > 0 ? 'text-beme-300' : 'text-ink-50'
   return (
     <Link
-      to="/requests?scope=mine"
+      to="/requests?scope=mine&status=pending"
       className="block border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
     >
       <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 flex items-center justify-between gap-2">
