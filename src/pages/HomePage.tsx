@@ -145,35 +145,35 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
         <div className="flex flex-col gap-3">
           <Link
             to="/project/block"
-            className="px-4 py-5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3.5"
+            className="px-4 py-5 rounded-lg border border-beme-500/40 bg-beme-500/[0.06] text-ink-100 hover:bg-beme-500/[0.12] hover:border-beme-500/70 hover:text-beme-200 transition-colors group flex items-center gap-3.5"
           >
             <span
-              className="inline-block w-1.5 h-14 rounded-full bg-sky-400/80 flex-shrink-0"
+              className="inline-block w-1.5 h-14 rounded-full bg-beme-500/80 flex-shrink-0"
               aria-hidden
             />
             <div className="flex-1 text-left">
               <div className="font-semibold text-base leading-tight">Block estimate</div>
-              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-1">
+              <div className="text-xs text-ink-300/80 group-hover:text-beme-200/90 mt-1">
                 Draw walls, openings, piers, lintels
               </div>
             </div>
-            <span className="text-ink-500 group-hover:text-beme-300 text-lg">→</span>
+            <span className="text-beme-300/70 group-hover:text-beme-200 text-lg">→</span>
           </Link>
           <Link
             to="/project/brick"
-            className="px-4 py-5 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-100 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors group flex items-center gap-3.5"
+            className="px-4 py-5 rounded-lg border border-beme-500/40 bg-beme-500/[0.06] text-ink-100 hover:bg-beme-500/[0.12] hover:border-beme-500/70 hover:text-beme-200 transition-colors group flex items-center gap-3.5"
           >
             <span
-              className="inline-block w-1.5 h-14 rounded-full bg-rose-400/80 flex-shrink-0"
+              className="inline-block w-1.5 h-14 rounded-full bg-beme-500/80 flex-shrink-0"
               aria-hidden
             />
             <div className="flex-1 text-left">
               <div className="font-semibold text-base leading-tight">Brick estimate</div>
-              <div className="text-xs text-ink-400 group-hover:text-beme-300/80 mt-1">
+              <div className="text-xs text-ink-300/80 group-hover:text-beme-200/90 mt-1">
                 Trace walls, calculate brickwork area
               </div>
             </div>
-            <span className="text-ink-500 group-hover:text-beme-300 text-lg">→</span>
+            <span className="text-beme-300/70 group-hover:text-beme-200 text-lg">→</span>
           </Link>
           {isOrgUser && (
             <>
