@@ -1063,10 +1063,15 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     ? buildWallSpecsPage(makeups, walls, thicknessByWallId, wallsById, pageHeader)
     : ''
 
-  // Page 3: Block Schedule (full code-by-code tally)
+  // Page 3: Grand Total (full code-by-code tally with corner dedup applied —
+  // these are the ACTUAL ORDER QUANTITIES). Previously titled "Block
+  // Schedule"; renamed so the only "Grand Total" the customer sees is the
+  // one with the real numbers. The old "Grand Total per Block Type" page
+  // that appeared AFTER the per-wall-type breakdown showed the pre-dedup
+  // sum and was confusing — that's been removed below.
   const scheduleTable = inclusions.blockSchedule && entries.length > 0
     ? `
-      <h2 class="section-title">Block Schedule</h2>
+      <h2 class="section-title">Grand Total</h2>
       <table>
         <thead>
           <tr>
@@ -1251,38 +1256,14 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
           })
           .join('')
 
-        const grandTotalPage = `
-          <section class="page">
-            ${pageHeader}
-            <h2 class="section-title">Grand Total per Block Type</h2>
-            <p class="page-intro">Combined block counts across every wall makeup.</p>
-            <div class="wall-type-section">
-              <table>
-                <thead>
-                  <tr>
-                    <th style="width: 100px">Code</th>
-                    <th>Block</th>
-                    <th class="right" style="width: 100px">Quantity</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${combinedEntries
-                    .map(
-                      ([code, count]) =>
-                        `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right tabular">${formatNumber(count)}</td></tr>`
-                    )
-                    .join('')}
-                  <tr class="bold">
-                    <td colspan="2">Total</td>
-                    <td class="right tabular">${formatNumber(breakdownGrandTotal)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-        `
-
-        return wallTypePages + grandTotalPage
+        // The "Grand Total per Block Type" summary that used to live here
+        // was the same data the per-wall-type rows above add up to, but
+        // pre-corner-dedup — so its totals didn't match the real order
+        // quantities on the Grand Total page (formerly Block Schedule).
+        // Two grand-totals looked contradictory to customers, so the
+        // inflated one has been dropped. The breakdown pages stand on
+        // their own as the "where did each block come from" view.
+        return wallTypePages
       })()
     : ''
 
@@ -1842,10 +1823,14 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   ${assumptionsPage}
   ${wallSpecsPage}
   ${planOverviewPage}
-  ${schedulePage}
   ${breakdownPages}
   ${openingsPage}
   ${disclaimerPage}
+  ${/* Grand Total sits at the very end so the customer's final view of the
+       document is the actual order quantities — the page they'll quote and
+       order from. Used to live between Wall Layout and the breakdown,
+       which buried it among the workings. */ ''}
+  ${schedulePage}
 </body>
 </html>`
 
