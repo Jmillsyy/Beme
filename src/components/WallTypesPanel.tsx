@@ -470,7 +470,21 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           />
         </label>
 
-        <div className="text-sm">
+        {/* Bond type + Options share the wedge-disabled treatment: a
+            stacked-wedge curve has no bond pattern (every block is the
+            same wedge, no offset) and no length-makeup (no fractions
+            because the curve's length is set by chord-vs-radius, not by
+            cutting the last block). Disabling these alongside Block
+            composition keeps the form honest about which decisions are
+            still meaningful for the active curve mode. */}
+        <div
+          className={`text-sm ${
+            isCurveMakeup && wedgeRequired
+              ? 'opacity-40 pointer-events-none select-none'
+              : ''
+          }`}
+          aria-disabled={isCurveMakeup && wedgeRequired}
+        >
           <span className="block text-ink-300 mb-1">Bond type</span>
           <div className="flex gap-3">
             <label className="flex items-center gap-1.5 cursor-pointer">
@@ -478,6 +492,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                 type="radio"
                 checked={bondType === 'stretcher'}
                 onChange={() => setBondType('stretcher')}
+                disabled={isCurveMakeup && wedgeRequired}
               />
               <span>Stretcher</span>
             </label>
@@ -486,13 +501,21 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                 type="radio"
                 checked={bondType === 'stack'}
                 onChange={() => setBondType('stack')}
+                disabled={isCurveMakeup && wedgeRequired}
               />
               <span>Stack</span>
             </label>
           </div>
         </div>
 
-        <div className="text-sm">
+        <div
+          className={`text-sm ${
+            isCurveMakeup && wedgeRequired
+              ? 'opacity-40 pointer-events-none select-none'
+              : ''
+          }`}
+          aria-disabled={isCurveMakeup && wedgeRequired}
+        >
           <span className="block text-ink-300 mb-1">Options</span>
           <div className="flex flex-col gap-1">
             <label className="flex items-center gap-1.5 cursor-pointer">
@@ -500,6 +523,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                 type="checkbox"
                 checked={useFractions}
                 onChange={(e) => setUseFractions(e.target.checked)}
+                disabled={isCurveMakeup && wedgeRequired}
               />
               <span>Use fractions (20.02 / 20.22)</span>
             </label>
