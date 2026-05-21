@@ -26,6 +26,16 @@ import type { OrgMember, Organisation } from '../types/organisations'
 
 type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
 
+/**
+ * Format a project's reference number as a 6-digit zero-padded string.
+ * Values that overflow 6 digits (won't happen for a long time) just print
+ * as-is rather than silently truncating. Mirrors the helper in ProjectBar
+ * so the workspace and dashboard show the number identically.
+ */
+function formatRef(n: number): string {
+  return n >= 100000 ? `${n}` : n.toString().padStart(6, '0')
+}
+
 function formatRelative(iso: string): string {
   const date = new Date(iso)
   const now = new Date()
@@ -535,30 +545,41 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     const myInProgress = active
       .filter((r) => r.status === 'in_progress' && r.assignedToUserId === userId)
       .sort(byOldestUpdated)
-    // Recently-completed is personal: only requests the current user was
-    // assigned to AND projects the current user owns. Org-wide completed
-    // work lives behind a filter on the /requests page.
+    // Recently-completed is now TEAM-WIDE within the past 7 days — the
+    // dashboard surfaces what the whole org has shipped recently, not just
+    // what the current user finished. Older work (or work an org member
+    // wants to audit by specific person) still lives on the /requests page
+    // behind filters.
     //
     // Two sources merged into one list:
-    //   1. Estimate requests with status === 'completed' (the workspace's
-    //      status toggle propagates to the linked request now, so a project
-    //      that originated from a request shows up here).
+    //   1. Estimate requests with status === 'completed' completed in the
+    //      past week (any assignee).
     //   2. Projects with status === 'completed' that DON'T have a linked
-    //      request — direct '+ Block' / '+ Brick' creates that the user
-    //      finished. Without this, those just disappear after completion.
+    //      request — direct '+ Block' / '+ Brick' creates the user
+    //      finished. Same 7-day window.
     //
     // De-duplicates by projectId: if a completed project's id appears in
     // both lists (request flow) we keep the REQUEST entry because the
     // CompletedCard renders the customer-name header better than the
     // project's projectDetails.
+    const weekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000
+    const withinPastWeek = (iso: string | undefined) => {
+      if (!iso) return false
+      const t = new Date(iso).getTime()
+      return Number.isFinite(t) && t >= weekAgoMs
+    }
     const completedRequests = requests.filter(
-      (r) => r.status === 'completed' && r.assignedToUserId === userId
+      (r) =>
+        r.status === 'completed' && withinPastWeek(r.completedAt ?? r.updatedAt)
     )
     const requestProjectIds = new Set(
       completedRequests.map((r) => r.projectId).filter(Boolean)
     )
     const orphanCompletedProjects = projects.filter(
-      (p) => p.status === 'completed' && !requestProjectIds.has(p.id)
+      (p) =>
+        p.status === 'completed' &&
+        !requestProjectIds.has(p.id) &&
+        withinPastWeek(p.completedAt ?? p.updatedAt)
     )
     type CompletedItem =
       | { kind: 'request'; request: EstimateRequest; completedAt: string }
@@ -575,20 +596,27 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         completedAt: p.completedAt ?? p.updatedAt,
       })),
     ]
-    const completed = merged
-      .sort(
-        (a, b) =>
-          new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
-      )
-      // Cap at 4 so the row fills cleanly on common viewport widths without
-      // orphans. "View all →" link surfaces the rest.
-      .slice(0, 4)
+    const completed = merged.sort(
+      (a, b) =>
+        new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
+    )
+    // No slice — past-7-days is already a natural cap, and an estimator
+    // looking at the team's weekly output deserves to see all of it.
     return {
       myPending,
       myInProgress,
       recentlyCompleted: completed,
     }
   }, [requests, projects, userId])
+
+  // Quick lookup from request → linked project so the Recently Completed
+  // cards can show the project's reference number (and any other
+  // project-only fields) alongside the request's customer data.
+  const projectById = useMemo(() => {
+    const m = new Map<string, SavedProject>()
+    for (const p of projects) m.set(p.id, p)
+    return m
+  }, [projects])
 
   // Look up the current user in the org's member list to surface a real
   // display name in the welcome strip. Falls back to the email local-part,
@@ -742,34 +770,32 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           same rows. The /requests page is one click from the InboxTile
           for anyone who wants the full estimate-request audit view. */}
 
-      {/* ── Recently completed (yours) ──
-          Personal-only: shows requests YOU finished. Org-wide completed
-          work lives on /requests (filter by person + date) so a teammate
-          can audit anyone's recent throughput without it bloating the
-          home page. */}
-      {/* Always-on Recently Completed band. We show a placeholder card when
-          the user hasn't finished anything yet so the dashboard layout is
-          consistent for new and returning users — there's no jarring "where
-          did that section go" once a project gets reopened or deleted. */}
+      {/* ── Recently completed (team, past 7 days) ──
+          Team-wide scope: shows every estimate the org has finished in the
+          last week so anyone walking up to the dashboard can see what's
+          shipped. Older completed work lives behind the View all link on
+          the /requests page. Always-on band — empty state placeholder
+          keeps the dashboard layout consistent week to week. */}
       <section className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Your recently completed
+            Team — recently completed
           </h3>
           <Link
             to="/requests?scope=all&status=completed"
             className="text-xs text-beme-300 hover:text-beme-200"
           >
-            View team activity →
+            View all →
           </Link>
         </div>
         {recentlyCompleted.length === 0 ? (
           <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 p-6 text-center">
             <div className="text-sm text-ink-300">
-              Nothing finished yet
+              Nothing finished by the team this week
             </div>
             <p className="text-xs text-ink-500 mt-1 max-w-md mx-auto">
-              When you mark an estimate request as completed, it shows up here so you can find it again without digging.
+              Completed estimates from the past 7 days show up here. Older
+              work is one click away under View all.
             </p>
           </div>
         ) : (
@@ -785,6 +811,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
                   assignee={
                     item.request.assignedToUserId
                       ? memberById.get(item.request.assignedToUserId)
+                      : undefined
+                  }
+                  referenceNumber={
+                    item.request.projectId
+                      ? projectById.get(item.request.projectId)?.referenceNumber
                       : undefined
                   }
                 />
@@ -910,6 +941,14 @@ function ProjectInProgressRow({
               <span className="font-semibold text-ink-50 truncate">
                 {name}
               </span>
+              {typeof project.referenceNumber === 'number' && (
+                <span
+                  className="text-[11px] tabular-nums font-semibold text-ink-300"
+                  title="Reference number — quote this when looking the project up."
+                >
+                  #{formatRef(project.referenceNumber)}
+                </span>
+              )}
               <span className="text-[10px] uppercase tracking-wider text-ink-400">
                 {project.type === 'brick' ? 'Brick' : 'Block'}
               </span>
@@ -937,9 +976,12 @@ function ProjectInProgressRow({
 function CompletedCard({
   request,
   assignee,
+  referenceNumber,
 }: {
   request: EstimateRequest
   assignee: OrgMember | undefined
+  /** Reference number of the linked project, if there is one. */
+  referenceNumber?: number | null
 }) {
   // Turnaround = completedAt − createdAt. Defaults to updatedAt for safety
   // if completedAt is missing (shouldn't happen on completed rows but
@@ -957,8 +999,15 @@ function CompletedCard({
     >
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0">
-          <div className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
-            {request.customerName}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
+              {request.customerName}
+            </span>
+            {typeof referenceNumber === 'number' && (
+              <span className="text-[11px] tabular-nums font-semibold text-ink-300">
+                #{formatRef(referenceNumber)}
+              </span>
+            )}
           </div>
           {request.customerCompany && (
             <div className="text-xs text-ink-400 truncate">{request.customerCompany}</div>
@@ -1020,8 +1069,15 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
     >
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="min-w-0">
-          <div className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
-            {title}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
+              {title}
+            </span>
+            {typeof project.referenceNumber === 'number' && (
+              <span className="text-[11px] tabular-nums font-semibold text-ink-300">
+                #{formatRef(project.referenceNumber)}
+              </span>
+            )}
           </div>
           {sub && sub !== title && (
             <div className="text-xs text-ink-400 truncate">{sub}</div>
