@@ -415,7 +415,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       )
   }, [projects])
 
-  const { myPending, myInProgress, teamActive, recentlyCompleted } = useMemo(() => {
+  const { myPending, myInProgress, recentlyCompleted } = useMemo(() => {
     const active = requests.filter(
       (r) => r.status === 'pending' || r.status === 'in_progress'
     )
@@ -427,12 +427,6 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     const myInProgress = active
       .filter((r) => r.status === 'in_progress' && r.assignedToUserId === userId)
       .sort(byOldestUpdated)
-    const team = active
-      .filter((r) => r.assignedToUserId !== userId)
-      .sort((a, b) => {
-        if (a.status !== b.status) return a.status === 'pending' ? -1 : 1
-        return b.updatedAt.localeCompare(a.updatedAt)
-      })
     // Recently-completed is personal: only requests the current user was
     // assigned to AND projects the current user owns. Org-wide completed
     // work lives behind a filter on the /requests page.
@@ -484,7 +478,6 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return {
       myPending,
       myInProgress,
-      teamActive: team,
       recentlyCompleted: completed,
     }
   }, [requests, projects, userId])
@@ -586,30 +579,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         </section>
       )}
 
-      {/* ── Team inbox ── */}
-      {teamActive.length > 0 && (
-        <section className="mt-8">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-              Team inbox
-            </h3>
-            <span className="text-xs text-ink-400">
-              {teamActive.length} {teamActive.length === 1 ? 'request' : 'requests'} with teammates
-            </span>
-          </div>
-          <ul className="space-y-2">
-            {teamActive.map((r) => (
-              <InboxRow
-                key={r.id}
-                request={r}
-                assignee={r.assignedToUserId ? memberById.get(r.assignedToUserId) : undefined}
-                creator={memberById.get(r.createdByUserId)}
-                muted
-              />
-            ))}
-          </ul>
-        </section>
-      )}
+      {/* Team inbox removed: the In-progress projects section above already
+          shows every teammate's active work (the 'by Sarah' label calls
+          out whose it is), so a separate Team inbox just duplicated the
+          same rows. The /requests page is one click from the InboxTile
+          for anyone who wants the full estimate-request audit view. */}
 
       {/* ── Recently completed (yours) ──
           Personal-only: shows requests YOU finished. Org-wide completed
