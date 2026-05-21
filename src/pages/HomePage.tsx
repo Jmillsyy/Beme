@@ -396,24 +396,29 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { pending, inProgress, completedThisWeek }
   }, [requests])
 
-  // In-progress projects shown on the dashboard. ALL in-progress projects the
-  // user can see, regardless of whether the project came from picking up an
-  // estimate request or from a direct '+ Brick / + Block estimate' click.
+  // Split the in-progress projects into 'mine' (above) and 'team' (below) so
+  // the user's own work is the FIRST thing they see in the project list. The
+  // 'mine' bucket = projects where the current user is the owner — i.e.
+  // projects they started directly OR estimate requests they were allocated /
+  // picked up. Everything else (other org members' active projects) goes in
+  // the 'team' bucket below.
   //
-  // We used to filter out projects linked to a request (the inbox surfaces
-  // them, the thinking went), but the inbox grid was later replaced by the
-  // single InboxTile in the stats row that just shows a count. That left
-  // picked-up projects with nowhere to live on the dashboard — the user
-  // would accept a job and watch it vanish. Re-showing them here puts every
-  // in-progress estimate in one predictable spot. Most recent first.
-  const inProgressProjects = useMemo(() => {
-    return projects
-      .filter((p) => p.status === 'in-progress')
-      .sort(
-        (a, b) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-      )
-  }, [projects])
+  // We resolve ownership from ownerUserId, falling back to createdByUserId for
+  // older projects predating the read-only feature (same fallback chain the
+  // workspace uses). Most recent first within each bucket.
+  const { myProjects, teamProjects } = useMemo(() => {
+    const sortRecent = (a: SavedProject, b: SavedProject) =>
+      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    const all = projects.filter((p) => p.status === 'in-progress')
+    const mine: SavedProject[] = []
+    const team: SavedProject[] = []
+    for (const p of all) {
+      const owner = p.ownerUserId ?? p.createdByUserId ?? null
+      if (userId && owner === userId) mine.push(p)
+      else team.push(p)
+    }
+    return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
+  }, [projects, userId])
 
   const { myPending, myInProgress, recentlyCompleted } = useMemo(() => {
     const active = requests.filter(
@@ -551,13 +556,50 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           one source of truth for personal queue instead of two surfaces
           on the same page showing the same data. */}
 
+      {/* ── Your projects ──
+          The current user's own active projects — anything they started or
+          got allocated. Sits above the team's in-progress list so a user's
+          first glance at the dashboard is their own work. Same 5-cap +
+          View all affordance as the other lists. */}
+      {myProjects.length > 0 && (
+        <section className="mt-8">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Your projects
+            </h3>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-ink-400">
+                {myProjects.length}{' '}
+                {myProjects.length === 1 ? 'project' : 'projects'} on the go
+              </span>
+              {myProjects.length > 5 && (
+                <Link
+                  to="/requests?scope=mine&status=in_progress"
+                  className="text-xs text-beme-300 hover:text-beme-200"
+                >
+                  View all →
+                </Link>
+              )}
+            </div>
+          </div>
+          <ul className="space-y-2">
+            {myProjects.slice(0, 5).map((p) => (
+              <ProjectInProgressRow
+                key={p.id}
+                project={p}
+                members={members}
+                currentUserId={userId}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* ── In-progress projects ──
-          Shows the 5 most-recently-updated in-progress projects on this org
-          — request-driven or direct. When there are more than 5, the
-          'View all →' link points the user to /requests filtered to
-          in-progress so they can see the full list. Same affordance as
-          Recently Completed. */}
-      {inProgressProjects.length > 0 && (
+          Active projects owned by other org members — the 'by Sarah'
+          label calls out whose each one is so the user can spot who's
+          working on what at a glance. */}
+      {teamProjects.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
@@ -565,11 +607,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             </h3>
             <div className="flex items-center gap-3">
               <span className="text-xs text-ink-400">
-                {inProgressProjects.length}{' '}
-                {inProgressProjects.length === 1 ? 'project' : 'projects'} on
-                the go
+                {teamProjects.length}{' '}
+                {teamProjects.length === 1 ? 'project' : 'projects'} on the go
               </span>
-              {inProgressProjects.length > 5 && (
+              {teamProjects.length > 5 && (
                 <Link
                   to="/requests?scope=all&status=in_progress"
                   className="text-xs text-beme-300 hover:text-beme-200"
@@ -580,8 +621,13 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             </div>
           </div>
           <ul className="space-y-2">
-            {inProgressProjects.slice(0, 5).map((p) => (
-              <ProjectInProgressRow key={p.id} project={p} />
+            {teamProjects.slice(0, 5).map((p) => (
+              <ProjectInProgressRow
+                key={p.id}
+                project={p}
+                members={members}
+                currentUserId={userId}
+              />
             ))}
           </ul>
         </section>
@@ -714,7 +760,15 @@ function InboxColumn({
  * project's just sitting there waiting to be worked on. Click anywhere on
  * the row to open the workspace; brick / block decides the URL path.
  */
-function ProjectInProgressRow({ project }: { project: SavedProject }) {
+function ProjectInProgressRow({
+  project,
+  members,
+  currentUserId,
+}: {
+  project: SavedProject
+  members: OrgMember[]
+  currentUserId: string | null
+}) {
   const name =
     project.projectDetails.projectName.trim() ||
     project.projectDetails.siteAddress.trim() ||
@@ -728,6 +782,19 @@ function ProjectInProgressRow({ project }: { project: SavedProject }) {
     project.type === 'brick'
       ? `/project/brick?id=${project.id}`
       : `/project/block?id=${project.id}`
+
+  // Resolve the owner's display name. Fallback chain: ownerUserId →
+  // createdByUserId → null. Suppresses the label when the project is the
+  // current user's (the section header above already says 'Your projects')
+  // so the row doesn't read "by Josh" to Josh.
+  const ownerId = project.ownerUserId ?? project.createdByUserId ?? null
+  const ownerMember = ownerId ? members.find((m) => m.userId === ownerId) : null
+  const ownerName =
+    ownerMember?.displayName ||
+    ownerMember?.email ||
+    (ownerId ? 'a teammate' : null)
+  const isMyProject = ownerId && currentUserId && ownerId === currentUserId
+
   return (
     <li>
       <Link
@@ -743,6 +810,11 @@ function ProjectInProgressRow({ project }: { project: SavedProject }) {
               <span className="text-[10px] uppercase tracking-wider text-ink-400">
                 {project.type === 'brick' ? 'Brick' : 'Block'}
               </span>
+              {ownerName && !isMyProject && (
+                <span className="text-[11px] text-ink-400">
+                  by <span className="text-ink-300">{ownerName}</span>
+                </span>
+              )}
             </div>
             {subtitle && (
               <div className="text-sm text-ink-300 mt-0.5 truncate">
