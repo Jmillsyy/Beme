@@ -196,13 +196,13 @@ export default function BlockExportPanel({
               checked={inclusions.blockSchedule}
               onChange={(v) => patch({ blockSchedule: v })}
             />
-            <Toggle
-              label="Breakdown by wall type"
-              checked={inclusions.wallTypeBreakdown}
-              onChange={(v) => patch({ wallTypeBreakdown: v })}
-              disabled={makeups.length === 0}
-              disabledHint="Define at least one wall type first"
-            />
+            {/* 'Breakdown by wall type' toggle removed — the per-makeup
+                sub-tables it controlled are no longer included in the
+                export, since the Wall Specs section already shows the
+                block composition per type and the Grand Total at the end
+                shows the order quantities. The wallTypeBreakdown field
+                stays in BlockExportInclusions for back-compat with saved
+                projects. */}
             <Toggle
               label="Ruler measurements on layout"
               checked={inclusions.measurements}
