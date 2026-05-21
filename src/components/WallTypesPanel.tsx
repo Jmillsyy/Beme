@@ -650,7 +650,32 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           </div>
         ) : null}
 
-        <div className="grid grid-cols-1 gap-3">
+        {/* When the wedge section is the active one for this curve, the rest
+            of the wall-composition fields don't apply — wedge walls are just
+            stacked tapered blocks with no separate base / top / end-block
+            roles. Fade out and disable the section so the user sees clearly
+            that these knobs aren't relevant; the dual section above already
+            committed the body block to the wedge. Switching the curve into
+            normal-blocks territory (radius >= wedge threshold) re-enables
+            everything. */}
+        {isCurveMakeup && wedgeRequired && (
+          <div className="mb-3 p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-xs text-amber-200">
+            Wedge walls (20.03CW) use a single stacked-wedge composition.
+            The fields below — base course, top course, end terminations,
+            course overrides, course-series ranges — don't apply to a
+            wedge build and are disabled while this curve sits below the{' '}
+            {CURVED_WALL_WEDGE_RADIUS_MM}mm wedge threshold.
+          </div>
+        )}
+
+        <div
+          className={`grid grid-cols-1 gap-3 ${
+            isCurveMakeup && wedgeRequired
+              ? 'opacity-40 pointer-events-none select-none'
+              : ''
+          }`}
+          aria-disabled={isCurveMakeup && wedgeRequired}
+        >
           <label className="text-sm">
             <span className="block text-ink-300 mb-1">Base course block</span>
             <select
@@ -761,8 +786,18 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         </div>
       </div>
 
-      {/* Per-course overrides */}
-      <div className="mt-5">
+      {/* Per-course overrides. Same wedge-disabled treatment as the
+          composition section above — overrides don't apply to a
+          stacked-wedge wall, so we fade and disable when this curve is
+          in the wedge zone. */}
+      <div
+        className={`mt-5 ${
+          isCurveMakeup && wedgeRequired
+            ? 'opacity-40 pointer-events-none select-none'
+            : ''
+        }`}
+        aria-disabled={isCurveMakeup && wedgeRequired}
+      >
         <button
           onClick={() => setShowOverrides((v) => !v)}
           className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
@@ -826,8 +861,16 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           300 series for the base 5 courses for an engineered footing, then
           standard 200 series above. Each range overrides any subset of the
           role-based block picks; anything left on "Default" falls back to the
-          makeup-level field above. */}
-      <div className="mt-5">
+          makeup-level field above. Disabled for wedge curves (same reason
+          as Per-course overrides — wedge walls don't course-mix). */}
+      <div
+        className={`mt-5 ${
+          isCurveMakeup && wedgeRequired
+            ? 'opacity-40 pointer-events-none select-none'
+            : ''
+        }`}
+        aria-disabled={isCurveMakeup && wedgeRequired}
+      >
         <button
           onClick={() => setShowSeriesRanges((v) => !v)}
           className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
