@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import Header from '../components/Header'
+import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import type { OrgMember } from '../types/organisations'
 import { createEstimateRequest } from '../lib/estimateRequests'
@@ -19,6 +20,7 @@ import type { ProjectType } from '../lib/projectStorage'
  */
 export default function NewRequestPage() {
   const { currentOrg, loading: orgLoading } = useOrganisations()
+  const { user } = useAuth()
   const navigate = useNavigate()
   const [members, setMembers] = useState<OrgMember[]>([])
   const [membersLoading, setMembersLoading] = useState(true)
@@ -48,18 +50,22 @@ export default function NewRequestPage() {
       if (cancelled) return
       setMembers(list)
       setMembersLoading(false)
-      // Default the assignee to the first non-admin staff member in the org
-      // if any exists. Saves a click on the most common case ("send to our
-      // team"). Admins can still be assigned manually if needed, but the
-      // first-pick is staff so the request gets routed to a takeoff person
-      // by default rather than to an admin who may not be doing estimates.
-      const firstAssignable = list.find((m) => m.role === 'staff')
-      if (firstAssignable) setAssignedToUserId(firstAssignable.userId)
+      // Default the assignee to the CURRENT USER — the person creating the
+      // request. Requests now require a specific person (no 'Unassigned'),
+      // and the most likely case is "I'm creating this and I'll work on it
+      // myself unless I deliberately hand it off to someone else." Falls
+      // back to the first staff member if the current user isn't in the
+      // org list for some reason (shouldn't happen, but defensive).
+      const selfId = user?.id
+      const me = selfId ? list.find((m) => m.userId === selfId) : undefined
+      const fallback = list.find((m) => m.role === 'staff') ?? list[0]
+      const def = me ?? fallback
+      if (def) setAssignedToUserId(def.userId)
     })
     return () => {
       cancelled = true
     }
-  }, [currentOrg])
+  }, [currentOrg, user?.id])
 
   // Surface a friendly empty state for users not inside an org, rather than
   // letting them fill in a form they can't submit.
@@ -96,7 +102,12 @@ export default function NewRequestPage() {
   const canSubmit =
     customerName.trim().length > 0 &&
     !submitting &&
-    !!currentOrg
+    !!currentOrg &&
+    // Requests must go to a specific person — no team-pool / unassigned
+    // queue. If the dropdown's empty (membership not loaded, or the org
+    // genuinely has no other members), Submit stays disabled until a
+    // person resolves.
+    assignedToUserId.trim().length > 0
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -106,7 +117,10 @@ export default function NewRequestPage() {
     try {
       const draft: EstimateRequestDraft = {
         type,
-        assignedToUserId: assignedToUserId || null,
+        // Requests always go to a specific person — no team pool. The
+        // canSubmit guard above already prevents reaching this point with
+        // an empty selection, so the assertion is safe.
+        assignedToUserId,
         customerName: customerName.trim(),
         customerCompany: customerCompany.trim() || undefined,
         customerEmail: customerEmail.trim() || undefined,
@@ -343,7 +357,6 @@ export default function NewRequestPage() {
                 onChange={(e) => setAssignedToUserId(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
               >
-                <option value="">Unassigned (anyone can pick up)</option>
                 {assignableMembers.map((m) => (
                   <option key={m.userId} value={m.userId}>
                     {m.displayName || m.email || `Member (${m.role})`} —{' '}

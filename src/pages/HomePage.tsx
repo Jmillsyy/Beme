@@ -551,22 +551,35 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           on the same page showing the same data. */}
 
       {/* ── In-progress projects ──
-          Shows every in-progress project on this org — request-driven OR
-          direct — sorted by most recently updated. */}
+          Shows the 5 most-recently-updated in-progress projects on this org
+          — request-driven or direct. When there are more than 5, the
+          'View all →' link points the user to /requests filtered to
+          in-progress so they can see the full list. Same affordance as
+          Recently Completed. */}
       {inProgressProjects.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
               In-progress projects
             </h3>
-            <span className="text-xs text-ink-400">
-              {inProgressProjects.length}{' '}
-              {inProgressProjects.length === 1 ? 'project' : 'projects'} on
-              the go
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-ink-400">
+                {inProgressProjects.length}{' '}
+                {inProgressProjects.length === 1 ? 'project' : 'projects'} on
+                the go
+              </span>
+              {inProgressProjects.length > 5 && (
+                <Link
+                  to="/requests?scope=all&status=in_progress"
+                  className="text-xs text-beme-300 hover:text-beme-200"
+                >
+                  View all →
+                </Link>
+              )}
+            </div>
           </div>
           <ul className="space-y-2">
-            {inProgressProjects.map((p) => (
+            {inProgressProjects.slice(0, 5).map((p) => (
               <ProjectInProgressRow key={p.id} project={p} />
             ))}
           </ul>
