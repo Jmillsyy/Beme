@@ -596,12 +596,16 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         completedAt: p.completedAt ?? p.updatedAt,
       })),
     ]
-    const completed = merged.sort(
-      (a, b) =>
-        new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
-    )
-    // No slice — past-7-days is already a natural cap, and an estimator
-    // looking at the team's weekly output deserves to see all of it.
+    const completed = merged
+      .sort(
+        (a, b) =>
+          new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
+      )
+      // Cap at the 5 most-recently-completed so the band reads as a quick
+      // glance at "what just shipped", not a full archive. The 'View all
+      // →' link on the section header points at /requests?status=completed
+      // for the unbounded list.
+      .slice(0, 5)
     return {
       myPending,
       myInProgress,
