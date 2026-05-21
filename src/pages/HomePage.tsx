@@ -396,30 +396,24 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { pending, inProgress, completedThisWeek }
   }, [requests])
 
-  // Split the active requests three ways:
-  //   - myPending    → 'Needs you to pick up'   (left column of Your inbox)
-  //   - myInProgress → 'Currently working on'   (right column of Your inbox)
-  //   - teamActive   → 'Team inbox'             (collapsed-ish section below)
+  // In-progress projects shown on the dashboard. ALL in-progress projects the
+  // user can see, regardless of whether the project came from picking up an
+  // estimate request or from a direct '+ Brick / + Block estimate' click.
   //
-  // The two 'mine' columns sort by oldest-pending-first because that's the
-  // one that's been waiting longest and most likely to need attention.
-  // In-progress projects on this org that aren't tied to an estimate
-  // request — these are the ones created via '+ Brick / + Block estimate'
-  // on the dashboard rather than picked up from a request. The inbox grid
-  // above already covers request-driven work; this section surfaces the
-  // free-standing projects so they have somewhere to live on the
-  // dashboard. Most recent first.
+  // We used to filter out projects linked to a request (the inbox surfaces
+  // them, the thinking went), but the inbox grid was later replaced by the
+  // single InboxTile in the stats row that just shows a count. That left
+  // picked-up projects with nowhere to live on the dashboard — the user
+  // would accept a job and watch it vanish. Re-showing them here puts every
+  // in-progress estimate in one predictable spot. Most recent first.
   const inProgressProjects = useMemo(() => {
-    const linkedProjectIds = new Set(
-      requests.map((r) => r.projectId).filter((id): id is string => !!id)
-    )
     return projects
-      .filter((p) => p.status === 'in-progress' && !linkedProjectIds.has(p.id))
+      .filter((p) => p.status === 'in-progress')
       .sort(
         (a, b) =>
           new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
       )
-  }, [projects, requests])
+  }, [projects])
 
   const { myPending, myInProgress, teamActive, recentlyCompleted } = useMemo(() => {
     const active = requests.filter(
@@ -556,12 +550,9 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           one source of truth for personal queue instead of two surfaces
           on the same page showing the same data. */}
 
-      {/* ── In-progress projects (not from a request) ──
-          Direct '+ Brick / + Block' creates bypass the estimate-request
-          inbox entirely — they need somewhere to surface on the dashboard
-          so the user doesn't lose them. Show every in-progress project on
-          this org that ISN'T already shown above as a request, sorted by
-          most recently updated. */}
+      {/* ── In-progress projects ──
+          Shows every in-progress project on this org — request-driven OR
+          direct — sorted by most recently updated. */}
       {inProgressProjects.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
