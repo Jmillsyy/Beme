@@ -397,28 +397,44 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   }, [requests])
 
   // Split the in-progress projects into 'mine' (above) and 'team' (below) so
-  // the user's own work is the FIRST thing they see in the project list. The
-  // 'mine' bucket = projects where the current user is the owner — i.e.
-  // projects they started directly OR estimate requests they were allocated /
-  // picked up. Everything else (other org members' active projects) goes in
-  // the 'team' bucket below.
+  // the user's own work is the FIRST thing they see in the project list.
   //
-  // We resolve ownership from ownerUserId, falling back to createdByUserId for
-  // older projects predating the read-only feature (same fallback chain the
-  // workspace uses). Most recent first within each bucket.
+  // 'mine' = projects where the user is the OWNER (i.e. they created the
+  //          underlying estimate request, or they started a direct '+ Brick /
+  //          + Block' project) OR they're the current assignee of the linked
+  //          estimate request (i.e. they were allocated to work on it,
+  //          regardless of who created it).
+  //
+  // Two buckets exist because the project lifecycle now separates creator and
+  // worker: a sales person creates the request and stays the owner; the
+  // estimator picks it up and is the assignee. Both should see the project
+  // under 'Your projects' on their respective dashboards.
+  //
+  // Most recent first within each bucket.
   const { myProjects, teamProjects } = useMemo(() => {
     const sortRecent = (a: SavedProject, b: SavedProject) =>
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    // Set of project ids the current user is assigned to via an estimate
+    // request — derived from the requests list we already loaded. Includes
+    // requests in any status (the project sticks with the assignee even
+    // after the request itself is completed, until it's cleaned up).
+    const myAssignedProjectIds = new Set(
+      requests
+        .filter((r) => r.assignedToUserId === userId && r.projectId)
+        .map((r) => r.projectId as string)
+    )
     const all = projects.filter((p) => p.status === 'in-progress')
     const mine: SavedProject[] = []
     const team: SavedProject[] = []
     for (const p of all) {
       const owner = p.ownerUserId ?? p.createdByUserId ?? null
-      if (userId && owner === userId) mine.push(p)
+      const isOwner = !!userId && owner === userId
+      const isAssignee = myAssignedProjectIds.has(p.id)
+      if (isOwner || isAssignee) mine.push(p)
       else team.push(p)
     }
     return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
-  }, [projects, userId])
+  }, [projects, requests, userId])
 
   const { myPending, myInProgress, recentlyCompleted } = useMemo(() => {
     const active = requests.filter(

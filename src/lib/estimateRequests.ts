@@ -468,6 +468,14 @@ export async function pickUpEstimateRequest(request: EstimateRequest): Promise<s
     organisationId: request.organisationId,
     createdAt: nowIso,
     updatedAt: nowIso,
+    // Ownership of a request-driven project sticks with whoever CREATED
+    // the estimate request — i.e. the sales person who originated the
+    // job. The picker is the estimator working on it but doesn't 'own'
+    // it. Stamping both fields here means the resulting projects.row
+    // shows the creator on read, even though the row is inserted by the
+    // picker (RLS allows org members to insert org-scoped rows).
+    createdByUserId: request.createdByUserId,
+    ownerUserId: request.createdByUserId,
     projectDetails,
     pdfBlob: planBlob
       ? new File(
