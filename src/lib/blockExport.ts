@@ -1823,19 +1823,14 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   ${assumptionsPage}
   ${wallSpecsPage}
   ${planOverviewPage}
+  ${breakdownPages}
   ${openingsPage}
-  ${disclaimerPage}
-  ${/* Grand Total sits at the very end so the customer's final view of the
-       document is the actual order quantities — the page they'll quote
-       and order from.
-
-       The per-wall-type Breakdown pages used to sit between Wall Layout
-       and Openings here. They've been removed from the assembly: between
-       the Wall Specs section (block composition per type) and the Grand
-       Total (final order quantities), the per-makeup sub-tables were
-       redundant detail rather than additive insight. The breakdownPages
-       variable is still built above in case it's wanted back. */ ''}
+  ${/* Grand Total sits just before the disclaimer so the customer's
+       last data-bearing page is the actual order quantities — the page
+       they'll quote and order from. Disclaimer wraps the document so
+       the legal copy is the final read. */ ''}
   ${schedulePage}
+  ${disclaimerPage}
 </body>
 </html>`
 
