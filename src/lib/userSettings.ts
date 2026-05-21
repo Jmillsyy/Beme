@@ -12,7 +12,11 @@
  */
 
 import { useEffect, useReducer } from 'react'
-import { createDefaultUserSettings, type UserSettings } from '../types/userSettings'
+import {
+  createDefaultSupplyItems,
+  createDefaultUserSettings,
+  type UserSettings,
+} from '../types/userSettings'
 
 // ─── Mutable singleton ──────────────────────────────────────────────────────
 
@@ -158,7 +162,17 @@ export async function initUserSettings(): Promise<void> {
         },
       },
       defaults: { ...defaults.defaults, ...(saved.defaults ?? {}) },
-      supplyItems: saved.supplyItems ?? [],
+      // Backfill supply items for existing users who installed Beme before
+      // the supply-items system shipped (or before defaults were seeded).
+      // An empty list now picks up the seed so opening the Material library
+      // shows real items the user can edit, not an empty 'No supply items
+      // yet' placeholder. Once anything's been edited the saved list takes
+      // over; the seed only fires when the field is literally missing or
+      // empty.
+      supplyItems:
+        saved.supplyItems && saved.supplyItems.length > 0
+          ? saved.supplyItems
+          : createDefaultSupplyItems(),
     }
     notifyChange()
   }

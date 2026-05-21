@@ -200,6 +200,61 @@ export function createDefaultUserSettings(): UserSettings {
       defaultMortarJointMm: 10,
       defaultBrickTypeCode: 'standard',
     },
-    supplyItems: [],
+    supplyItems: createDefaultSupplyItems(),
   }
+}
+
+/**
+ * Seed supply items every new install starts with. Includes the supplies
+ * the brick estimate has historically tallied (ties), plus a couple of
+ * common additions (cement bags, cavity flashing) that estimators will
+ * recognise. The rates match what most Australian estimators use day-to-
+ * day; users edit them in the Material library page.
+ *
+ * 'Brick Ties' is intentionally `enabledByDefault: true` so the brick
+ * export shows ties on a fresh project without the user having to flip
+ * anything. The brick export de-dupes against this item so the legacy
+ * BrickSettings.ties row doesn't double up. The other items default off
+ * — they're there to be visible / one-toggle-away in the library, not to
+ * auto-add to every estimate.
+ */
+export function createDefaultSupplyItems(): SupplyItem[] {
+  return [
+    {
+      id: 'seed-brick-ties',
+      name: 'Brick Ties',
+      description: 'Wall ties tying brickwork to the structural backing.',
+      unit: 'per-m2',
+      rate: 2,
+      appliesTo: ['brick'],
+      enabledByDefault: true,
+    },
+    {
+      id: 'seed-cement',
+      name: 'Cement (bags)',
+      description: 'GP cement bags for mortar — adjust the rate to suit your mix.',
+      unit: 'per-m2',
+      rate: 0.3,
+      appliesTo: ['brick', 'block'],
+      enabledByDefault: false,
+    },
+    {
+      id: 'seed-cavity-flashing',
+      name: 'Cavity flashing (m)',
+      description: 'Damp-proof flashing across cavity bases / lintel heads.',
+      unit: 'per-m-lineal',
+      rate: 1,
+      appliesTo: ['brick'],
+      enabledByDefault: false,
+    },
+    {
+      id: 'seed-vertical-rebar',
+      name: 'N12 vertical rebar (each)',
+      description: 'Reinforcing bar placed in filled cores — one per N blocks.',
+      unit: 'per-block',
+      rate: 0.05,
+      appliesTo: ['block'],
+      enabledByDefault: false,
+    },
+  ]
 }

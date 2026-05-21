@@ -760,11 +760,28 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     : ''
 
   const accessoriesRows: string[] = []
-  if (inclusions.brickTies && settings.ties.enabled)
+  // Detect whether the user's supply-item list already covers ties so we
+  // don't print the legacy BrickSettings.ties row on top of it. Match by
+  // case-insensitive 'brick tie' contains — that catches 'Brick Ties',
+  // 'Brick tie', 'Coloured brick ties', etc. The supply-item row from
+  // supplyRows below takes precedence; legacy ties only show when no
+  // supply item is doing the job.
+  const supplyCoversTies = supplyRows.some((r) =>
+    r.name.toLowerCase().includes('brick tie')
+  )
+  const supplyCoversPlascourse = supplyRows.some((r) =>
+    r.name.toLowerCase().includes('plascourse')
+  )
+  if (inclusions.brickTies && settings.ties.enabled && !supplyCoversTies)
     accessoriesRows.push(
       `<tr><td>Brick Ties</td><td class="right">${tally.tiesCount.toLocaleString()}</td></tr>`
     )
-  if (inclusions.plascourse && settings.plascourse.enabled && tally.plascourseCount > 0)
+  if (
+    inclusions.plascourse &&
+    settings.plascourse.enabled &&
+    tally.plascourseCount > 0 &&
+    !supplyCoversPlascourse
+  )
     accessoriesRows.push(
       `<tr><td>Plascourse</td><td class="right">${tally.plascourseCount} ${tally.plascourseCount === 1 ? 'roll' : 'rolls'}</td></tr>`
     )
