@@ -527,12 +527,16 @@ function buildPlanOverviewPage(
     })
     .join('\n          ')
 
-  // Numbered labels at each wall's midpoint with the wall length as a
-  // secondary text below the circle. White-on-orange circle for the number
-  // so it reads on top of the wall fill; the length text is white with a
-  // dark stroke (paint-order: stroke) so it's legible whether it falls on
-  // the wall body or in the gap.
+  // Length-only labels at each wall's midpoint. The numbered circles
+  // (1, 2, 3 …) that used to sit on top of the length were removed —
+  // there's no companion table referencing those numbers in the
+  // document any more, so they were noise on the diagram. The length
+  // text is dark with a heavier white stroke (paint-order: stroke) so
+  // it's legible whether it falls on the wall body or in the gap.
   const lengthFontSize = labelFontSize * 0.85
+  // labelDiameter is no longer used for circles but kept for the per-wall
+  // labelling sizing logic above. Silence the unused-warning.
+  void labelDiameter
   const wallLabels: string[] = walls.map((w, i) => {
     let cx: number
     let cy: number
@@ -544,14 +548,8 @@ function buildPlanOverviewPage(
       cy = (w.startY + w.endY) / 2
     }
     const lengthM = (wallLengthsMm[i] / 1000).toFixed(2)
-    const lengthOffsetY = labelDiameter * 0.7 + lengthFontSize * 0.6
-    // Circle fill matches the wall type's "dark" colour so the number sits
-    // visually on top of a deeper version of the wall colour beside it.
-    const c = colourFor(w)
     return `
-      <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="${c.dark}" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
-      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${labelFontSize}" font-weight="700" fill="#fff">${i + 1}</text>
-      <text x="${cx}" y="${cy + lengthOffsetY}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.18}" paint-order="stroke">${lengthM} m</text>
+      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthM} m</text>
     `
   })
 
@@ -596,8 +594,8 @@ function buildPlanOverviewPage(
     : ''
 
   const intro = background
-    ? 'The plan with the drawn walls and piers overlaid in colour. Numbered labels match the wall references in the breakdown tables.'
-    : 'Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the breakdown tables.'
+    ? 'The plan with the drawn walls and piers overlaid in colour, length labelled at each wall midpoint.'
+    : 'Diagram of every wall as drawn on the plan with overall sizing. Length labelled at each wall midpoint.'
 
   return `
     <section class="page plan-overview-page">

@@ -280,17 +280,17 @@ function buildBrickPlanOverviewPage(
     })
     .join('\n          ')
 
+  // Length-only labels — numbered circles dropped to match the block
+  // export. No companion table references wall numbers, so the circles
+  // were just visual noise.
+  void labelDiameter
   const wallLabels = walls
     .map((w, i) => {
       const cx = (w.startX + w.endX) / 2
       const cy = (w.startY + w.endY) / 2
       const lengthM = (wallLengthsMm[i] / 1000).toFixed(2)
-      const lengthOffsetY = labelDiameter * 0.7 + lengthFontSize * 0.6
-      const c = colourFor(w)
       return `
-        <circle cx="${cx}" cy="${cy}" r="${labelDiameter / 2}" fill="${c.dark}" stroke="#fff" stroke-width="${labelDiameter * 0.06}"/>
-        <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${labelFontSize}" font-weight="700" fill="#fff">${i + 1}</text>
-        <text x="${cx}" y="${cy + lengthOffsetY}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.18}" paint-order="stroke">${lengthM} m</text>
+        <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthM} m</text>
       `
     })
     .join('\n          ')
@@ -327,8 +327,8 @@ function buildBrickPlanOverviewPage(
     : ''
 
   const intro = background
-    ? 'The plan with the drawn walls overlaid in colour. Numbered labels match the wall references in the brick area summary.'
-    : 'Diagram of every wall as drawn on the plan with overall sizing. Numbered labels match the wall references in the brick area summary.'
+    ? 'The plan with the drawn walls overlaid in colour, length labelled at each wall midpoint.'
+    : 'Diagram of every wall as drawn on the plan with overall sizing. Length labelled at each wall midpoint.'
 
   return `
     <section class="page plan-overview-page">
