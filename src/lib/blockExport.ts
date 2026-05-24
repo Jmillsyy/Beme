@@ -36,6 +36,7 @@ import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
 import { rasterisePdfPage } from './pdfRaster'
 import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
+import { getUserSettings } from './userSettings'
 
 interface ExportParams {
   projectDetails: ProjectDetails
@@ -801,7 +802,8 @@ function buildAssumptions(
     hasCutCurves: false,
     hasWedgeCurves: false,
     hasCustomCurves: false,
-  }
+  },
+  supplyItemNotes: string[] = []
 ): string[] {
   if (!inclusions.assumptions) return []
 
@@ -854,6 +856,12 @@ function buildAssumptions(
 
   items.push('No waste allowance applied — quantities are net as measured.')
 
+  // Supply items the user has enabled in their Material library — render
+  // one rate-and-quantity line each so the customer sees where the count
+  // came from. Built by the caller off the same supplyRows that drove the
+  // Accessories table so the two never drift.
+  items.push(...supplyItemNotes)
+
   // Custom notes from the user — split on newlines, ignore blank lines
   const customLines = customNotes
     .split(/\r?\n/)
@@ -903,6 +911,71 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   )
   const entries = tallyEntries(tally)
   const totalBlocks = entries.reduce((sum, [, c]) => sum + c, 0)
+
+  // Aggregate length + net area for supply-item rate math (per-m-lineal /
+  // per-m² items). Wall height comes off the per-wall override or its
+  // makeup default; openings reduce the area as gross voids. Done with a
+  // simple geometric length here rather than wallLengthMm() because supply
+  // rates are wall-run / wall-area concepts that don't need the corner /
+  // endpoint accounting wallLengthMm does.
+  let totalLengthMm_supply = 0
+  let totalAreaSqMm_supply = 0
+  for (const w of walls) {
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    const lenMm = Math.sqrt(dx * dx + dy * dy)
+    totalLengthMm_supply += lenMm
+    const h = w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+    totalAreaSqMm_supply += lenMm * h
+  }
+  for (const o of openings) {
+    totalAreaSqMm_supply -= o.widthMm * o.heightMm
+  }
+  if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+
+  // User-defined supply items applicable to block estimates. Same model as
+  // the brick export: each item resolves to a whole-unit count from its
+  // rate × unit basis; zero-qty rows drop out. per-brick items skipped.
+  // supplyRows feeds both the Accessories table below and a matching
+  // assumption note so the document stays self-explanatory.
+  const supplyItems = getUserSettings().supplyItems ?? []
+  const blockArea_m2 = totalAreaSqMm_supply / 1_000_000
+  const blockRun_m = totalLengthMm_supply / 1000
+  const supplyRows: { name: string; qty: number; noteRate: string }[] = []
+  for (const item of supplyItems) {
+    if (!item.appliesTo.includes('block')) continue
+    if (!item.enabledByDefault) continue
+    let qty = 0
+    let noteRate = ''
+    switch (item.unit) {
+      case 'each':
+        qty = item.rate
+        noteRate = `${item.rate} per project`
+        break
+      case 'per-block':
+        qty = item.rate * totalBlocks
+        noteRate = `${item.rate} per block`
+        break
+      case 'per-m2':
+        qty = item.rate * blockArea_m2
+        noteRate = `${item.rate} per m²`
+        break
+      case 'per-m-lineal':
+        qty = item.rate * blockRun_m
+        noteRate = `${item.rate} per lineal metre`
+        break
+      case 'per-opening':
+        qty = item.rate * openings.length
+        noteRate = `${item.rate} per opening`
+        break
+      case 'per-brick':
+        // Block estimate — brick-relative rates don't apply.
+        continue
+    }
+    const rounded = Math.ceil(qty)
+    if (rounded <= 0) continue
+    supplyRows.push({ name: item.name, qty: rounded, noteRate })
+  }
 
   // Per-wall thickness + lookup so wallLengthMm returns outer-edge length consistently
   // (only the wall whose endpoint sits INSIDE the other wall gets the extension).
@@ -990,12 +1063,16 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     else if (zone === 'custom') hasCustomCurves = true
   }
 
+  const supplyItemNotes = supplyRows.map(
+    (r) => `${r.name} allowance at ${r.noteRate} — ${r.qty.toLocaleString()} included.`
+  )
   const assumptions = buildAssumptions(
     inclusions,
     openings.length > 0,
     projectDetails.notes,
     { tied: tiedPierCount, freestanding: freestandingPierCount },
-    { hasCutCurves, hasWedgeCurves, hasCustomCurves }
+    { hasCutCurves, hasWedgeCurves, hasCustomCurves },
+    supplyItemNotes
   )
 
   // ---------- HTML pieces ----------
@@ -1117,11 +1194,40 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  const schedulePage = scheduleTable
+  // Accessories table — rows pulled from the user's Material library
+  // supply-items catalogue (cement bags, rebar, sundries, anything they
+  // need to ship alongside the blocks). Shown immediately under the Grand
+  // Total so the customer sees the full material list in one page. Hidden
+  // entirely when no supply items applied to this estimate so the page
+  // doesn't end with an empty 'Accessories' heading.
+  const accessoriesTable = supplyRows.length > 0
+    ? `
+      <h2 class="section-title">Accessories</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th class="right" style="width: 100px">Quantity</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${supplyRows
+            .map(
+              (r) =>
+                `<tr><td>${escapeHtml(r.name)}</td><td class="right">${formatNumber(r.qty)}</td></tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    `
+    : ''
+
+  const schedulePage = scheduleTable || accessoriesTable
     ? `
       <section class="page">
         ${pageHeader}
         ${scheduleTable}
+        ${accessoriesTable}
       </section>
     `
     : ''

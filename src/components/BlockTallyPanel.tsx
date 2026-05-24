@@ -48,6 +48,73 @@ export default function BlockTallyPanel({
   }, 0)
   const makeupCount = Object.keys(makeupsById).length
 
+  /**
+   * Net wallwork area in mm² across the project. Each wall contributes
+   * length × wall height (per-wall override → makeup default). Openings
+   * are subtracted as gross voids. Used by supply-item rate-per-m² rows.
+   */
+  const totalAreaSqMm = useMemo(() => {
+    let gross = 0
+    for (const w of walls) {
+      const dx = w.endX - w.startX
+      const dy = w.endY - w.startY
+      const lenMm = Math.sqrt(dx * dx + dy * dy)
+      const h = w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+      gross += lenMm * h
+    }
+    let voids = 0
+    for (const o of openings) voids += o.widthMm * o.heightMm
+    return Math.max(0, gross - voids)
+  }, [walls, openings, makeupsById])
+
+  /**
+   * Per-supply-item rows pulled from the user's Material library catalogue.
+   * Same math + rendering as the brick tally panel; rows for items that
+   * apply to block AND are enabled by default. per-brick items skipped
+   * (irrelevant on a block estimate). Quantity rounds UP to whole units;
+   * zero-qty rows are dropped.
+   */
+  const supplyRows = useMemo(() => {
+    const items = userSettings.supplyItems ?? []
+    const areaSqM = totalAreaSqMm / 1_000_000
+    const lengthM = totalLengthMm / 1000
+    const rows: { name: string; qty: number; rateLabel: string }[] = []
+    for (const item of items) {
+      if (!item.appliesTo.includes('block')) continue
+      if (!item.enabledByDefault) continue
+      let qty = 0
+      let rateLabel = ''
+      switch (item.unit) {
+        case 'each':
+          qty = item.rate
+          rateLabel = `${item.rate}/project`
+          break
+        case 'per-block':
+          qty = item.rate * totalBlocks
+          rateLabel = `${item.rate}/block`
+          break
+        case 'per-m2':
+          qty = item.rate * areaSqM
+          rateLabel = `${item.rate}/m²`
+          break
+        case 'per-m-lineal':
+          qty = item.rate * lengthM
+          rateLabel = `${item.rate}/m`
+          break
+        case 'per-opening':
+          qty = item.rate * openings.length
+          rateLabel = `${item.rate}/opening`
+          break
+        case 'per-brick':
+          continue
+      }
+      const rounded = Math.ceil(qty)
+      if (rounded <= 0) continue
+      rows.push({ name: item.name, qty: rounded, rateLabel })
+    }
+    return rows
+  }, [userSettings.supplyItems, totalAreaSqMm, totalLengthMm, totalBlocks, openings.length])
+
   if (walls.length === 0) {
     return (
       <div className="my-4 border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm bg-ink-800/50">
@@ -123,6 +190,36 @@ export default function BlockTallyPanel({
               })}
             </tbody>
           </table>
+
+          {/* Supply items from the user's Material library that apply to
+              block estimates. Rendered as a separate sub-section so the
+              block-by-code table above stays clean. Numbers are pre-rounded
+              to whole units and match what the exported PDF will show. */}
+          {supplyRows.length > 0 && (
+            <table className="w-full text-sm border-t border-ink-600">
+              <thead className="text-[11px] uppercase tracking-wider text-ink-400 bg-ink-700/40">
+                <tr>
+                  <th className="text-left px-3 py-1.5 font-semibold" colSpan={2}>
+                    Supply items
+                  </th>
+                  <th className="text-right px-3 py-1.5 w-16 font-semibold">Count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {supplyRows.map((r) => (
+                  <tr key={r.name} className="border-t border-ink-700/60">
+                    <td className="px-3 py-1.5 text-ink-200 text-xs" colSpan={2}>
+                      {r.name}{' '}
+                      <span className="text-ink-400">({r.rateLabel})</span>
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold tabular-nums text-ink-50">
+                      {r.qty.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </>
       )}
     </div>
