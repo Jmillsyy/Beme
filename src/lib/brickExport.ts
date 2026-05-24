@@ -259,10 +259,21 @@ function buildBrickPlanOverviewPage(
   const labelFontSize = labelDiameter * 0.55
   const lengthFontSize = labelFontSize * 0.85
 
+  // Two-pass wall rendering for visibility: a slightly-wider dark rim
+  // underneath, then the body colour on top at high opacity. Matches the
+  // block export's treatment (June 2026) — walls pop clearly against
+  // rasterised PDF backgrounds and pale page tints. Rim is 20 mm wider
+  // than the wall (10 mm border each side); brick walls are typically
+  // 110 mm thick so 20 mm is enough to register as a defined edge
+  // without dominating the body fill.
+  const BRICK_RIM_EXTRA_MM = 20
   const wallShapes = walls
     .map((w) => {
       const c = colourFor(w)
-      return `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`
+      return [
+        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`,
+        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`,
+      ].join('\n          ')
     })
     .join('\n          ')
 

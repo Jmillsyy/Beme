@@ -449,9 +449,19 @@ function buildPlanOverviewPage(
   // enough for an at-a-glance overview. stroke-opacity 0.55 lets the
   // dashed plan beneath show through a touch where walls overlap, which
   // helps disambiguate cavity/double walls drawn close together.
+  //
+  // Visibility tuning (June 2026): walls now render in TWO passes — a
+  // slightly-wider dark rim (c.dark) first, then the body colour on top
+  // at full opacity. The rim adds about 30 mm of darker border around
+  // the wall so it pops against rasterised PDF backgrounds; the bumped
+  // body opacity (0.55 → 0.9) makes the wall colour itself read clearly
+  // instead of bleeding into the page tint. Net effect: walls are
+  // unmissable on every export, including dark / busy plans.
+  const RIM_EXTRA_MM = 30
   const wallShapes: string[] = []
   for (const w of walls) {
     const thickness = thicknessByWallId[w.id] || 190
+    const rim = thickness + RIM_EXTRA_MM
     const c = colourFor(w)
     if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
       const geom = arcFromThreePoints(
@@ -461,7 +471,8 @@ function buildPlanOverviewPage(
       )
       if (!geom) {
         wallShapes.push(
-          `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${thickness}" stroke-linecap="butt"/>`
+          `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${rim}" stroke-linecap="butt"/>`,
+          `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${thickness}" stroke-linecap="butt"/>`
         )
         continue
       }
@@ -471,11 +482,13 @@ function buildPlanOverviewPage(
       const samples = sampleArc(geom, 48)
       const pts = samples.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
       wallShapes.push(
-        `<polyline points="${pts}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${thickness}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`
+        `<polyline points="${pts}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${rim}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`,
+        `<polyline points="${pts}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${thickness}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`
       )
     } else {
       wallShapes.push(
-        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.55" stroke-width="${thickness}" stroke-linecap="butt"/>`
+        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${rim}" stroke-linecap="butt"/>`,
+        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${thickness}" stroke-linecap="butt"/>`
       )
     }
   }
