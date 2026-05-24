@@ -17,6 +17,8 @@ interface BrickExportPanelProps {
   referenceNumber?: number | null
   /** Per-project supply-item include/exclude. See PdfWorkspace state. */
   supplyItemSelections?: Record<string, boolean>
+  /** Per-project rate overrides for supply items. */
+  supplyItemRateOverrides?: Record<string, number>
   inclusions: BrickExportInclusions
   onChangeInclusions: (inclusions: BrickExportInclusions) => void
   settings: BrickSettings
@@ -39,6 +41,7 @@ function BrickExportPanelImpl({
   projectDetails,
   referenceNumber,
   supplyItemSelections,
+  supplyItemRateOverrides,
   inclusions,
   onChangeInclusions,
   settings,
@@ -69,6 +72,7 @@ function BrickExportPanelImpl({
         projectDetails,
         referenceNumber: referenceNumber ?? undefined,
         supplyItemSelections,
+        supplyItemRateOverrides,
         inclusions,
         walls,
         openings,

@@ -69,6 +69,11 @@ interface ExportParams {
    * library item turns into a row in the Accessories table.
    */
   supplyItemSelections?: Record<string, boolean>
+  /**
+   * Per-project rate overrides for supply items. Missing key means "use
+   * the library default rate." Applied before per-unit math.
+   */
+  supplyItemRateOverrides?: Record<string, number>
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
@@ -508,6 +513,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     inclusions,
     referenceNumber,
     supplyItemSelections,
+    supplyItemRateOverrides,
     walls,
     openings,
     settings,
@@ -547,28 +553,34 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     // Honour the per-project selection — missing key means included by
     // default, `false` excludes the item from this export entirely.
     if (supplyItemSelections?.[item.id] === false) continue
+    // Honour the per-project rate override — undefined / unset falls back
+    // to the library default rate so projects without overrides behave
+    // exactly as before.
+    const override = supplyItemRateOverrides?.[item.id]
+    const rate =
+      override !== undefined && Number.isFinite(override) ? override : item.rate
     let qty = 0
     let noteRate = ''
     switch (item.unit) {
       case 'each':
-        qty = item.rate
-        noteRate = `${item.rate} per project`
+        qty = rate
+        noteRate = `${rate} per project`
         break
       case 'per-brick':
-        qty = item.rate * tally.brickCount
-        noteRate = `${item.rate} per brick`
+        qty = rate * tally.brickCount
+        noteRate = `${rate} per brick`
         break
       case 'per-m2':
-        qty = item.rate * brickArea_m2
-        noteRate = `${item.rate} per m²`
+        qty = rate * brickArea_m2
+        noteRate = `${rate} per m²`
         break
       case 'per-m-lineal':
-        qty = item.rate * brickRun_m
-        noteRate = `${item.rate} per lineal metre`
+        qty = rate * brickRun_m
+        noteRate = `${rate} per lineal metre`
         break
       case 'per-opening':
-        qty = item.rate * tally.openingCount
-        noteRate = `${item.rate} per opening`
+        qty = rate * tally.openingCount
+        noteRate = `${rate} per opening`
         break
       case 'per-block':
         // Brick estimate — block-relative rates don't apply.

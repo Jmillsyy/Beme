@@ -5,11 +5,13 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import BlockLibraryPanel from './BlockLibraryPanel'
+import SupplyItemsPanel from './SupplyItemsPanel'
+import { calculateProjectTally } from '../lib/blockCalc'
+import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import BrickLibraryPanel from './BrickLibraryPanel'
 import PierTypesPanel from './PierTypesPanel'
 import WallTypesPanel from './WallTypesPanel'
-import BrickAdditionsPanel from './BrickAdditionsPanel'
 import BrickTypesPanel from './BrickTypesPanel'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
@@ -669,6 +671,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    * specific estimate, and the choice rides with the project on save.
    */
   const [supplyItemSelections, setSupplyItemSelections] = useState<Record<string, boolean>>({})
+  /**
+   * Per-project rate overrides for supply items. Same key/value shape as
+   * the SavedProject field — an empty map means "use the library default
+   * rate for every item." See {@link SavedProject.supplyItemRateOverrides}.
+   */
+  const [supplyItemRateOverrides, setSupplyItemRateOverrides] = useState<
+    Record<string, number>
+  >({})
 
   // ---------- Saved-project tracking ----------
   /** ID of the currently-loaded saved project (null if this is a fresh, unsaved workspace). */
@@ -857,6 +867,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setCreatedByUserId(proj.createdByUserId ?? null)
         setReferenceNumber(proj.referenceNumber ?? null)
         setSupplyItemSelections(proj.supplyItemSelections ?? {})
+        setSupplyItemRateOverrides(proj.supplyItemRateOverrides ?? {})
         setProjectCompletedAt(proj.completedAt ?? null)
         setLastSavedAt(proj.updatedAt)
         // Loading a project resets the dirty baseline — fresh open means
@@ -937,6 +948,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     brick: typeof brickSettings
     brickMakeups: typeof brickMakeups
     supplyItemSelections: typeof supplyItemSelections
+    supplyItemRateOverrides: typeof supplyItemRateOverrides
   } | null>(null)
 
   /**
@@ -963,6 +975,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       brick: brickSettings,
       brickMakeups,
       supplyItemSelections,
+      supplyItemRateOverrides,
     }
     if (!savedSnapshotRef.current) {
       // First render — seed the snapshot so the very first effect run doesn't
@@ -980,7 +993,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       current.details !== snap.details ||
       current.brick !== snap.brick ||
       current.brickMakeups !== snap.brickMakeups ||
-      current.supplyItemSelections !== snap.supplyItemSelections
+      current.supplyItemSelections !== snap.supplyItemSelections ||
+      current.supplyItemRateOverrides !== snap.supplyItemRateOverrides
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
     wallsByPage,
@@ -992,6 +1006,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     brickSettings,
     brickMakeups,
     supplyItemSelections,
+    supplyItemRateOverrides,
     hasUnsavedChanges,
   ])
 
@@ -1080,6 +1095,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       piersByPage,
       currentPage,
       supplyItemSelections,
+      supplyItemRateOverrides,
       ...(mode === 'block'
         ? { makeups, activeMakeupId, blockExportInclusions, pierMakeups }
         : {}),
@@ -1426,6 +1442,70 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // the user edits a block's depth, swaps the active brick type, or changes a
   // brick type's depth in the library panel.
   const { version: blockLibraryVersion } = useBlockLibrary()
+
+  /**
+   * Headline numbers the SupplyItemsPanel needs to compute live quantities.
+   * Same math the export uses: net wall area (gross minus opening voids),
+   * total run length, and the block / brick count for per-unit rates.
+   * Mode picks the relevant tally function. Memoised on every input that
+   * could shift the totals so the panel updates in lockstep with the
+   * workspace.
+   */
+  const supplyMetrics = useMemo(() => {
+    if (mode === 'brick') {
+      const tally = calculateBrickTally(allWalls, allOpenings, brickSettings)
+      return {
+        mode: 'brick' as const,
+        areaSqM: tally.totalAreaSqMm / 1_000_000,
+        lengthM: tally.totalLinealMm / 1000,
+        brickCount: tally.brickCount,
+        blockCount: 0,
+        openingCount: tally.openingCount,
+      }
+    }
+    // Block mode (or any unknown — fall back to block math which yields 0s).
+    const tally = calculateProjectTally(
+      allWalls,
+      makeupsById,
+      allOpenings,
+      allPiers,
+      pierMakeupsById
+    )
+    const blockCount = Object.values(tally).reduce<number>(
+      (s, c) => s + (c ?? 0),
+      0
+    )
+    let lengthMm = 0
+    let areaSqMm = 0
+    for (const w of allWalls) {
+      const lenMm = Math.hypot(w.endX - w.startX, w.endY - w.startY)
+      lengthMm += lenMm
+      const h = w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+      areaSqMm += lenMm * h
+    }
+    for (const o of allOpenings) areaSqMm -= o.widthMm * o.heightMm
+    return {
+      mode: 'block' as const,
+      areaSqM: Math.max(0, areaSqMm) / 1_000_000,
+      lengthM: lengthMm / 1000,
+      brickCount: 0,
+      blockCount,
+      openingCount: allOpenings.length,
+    }
+    // blockLibraryVersion is a tally-engine dependency (calculateProjectTally
+    // reaches into the live BLOCK_LIBRARY); listing it here re-runs the memo
+    // when the user edits the block catalogue.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    mode,
+    allWalls,
+    allOpenings,
+    brickSettings,
+    makeupsById,
+    allPiers,
+    pierMakeupsById,
+    blockLibraryVersion,
+  ])
   const { version: brickLibraryVersion } = useBrickLibrary()
   const wallThicknessByWallId = useMemo(
     () =>
@@ -3635,7 +3715,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     onUpdateMakeup={handleUpdateBrickMakeup}
                     onDeleteMakeup={handleDeleteBrickMakeup}
                   />
-                  <BrickAdditionsPanel settings={brickSettings} onChange={setBrickSettings} />
                   <BrickLibraryPanel />
                 </>
               )}
@@ -5478,9 +5557,32 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               onUpdateMakeup={handleUpdateBrickMakeup}
               onDeleteMakeup={handleDeleteBrickMakeup}
             />
-            <BrickAdditionsPanel settings={brickSettings} onChange={setBrickSettings} />
             <BrickLibraryPanel />
           </>
+        )}
+
+        {/* Supply items panel — same component in both modes. Lists the
+            library items applicable to this estimate, with per-item
+            checkbox + editable rate + live qty. Replaces the legacy
+            BrickAdditionsPanel (ties/plascourse only) and unifies the
+            workflow across brick + block. */}
+        {(mode === 'block' || mode === 'brick') && (
+          <SupplyItemsPanel
+            metrics={supplyMetrics}
+            selections={supplyItemSelections}
+            rateOverrides={supplyItemRateOverrides}
+            onToggle={(id, included) =>
+              setSupplyItemSelections((prev) => ({ ...prev, [id]: included }))
+            }
+            onRateChange={(id, rate) =>
+              setSupplyItemRateOverrides((prev) => {
+                const next = { ...prev }
+                if (rate === undefined) delete next[id]
+                else next[id] = rate
+                return next
+              })
+            }
+          />
         )}
 
         {/* Block tally panel (block mode) */}
@@ -5491,10 +5593,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             openings={allOpenings}
             piers={allPiers}
             pierMakeupsById={pierMakeupsById}
-            supplyItemSelections={supplyItemSelections}
-            onSupplyItemToggle={(id, included) =>
-              setSupplyItemSelections((prev) => ({ ...prev, [id]: included }))
-            }
           />
         )}
 
@@ -5504,10 +5602,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             walls={allWalls}
             openings={allOpenings}
             settings={brickSettings}
-            supplyItemSelections={supplyItemSelections}
-            onSupplyItemToggle={(id, included) =>
-              setSupplyItemSelections((prev) => ({ ...prev, [id]: included }))
-            }
           />
         )}
 
@@ -5517,6 +5611,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             projectDetails={projectDetails}
             referenceNumber={referenceNumber}
             supplyItemSelections={supplyItemSelections}
+            supplyItemRateOverrides={supplyItemRateOverrides}
             inclusions={blockExportInclusions}
             onChangeInclusions={setBlockExportInclusions}
             walls={allWalls}
@@ -5554,6 +5649,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             projectDetails={projectDetails}
             referenceNumber={referenceNumber}
             supplyItemSelections={supplyItemSelections}
+            supplyItemRateOverrides={supplyItemRateOverrides}
             inclusions={exportInclusions}
             onChangeInclusions={setExportInclusions}
             settings={brickSettings}

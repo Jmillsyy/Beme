@@ -1,21 +1,11 @@
 import { memo, useMemo, useState } from 'react'
 import type { BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
-import { useUserSettings } from '../lib/userSettings'
 
 interface BrickTallyPanelProps {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
-  /**
-   * Per-project include/exclude map for supply items. Keys are supply-
-   * item ids; `true` = included in this estimate, `false` = excluded.
-   * Missing keys default to included so a newly-added library item
-   * shows up on every existing project automatically.
-   */
-  supplyItemSelections?: Record<string, boolean>
-  /** Called when the user ticks / unticks a supply-item row. */
-  onSupplyItemToggle?: (itemId: string, included: boolean) => void
 }
 
 interface LintelGroup {
@@ -32,83 +22,19 @@ interface LintelGroup {
  * openings, or brick settings change — none of which happen during a zoom
  * gesture.
  */
-function BrickTallyPanelImpl({
-  walls,
-  openings,
-  settings,
-  supplyItemSelections,
-  onSupplyItemToggle,
-}: BrickTallyPanelProps) {
+function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
   const [detailExpanded, setDetailExpanded] = useState(false)
-  const { settings: userSettings } = useUserSettings()
 
   const tally = useMemo(
     () => calculateBrickTally(walls, openings, settings),
     [walls, openings, settings]
   )
 
-  /**
-   * Per-supply-item rows pulled from the user's Material library catalogue.
-   * Same math as the brick export — each entry resolves to a whole-unit
-   * count from its unit type and the brick tally. Filtered to items that
-   * apply to brick AND are enabled by default; rows that resolve to zero
-   * are dropped so the table stays tidy. The list is name-deduped against
-   * the legacy ties / plascourse rows below: if a "Brick Tie" supply item
-   * is present, the legacy ties row hides and the supply item takes over.
-   */
-  const supplyRows = useMemo(() => {
-    const items = userSettings.supplyItems ?? []
-    const areaSqM = tally.totalAreaSqMm / 1_000_000
-    const lengthM = tally.totalLinealMm / 1000
-    const rows: {
-      id: string
-      name: string
-      qty: number
-      rateLabel: string
-      included: boolean
-    }[] = []
-    for (const item of items) {
-      if (!item.appliesTo.includes('brick')) continue
-      let qty = 0
-      let rateLabel = ''
-      switch (item.unit) {
-        case 'each':
-          qty = item.rate
-          rateLabel = `${item.rate}/project`
-          break
-        case 'per-brick':
-          qty = item.rate * tally.brickCount
-          rateLabel = `${item.rate}/brick`
-          break
-        case 'per-m2':
-          qty = item.rate * areaSqM
-          rateLabel = `${item.rate}/m²`
-          break
-        case 'per-m-lineal':
-          qty = item.rate * lengthM
-          rateLabel = `${item.rate}/m`
-          break
-        case 'per-opening':
-          qty = item.rate * tally.openingCount
-          rateLabel = `${item.rate}/opening`
-          break
-        case 'per-block':
-          continue
-      }
-      const rounded = Math.max(0, Math.ceil(qty))
-      // Missing key in the selection map means 'default to included' so
-      // newly-added supply items show up on existing projects.
-      const included = supplyItemSelections?.[item.id] !== false
-      rows.push({ id: item.id, name: item.name, qty: rounded, rateLabel, included })
-    }
-    return rows
-  }, [userSettings.supplyItems, tally, supplyItemSelections])
-
-  // (Legacy dedupe state removed — brick ties + plascourse are now driven
-  // exclusively by the user's supplyItems list. See the rendering block
-  // below where the old BrickSettings.ties + BrickSettings.plascourse rows
-  // were ripped out.)
+  // Supply items used to live as rows inside this panel; they've moved to
+  // the dedicated SupplyItemsPanel in the right rail so the user can
+  // configure rate + included/excluded in one place across brick + block.
+  // The tally panel now only carries brick-counting facts.
 
   // Group lintels by (length, profile) for an order-style summary
   const lintelGroups = useMemo<LintelGroup[]>(() => {
@@ -198,40 +124,9 @@ function BrickTallyPanelImpl({
                   {tally.brickCount.toLocaleString()}
                 </td>
               </tr>
-              {/* Supply items from the user's Material library. Each row
-                  has a checkbox so the estimator can tick / untick whether
-                  THIS project includes it — choice is persisted on the
-                  project via supplyItemSelections. The included row's
-                  quantity participates in the export; an excluded row is
-                  dimmed and shows '—' so the user can still see what they'd
-                  add if they turned it on. */}
-              {supplyRows.map((r) => (
-                <tr key={r.id} className="border-b border-ink-700/60">
-                  <td className="px-3 py-1.5">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={r.included}
-                        onChange={(e) =>
-                          onSupplyItemToggle?.(r.id, e.target.checked)
-                        }
-                        className="w-3.5 h-3.5 accent-beme-500"
-                      />
-                      <span className={r.included ? 'text-ink-300' : 'text-ink-500 line-through'}>
-                        {r.name}{' '}
-                        <span className="text-xs text-ink-400">({r.rateLabel})</span>
-                      </span>
-                    </label>
-                  </td>
-                  <td
-                    className={`px-3 py-1.5 text-right font-semibold tabular-nums ${
-                      r.included ? '' : 'text-ink-500'
-                    }`}
-                  >
-                    {r.included ? r.qty.toLocaleString() : '—'}
-                  </td>
-                </tr>
-              ))}
+              {/* Supply items moved to SupplyItemsPanel — see PdfWorkspace
+                  right rail. Keeping the tally panel focused on the brick-
+                  level facts that are derived from drawn geometry. */}
               {tally.lintels.length > 0 && (
                 <tr className="border-b border-ink-700/60">
                   <td className="px-3 py-1.5 text-ink-300">Total lintel length</td>

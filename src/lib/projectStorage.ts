@@ -190,10 +190,18 @@ export interface SavedProject {
    * The map only stores explicit decisions; unknown ids default to
    * included so adding a new item to the library shows up on every
    * existing project automatically. Estimators tick / untick per project
-   * via the tally panel; the selection follows the project around
-   * regardless of which device opens it next.
+   * via the Supply items panel.
    */
   supplyItemSelections?: Record<string, boolean>
+  /**
+   * Per-project rate overrides for supply items. Keys are the supply
+   * item's `id`, values are the rate (in the item's own unit — e.g. 2 for
+   * "2 ties per m²"). Lets an estimator dial the rate up or down for an
+   * unusual project without editing the library catalogue. Missing keys
+   * fall back to the library's default rate, so the override is purely
+   * additive — leaving everything blank reproduces library behaviour.
+   */
+  supplyItemRateOverrides?: Record<string, number>
 
   // Block-mode-specific
   makeups?: WallMakeup[]

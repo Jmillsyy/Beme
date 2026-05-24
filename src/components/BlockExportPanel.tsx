@@ -22,6 +22,8 @@ interface BlockExportPanelProps {
   referenceNumber?: number | null
   /** Per-project supply-item include/exclude. See PdfWorkspace state. */
   supplyItemSelections?: Record<string, boolean>
+  /** Per-project rate overrides for supply items. */
+  supplyItemRateOverrides?: Record<string, number>
   inclusions: BlockExportInclusions
   onChangeInclusions: (inclusions: BlockExportInclusions) => void
   walls: Wall[]
@@ -49,6 +51,7 @@ export default function BlockExportPanel({
   projectDetails,
   referenceNumber,
   supplyItemSelections,
+  supplyItemRateOverrides,
   inclusions,
   onChangeInclusions,
   walls,
@@ -116,6 +119,7 @@ export default function BlockExportPanel({
         projectDetails,
         referenceNumber: referenceNumber ?? undefined,
         supplyItemSelections,
+        supplyItemRateOverrides,
         inclusions,
         walls: filteredWalls,
         makeups,

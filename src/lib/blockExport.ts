@@ -50,6 +50,8 @@ interface ExportParams {
   referenceNumber?: number
   /** Per-project supply-item include/exclude map. See brick export. */
   supplyItemSelections?: Record<string, boolean>
+  /** Per-project rate overrides for supply items. */
+  supplyItemRateOverrides?: Record<string, number>
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
@@ -895,6 +897,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     inclusions,
     referenceNumber,
     supplyItemSelections,
+    supplyItemRateOverrides,
     walls,
     makeups,
     openings,
@@ -961,28 +964,33 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('block')) continue
     if (supplyItemSelections?.[item.id] === false) continue
+    // Honour the per-project rate override — undefined falls back to the
+    // library default so projects without overrides behave as before.
+    const override = supplyItemRateOverrides?.[item.id]
+    const rate =
+      override !== undefined && Number.isFinite(override) ? override : item.rate
     let qty = 0
     let noteRate = ''
     switch (item.unit) {
       case 'each':
-        qty = item.rate
-        noteRate = `${item.rate} per project`
+        qty = rate
+        noteRate = `${rate} per project`
         break
       case 'per-block':
-        qty = item.rate * totalBlocks
-        noteRate = `${item.rate} per block`
+        qty = rate * totalBlocks
+        noteRate = `${rate} per block`
         break
       case 'per-m2':
-        qty = item.rate * blockArea_m2
-        noteRate = `${item.rate} per m²`
+        qty = rate * blockArea_m2
+        noteRate = `${rate} per m²`
         break
       case 'per-m-lineal':
-        qty = item.rate * blockRun_m
-        noteRate = `${item.rate} per lineal metre`
+        qty = rate * blockRun_m
+        noteRate = `${rate} per lineal metre`
         break
       case 'per-opening':
-        qty = item.rate * openings.length
-        noteRate = `${item.rate} per opening`
+        qty = rate * openings.length
+        noteRate = `${rate} per opening`
         break
       case 'per-brick':
         // Block estimate — brick-relative rates don't apply.

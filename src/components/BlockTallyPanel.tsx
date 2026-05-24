@@ -12,9 +12,6 @@ interface BlockTallyPanelProps {
   openings: Opening[]
   piers?: Pier[]
   pierMakeupsById?: Record<string, PierMakeup>
-  /** Per-project supply-item include/exclude map. See BrickTallyPanel. */
-  supplyItemSelections?: Record<string, boolean>
-  onSupplyItemToggle?: (itemId: string, included: boolean) => void
 }
 
 export default function BlockTallyPanel({
@@ -23,8 +20,6 @@ export default function BlockTallyPanel({
   openings,
   piers = [],
   pierMakeupsById = {},
-  supplyItemSelections,
-  onSupplyItemToggle,
 }: BlockTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
   // Re-run the tally when the user edits the library (depth lookups, etc.)
@@ -53,84 +48,9 @@ export default function BlockTallyPanel({
   }, 0)
   const makeupCount = Object.keys(makeupsById).length
 
-  /**
-   * Net wallwork area in mm² across the project. Each wall contributes
-   * length × wall height (per-wall override → makeup default). Openings
-   * are subtracted as gross voids. Used by supply-item rate-per-m² rows.
-   */
-  const totalAreaSqMm = useMemo(() => {
-    let gross = 0
-    for (const w of walls) {
-      const dx = w.endX - w.startX
-      const dy = w.endY - w.startY
-      const lenMm = Math.sqrt(dx * dx + dy * dy)
-      const h = w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
-      gross += lenMm * h
-    }
-    let voids = 0
-    for (const o of openings) voids += o.widthMm * o.heightMm
-    return Math.max(0, gross - voids)
-  }, [walls, openings, makeupsById])
-
-  /**
-   * Per-supply-item rows pulled from the user's Material library catalogue.
-   * Same math + rendering as the brick tally panel; rows for items that
-   * apply to block AND are enabled by default. per-brick items skipped
-   * (irrelevant on a block estimate). Quantity rounds UP to whole units;
-   * zero-qty rows are dropped.
-   */
-  const supplyRows = useMemo(() => {
-    const items = userSettings.supplyItems ?? []
-    const areaSqM = totalAreaSqMm / 1_000_000
-    const lengthM = totalLengthMm / 1000
-    const rows: {
-      id: string
-      name: string
-      qty: number
-      rateLabel: string
-      included: boolean
-    }[] = []
-    for (const item of items) {
-      if (!item.appliesTo.includes('block')) continue
-      let qty = 0
-      let rateLabel = ''
-      switch (item.unit) {
-        case 'each':
-          qty = item.rate
-          rateLabel = `${item.rate}/project`
-          break
-        case 'per-block':
-          qty = item.rate * totalBlocks
-          rateLabel = `${item.rate}/block`
-          break
-        case 'per-m2':
-          qty = item.rate * areaSqM
-          rateLabel = `${item.rate}/m²`
-          break
-        case 'per-m-lineal':
-          qty = item.rate * lengthM
-          rateLabel = `${item.rate}/m`
-          break
-        case 'per-opening':
-          qty = item.rate * openings.length
-          rateLabel = `${item.rate}/opening`
-          break
-        case 'per-brick':
-          continue
-      }
-      const rounded = Math.max(0, Math.ceil(qty))
-      const included = supplyItemSelections?.[item.id] !== false
-      rows.push({ id: item.id, name: item.name, qty: rounded, rateLabel, included })
-    }
-    return rows
-  }, [
-    userSettings.supplyItems,
-    totalAreaSqMm,
-    totalLengthMm,
-    totalBlocks,
-    openings.length,
-    supplyItemSelections,
-  ])
+  // Supply items moved to the unified SupplyItemsPanel in the right rail
+  // so brick + block share one configuration surface. This panel now only
+  // shows the block-counting facts derived from drawn geometry.
 
   if (walls.length === 0) {
     return (
@@ -208,55 +128,9 @@ export default function BlockTallyPanel({
             </tbody>
           </table>
 
-          {/* Supply items from the user's Material library that apply to
-              block estimates. Rendered as a separate sub-section so the
-              block-by-code table above stays clean. Numbers are pre-rounded
-              to whole units and match what the exported PDF will show. */}
-          {supplyRows.length > 0 && (
-            <table className="w-full text-sm border-t border-ink-600">
-              <thead className="text-[11px] uppercase tracking-wider text-ink-400 bg-ink-700/40">
-                <tr>
-                  <th className="text-left px-3 py-1.5 font-semibold" colSpan={2}>
-                    Supply items
-                  </th>
-                  <th className="text-right px-3 py-1.5 w-16 font-semibold">Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {supplyRows.map((r) => (
-                  <tr key={r.id} className="border-t border-ink-700/60">
-                    <td className="px-3 py-1.5 text-xs" colSpan={2}>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={r.included}
-                          onChange={(e) =>
-                            onSupplyItemToggle?.(r.id, e.target.checked)
-                          }
-                          className="w-3.5 h-3.5 accent-beme-500"
-                        />
-                        <span
-                          className={
-                            r.included ? 'text-ink-200' : 'text-ink-500 line-through'
-                          }
-                        >
-                          {r.name}{' '}
-                          <span className="text-ink-400">({r.rateLabel})</span>
-                        </span>
-                      </label>
-                    </td>
-                    <td
-                      className={`px-3 py-1.5 text-right font-mono font-semibold tabular-nums ${
-                        r.included ? 'text-ink-50' : 'text-ink-500'
-                      }`}
-                    >
-                      {r.included ? r.qty.toLocaleString() : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {/* Supply items live in SupplyItemsPanel in the workspace's
+              right rail. Keeping this panel focused on the block-by-code
+              tally that comes from drawn geometry. */}
         </>
       )}
     </div>
