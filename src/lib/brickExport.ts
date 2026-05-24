@@ -432,13 +432,23 @@ function buildAssumptions(
   totalLinealMm: number,
   plascourseCount: number,
   customNotes: string,
-  supplyItemNotes: string[] = []
+  supplyItemNotes: string[] = [],
+  /**
+   * Pre-formatted summary line for the wall-height assumption — built by
+   * the caller from the project's BrickMakeup heights + per-wall
+   * overrides so a multi-height project ("Facework 2400, Render 2700")
+   * reads correctly. Empty / undefined falls back to the legacy single-
+   * height line that quotes settings.defaultWallHeightMm, which is what
+   * older projects (single makeup, no per-wall overrides) want anyway.
+   */
+  wallHeightSummary: string = ''
 ): string[] {
   if (!inclusions.assumptions) return []
 
   const items: string[] = [
     'All brick dimensions are nominal and include mortar joint.',
-    `Wall heights are uniform at ${formatNumber(settings.defaultWallHeightMm)}mm for all walls unless otherwise noted.`,
+    wallHeightSummary ||
+      `Wall heights are uniform at ${formatNumber(settings.defaultWallHeightMm)}mm for all walls unless otherwise noted.`,
     'Wall lengths are taken from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
     'Openings (doors and windows) have been deducted from gross wall areas as indicated on the drawings.',
     'No waste allowance has been applied. Quantities are net as measured.',
@@ -594,13 +604,48 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     (r) => `${r.name} allowance at ${r.noteRate} — ${r.qty.toLocaleString()} included.`
   )
 
+  // Build a human-readable summary of the distinct wall heights actually
+  // used on this project — per-wall override wins over the makeup's
+  // height, which wins over the project default. Single-height projects
+  // collapse to one line ("2400 mm"); multi-makeup projects list each.
+  // Sorted ascending so the reader sees the smallest first.
+  const wallHeightSummary = (() => {
+    const heightsToNames = new Map<number, Set<string>>()
+    const recordHeight = (h: number, name: string) => {
+      if (!Number.isFinite(h) || h <= 0) return
+      const rounded = Math.round(h)
+      const existing = heightsToNames.get(rounded)
+      if (existing) existing.add(name)
+      else heightsToNames.set(rounded, new Set([name]))
+    }
+    const makeupsById = new Map(makeups.map((m) => [m.id, m]))
+    for (const w of walls) {
+      const makeup = makeupsById.get(w.makeupId)
+      const name = makeup?.name?.trim() || 'wall type'
+      const h = w.heightMmOverride ?? makeup?.heightMm
+      if (h !== undefined) recordHeight(h, name)
+    }
+    if (heightsToNames.size === 0) return ''
+    const entries = [...heightsToNames.entries()].sort(([a], [b]) => a - b)
+    if (entries.length === 1) {
+      const [h] = entries[0]
+      return `Wall heights are uniform at ${formatNumber(h)} mm for all walls unless overridden per wall.`
+    }
+    const parts = entries.map(([h, names]) => {
+      const nameList = [...names].sort().join(', ')
+      return `${formatNumber(h)} mm (${nameList})`
+    })
+    return `Wall heights vary by wall type: ${parts.join('; ')}. Per-wall overrides honoured where set.`
+  })()
+
   const assumptions = buildAssumptions(
     inclusions,
     settings,
     tally.totalLinealMm,
     tally.plascourseCount,
     projectDetails.notes,
-    supplyItemNotes
+    supplyItemNotes,
+    wallHeightSummary
   )
 
   const { groups: lintelGroups, oversizedCount, total: lintelTotal } = groupLintels(
