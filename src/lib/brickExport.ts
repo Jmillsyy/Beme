@@ -654,12 +654,15 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
 
   // ---------- HTML pieces ----------
 
-  // Branded header — uses the user's business identity when provided.
+  // Branded header — mirrors blockExport's logic. Logo set → logo IS the
+  // brand mark and the name text drops out (no visual duplication). No
+  // logo, company name set → render the name as text. Neither → generic
+  // Beme wordmark. ABN/phone/website/address always print under whatever
+  // mark is chosen.
   const hasBusinessIdentity = !!business?.companyName?.trim()
-  const brandBlock = hasBusinessIdentity
+  const hasLogo = !!business?.logoUrl
+  const contactBlock = hasBusinessIdentity
     ? `
-        ${business?.logoUrl ? `<img src="${escapeHtml(business.logoUrl)}" alt="Logo" class="brand-logo" />` : ''}
-        <div class="brand-name">${escapeHtml(business?.companyName ?? '')}</div>
         <div class="brand-tag">
           ${business?.abn ? `ABN ${escapeHtml(business.abn)}` : ''}
           ${business?.phone ? ` · ${escapeHtml(business.phone)}` : ''}
@@ -679,6 +682,17 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
                 .join('<br/>')}</div>`
             : ''
         }
+      `
+    : ''
+  const brandBlock = hasLogo
+    ? `
+        <img src="${escapeHtml(business!.logoUrl ?? '')}" alt="${escapeHtml(business?.companyName ?? 'Logo')}" class="brand-logo-primary" />
+        ${contactBlock}
+      `
+    : hasBusinessIdentity
+    ? `
+        <div class="brand-name">${escapeHtml(business?.companyName ?? '')}</div>
+        ${contactBlock}
       `
     : `
         <div class="brand-name">Beme</div>
@@ -1004,6 +1018,13 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   .brand-logo {
     max-height: 56px;
     max-width: 180px;
+    display: block;
+    margin-bottom: 6px;
+  }
+  /* Primary brand mark — used when no text name accompanies the logo. */
+  .brand-logo-primary {
+    max-height: 80px;
+    max-width: 280px;
     display: block;
     margin-bottom: 6px;
   }

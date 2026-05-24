@@ -12,6 +12,7 @@ import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import {
+  updateOrganisationLogo,
   useOrganisations,
   listOrgMembers,
   isCurrentUserOrgAdmin,
@@ -204,6 +205,92 @@ function TextInput({
       disabled={disabled}
       className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 disabled:opacity-60"
     />
+  )
+}
+
+/**
+ * Logo picker — accepts a PNG / JPG / SVG file from the user's device,
+ * encodes it as a data URL, and writes it through to whatever string
+ * field the parent controls (business.logoUrl on Settings → Business,
+ * organisations.logo_url on Settings → Organisation, etc.). Data URLs
+ * embed the bytes inline so the logo travels with every export and we
+ * don't need a separate storage bucket / CDN to serve the image.
+ *
+ * Files >1 MB get a warning — they balloon the saved settings payload
+ * and slow down every estimate save / load on this device. PNG/SVG
+ * exports trimmed to a couple hundred pixels are typically well under
+ * 100 KB.
+ */
+function LogoUploader({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function handlePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-picking the same file
+    if (!file) return
+    setError(null)
+    if (!/^image\//.test(file.type)) {
+      setError('Pick an image file (PNG, JPG, or SVG).')
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Logo is over 2 MB — please resize it down to a few hundred pixels for the brand strip.')
+      return
+    }
+    setBusy(true)
+    const reader = new FileReader()
+    reader.onload = () => {
+      onChange(typeof reader.result === 'string' ? reader.result : '')
+      setBusy(false)
+    }
+    reader.onerror = () => {
+      setError('Failed to read the image.')
+      setBusy(false)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-3 flex-wrap">
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/svg+xml,image/webp"
+          onChange={handlePick}
+          disabled={busy}
+          className="text-sm text-ink-300 file:mr-3 file:rounded-md file:border-0 file:bg-beme-500 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-black hover:file:bg-beme-400 file:cursor-pointer"
+        />
+        {value && (
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            className="text-xs text-rose-300 hover:text-rose-200 underline-offset-2 hover:underline"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-300">{error}</p>}
+      {value && (
+        <div className="bg-white p-3 rounded-lg inline-block">
+          <img
+            src={value}
+            alt="Logo preview"
+            className="max-h-16"
+            onError={(ev) => {
+              ;(ev.currentTarget as HTMLImageElement).style.display = 'none'
+            }}
+          />
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -424,13 +511,12 @@ function BusinessTab({ business }: { business: BusinessProfile }) {
       >
         <FieldGroup>
           <Field
-            label="Logo URL"
-            hint="Direct link to a PNG or SVG. File upload coming soon — for now you paste a URL."
+            label="Logo"
+            hint="PNG, JPG, or SVG. Picked file is embedded inline so it travels with every export."
           >
-            <TextInput
+            <LogoUploader
               value={business.logoUrl}
               onChange={(v) => set({ logoUrl: v })}
-              placeholder="https://…/logo.png"
             />
           </Field>
           <Field
@@ -447,23 +533,6 @@ function BusinessTab({ business }: { business: BusinessProfile }) {
           </Field>
         </FieldGroup>
 
-        {business.logoUrl && (
-          <div className="mt-3 pt-4 border-t border-ink-600">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-ink-400 mb-2">
-              Logo preview
-            </div>
-            <div className="bg-white p-3 rounded-lg inline-block">
-              <img
-                src={business.logoUrl}
-                alt="Logo preview"
-                className="max-h-16"
-                onError={(e) => {
-                  ;(e.currentTarget as HTMLImageElement).style.display = 'none'
-                }}
-              />
-            </div>
-          </div>
-        )}
       </PanelCard>
     </div>
   )
@@ -823,6 +892,43 @@ function OrganisationTab() {
           Renaming your organisation isn't available from the app yet. Ping the
           admin if you need it changed.
         </p>
+
+        <div className="mt-4 pt-4 border-t border-ink-600">
+          <Field
+            label="Organisation logo"
+            hint={
+              isAdmin
+                ? 'Replaces the org name in the top-left of every exported PDF. Picked file is stored inline (data URL) so it travels with the org row.'
+                : 'Admins can set the org logo. Currently showing whatever the admin has uploaded.'
+            }
+          >
+            {isAdmin ? (
+              <LogoUploader
+                value={currentOrg.logoUrl ?? ''}
+                onChange={(v) => {
+                  void updateOrganisationLogo(currentOrg.id, v).catch((err) => {
+                    window.alert(`Failed to update org logo: ${(err as Error).message}`)
+                  })
+                }}
+              />
+            ) : currentOrg.logoUrl ? (
+              <div className="bg-white p-3 rounded-lg inline-block">
+                <img
+                  src={currentOrg.logoUrl}
+                  alt="Organisation logo"
+                  className="max-h-16"
+                  onError={(e) => {
+                    ;(e.currentTarget as HTMLImageElement).style.display = 'none'
+                  }}
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-ink-400 italic">
+                No logo set yet.
+              </p>
+            )}
+          </Field>
+        </div>
       </PanelCard>
 
       <PanelCard

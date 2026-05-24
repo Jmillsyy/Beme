@@ -1104,11 +1104,19 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   // Branded header — when the user has filled out their business identity in
   // settings, the company name + ABN + address replace the generic "Beme"
   // wordmark, turning the export into a real quote.
+  // Brand block rules:
+  //   - Logo set → the logo IS the brand mark, render it large, drop the
+  //     company-name text entirely (the logo carries the name, so
+  //     reprinting it as text is visual duplication).
+  //   - No logo, company name set → render the company name as text in
+  //     the usual brand position. Same legacy behaviour.
+  //   - Neither → fall back to the generic "Beme" wordmark.
+  // ABN / phone / website / address still print under whichever mark is
+  // chosen so the customer always has a way to identify the supplier.
   const hasBusinessIdentity = !!business?.companyName?.trim()
-  const brandBlock = hasBusinessIdentity
+  const hasLogo = !!business?.logoUrl
+  const contactBlock = hasBusinessIdentity
     ? `
-        ${business?.logoUrl ? `<img src="${escapeHtml(business.logoUrl)}" alt="Logo" class="brand-logo" />` : ''}
-        <div class="brand-name">${escapeHtml(business?.companyName ?? '')}</div>
         <div class="brand-tag">
           ${business?.abn ? `ABN ${escapeHtml(business.abn)}` : ''}
           ${business?.phone ? ` · ${escapeHtml(business.phone)}` : ''}
@@ -1128,6 +1136,17 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
                 .join('<br/>')}</div>`
             : ''
         }
+      `
+    : ''
+  const brandBlock = hasLogo
+    ? `
+        <img src="${escapeHtml(business!.logoUrl ?? '')}" alt="${escapeHtml(business?.companyName ?? 'Logo')}" class="brand-logo-primary" />
+        ${contactBlock}
+      `
+    : hasBusinessIdentity
+    ? `
+        <div class="brand-name">${escapeHtml(business?.companyName ?? '')}</div>
+        ${contactBlock}
       `
     : `
         <div class="brand-name">Beme</div>
@@ -1544,6 +1563,15 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   .brand-logo {
     max-height: 56px;
     max-width: 180px;
+    display: block;
+    margin-bottom: 6px;
+  }
+  /* Logo used as the primary brand mark — bigger than the inline logo
+     because no text name accompanies it. Capped at 80 px tall / 280 px
+     wide so it doesn't dominate the header on tall / wide images. */
+  .brand-logo-primary {
+    max-height: 80px;
+    max-width: 280px;
     display: block;
     margin-bottom: 6px;
   }

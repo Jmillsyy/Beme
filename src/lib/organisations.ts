@@ -342,6 +342,32 @@ export async function updateOrgMemberRole(
 }
 
 /**
+ * Update the organisation's display-time fields (right now just the logo).
+ * Admin-only at the RLS layer ("Admins update own org" policy). The
+ * resulting logo URL is read back into the singleton via refreshOrganisations
+ * so the rest of the app picks up the change without a page reload.
+ *
+ * `logoUrl` accepts both http(s) URLs and `data:image/...` base64 URLs,
+ * which is what the LogoUploader on SettingsPage produces. Pass an empty
+ * string to clear the logo.
+ */
+export async function updateOrganisationLogo(
+  orgId: string,
+  logoUrl: string
+): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Organisation editing requires Supabase to be configured.')
+  }
+  const client = supabase()
+  const { error } = await client
+    .from('organisations')
+    .update({ logo_url: logoUrl || null })
+    .eq('id', orgId)
+  if (error) throw new Error(error.message)
+  await refreshOrganisations()
+}
+
+/**
  * Is the signed-in user an admin of the given org? Reads the cached membership
  * list — call after the org context has loaded. Returns false in offline mode
  * or when the user isn't a member of the org.
