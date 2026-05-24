@@ -661,6 +661,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const [blockExportInclusions, setBlockExportInclusions] = useState<BlockExportInclusions>(
     () => createDefaultBlockExportInclusions()
   )
+  /**
+   * Per-project supply-item include / exclude map. See SavedProject.
+   * Keys are supply-item ids; missing keys default to included, so this
+   * starts empty for a fresh project (= include everything by default).
+   * The user ticks items off in the tally panel to drop them from this
+   * specific estimate, and the choice rides with the project on save.
+   */
+  const [supplyItemSelections, setSupplyItemSelections] = useState<Record<string, boolean>>({})
 
   // ---------- Saved-project tracking ----------
   /** ID of the currently-loaded saved project (null if this is a fresh, unsaved workspace). */
@@ -848,6 +856,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setProjectCreatedAt(proj.createdAt)
         setCreatedByUserId(proj.createdByUserId ?? null)
         setReferenceNumber(proj.referenceNumber ?? null)
+        setSupplyItemSelections(proj.supplyItemSelections ?? {})
         setProjectCompletedAt(proj.completedAt ?? null)
         setLastSavedAt(proj.updatedAt)
         // Loading a project resets the dirty baseline — fresh open means
@@ -927,6 +936,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     details: typeof projectDetails
     brick: typeof brickSettings
     brickMakeups: typeof brickMakeups
+    supplyItemSelections: typeof supplyItemSelections
   } | null>(null)
 
   /**
@@ -952,6 +962,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       details: projectDetails,
       brick: brickSettings,
       brickMakeups,
+      supplyItemSelections,
     }
     if (!savedSnapshotRef.current) {
       // First render — seed the snapshot so the very first effect run doesn't
@@ -968,7 +979,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       current.pierMakeups !== snap.pierMakeups ||
       current.details !== snap.details ||
       current.brick !== snap.brick ||
-      current.brickMakeups !== snap.brickMakeups
+      current.brickMakeups !== snap.brickMakeups ||
+      current.supplyItemSelections !== snap.supplyItemSelections
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
     wallsByPage,
@@ -979,6 +991,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     projectDetails,
     brickSettings,
     brickMakeups,
+    supplyItemSelections,
     hasUnsavedChanges,
   ])
 
@@ -1066,6 +1079,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       openingsByPage,
       piersByPage,
       currentPage,
+      supplyItemSelections,
       ...(mode === 'block'
         ? { makeups, activeMakeupId, blockExportInclusions, pierMakeups }
         : {}),
@@ -1102,6 +1116,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         details: projectDetails,
         brick: brickSettings,
         brickMakeups,
+        supplyItemSelections,
       }
       setHasUnsavedChanges(false)
       // Update URL with the project id (so refresh keeps you in the saved project)
@@ -5476,12 +5491,24 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             openings={allOpenings}
             piers={allPiers}
             pierMakeupsById={pierMakeupsById}
+            supplyItemSelections={supplyItemSelections}
+            onSupplyItemToggle={(id, included) =>
+              setSupplyItemSelections((prev) => ({ ...prev, [id]: included }))
+            }
           />
         )}
 
         {/* Brick tally panel (brick mode) */}
         {mode === 'brick' && (
-          <BrickTallyPanel walls={allWalls} openings={allOpenings} settings={brickSettings} />
+          <BrickTallyPanel
+            walls={allWalls}
+            openings={allOpenings}
+            settings={brickSettings}
+            supplyItemSelections={supplyItemSelections}
+            onSupplyItemToggle={(id, included) =>
+              setSupplyItemSelections((prev) => ({ ...prev, [id]: included }))
+            }
+          />
         )}
 
         {/* Block export panel (block mode) */}
@@ -5489,6 +5516,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           <BlockExportPanel
             projectDetails={projectDetails}
             referenceNumber={referenceNumber}
+            supplyItemSelections={supplyItemSelections}
             inclusions={blockExportInclusions}
             onChangeInclusions={setBlockExportInclusions}
             walls={allWalls}
@@ -5525,6 +5553,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           <BrickExportPanel
             projectDetails={projectDetails}
             referenceNumber={referenceNumber}
+            supplyItemSelections={supplyItemSelections}
             inclusions={exportInclusions}
             onChangeInclusions={setExportInclusions}
             settings={brickSettings}

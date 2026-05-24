@@ -15,6 +15,8 @@ interface BrickExportPanelProps {
   projectDetails: ProjectDetails
   /** 6-digit project reference number forwarded to the export. */
   referenceNumber?: number | null
+  /** Per-project supply-item include/exclude. See PdfWorkspace state. */
+  supplyItemSelections?: Record<string, boolean>
   inclusions: BrickExportInclusions
   onChangeInclusions: (inclusions: BrickExportInclusions) => void
   settings: BrickSettings
@@ -36,6 +38,7 @@ interface BrickExportPanelProps {
 function BrickExportPanelImpl({
   projectDetails,
   referenceNumber,
+  supplyItemSelections,
   inclusions,
   onChangeInclusions,
   settings,
@@ -65,6 +68,7 @@ function BrickExportPanelImpl({
       await exportBrickEstimate({
         projectDetails,
         referenceNumber: referenceNumber ?? undefined,
+        supplyItemSelections,
         inclusions,
         walls,
         openings,

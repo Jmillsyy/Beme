@@ -179,6 +179,22 @@ export interface SavedProject {
   /** Last-viewed page number. */
   currentPage: number
 
+  /**
+   * Per-project opt-in/opt-out for supply items defined in the user's
+   * Material library. Keys are the supply item's `id`, values are
+   * booleans:
+   *   - `true`  → include in tally + export for this project
+   *   - `false` → exclude from tally + export
+   *   - missing → default to included
+   *
+   * The map only stores explicit decisions; unknown ids default to
+   * included so adding a new item to the library shows up on every
+   * existing project automatically. Estimators tick / untick per project
+   * via the tally panel; the selection follows the project around
+   * regardless of which device opens it next.
+   */
+  supplyItemSelections?: Record<string, boolean>
+
   // Block-mode-specific
   makeups?: WallMakeup[]
   activeMakeupId?: string

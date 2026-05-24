@@ -12,6 +12,9 @@ interface BlockTallyPanelProps {
   openings: Opening[]
   piers?: Pier[]
   pierMakeupsById?: Record<string, PierMakeup>
+  /** Per-project supply-item include/exclude map. See BrickTallyPanel. */
+  supplyItemSelections?: Record<string, boolean>
+  onSupplyItemToggle?: (itemId: string, included: boolean) => void
 }
 
 export default function BlockTallyPanel({
@@ -20,6 +23,8 @@ export default function BlockTallyPanel({
   openings,
   piers = [],
   pierMakeupsById = {},
+  supplyItemSelections,
+  onSupplyItemToggle,
 }: BlockTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
   // Re-run the tally when the user edits the library (depth lookups, etc.)
@@ -78,7 +83,13 @@ export default function BlockTallyPanel({
     const items = userSettings.supplyItems ?? []
     const areaSqM = totalAreaSqMm / 1_000_000
     const lengthM = totalLengthMm / 1000
-    const rows: { name: string; qty: number; rateLabel: string }[] = []
+    const rows: {
+      id: string
+      name: string
+      qty: number
+      rateLabel: string
+      included: boolean
+    }[] = []
     for (const item of items) {
       if (!item.appliesTo.includes('block')) continue
       let qty = 0
@@ -107,12 +118,19 @@ export default function BlockTallyPanel({
         case 'per-brick':
           continue
       }
-      const rounded = Math.ceil(qty)
-      if (rounded <= 0) continue
-      rows.push({ name: item.name, qty: rounded, rateLabel })
+      const rounded = Math.max(0, Math.ceil(qty))
+      const included = supplyItemSelections?.[item.id] !== false
+      rows.push({ id: item.id, name: item.name, qty: rounded, rateLabel, included })
     }
     return rows
-  }, [userSettings.supplyItems, totalAreaSqMm, totalLengthMm, totalBlocks, openings.length])
+  }, [
+    userSettings.supplyItems,
+    totalAreaSqMm,
+    totalLengthMm,
+    totalBlocks,
+    openings.length,
+    supplyItemSelections,
+  ])
 
   if (walls.length === 0) {
     return (
@@ -206,13 +224,33 @@ export default function BlockTallyPanel({
               </thead>
               <tbody>
                 {supplyRows.map((r) => (
-                  <tr key={r.name} className="border-t border-ink-700/60">
-                    <td className="px-3 py-1.5 text-ink-200 text-xs" colSpan={2}>
-                      {r.name}{' '}
-                      <span className="text-ink-400">({r.rateLabel})</span>
+                  <tr key={r.id} className="border-t border-ink-700/60">
+                    <td className="px-3 py-1.5 text-xs" colSpan={2}>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={r.included}
+                          onChange={(e) =>
+                            onSupplyItemToggle?.(r.id, e.target.checked)
+                          }
+                          className="w-3.5 h-3.5 accent-beme-500"
+                        />
+                        <span
+                          className={
+                            r.included ? 'text-ink-200' : 'text-ink-500 line-through'
+                          }
+                        >
+                          {r.name}{' '}
+                          <span className="text-ink-400">({r.rateLabel})</span>
+                        </span>
+                      </label>
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono font-semibold tabular-nums text-ink-50">
-                      {r.qty.toLocaleString()}
+                    <td
+                      className={`px-3 py-1.5 text-right font-mono font-semibold tabular-nums ${
+                        r.included ? 'text-ink-50' : 'text-ink-500'
+                      }`}
+                    >
+                      {r.included ? r.qty.toLocaleString() : '—'}
                     </td>
                   </tr>
                 ))}

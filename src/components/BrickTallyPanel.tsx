@@ -7,6 +7,15 @@ interface BrickTallyPanelProps {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
+  /**
+   * Per-project include/exclude map for supply items. Keys are supply-
+   * item ids; `true` = included in this estimate, `false` = excluded.
+   * Missing keys default to included so a newly-added library item
+   * shows up on every existing project automatically.
+   */
+  supplyItemSelections?: Record<string, boolean>
+  /** Called when the user ticks / unticks a supply-item row. */
+  onSupplyItemToggle?: (itemId: string, included: boolean) => void
 }
 
 interface LintelGroup {
@@ -23,7 +32,13 @@ interface LintelGroup {
  * openings, or brick settings change — none of which happen during a zoom
  * gesture.
  */
-function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps) {
+function BrickTallyPanelImpl({
+  walls,
+  openings,
+  settings,
+  supplyItemSelections,
+  onSupplyItemToggle,
+}: BrickTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
   const [detailExpanded, setDetailExpanded] = useState(false)
   const { settings: userSettings } = useUserSettings()
@@ -46,7 +61,13 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
     const items = userSettings.supplyItems ?? []
     const areaSqM = tally.totalAreaSqMm / 1_000_000
     const lengthM = tally.totalLinealMm / 1000
-    const rows: { name: string; qty: number; rateLabel: string }[] = []
+    const rows: {
+      id: string
+      name: string
+      qty: number
+      rateLabel: string
+      included: boolean
+    }[] = []
     for (const item of items) {
       if (!item.appliesTo.includes('brick')) continue
       let qty = 0
@@ -75,12 +96,14 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
         case 'per-block':
           continue
       }
-      const rounded = Math.ceil(qty)
-      if (rounded <= 0) continue
-      rows.push({ name: item.name, qty: rounded, rateLabel })
+      const rounded = Math.max(0, Math.ceil(qty))
+      // Missing key in the selection map means 'default to included' so
+      // newly-added supply items show up on existing projects.
+      const included = supplyItemSelections?.[item.id] !== false
+      rows.push({ id: item.id, name: item.name, qty: rounded, rateLabel, included })
     }
     return rows
-  }, [userSettings.supplyItems, tally])
+  }, [userSettings.supplyItems, tally, supplyItemSelections])
 
   // (Legacy dedupe state removed — brick ties + plascourse are now driven
   // exclusively by the user's supplyItems list. See the rendering block
@@ -175,21 +198,37 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
                   {tally.brickCount.toLocaleString()}
                 </td>
               </tr>
-              {/* Supply items from the user's Material library — the
-                  single source for accessory rows (ties, plascourse,
-                  cement, anything else the user defines). The legacy
-                  BrickSettings.ties + BrickSettings.plascourse rows have
-                  been removed; the seed catalogue includes Brick Ties and
-                  Plascourse as default items so the same totals show up,
-                  but now driven by the library the user can actually edit. */}
+              {/* Supply items from the user's Material library. Each row
+                  has a checkbox so the estimator can tick / untick whether
+                  THIS project includes it — choice is persisted on the
+                  project via supplyItemSelections. The included row's
+                  quantity participates in the export; an excluded row is
+                  dimmed and shows '—' so the user can still see what they'd
+                  add if they turned it on. */}
               {supplyRows.map((r) => (
-                <tr key={r.name} className="border-b border-ink-700/60">
-                  <td className="px-3 py-1.5 text-ink-300">
-                    {r.name}{' '}
-                    <span className="text-xs text-ink-400">({r.rateLabel})</span>
+                <tr key={r.id} className="border-b border-ink-700/60">
+                  <td className="px-3 py-1.5">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={r.included}
+                        onChange={(e) =>
+                          onSupplyItemToggle?.(r.id, e.target.checked)
+                        }
+                        className="w-3.5 h-3.5 accent-beme-500"
+                      />
+                      <span className={r.included ? 'text-ink-300' : 'text-ink-500 line-through'}>
+                        {r.name}{' '}
+                        <span className="text-xs text-ink-400">({r.rateLabel})</span>
+                      </span>
+                    </label>
                   </td>
-                  <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                    {r.qty.toLocaleString()}
+                  <td
+                    className={`px-3 py-1.5 text-right font-semibold tabular-nums ${
+                      r.included ? '' : 'text-ink-500'
+                    }`}
+                  >
+                    {r.included ? r.qty.toLocaleString() : '—'}
                   </td>
                 </tr>
               ))}

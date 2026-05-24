@@ -48,6 +48,8 @@ interface ExportParams {
    * reference-number rollout still export cleanly without one.
    */
   referenceNumber?: number
+  /** Per-project supply-item include/exclude map. See brick export. */
+  supplyItemSelections?: Record<string, boolean>
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
@@ -879,6 +881,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     projectDetails,
     inclusions,
     referenceNumber,
+    supplyItemSelections,
     walls,
     makeups,
     openings,
@@ -944,6 +947,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   const supplyRows: { name: string; qty: number; noteRate: string }[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('block')) continue
+    if (supplyItemSelections?.[item.id] === false) continue
     let qty = 0
     let noteRate = ''
     switch (item.unit) {

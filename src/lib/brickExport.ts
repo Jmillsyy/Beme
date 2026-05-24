@@ -63,6 +63,12 @@ interface ExportParams {
    * looking the job up. Optional for projects predating the rollout.
    */
   referenceNumber?: number
+  /**
+   * Per-project supply-item include/exclude. Same shape as the in-memory
+   * map: missing key → included, `false` → excluded. Drives whether each
+   * library item turns into a row in the Accessories table.
+   */
+  supplyItemSelections?: Record<string, boolean>
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
@@ -490,6 +496,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     projectDetails,
     inclusions,
     referenceNumber,
+    supplyItemSelections,
     walls,
     openings,
     settings,
@@ -526,6 +533,9 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   const supplyRows: SupplyRow[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('brick')) continue
+    // Honour the per-project selection — missing key means included by
+    // default, `false` excludes the item from this export entirely.
+    if (supplyItemSelections?.[item.id] === false) continue
     let qty = 0
     let noteRate = ''
     switch (item.unit) {
