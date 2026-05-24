@@ -526,7 +526,6 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   const supplyRows: SupplyRow[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('brick')) continue
-    if (!item.enabledByDefault) continue
     let qty = 0
     let noteRate = ''
     switch (item.unit) {

@@ -49,7 +49,6 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
     const rows: { name: string; qty: number; rateLabel: string }[] = []
     for (const item of items) {
       if (!item.appliesTo.includes('brick')) continue
-      if (!item.enabledByDefault) continue
       let qty = 0
       let rateLabel = ''
       switch (item.unit) {

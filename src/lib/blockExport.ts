@@ -944,7 +944,6 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   const supplyRows: { name: string; qty: number; noteRate: string }[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('block')) continue
-    if (!item.enabledByDefault) continue
     let qty = 0
     let noteRate = ''
     switch (item.unit) {

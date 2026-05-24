@@ -274,14 +274,6 @@ function SupplyItemRow({
           <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-ink-600 text-ink-400">
             {applies}
           </span>
-          {!item.enabledByDefault && (
-            <span
-              className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border border-amber-500/40 text-amber-300"
-              title="Not added to new projects by default — user can opt-in per project."
-            >
-              opt-in
-            </span>
-          )}
         </div>
         <div className="text-xs text-ink-400 mt-0.5">
           <span className="font-mono text-ink-300">{item.rate}</span>{' '}
@@ -436,21 +428,11 @@ function SupplyItemForm({
           </div>
         </div>
 
-        <label className="flex items-start gap-2 text-sm cursor-pointer md:col-span-2">
-          <input
-            type="checkbox"
-            checked={enabledByDefault}
-            onChange={(e) => setEnabledByDefault(e.target.checked)}
-            className="mt-0.5 w-4 h-4 accent-beme-500"
-          />
-          <span>
-            <span className="text-ink-100">Add to new projects by default</span>
-            <span className="block text-xs text-ink-400 mt-0.5">
-              Untick for items that aren't always needed — users can opt them
-              in per project.
-            </span>
-          </span>
-        </label>
+        {/* The 'Add to new projects by default' toggle was here. It now
+            does nothing — every supply item in the library is included on
+            every applicable estimate regardless. Kept the state above so
+            existing items deserialise without TypeScript complaints; will
+            wire it back up when per-project opt-in lands. */}
       </div>
 
       <div className="flex gap-2 mt-4">
