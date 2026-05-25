@@ -1087,18 +1087,10 @@ export function analyseLibraryHealth(
   const checks: HealthCheck[] = []
   const blocks = Object.values(library)
 
-  // Empty library — short-circuit so the user gets one big "pick a
-  // template or add blocks" call to action rather than a dozen
-  // individual errors.
+  // Empty library — return no checks. The /library page's empty-state
+  // hero already prompts the user to pick a preset or add blocks, so
+  // a separate "library is empty" banner would be redundant.
   if (blocks.length === 0) {
-    checks.push({
-      id: 'empty',
-      severity: 'error',
-      message: 'Library is empty.',
-      detail:
-        'Pick a regional template (Settings → Library template) or add ' +
-        'blocks manually below.',
-    })
     return checks
   }
 
