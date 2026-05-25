@@ -419,6 +419,54 @@ function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModal
   // Advanced tabs and force back to Basics if the user lands there.
   const wedgeDisablesCourseMix = isCurveMakeup && wedgeRequired
 
+  // ---- Preview bands (always-on visual stack) ----
+  // When the user has an explicit course pattern, that's the source of
+  // truth. Otherwise synthesise bands from the current form state via
+  // convertMakeupToBands so the preview shows what a legacy uniform-height
+  // wall looks like with its base/body/top stack and any height-makeup
+  // courses derived from heightMm. courseOverrides are ignored in the
+  // preview (the conversion is lossy with overrides); the preview is a
+  // visual aid, not an authoritative render of the calc-engine output.
+  const previewBands = useMemo<CourseBand[]>(() => {
+    if (coursePattern.length > 0) return coursePattern
+    const resolvedBodyForPreview: BlockCode = isCurveMakeup
+      ? wedgeRequired
+        ? wedgeBodyBlockCode
+        : normalBodyBlockCode
+      : bodyBlockCode
+    const draft: WallMakeup = {
+      id: existing?.id ?? 'preview',
+      name,
+      bondType,
+      heightMm,
+      baseCourseBlockCode,
+      baseCourseTileCode: baseCourseTileCode || undefined,
+      bodyBlockCode: resolvedBodyForPreview,
+      topCourseBlockCode,
+      cornerBlockCode,
+      halfBlockCode,
+      useFractions,
+    }
+    return convertMakeupToBands(draft).bands
+  }, [
+    coursePattern,
+    existing?.id,
+    name,
+    bondType,
+    heightMm,
+    baseCourseBlockCode,
+    baseCourseTileCode,
+    bodyBlockCode,
+    topCourseBlockCode,
+    cornerBlockCode,
+    halfBlockCode,
+    useFractions,
+    isCurveMakeup,
+    wedgeRequired,
+    wedgeBodyBlockCode,
+    normalBodyBlockCode,
+  ])
+
   function handleSave() {
     const cleanedRanges = seriesRanges.filter((r) => {
       if (r.toCourse < r.fromCourse) return false
@@ -651,6 +699,32 @@ function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModal
               />
             )}
           </div>
+
+          {/* Right rail: live visual stack preview. Shows on every tab so
+              changes anywhere in the form (height, body block, pattern)
+              produce immediate feedback. Hidden on narrow viewports to
+              give the form room — modal max-width is 5xl which is
+              ~1024px, so the rail kicks in at lg (1024px+). */}
+          <aside className="hidden lg:flex w-56 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4 min-h-0">
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400">
+                Wall preview
+              </h3>
+              {hasCoursePattern ? (
+                <span className="text-[10px] text-beme-300 font-mono">pattern</span>
+              ) : (
+                <span className="text-[10px] text-ink-500 font-mono">auto</span>
+              )}
+            </div>
+            <p className="text-[10px] text-ink-500 mb-3 leading-snug">
+              {hasCoursePattern
+                ? 'From the bands you defined on the Course pattern tab.'
+                : 'Derived from Basics + Composition. Switch to Course pattern for full control.'}
+            </p>
+            <div className="flex-1 min-h-0">
+              <CoursePatternPreview bands={previewBands} library={library} />
+            </div>
+          </aside>
         </div>
 
         {/* Footer — Cancel + Save always visible */}
@@ -1115,32 +1189,33 @@ function PatternTab(props: PatternTabProps) {
   }
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 h-full min-h-0">
-      {/* Left: band editor */}
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <div>
-            <h3 className="text-sm font-semibold text-ink-100">Bands (bottom → top)</h3>
-            <p className="text-[11px] text-ink-400 mt-0.5 font-mono">
-              {patternTotalCourses} courses · {patternTotalHeight} mm total
-            </p>
-          </div>
-          <button
-            onClick={clearCoursePattern}
-            className="text-xs text-rose-400 hover:text-rose-300 hover:underline"
-          >
-            Clear pattern
-          </button>
+    // The wall preview now lives in the modal's right rail (visible on
+    // every tab), so this tab is the band editor only — it can use the
+    // full content width without competing for space.
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <h3 className="text-sm font-semibold text-ink-100">Bands (bottom → top)</h3>
+          <p className="text-[11px] text-ink-400 mt-0.5 font-mono">
+            {patternTotalCourses} courses · {patternTotalHeight} mm total
+          </p>
         </div>
+        <button
+          onClick={clearCoursePattern}
+          className="text-xs text-rose-400 hover:text-rose-300 hover:underline"
+        >
+          Clear pattern
+        </button>
+      </div>
 
-        <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-          {coursePattern.map((band, i) => {
-            const moduleH = moduleHeightForBand(band, library)
-            return (
-              <div
-                key={i}
-                className="flex items-center gap-2 p-2 rounded-lg border border-ink-600 bg-ink-900/60"
-              >
+      <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+        {coursePattern.map((band, i) => {
+          const moduleH = moduleHeightForBand(band, library)
+          return (
+            <div
+              key={i}
+              className="flex items-center gap-2 p-2 rounded-lg border border-ink-600 bg-ink-900/60"
+            >
                 <span
                   className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
                   style={{ backgroundColor: bandColor(band.blockCode) }}
@@ -1214,19 +1289,12 @@ function PatternTab(props: PatternTabProps) {
           + Add band
         </button>
 
-        {hasOverrides && (
-          <p className="mt-3 text-[11px] text-amber-300 leading-snug">
-            Note: per-course overrides on the Advanced tab still apply on top of this
-            pattern. Clear them there if you don't want them.
-          </p>
-        )}
-      </div>
-
-      {/* Right: visual stack preview */}
-      <div className="w-full lg:w-72 flex-shrink-0">
-        <h3 className="text-sm font-semibold text-ink-100 mb-3">Wall preview</h3>
-        <CoursePatternPreview bands={coursePattern} library={library} />
-      </div>
+      {hasOverrides && (
+        <p className="mt-3 text-[11px] text-amber-300 leading-snug">
+          Note: per-course overrides on the Advanced tab still apply on top of this
+          pattern. Clear them there if you don't want them.
+        </p>
+      )}
     </div>
   )
 }
