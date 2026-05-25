@@ -696,6 +696,13 @@ function WallTypeEditorModal({
   // ranges' cornerBlockCode / halfBlockCode are honoured for the
   // end-termination cells.
   const resolveForCourse = useMemo(() => {
+    // Total visible courses across all bands — used to detect the top
+    // course so a series range overlay doesn't accidentally swap its
+    // top course block for the range's body code.
+    const totalCourses = previewBands.reduce(
+      (s, b) => s + Math.max(0, b.count),
+      0
+    )
     return (courseNumber: number) => {
       const resolved = resolveCourseBlocks(previewMakeup, courseNumber)
       // Find this course's band body (which course of which band?)
@@ -711,9 +718,38 @@ function WallTypeEditorModal({
       }
       const range = findSeriesRangeForCourse(previewMakeup, courseNumber)
       const override = courseOverrides.find((o) => o.courseNumber === courseNumber)
+      // Series range field selection — different course "roles" pull
+      // different override fields from the range so 300-series on the
+      // bottom 5 courses correctly substitutes the BASE course block
+      // (30.45) for course 1 instead of the body block (30.48).
+      //
+      //   Course 1                 → range.baseCourseBlockCode
+      //   Height-makeup courses    → range.heightMakeup71BlockCode
+      //     (detected via library: any band block whose face height is
+      //      below the typical 190mm modular height is height-makeup)
+      //   Top course               → keep band code (no range overlay)
+      //     so a wall topped by a bond beam doesn't get overwritten by
+      //     a 300-series body code
+      //   Otherwise                → range.bodyBlockCode
+      let rangeOverride: BlockCode | undefined
+      if (range) {
+        const blockHeight = library[bandBody]?.dimensions.heightMm ?? 190
+        const isBase = courseNumber === 1
+        const isTop = courseNumber === totalCourses && totalCourses >= 2
+        const isHeightMakeup = blockHeight < 190
+        if (isBase) {
+          rangeOverride = range.baseCourseBlockCode
+        } else if (isHeightMakeup) {
+          rangeOverride = range.heightMakeup71BlockCode
+        } else if (isTop) {
+          rangeOverride = undefined
+        } else {
+          rangeOverride = range.bodyBlockCode
+        }
+      }
       const body =
         override?.blockCode ??
-        range?.bodyBlockCode ??
+        rangeOverride ??
         bandBody
       return {
         body,
@@ -721,7 +757,7 @@ function WallTypeEditorModal({
         half: resolved.halfBlockCode,
       }
     }
-  }, [previewMakeup, previewBands, courseOverrides])
+  }, [previewMakeup, previewBands, courseOverrides, library])
 
   function handleSave() {
     const cleanedRanges = seriesRanges.filter((r) => {
