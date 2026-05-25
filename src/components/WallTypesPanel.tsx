@@ -444,29 +444,31 @@ function WallTypeEditorModal({
   // Defaults for new wall types come from the LIVE library via the role
   // pickers — so a US user creating their first wall type lands on
   // CMU8 / CMU8-C / CMU8-H instead of the AU SEQ codes. Existing wall
-  // types keep the codes they were saved with. The hardcoded SEQ codes
-  // remain as a last-resort fallback only if both the live library AND
-  // the seed are empty / role-stripped.
+  // types keep the codes they were saved with.
+  //
+  // Each fallback chain ends in pickBodyDefault() before the hardcoded
+  // SEQ code — so a region whose library doesn't tag (say) a top-course
+  // or base-course block STILL gets a real code from the live library
+  // (the body block) instead of an AU code that doesn't exist there.
+  // The AU literals are last-resort only.
+  const bodyFallback = pickBodyDefault()?.code ?? '20.48'
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
-    existing?.baseCourseBlockCode ?? pickBaseCourse()?.code ?? '20.45'
+    existing?.baseCourseBlockCode ?? pickBaseCourse()?.code ?? bodyFallback
   )
   const [baseCourseTileCode, setBaseCourseTileCode] = useState<BlockCode | ''>(
     existing?.baseCourseTileCode ?? pickBaseTile()?.code ?? ''
   )
   const [bodyBlockCode, setBodyBlockCode] = useState<BlockCode>(
-    existing?.bodyBlockCode ?? pickBodyDefault()?.code ?? '20.48'
+    existing?.bodyBlockCode ?? bodyFallback
   )
   const [topCourseBlockCode, setTopCourseBlockCode] = useState<BlockCode>(
-    existing?.topCourseBlockCode ??
-      pickTopCourse()?.code ??
-      pickBodyDefault()?.code ??
-      '20.48'
+    existing?.topCourseBlockCode ?? pickTopCourse()?.code ?? bodyFallback
   )
   const [cornerBlockCode, setCornerBlockCode] = useState<BlockCode>(
-    existing?.cornerBlockCode ?? pickCornerBlock()?.code ?? '20.01'
+    existing?.cornerBlockCode ?? pickCornerBlock()?.code ?? bodyFallback
   )
   const [halfBlockCode, setHalfBlockCode] = useState<BlockCode>(
-    existing?.halfBlockCode ?? pickHalfBlock()?.code ?? '20.03'
+    existing?.halfBlockCode ?? pickHalfBlock()?.code ?? bodyFallback
   )
 
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(

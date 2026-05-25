@@ -71,16 +71,22 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
 
   // Resolve defaults from the live library by role so a US / UK user
   // creating their first wall type gets THEIR library's body / corner /
-  // base / tile codes — not the AU SEQ ones. Falls back to AU codes only
-  // if the library is missing role tags.
+  // base / tile codes — not the AU SEQ ones.
+  //
+  // Each chain ends with the body-block as a region-aware fallback so
+  // libraries that don't tag (say) a separate base-course or top-course
+  // block STILL land on a real code from the same library (the body),
+  // instead of falling through to an AU code that doesn't exist there.
   const bodyDefault = pickBodyDefault()?.code ?? '20.48'
   const cornerDefault = knockoutCorners
     ? '20.21'
-    : pickCornerBlock()?.code ?? '20.01'
-  const baseDefault = pickBaseCourse()?.code ?? '20.45'
-  const tileDefault = pickBaseTile()?.code ?? '50.45'
+    : pickCornerBlock()?.code ?? bodyDefault
+  const baseDefault = pickBaseCourse()?.code ?? bodyDefault
+  // Base tile is genuinely optional — many regions don't pair one. Empty
+  // string means 'no tile' and the calc engine handles it gracefully.
+  const tileDefault = pickBaseTile()?.code ?? ''
   const topDefault = bondBeamOnTop
-    ? pickTopCourse()?.code ?? '20.20'
+    ? pickTopCourse()?.code ?? bodyDefault
     : bodyDefault
 
   return {
@@ -89,7 +95,11 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
     bondType,
     heightMm,
     baseCourseBlockCode: baseDefault,
-    baseCourseTileCode: tileDefault,
+    // Omit baseCourseTileCode entirely when no tile is tagged in the
+    // library — undefined is the canonical "no paired tile" signal and
+    // avoids polluting the makeup with an empty string that would
+    // round-trip through storage.
+    ...(tileDefault ? { baseCourseTileCode: tileDefault } : {}),
     bodyBlockCode: bodyDefault,
     topCourseBlockCode: topDefault,
     cornerBlockCode: cornerDefault,
