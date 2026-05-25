@@ -1781,21 +1781,26 @@ function CoursePatternPreview({
   // the MAX across all courses as the wall's representative width — so
   // a wall with wedge bodies renders narrower than one with standard
   // bodies, and the block faces always show at their real aspect.
+  // Corner / half widths come per-course from resolveForCourse so a
+  // series-range override (e.g. 30.01 corner) contributes its own
+  // width rather than the makeup-level default.
   const BLOCKS_ACROSS = 4
   const bodyWidthOf = (code: BlockCode) => widthOf(code)
-  const cornerWidth = widthOf(cornerBlockCode)
-  const halfWidth = widthOf(halfBlockCode)
 
   // Per-course modular width: even (stretcher) rows = halfW + (n+1)·bodyW + halfW,
   // odd / stack rows = cornerW + n·bodyW + cornerW. We take the max so
   // the wall preview locks to the widest course's width.
   const courseModularWidths = courses.map((code, idx) => {
-    const isEven = (idx + 1) % 2 === 0
+    const courseNum = idx + 1
+    const res = resolveForCourse(courseNum)
+    const isEven = courseNum % 2 === 0
     const bodyW = bodyWidthOf(code)
     if (bondType === 'stretcher' && isEven) {
-      return halfWidth + (BLOCKS_ACROSS + 1) * bodyW + halfWidth
+      const halfW = widthOf(res.half)
+      return halfW + (BLOCKS_ACROSS + 1) * bodyW + halfW
     }
-    return cornerWidth + BLOCKS_ACROSS * bodyW + cornerWidth
+    const cornerW = widthOf(res.corner)
+    return cornerW + BLOCKS_ACROSS * bodyW + cornerW
   })
   const REPRESENTATIVE_WIDTH_MM = Math.max(...courseModularWidths, 1)
   const wallAspect = `${REPRESENTATIVE_WIDTH_MM} / ${totalHeight}`
