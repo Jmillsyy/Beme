@@ -1391,7 +1391,10 @@ function PreviewLegend({
 
   if (items.length === 0) return null
   return (
-    <div className="mt-3 pt-3 border-t border-ink-700/60">
+    // flex-shrink-0 so this band always takes its natural height in the
+    // aside's flex column — the preview above gets `flex-1` and would
+    // otherwise compete with us and force overlap.
+    <div className="mt-3 pt-3 border-t border-ink-700/60 flex-shrink-0">
       <div className="text-[10px] uppercase tracking-wide text-ink-500 mb-2 font-semibold">
         Legend
       </div>
@@ -1499,14 +1502,15 @@ function CoursePatternPreview({
   }
 
   return (
-    <div className="flex gap-2 min-h-[360px] h-[65vh] max-h-[720px]">
+    <div className="flex gap-2 h-full min-h-[280px]">
       {/* Wall section. Each course is a row; blocks within a row stretch
           to fill the row width proportionally. Stretcher even-course
           offset is achieved by inserting half-width filler blocks at
           each end so the visible course is still the same total width.
-          Section fills the rail width (capped to keep aspect sensible
-          when the rail is widened further). */}
-      <div className="flex-1 max-w-[240px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner">
+          h-full + min-h-0 lets the preview obey its parent's flex slot
+          (so the legend below always has room) while still claiming a
+          sensible floor on tiny viewports. */}
+      <div className="flex-1 max-w-[240px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner min-h-0">
         {courses.map((code, courseIdx) => {
           // courseIdx 0 = bottom of wall (base). flex-col-reverse means
           // we render the array in normal order but DOM/visual order is
