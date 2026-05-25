@@ -43,6 +43,7 @@ import {
   createDefaultPierMakeups,
   createDefaultTiedPierMakeup,
   createDefaultWallMakeup,
+  getMakeupHeightMm,
 } from '../lib/makeups'
 import { arcFromThreePoints } from '../lib/curveGeom'
 import { curveZoneForRadius } from '../lib/blockCalc'
@@ -1947,7 +1948,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     } else {
       // Block mode: opening height = wall − sill − head.
       const makeup = makeupsById[wall.makeupId]
-      const wallHeightMm = wall.heightMmOverride ?? makeup?.heightMm ?? 0
+      const wallHeightMm = wall.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
       const computed = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
       if (computed < 100) return
       openingHeightForSave = computed

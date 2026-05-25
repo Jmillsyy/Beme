@@ -36,6 +36,7 @@ import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
 import { rasterisePdfPage } from './pdfRaster'
 import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
+import { getMakeupHeightMm } from './makeups'
 import { getUserSettings } from './userSettings'
 
 interface ExportParams {
@@ -294,7 +295,7 @@ function buildPlanOverviewPage(
   const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
   const totalWallAreaSqMm = walls.reduce((sum, w, i) => {
     const makeup = makeupsById[w.makeupId]
-    const heightMm = w.heightMmOverride ?? makeup?.heightMm ?? 0
+    const heightMm = w.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
     return sum + wallLengthsMm[i] * heightMm
   }, 0)
   const openingsAreaSqMm = openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
@@ -691,11 +692,17 @@ function buildWallSpecsPage(
       const fullEndLabel = makeup.cornerBlockCode
       const halfEndLabel = makeup.halfBlockCode ?? '20.03'
 
+      // Resolved wall height — sums the band counts when a course pattern is
+      // set, otherwise the flat heightMm. Keeps the spec card honest for
+      // mixed-height walls where heightMm alone would understate the build.
+      const resolvedHeightMm = getMakeupHeightMm(makeup)
+      const hasPattern = !!(makeup.coursePattern && makeup.coursePattern.length > 0)
+
       // Key/value rows for the always-on fields. Pier type is only shown
       // when the makeup actually opted into piers.
       const specRows: Array<[string, string]> = [
         ['Bond', `${makeup.bondType} bond`],
-        ['Height', `${formatNumber(makeup.heightMm)} mm`],
+        ['Height', `${formatNumber(resolvedHeightMm)} mm${hasPattern ? ' (from pattern)' : ''}`],
         ['Base course', baseLabel],
         ['Body block', makeup.bodyBlockCode],
         ['Top course', makeup.topCourseBlockCode],
@@ -716,6 +723,44 @@ function buildWallSpecsPage(
         </div>`
         )
         .join('')
+
+      // Course pattern (bands) — bricklayer needs to see the actual stack
+      // order for a mixed-height wall, not just a single Height number.
+      // Walked from bottom to top, with a per-band height column so the
+      // running total ties out to the Height row above.
+      let patternBlock = ''
+      if (hasPattern && makeup.coursePattern) {
+        const bandRows = makeup.coursePattern
+          .map((band, i) => {
+            const blockHeight = BLOCK_LIBRARY[band.blockCode]?.dimensions.heightMm
+            const moduleHeight =
+              blockHeight !== undefined ? blockHeight + 10 : 200 // +10mm mortar
+            const totalForBand = band.count * moduleHeight
+            return `
+              <tr>
+                <td class="mono">${i + 1}</td>
+                <td class="mono">${band.count}× ${escapeHtml(band.blockCode)}</td>
+                <td class="right">${formatNumber(moduleHeight)} mm</td>
+                <td class="right">${formatNumber(totalForBand)} mm</td>
+              </tr>`
+          })
+          .join('')
+        patternBlock = `
+          <div class="spec-subsection">
+            <div class="spec-sub-title">Course pattern (bottom to top)</div>
+            <table class="spec-sub-table">
+              <thead>
+                <tr>
+                  <th style="width: 40px">Band</th>
+                  <th>Block</th>
+                  <th class="right" style="width: 120px">Per course</th>
+                  <th class="right" style="width: 120px">Band height</th>
+                </tr>
+              </thead>
+              <tbody>${bandRows}</tbody>
+            </table>
+          </div>`
+      }
 
       // Course-series ranges — only render the block when the makeup has
       // any. Each range's overrides are shown as code-list pairs; fields
@@ -790,6 +835,7 @@ function buildWallSpecsPage(
           <div class="spec-grid">
             ${specGrid}
           </div>
+          ${patternBlock}
           ${rangesBlock}
           ${overridesBlock}
         </div>`
@@ -1041,7 +1087,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   const openingsDetail = openings.map((o, i) => {
     const wall = walls.find((w) => w.id === o.wallId)
     const makeup = wall ? makeupsById[wall.makeupId] : undefined
-    const wallHeightMm = wall?.heightMmOverride ?? makeup?.heightMm ?? 0
+    const wallHeightMm = wall?.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
     const headMm = wallHeightMm - o.sillHeightMm - o.heightMm
     const lintel = headMm > 0 ? selectBlockLintel(headMm) : null
     return {
@@ -1396,7 +1442,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
                     <span class="wall-type-meta">
                       · ${p.wallCount} wall${p.wallCount === 1 ? '' : 's'}
                       · ${formatNumber(p.lengthMm / 1000, 2)} m
-                      · ${p.makeup.heightMm}mm high
+                      · ${getMakeupHeightMm(p.makeup)}mm high
                     </span>
                   </h3>
                   <table>
