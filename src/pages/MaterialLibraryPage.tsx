@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import Header from '../components/Header'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
+import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
@@ -135,6 +136,11 @@ export default function MaterialLibraryPage() {
             title="Blocks"
             description="Concrete blocks you supply. Code, dimensions, and what each block is used for (body, end, corner, fraction, lintel, pier, etc.). The wall-type editor pulls from this list."
           >
+            {/* Library health: flags missing required + advisory roles
+                so the user knows their library is set up correctly
+                before the calc engine surprises them with a fallback
+                or a missing block. Auto-hides when everything's green. */}
+            <LibraryHealthBanner />
             <BlockLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
           </Section>
 

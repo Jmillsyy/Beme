@@ -1036,3 +1036,167 @@ export function pickFractionByFraction(
 ): Block | undefined {
   return pickFractionByFractionIn(BLOCK_LIBRARY, targetFraction, tolerance)
 }
+
+// ─── Library health ────────────────────────────────────────────────────────
+
+export type HealthSeverity = 'error' | 'warning' | 'ok'
+
+export interface HealthCheck {
+  /** Stable id so the UI can key reliably + map a 'Fix' action per check. */
+  id: string
+  /** Severity surfaces colour + sort order in the UI. */
+  severity: HealthSeverity
+  /** One-line headline shown to the user. */
+  message: string
+  /** Optional supporting detail (sub-line under the message). */
+  detail?: string
+  /** Role this check is about — UI uses it to drive the 'Tag a block' picker. */
+  role?:
+    | 'body'
+    | 'corner'
+    | 'end-termination'
+    | 'base-course'
+    | 'base-tile'
+    | 'top-course'
+    | 'pier'
+    | 'lintel'
+    | 'fraction'
+    | 'curve-tight'
+    | 'corner-lead-in'
+    | 'height-makeup'
+}
+
+/**
+ * Walks the active library and reports problems the calc engine WOULD hit
+ * downstream. Each check is graded:
+ *
+ *   error    — the engine can't produce a correct tally without this
+ *              (e.g. no body block tagged → no wall calc can run)
+ *   warning  — the engine will degrade gracefully but the user is
+ *              probably surprised (e.g. no top-course block → top
+ *              course just uses the body block, no bond beam)
+ *   ok       — informational, returned only for fully-tagged libraries
+ *
+ * Pure function — takes a library snapshot, returns a list. The UI
+ * decides how to render. Library editors call this whenever the library
+ * changes so the surfaced banner stays live.
+ */
+export function analyseLibraryHealth(
+  library: Record<BlockCode, Block> = BLOCK_LIBRARY
+): HealthCheck[] {
+  const checks: HealthCheck[] = []
+  const blocks = Object.values(library)
+
+  // Empty library — short-circuit so the user gets one big "pick a
+  // template or add blocks" call to action rather than a dozen
+  // individual errors.
+  if (blocks.length === 0) {
+    checks.push({
+      id: 'empty',
+      severity: 'error',
+      message: 'Library is empty.',
+      detail:
+        'Pick a regional template (Settings → Library template) or add ' +
+        'blocks manually below.',
+    })
+    return checks
+  }
+
+  // Hard requirements — calc engine breaks without these.
+  const hasBody = blocks.some((b) => b.roles.includes('body'))
+  if (!hasBody) {
+    checks.push({
+      id: 'no-body',
+      role: 'body',
+      severity: 'error',
+      message: 'No block tagged as the BODY block.',
+      detail:
+        'Every wall needs a default body block. Tag at least one block ' +
+        'with the "body" role.',
+    })
+  }
+  const hasCorner = blocks.some((b) => b.roles.includes('corner'))
+  if (!hasCorner) {
+    checks.push({
+      id: 'no-corner',
+      role: 'corner',
+      severity: 'error',
+      message: 'No block tagged as a CORNER block.',
+      detail:
+        'Wall corners and the ends of stretcher-bond walls need a full ' +
+        'corner block. Tag at least one block with the "corner" role.',
+    })
+  }
+  const hasHalf = blocks.some(
+    (b) => b.roles.includes('end-termination') && b.fraction === 0.5
+  )
+  if (!hasHalf) {
+    checks.push({
+      id: 'no-half',
+      role: 'end-termination',
+      severity: 'error',
+      message: 'No HALF block tagged for stretcher-bond ends.',
+      detail:
+        'Stretcher bond alternates a corner block with a half block at ' +
+        'free ends. Tag a half-width block with both "end-termination" ' +
+        'and "fraction" roles (and fraction: 0.5).',
+    })
+  }
+
+  // Soft advisories — engine works but the user probably wants these.
+  const hasBase = blocks.some((b) => b.roles.includes('base-course'))
+  if (!hasBase) {
+    checks.push({
+      id: 'no-base',
+      role: 'base-course',
+      severity: 'warning',
+      message: 'No base-course block.',
+      detail:
+        'New wall types will use the body block at course 1. Tag a ' +
+        'cleanout / starter block with the "base-course" role to get a ' +
+        'distinct base course.',
+    })
+  }
+  const hasTop = blocks.some((b) => b.roles.includes('top-course'))
+  if (!hasTop) {
+    checks.push({
+      id: 'no-top',
+      role: 'top-course',
+      severity: 'warning',
+      message: 'No top-course (bond beam) block.',
+      detail:
+        'Wall types with "bond beam on top" will fall back to the body ' +
+        'block. Tag a U-channel / knockout block with the "top-course" ' +
+        'role if your region uses a separate top-course block.',
+    })
+  }
+  const hasPier = blocks.some((b) => b.roles.includes('pier'))
+  if (!hasPier) {
+    checks.push({
+      id: 'no-pier',
+      role: 'pier',
+      severity: 'warning',
+      message: 'No pier block.',
+      detail:
+        'Tied / freestanding piers placed on the canvas need a pier-tagged ' +
+        'block. US / UK libraries often tag the body block as the pier ' +
+        '(piers are built from the same body unit, grouted solid).',
+    })
+  }
+  const hasLintel = blocks.some((b) => b.roles.includes('lintel'))
+  if (!hasLintel) {
+    checks.push({
+      id: 'no-lintel',
+      role: 'lintel',
+      severity: 'warning',
+      message: 'No lintel blocks tagged.',
+      detail:
+        "Openings won't get a lintel line in the export. Add lintel " +
+        'blocks with "lintel" role and the lintelMinHeadHeightMm / ' +
+        'lintelMaxHeadHeightMm fields populated.',
+    })
+  }
+
+  return checks
+}
+
