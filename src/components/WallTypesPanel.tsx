@@ -19,8 +19,10 @@ import {
 } from '../lib/blockCalc'
 import {
   convertMakeupToBands,
+  findSeriesRangeForCourse,
   getMakeupHeightMm,
   moduleHeightForBand,
+  resolveCourseBlocks,
 } from '../lib/makeups'
 
 interface WallTypesPanelProps {
@@ -636,6 +638,91 @@ function WallTypeEditorModal({
     normalBodyBlockCode,
   ])
 
+  // ---- Per-course preview resolution ----
+  // Builds an in-flight WallMakeup from the form state so the preview can
+  // call resolveCourseBlocks per course — that way courseSeriesRanges
+  // (e.g. 300 series on the base 5 courses) actually show up in the
+  // preview's body/corner/half cells, and courseOverrides override the
+  // body block on individual courses too.
+  const previewMakeup = useMemo<WallMakeup>(() => {
+    const resolvedBody: BlockCode = isCurveMakeup
+      ? wedgeRequired
+        ? wedgeBodyBlockCode
+        : normalBodyBlockCode
+      : bodyBlockCode
+    return {
+      id: existing?.id ?? 'preview',
+      name,
+      bondType,
+      heightMm,
+      baseCourseBlockCode,
+      baseCourseTileCode: baseCourseTileCode || undefined,
+      bodyBlockCode: resolvedBody,
+      topCourseBlockCode,
+      cornerBlockCode,
+      halfBlockCode,
+      useFractions,
+      courseOverrides,
+      courseSeriesRanges: seriesRanges,
+      coursePattern: coursePattern.length > 0 ? coursePattern : undefined,
+    }
+  }, [
+    existing?.id,
+    name,
+    bondType,
+    heightMm,
+    baseCourseBlockCode,
+    baseCourseTileCode,
+    bodyBlockCode,
+    topCourseBlockCode,
+    cornerBlockCode,
+    halfBlockCode,
+    useFractions,
+    courseOverrides,
+    seriesRanges,
+    coursePattern,
+    isCurveMakeup,
+    wedgeRequired,
+    wedgeBodyBlockCode,
+    normalBodyBlockCode,
+  ])
+
+  // Per-course resolver for the preview. Precedence (most specific wins):
+  //   1. courseOverrides[courseNumber] → body
+  //   2. courseSeriesRanges[range covers course].bodyBlockCode → body
+  //   3. Band's blockCode at that course position → body
+  //   4. makeup.bodyBlockCode (fallback)
+  // Corner and half always come from resolveCourseBlocks() so series
+  // ranges' cornerBlockCode / halfBlockCode are honoured for the
+  // end-termination cells.
+  const resolveForCourse = useMemo(() => {
+    return (courseNumber: number) => {
+      const resolved = resolveCourseBlocks(previewMakeup, courseNumber)
+      // Find this course's band body (which course of which band?)
+      let cursor = 0
+      let bandBody: BlockCode = previewMakeup.bodyBlockCode
+      for (const band of previewBands) {
+        if (band.count <= 0) continue
+        if (courseNumber <= cursor + band.count) {
+          bandBody = band.blockCode
+          break
+        }
+        cursor += band.count
+      }
+      const range = findSeriesRangeForCourse(previewMakeup, courseNumber)
+      const override = courseOverrides.find((o) => o.courseNumber === courseNumber)
+      const body =
+        override?.blockCode ??
+        range?.bodyBlockCode ??
+        bandBody
+      return {
+        body,
+        corner: resolved.cornerBlockCode,
+        half: resolved.halfBlockCode,
+      }
+    }
+  }, [previewMakeup, previewBands, courseOverrides])
+
   function handleSave() {
     const cleanedRanges = seriesRanges.filter((r) => {
       if (r.toCourse < r.fromCourse) return false
@@ -899,17 +986,16 @@ function WallTypeEditorModal({
                 bands={previewBands}
                 library={library}
                 bondType={bondType}
-                cornerBlockCode={cornerBlockCode}
-                halfBlockCode={halfBlockCode}
+                resolveForCourse={resolveForCourse}
               />
             </div>
             {/* Tiny legend so the user can map cell colour → block code at
-                a glance. Shows whatever distinct codes appear in the
-                preview right now (body bands + corner + half). */}
+                a glance. Walks the same per-course resolver as the
+                preview so series-range overrides and per-course
+                overrides surface in the legend too. */}
             <PreviewLegend
               bands={previewBands}
-              cornerBlockCode={cornerBlockCode}
-              halfBlockCode={halfBlockCode}
+              resolveForCourse={resolveForCourse}
               bondType={bondType}
             />
           </aside>
@@ -1549,25 +1635,27 @@ function bandColor(code: BlockCode): string {
 
 /**
  * Tiny legend under the preview that maps each colour swatch to its block
- * code. Lists the body blocks from every band in the preview, plus the
- * corner / half end-termination codes (only the relevant ones for the
- * active bond type — stack bond doesn't use halves).
+ * code. Walks the same per-course resolver as the preview so any
+ * series-range or per-course overrides land in the legend too — the
+ * legend always shows exactly the codes you can see in the preview.
  */
 function PreviewLegend({
   bands,
-  cornerBlockCode,
-  halfBlockCode,
+  resolveForCourse,
   bondType,
 }: {
   bands: CourseBand[]
-  cornerBlockCode: BlockCode
-  halfBlockCode: BlockCode
+  resolveForCourse: (courseNumber: number) => {
+    body: BlockCode
+    corner: BlockCode
+    half: BlockCode
+  }
   bondType: BondType
 }) {
-  // Collect distinct codes the preview will actually render: every body
-  // band + the corner + (for stretcher) the half block. De-dupe so a
-  // wall using 20.48 as both body and end doesn't list the same swatch
-  // twice.
+  // Walk every course in the preview, collect distinct body / corner /
+  // half codes via the resolver. Role labels reflect the first time a
+  // code appears (body wins over corner if the same code is used as
+  // both, since that's the more common usage on the wall).
   const items: { code: BlockCode; role: string }[] = []
   const seen = new Set<BlockCode>()
   function push(code: BlockCode, role: string) {
@@ -1575,9 +1663,17 @@ function PreviewLegend({
     seen.add(code)
     items.push({ code, role })
   }
-  for (const b of bands) if (b.count > 0) push(b.blockCode, 'body')
-  push(cornerBlockCode, 'corner')
-  if (bondType === 'stretcher') push(halfBlockCode, 'half end')
+  let courseNum = 0
+  for (const b of bands) {
+    if (b.count <= 0) continue
+    for (let i = 0; i < b.count; i++) {
+      courseNum++
+      const r = resolveForCourse(courseNum)
+      push(r.body, 'body')
+      push(r.corner, 'corner')
+      if (bondType === 'stretcher') push(r.half, 'half end')
+    }
+  }
 
   if (items.length === 0) return null
   return (
@@ -1612,13 +1708,15 @@ interface CoursePatternPreviewProps {
   bands: CourseBand[]
   library: Record<BlockCode, { dimensions: { heightMm: number; widthMm: number; depthMm: number } }>
   bondType: BondType
-  /** Full-block end termination (e.g. 20.01) — drawn at the ends of every
-   *  course in stack bond + odd courses in stretcher bond. */
-  cornerBlockCode: BlockCode
-  /** Half-block end termination (e.g. 20.03) — drawn at the ends of even
-   *  courses in stretcher bond, creating the half-block offset that
-   *  defines the bond pattern visually. */
-  halfBlockCode: BlockCode
+  /** Resolves the body / corner / half block codes for a given 1-indexed
+   *  course number. Lets the modal apply courseSeriesRanges and
+   *  courseOverrides per course so the preview shows e.g. 30.48 in the
+   *  base courses when those courses are series-overridden to 300. */
+  resolveForCourse: (courseNumber: number) => {
+    body: BlockCode
+    corner: BlockCode
+    half: BlockCode
+  }
 }
 
 /**
@@ -1636,16 +1734,22 @@ function CoursePatternPreview({
   bands,
   library,
   bondType,
-  cornerBlockCode,
-  halfBlockCode,
+  resolveForCourse,
 }: CoursePatternPreviewProps) {
   const visible = bands.filter((b) => b.count > 0)
   // Expand the band list into a flat per-course block-code array so we
   // can lay out each course independently — needed because course N+1
   // might use a different block code from course N (e.g. 20.48 → 20.71).
+  // Each course's body code starts from its band, but the eventual
+  // rendered code comes from resolveForCourse() — which lets series
+  // ranges and per-course overrides take effect.
   const courses: BlockCode[] = []
   for (const band of visible) {
-    for (let i = 0; i < band.count; i++) courses.push(band.blockCode)
+    for (let i = 0; i < band.count; i++) {
+      const courseNum = courses.length + 1
+      const resolvedBody = resolveForCourse(courseNum).body
+      courses.push(resolvedBody)
+    }
   }
   const totalHeight = courses.reduce(
     (s, code) => s + ((library[code]?.dimensions.heightMm ?? 190) + 10),
@@ -1745,33 +1849,57 @@ function CoursePatternPreview({
           // we render the array in normal order but DOM/visual order is
           // reversed so course[0] sits at the bottom of the column.
           const courseNum = courseIdx + 1 // 1-indexed
-          const h = heightOf(code)
+          // Resolve this course's actual body / corner / half codes —
+          // honours courseSeriesRanges (300 series on bottom courses,
+          // etc.) and courseOverrides per course. `code` from the bands
+          // array is the fallback; resolveForCourse may swap it.
+          const resolved = resolveForCourse(courseNum)
+          const bodyCode = resolved.body
+          const cornerCode = resolved.corner
+          const halfCode = resolved.half
+          // Height of the course depends on the RESOLVED body, not the
+          // band code — a 300-series-overridden course uses 30.48 which
+          // is still 200mm modular, but if the override was a 30.71 it
+          // would be 100mm. Keeps the visual proportional to reality.
+          const h = heightOf(bodyCode)
           const pct = (h / totalHeight) * 100
           const isEven = courseNum % 2 === 0
           const useHalves = bondType === 'stretcher' && isEven
 
-          // Build the cells for this course. Each cell's width is its
-          // block's modular width (face + mortar) as a percentage of the
-          // wall's representative width, so a 20.03CW cell (200mm)
-          // renders half as wide as a 20.48 cell (400mm).
-          const bodyFill = bandColor(code)
-          const cornerFill = bandColor(cornerBlockCode)
-          const halfFill = bandColor(halfBlockCode)
-          const bodyW = bodyWidthOf(code)
+          // Build the cells for this course.
+          //   * Each cell's WIDTH is the block's modular face width (face
+          //     + 10mm mortar) as a percentage of REPRESENTATIVE_WIDTH_MM,
+          //     so a 20.03CW cell (200mm) renders half as wide as a
+          //     20.48 cell (400mm). [from HEAD's bodyWidthOf approach]
+          //   * Each cell's COLOUR is from the PER-COURSE resolved body /
+          //     corner / half codes — so series-range overrides (e.g.
+          //     30.01 corners on the base 5 courses) show up. [from the
+          //     series-range / per-course-override resolver]
+          const bodyFill = bandColor(bodyCode)
+          const cornerFill = bandColor(cornerCode)
+          const halfFill = bandColor(halfCode)
+          const bodyW = bodyWidthOf(bodyCode)
+          const cornerW = widthOf(cornerCode)
+          const halfW = widthOf(halfCode)
           const toPct = (w: number) => (w / REPRESENTATIVE_WIDTH_MM) * 100
           const cells: { widthPct: number; color: string; label: string }[] = []
           if (useHalves) {
-            cells.push({ widthPct: toPct(halfWidth), color: halfFill, label: halfBlockCode })
+            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body + half
+            // end. Same total as the odd-course row below — that's why
+            // the bond pattern reads as an offset rather than a width
+            // change.
+            cells.push({ widthPct: toPct(halfW), color: halfFill, label: halfCode })
             for (let i = 0; i < BLOCKS_ACROSS + 1; i++) {
-              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: code })
+              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: bodyCode })
             }
-            cells.push({ widthPct: toPct(halfWidth), color: halfFill, label: halfBlockCode })
+            cells.push({ widthPct: toPct(halfW), color: halfFill, label: halfCode })
           } else {
-            cells.push({ widthPct: toPct(cornerWidth), color: cornerFill, label: cornerBlockCode })
+            // Stack bond OR stretcher odd: full end + N body + full end.
+            cells.push({ widthPct: toPct(cornerW), color: cornerFill, label: cornerCode })
             for (let i = 0; i < BLOCKS_ACROSS; i++) {
-              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: code })
+              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: bodyCode })
             }
-            cells.push({ widthPct: toPct(cornerWidth), color: cornerFill, label: cornerBlockCode })
+            cells.push({ widthPct: toPct(cornerW), color: cornerFill, label: cornerCode })
           }
 
           return (
@@ -1779,7 +1907,7 @@ function CoursePatternPreview({
               key={courseIdx}
               style={{ flexBasis: `${pct}%`, minHeight: 0 }}
               className="flex w-full border-b border-black/40 last:border-b-0"
-              title={`Course ${courseNum}: ${code} body (${h}mm modular)${useHalves ? ` · ${halfBlockCode} halves at ends` : ` · ${cornerBlockCode} at ends`}`}
+              title={`Course ${courseNum}: ${bodyCode} body (${h}mm modular)${useHalves ? ` · ${halfCode} halves at ends` : ` · ${cornerCode} at ends`}`}
             >
               {cells.map((c, i) => (
                 <div
@@ -2503,10 +2631,16 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
                 ))}
               </div>
             </div>
+            {/* Pier legend reuses the wall preview's legend helper with
+                a flat resolver — every course is just the pattern slot
+                cycling; no series ranges or per-course overrides on
+                piers, so body == corner == half for legend purposes. */}
             <PreviewLegend
               bands={pattern.map((c) => ({ blockCode: c, count: 1 }))}
-              cornerBlockCode={pattern[0]}
-              halfBlockCode={pattern[0]}
+              resolveForCourse={(n) => {
+                const code = pattern[(n - 1) % pattern.length] ?? pattern[0]
+                return { body: code, corner: code, half: code }
+              }}
               bondType="stack"
             />
           </aside>
