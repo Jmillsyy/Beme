@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type {
   WallMakeup,
   BondType,
@@ -103,169 +103,142 @@ export default function WallTypesPanel({
       </div>
 
       {expanded && (
-        <>
-      <div className="flex flex-col gap-2 pb-1">
-        {/* "New" form opens at the very top of the list so an in-progress add
-            doesn't shove every existing wall type down out of view. */}
-        {editingId === 'new' && (
-          <WallTypeForm
-            existing={null}
-            onSave={(makeup) => {
-              onAddMakeup(makeup)
-              setEditingId(null)
-            }}
-            onCancel={() => setEditingId(null)}
-          />
-        )}
-        {orderedMakeups.map((m) => {
-          const isActive = m.id === activeMakeupId
-          const wallCount = wallCountsByMakeupId[m.id] ?? 0
-          const canDelete = makeups.length > 1 && wallCount === 0
-          const isEditingThis = editingId === m.id
-          return (
-            <div key={m.id} className="flex flex-col gap-2">
-            <button
-              onClick={() => onSetActive(m.id)}
-              className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
-                isActive
-                  ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
-                  : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
-              }`}
-            >
-              {isActive && (
-                <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
-                  Active
-                </span>
-              )}
-              <div className="flex items-start gap-2 mb-1 pr-12">
-                {/* Swatch that matches the colour walls of this type are drawn in
-                    on the plan. Picked deterministically from a palette by index. */}
-                <span
-                  className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
-                  style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
-                  aria-hidden
-                />
-                {/* Allow the name to wrap onto multiple lines rather than
-                    truncate — the wall-type name is the identity of this
-                    entry, so the user always wants it in full even if that
-                    means the card grows taller. break-words handles single
-                    long names without spaces. */}
-                <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
-                  {m.name}
+        <div className="flex flex-col gap-2 pb-1">
+          {orderedMakeups.map((m) => {
+            const isActive = m.id === activeMakeupId
+            const wallCount = wallCountsByMakeupId[m.id] ?? 0
+            const canDelete = makeups.length > 1 && wallCount === 0
+            return (
+              <button
+                key={m.id}
+                onClick={() => onSetActive(m.id)}
+                className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                  isActive
+                    ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                    : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
+                }`}
+              >
+                {isActive && (
+                  <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                    Active
+                  </span>
+                )}
+                <div className="flex items-start gap-2 mb-1 pr-12">
+                  {/* Swatch that matches the colour walls of this type are drawn in
+                      on the plan. Picked deterministically from a palette by index. */}
+                  <span
+                    className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
+                    style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
+                    aria-hidden
+                  />
+                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                    {m.name}
+                  </div>
                 </div>
-              </div>
-              {/* Condensed details. Bond + height stay because they're the
-                  two facts an estimator checks first; everything else
-                  (corners, fractions, base/top blocks) lives behind Edit so
-                  the card can give the wall-type NAME the room it needs. */}
-              <div className="text-xs text-ink-400">
-                {m.bondType} bond · {getMakeupHeightMm(m)}mm · Body {m.bodyBlockCode}
-              </div>
-              {m.coursePattern && m.coursePattern.length > 0 && (
-                <div className="text-xs text-beme-300 mt-1 font-mono">
-                  Pattern:{' '}
-                  {m.coursePattern
-                    .map((b) => `${b.count}×${b.blockCode}`)
-                    .join(' + ')}
+                <div className="text-xs text-ink-400">
+                  {m.bondType} bond · {getMakeupHeightMm(m)}mm · Body {m.bodyBlockCode}
                 </div>
-              )}
-              {m.courseOverrides && m.courseOverrides.length > 0 && (
-                <div className="text-xs text-ink-400 mt-1">
-                  {m.courseOverrides.length} course override
-                  {m.courseOverrides.length === 1 ? '' : 's'}
+                {m.coursePattern && m.coursePattern.length > 0 && (
+                  <div className="text-xs text-beme-300 mt-1 font-mono">
+                    Pattern:{' '}
+                    {m.coursePattern.map((b) => `${b.count}×${b.blockCode}`).join(' + ')}
+                  </div>
+                )}
+                {m.courseOverrides && m.courseOverrides.length > 0 && (
+                  <div className="text-xs text-ink-400 mt-1">
+                    {m.courseOverrides.length} course override
+                    {m.courseOverrides.length === 1 ? '' : 's'}
+                  </div>
+                )}
+                {m.courseSeriesRanges && m.courseSeriesRanges.length > 0 && (
+                  <div className="text-xs text-ink-400 mt-1">
+                    {m.courseSeriesRanges.length} series range
+                    {m.courseSeriesRanges.length === 1 ? '' : 's'}
+                  </div>
+                )}
+                <div className="text-xs text-ink-500 mt-2">
+                  {wallCount} wall{wallCount === 1 ? '' : 's'} using this
                 </div>
-              )}
-              {m.courseSeriesRanges && m.courseSeriesRanges.length > 0 && (
-                <div className="text-xs text-ink-400 mt-1">
-                  {m.courseSeriesRanges.length} series range
-                  {m.courseSeriesRanges.length === 1 ? '' : 's'}
-                  {m.courseSeriesRanges.map((r, idx) => {
-                    const codes = [
-                      r.bodyBlockCode,
-                      r.cornerBlockCode,
-                      r.baseCourseBlockCode,
-                    ]
-                      .filter(Boolean)
-                      .slice(0, 1)
-                      .join(' / ')
-                    return (
-                      <span key={idx} className="ml-2 font-mono text-ink-500">
-                        c{r.fromCourse}
-                        {r.toCourse > r.fromCourse ? `–${r.toCourse}` : ''}
-                        {codes ? `: ${codes}` : ''}
-                      </span>
-                    )
-                  })}
-                </div>
-              )}
-              <div className="text-xs text-ink-500 mt-2">
-                {wallCount} wall{wallCount === 1 ? '' : 's'} using this
-              </div>
-              <div className="flex gap-3 mt-2">
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    // Toggle: clicking Edit on the type that's already open
-                    // collapses the form instead of leaving it stuck open.
-                    setEditingId(isEditingThis ? null : m.id)
-                  }}
-                  className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
-                >
-                  {isEditingThis ? 'Close' : 'Edit'}
-                </span>
-                {canDelete && (
+                <div className="flex gap-3 mt-2">
                   <span
                     role="button"
                     tabIndex={0}
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (window.confirm(`Delete wall type "${m.name}"?`)) {
-                        onDeleteMakeup(m.id)
-                      }
+                      setEditingId(m.id)
                     }}
-                    className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                    className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
                   >
-                    Delete
+                    Edit
                   </span>
-                )}
-              </div>
-            </button>
-            {/* Edit form opens INLINE beneath the wall type being edited so
-                the user doesn't have to scroll to find it at the bottom of
-                the panel every time. */}
-            {isEditingThis && (
-              <WallTypeForm
-                existing={editingMakeup}
-                onSave={(makeup) => {
-                  onUpdateMakeup(makeup)
-                  setEditingId(null)
-                }}
-                onCancel={() => setEditingId(null)}
-              />
-            )}
-            </div>
-          )
-        })}
-      </div>
-        </>
+                  {canDelete && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (window.confirm(`Delete wall type "${m.name}"?`)) {
+                          onDeleteMakeup(m.id)
+                        }
+                      }}
+                      className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                    >
+                      Delete
+                    </span>
+                  )}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Modal lives at the panel root so it floats over everything, not
+          inline in the list. Mounted only while editing/adding so the form
+          state (and its hooks) get fresh defaults each open. */}
+      {editingId !== null && (
+        <WallTypeEditorModal
+          existing={editingId === 'new' ? null : editingMakeup}
+          onCancel={() => setEditingId(null)}
+          onSave={(m) => {
+            if (editingId === 'new') onAddMakeup(m)
+            else onUpdateMakeup(m)
+            setEditingId(null)
+          }}
+        />
       )}
     </div>
   )
 }
 
-// ---------- Internal: WallTypeForm ----------
+// ---------- Internal: WallTypeEditorModal ----------
 
-interface WallTypeFormProps {
+type TabKey = 'basics' | 'composition' | 'pattern' | 'advanced'
+
+interface WallTypeEditorModalProps {
   existing: WallMakeup | null
   onSave: (makeup: WallMakeup) => void
   onCancel: () => void
 }
 
-function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
-  // Re-derive the dropdown options each render so they reflect the user's
-  // current library (re-renders when the library changes via useBlockLibrary).
+/**
+ * Full-screen editor for a wall type. Replaces the old inline side-panel
+ * form — that form had too many fields (bond, height, composition, course
+ * pattern, overrides, series ranges) to read cleanly in the narrow rail.
+ *
+ * Layout: backdrop overlay → centred dialog → header + left tab rail +
+ * tabbed content area + footer with Cancel / Save. Escape closes, clicking
+ * the backdrop closes. Save / Cancel are always visible in the footer so
+ * the user never has to scroll to commit.
+ *
+ * Tabs:
+ *   - Basics       : name, height, bond, options
+ *   - Composition  : base / body / top / end-termination block pickers
+ *                    (plus the curve wedge-vs-normal dual section)
+ *   - Course Pattern: bands editor + live visual stack preview
+ *   - Advanced     : per-course overrides + course-series ranges
+ */
+function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModalProps) {
   const { library } = useBlockLibrary()
   const selectableBlocks = useMemo<BlockCode[]>(
     () =>
@@ -275,6 +248,8 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         .sort(),
     [library]
   )
+
+  const [activeTab, setActiveTab] = useState<TabKey>('basics')
   const [name, setName] = useState(existing?.name ?? 'New wall type')
   const [bondType, setBondType] = useState<BondType>(existing?.bondType ?? 'stretcher')
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
@@ -292,12 +267,6 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const [topCourseBlockCode, setTopCourseBlockCode] = useState<BlockCode>(
     existing?.topCourseBlockCode ?? '20.48'
   )
-  // Full + half end-termination blocks. Seeded with 20.01 / 20.03 so the
-  // standard SEQ behaviour is the out-of-the-box default, but the user can
-  // swap in any block from their library (knockout corners, third-party
-  // blocks, etc.). Replaces the old binary "Knockout corners (20.21)"
-  // checkbox — that was just one specific override hiding the full
-  // freedom this gives.
   const [cornerBlockCode, setCornerBlockCode] = useState<BlockCode>(
     existing?.cornerBlockCode ?? '20.01'
   )
@@ -308,21 +277,10 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(
     existing?.courseOverrides ?? []
   )
-  const [showOverrides, setShowOverrides] = useState(
-    (existing?.courseOverrides ?? []).length > 0
-  )
 
   // ---- Course pattern (bands) state ----
-  // When set, the wall is built from a repeating list of {blockCode, count}
-  // bands rather than from the uniform 200mm-modular legacy stack. Lets the
-  // user spec walls like "4× 20.48 + 2× 20.71" for mixed-height runs that
-  // the legacy heightMm + courseOverrides path can't express correctly
-  // (the legacy path assumes every course is 200mm modular).
   const [coursePattern, setCoursePattern] = useState<CourseBand[]>(
     existing?.coursePattern ?? []
-  )
-  const [showCoursePattern, setShowCoursePattern] = useState(
-    (existing?.coursePattern ?? []).length > 0
   )
   const hasCoursePattern = coursePattern.length > 0
   const patternTotalHeight = useMemo(
@@ -343,17 +301,13 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       ...prev,
       { blockCode: bodyBlockCode || '20.48', count: 1 },
     ])
-    setShowCoursePattern(true)
   }
-
   function updateBand(index: number, patch: Partial<CourseBand>) {
     setCoursePattern((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)))
   }
-
   function removeBand(index: number) {
     setCoursePattern((prev) => prev.filter((_, i) => i !== index))
   }
-
   function moveBand(index: number, direction: -1 | 1) {
     setCoursePattern((prev) => {
       const next = [...prev]
@@ -365,10 +319,6 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   }
 
   function convertCurrentToBands() {
-    // Use the user's in-flight form state, not the saved makeup — so if they
-    // tweaked the height / blocks before clicking Convert, those edits seed
-    // the bands list. Carries the same { lossy } warning if courseOverrides
-    // are in play (overrides aren't translated band-for-band).
     const draft: WallMakeup = {
       id: existing?.id ?? 'draft',
       name,
@@ -392,21 +342,20 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       lossy &&
       !window.confirm(
         'This wall type has per-course overrides which can’t be translated band-for-band. ' +
-          'Convert anyway? You’ll be able to edit the bands directly after — the overrides will be cleared.'
+          'Convert anyway? The overrides will be cleared.'
       )
     ) {
       return
     }
     setCoursePattern(bands)
-    setShowCoursePattern(true)
     if (lossy) setCourseOverrides([])
   }
 
   function clearCoursePattern() {
     if (
       !window.confirm(
-        'Clear the course pattern and revert this wall type to a uniform-height makeup? ' +
-          'The Height field above will take over again.'
+        'Clear the course pattern and revert this wall type to the uniform-height makeup? ' +
+          'The Height field will take over again.'
       )
     ) {
       return
@@ -416,13 +365,12 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
 
   function addOverride() {
     setCourseOverrides((prev) => [...prev, { courseNumber: 2, blockCode: '20.48' }])
-    setShowOverrides(true)
   }
-
   function updateOverride(index: number, patch: Partial<CourseOverride>) {
-    setCourseOverrides((prev) => prev.map((o, i) => (i === index ? { ...o, ...patch } : o)))
+    setCourseOverrides((prev) =>
+      prev.map((o, i) => (i === index ? { ...o, ...patch } : o))
+    )
   }
-
   function removeOverride(index: number) {
     setCourseOverrides((prev) => prev.filter((_, i) => i !== index))
   }
@@ -430,16 +378,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const [seriesRanges, setSeriesRanges] = useState<CourseSeriesRange[]>(
     existing?.courseSeriesRanges ?? []
   )
-  const [showSeriesRanges, setShowSeriesRanges] = useState(
-    (existing?.courseSeriesRanges ?? []).length > 0
-  )
 
-  /**
-   * Add a new series range pre-filled with the 300-series block codes — the
-   * common case from the user's brief is "bottom 5 courses use 300 series",
-   * so the first-time UX should land on a useful starting point instead of an
-   * empty form. If the user wants something else they can change each picker.
-   */
   function addSeriesRange() {
     setSeriesRanges((prev) => [
       ...prev,
@@ -452,58 +391,35 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         baseCourseBlockCode: '30.45',
         baseCourseTileCode: '50.45',
         heightMakeup71BlockCode: '30.71',
-        // 300-series corners need two 30.02 cube blocks laid between the
-        // corner block and the regular body so the next 30.48 lands back on
-        // bond — pre-fill the rule so the canonical 300-series setup is one
-        // click from a saved makeup.
         cornerLeadInBlockCode: '30.02',
         cornerLeadInCount: 2,
       },
     ])
-    setShowSeriesRanges(true)
   }
-
   function updateSeriesRange(index: number, patch: Partial<CourseSeriesRange>) {
-    setSeriesRanges((prev) =>
-      prev.map((r, i) => (i === index ? { ...r, ...patch } : r))
-    )
+    setSeriesRanges((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)))
   }
-
   function removeSeriesRange(index: number) {
     setSeriesRanges((prev) => prev.filter((_, i) => i !== index))
   }
 
   // ---- Curve-makeup state ----
-  // A makeup created from a drawn curved wall carries a `curveRadiusMm` so we
-  // know to render two block-composition sections (wedge / normal) instead of
-  // one. The radius itself is read-only — it's a property of the drawn arc,
-  // not something the user changes here.
   const curveRadiusMm = existing?.curveRadiusMm
   const isCurveMakeup = typeof curveRadiusMm === 'number' && isFinite(curveRadiusMm)
-  // A curve below the wedge threshold (1500mm centreline) MUST be built with
-  // 20.03CW wedges — straight 20.48 won't bend tightly enough. A curve above
-  // the threshold uses normal body blocks (cut at the back on the tighter end
-  // of that band, no cuts above 6000mm). The disabled section is greyed out
-  // with a hint explaining why so the user understands the choice was made
-  // for them by the geometry.
   const wedgeRequired = isCurveMakeup && curveRadiusMm < CURVED_WALL_WEDGE_RADIUS_MM
   const curveZone = isCurveMakeup ? curveZoneForRadius(curveRadiusMm) : null
   const wedgeFeasible = isCurveMakeup && curveRadiusMm >= CURVED_WALL_MIN_FEASIBLE_RADIUS_MM
-  // Track wedge / normal body block codes separately so toggling between
-  // sections doesn't lose the user's pick. If the existing makeup already has
-  // a wedge body, seed the wedge state with it; otherwise default to 20.03CW.
   const [wedgeBodyBlockCode, setWedgeBodyBlockCode] = useState<BlockCode>(
     existing && wedgeRequired ? existing.bodyBlockCode : '20.03CW'
   )
   const [normalBodyBlockCode, setNormalBodyBlockCode] = useState<BlockCode>(
     existing && !wedgeRequired && isCurveMakeup ? existing.bodyBlockCode : '20.48'
   )
+  // A wedge curve has no use for course-mixing fields — disable Pattern /
+  // Advanced tabs and force back to Basics if the user lands there.
+  const wedgeDisablesCourseMix = isCurveMakeup && wedgeRequired
 
   function handleSave() {
-    const id = existing?.id ?? generateMakeupId()
-    // Strip any range with from > to (degenerate) and any whose overrides are
-    // all blank (no-op). Saves on bytes and keeps the calc engine's iteration
-    // efficient if the user added a range and then cleared it.
     const cleanedRanges = seriesRanges.filter((r) => {
       if (r.toCourse < r.fromCourse) return false
       const anyOverride =
@@ -516,18 +432,11 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         r.cornerLeadInBlockCode
       return !!anyOverride
     })
-    // For curve makeups, the body block comes from whichever section is
-    // active (driven by the curve's radius zone). For regular makeups, the
-    // single Body picker drives bodyBlockCode the way it always has.
     const resolvedBodyBlockCode: BlockCode = isCurveMakeup
       ? wedgeRequired
         ? wedgeBodyBlockCode
         : normalBodyBlockCode
       : bodyBlockCode
-    // Drop any zero-count or invalid bands. When bands survive, the wall is
-    // bands-driven and we store the SUMMED height into heightMm too so older
-    // code paths that still read makeup.heightMm directly see the right
-    // total (the calc engine routes everything through getMakeupHeightMm).
     const cleanedPattern = coursePattern.filter(
       (b) => b.count > 0 && !!BLOCK_LIBRARY[b.blockCode]
     )
@@ -539,7 +448,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
           )
         : heightMm
     const updated: WallMakeup = {
-      id,
+      id: existing?.id ?? generateMakeupId(),
       name: name.trim() || 'New wall type',
       bondType,
       heightMm: finalHeightMm,
@@ -553,8 +462,6 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
       coursePattern: cleanedPattern.length > 0 ? cleanedPattern : undefined,
-      // Preserve the curve marker so editing the makeup doesn't accidentally
-      // convert it into a straight-wall makeup on save.
       curveRadiusMm: existing?.curveRadiusMm,
     }
     onSave(updated)
@@ -563,122 +470,346 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
   const canSave =
     name.trim().length > 0 && (hasCoursePattern ? patternTotalHeight > 0 : heightMm >= 200)
 
+  // Escape closes the dialog. Mirrors the platform-standard modal UX so
+  // power users can dismiss without reaching for the mouse.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  const tabs: { key: TabKey; label: string; badge?: string; disabled?: boolean }[] = [
+    { key: 'basics', label: 'Basics' },
+    {
+      key: 'composition',
+      label: isCurveMakeup ? 'Composition (curve)' : 'Composition',
+    },
+    {
+      key: 'pattern',
+      label: 'Course pattern',
+      badge: hasCoursePattern ? `${coursePattern.length}` : undefined,
+      disabled: wedgeDisablesCourseMix,
+    },
+    {
+      key: 'advanced',
+      label: 'Advanced',
+      badge:
+        courseOverrides.length + seriesRanges.length > 0
+          ? `${courseOverrides.length + seriesRanges.length}`
+          : undefined,
+      disabled: wedgeDisablesCourseMix,
+    },
+  ]
+
   return (
-    // When editing an existing wall type, the form reads as a dropdown of
-    // the card above: a subtle left-border accent in the active beme colour
-    // and no separate frame / background. When creating a new wall type
-    // it still gets a faint border + heading so the user knows they're
-    // filling in a fresh entry rather than editing one.
     <div
-      className={
-        existing
-          ? 'mt-1 mb-2 pl-3 pr-1 py-2 border-l-2 border-beme-500/40'
-          : 'mt-2 mb-3 p-3 border border-ink-600/60 rounded-lg bg-ink-700/30'
-      }
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label={existing ? `Edit wall type ${existing.name}` : 'New wall type'}
     >
-      {!existing && (
-        <h4 className="text-sm font-semibold mb-3 text-ink-200">New wall type</h4>
-      )}
-      <div className="grid grid-cols-1 gap-4">
-        <label className="text-sm">
-          <span className="block text-ink-300 mb-1">Name</span>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400"
-          />
-        </label>
+      <div
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-5xl h-[88vh] max-h-[900px] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-ink-100 truncate">
+              {existing ? 'Edit wall type' : 'New wall type'}
+              {existing && (
+                <span className="text-ink-400 font-normal"> — {existing.name}</span>
+              )}
+            </h2>
+            <p className="text-[11px] text-ink-500 mt-0.5">
+              {hasCoursePattern
+                ? `Pattern-driven · ${patternTotalCourses} courses · ${patternTotalHeight} mm`
+                : `${Math.round(heightMm / 200)} courses · ${heightMm} mm`}
+            </p>
+          </div>
+          <button
+            onClick={onCancel}
+            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
 
-        <label className="text-sm">
-          <span className="block text-ink-300 mb-1">
-            Height (mm)
-            {hasCoursePattern && (
-              <span className="ml-2 text-[11px] text-ink-500 font-normal">
-                (driven by course pattern below)
-              </span>
+        {/* Tabs + content */}
+        <div className="flex flex-1 min-h-0">
+          {/* Left tab rail */}
+          <nav className="w-44 border-r border-ink-600 bg-ink-900/30 p-2 flex flex-col gap-1">
+            {tabs.map((t) => {
+              const isActive = activeTab === t.key
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => !t.disabled && setActiveTab(t.key)}
+                  disabled={t.disabled}
+                  className={`text-left text-sm px-3 py-2 rounded-lg transition-colors flex items-center justify-between gap-2 ${
+                    isActive
+                      ? 'bg-beme-500/15 text-beme-200 border border-beme-500/40'
+                      : t.disabled
+                      ? 'text-ink-600 cursor-not-allowed'
+                      : 'text-ink-300 hover:bg-ink-700/60 border border-transparent'
+                  }`}
+                  title={t.disabled ? 'Not applicable for wedge curves' : undefined}
+                >
+                  <span>{t.label}</span>
+                  {t.badge && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-700 text-ink-300">
+                      {t.badge}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </nav>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto p-6 min-w-0">
+            {activeTab === 'basics' && (
+              <BasicsTab
+                name={name}
+                setName={setName}
+                heightMm={heightMm}
+                setHeightMm={setHeightMm}
+                bondType={bondType}
+                setBondType={setBondType}
+                useFractions={useFractions}
+                setUseFractions={setUseFractions}
+                hasCoursePattern={hasCoursePattern}
+                patternTotalHeight={patternTotalHeight}
+                wedgeDisablesCourseMix={wedgeDisablesCourseMix}
+                isCurveMakeup={isCurveMakeup}
+                curveRadiusMm={curveRadiusMm}
+                curveZone={curveZone}
+                onJumpToPattern={() => setActiveTab('pattern')}
+              />
             )}
-          </span>
-          <input
-            type="number"
-            min="200"
-            step="50"
-            value={hasCoursePattern ? patternTotalHeight : heightMm}
-            onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-            disabled={hasCoursePattern}
-            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400 disabled:bg-ink-800/50 disabled:text-ink-400 disabled:cursor-not-allowed"
-          />
-        </label>
 
-        {/* Bond type + Options share the wedge-disabled treatment: a
-            stacked-wedge curve has no bond pattern (every block is the
-            same wedge, no offset) and no length-makeup (no fractions
-            because the curve's length is set by chord-vs-radius, not by
-            cutting the last block). Disabling these alongside Block
-            composition keeps the form honest about which decisions are
-            still meaningful for the active curve mode. */}
-        <div
-          className={`text-sm ${
-            isCurveMakeup && wedgeRequired
-              ? 'opacity-40 pointer-events-none select-none'
-              : ''
-          }`}
-          aria-disabled={isCurveMakeup && wedgeRequired}
-        >
-          <span className="block text-ink-300 mb-1">Bond type</span>
-          <div className="flex gap-3">
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="radio"
-                checked={bondType === 'stretcher'}
-                onChange={() => setBondType('stretcher')}
-                disabled={isCurveMakeup && wedgeRequired}
+            {activeTab === 'composition' && (
+              <CompositionTab
+                isCurveMakeup={isCurveMakeup}
+                curveRadiusMm={curveRadiusMm}
+                curveZone={curveZone}
+                wedgeRequired={wedgeRequired}
+                wedgeFeasible={wedgeFeasible}
+                wedgeBodyBlockCode={wedgeBodyBlockCode}
+                setWedgeBodyBlockCode={setWedgeBodyBlockCode}
+                normalBodyBlockCode={normalBodyBlockCode}
+                setNormalBodyBlockCode={setNormalBodyBlockCode}
+                baseCourseBlockCode={baseCourseBlockCode}
+                setBaseCourseBlockCode={setBaseCourseBlockCode}
+                baseCourseTileCode={baseCourseTileCode}
+                setBaseCourseTileCode={setBaseCourseTileCode}
+                bodyBlockCode={bodyBlockCode}
+                setBodyBlockCode={setBodyBlockCode}
+                topCourseBlockCode={topCourseBlockCode}
+                setTopCourseBlockCode={setTopCourseBlockCode}
+                cornerBlockCode={cornerBlockCode}
+                setCornerBlockCode={setCornerBlockCode}
+                halfBlockCode={halfBlockCode}
+                setHalfBlockCode={setHalfBlockCode}
+                selectableBlocks={selectableBlocks}
               />
-              <span>Stretcher</span>
-            </label>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="radio"
-                checked={bondType === 'stack'}
-                onChange={() => setBondType('stack')}
-                disabled={isCurveMakeup && wedgeRequired}
+            )}
+
+            {activeTab === 'pattern' && (
+              <PatternTab
+                coursePattern={coursePattern}
+                hasCoursePattern={hasCoursePattern}
+                patternTotalHeight={patternTotalHeight}
+                patternTotalCourses={patternTotalCourses}
+                library={library}
+                selectableBlocks={selectableBlocks}
+                addBand={addBand}
+                updateBand={updateBand}
+                removeBand={removeBand}
+                moveBand={moveBand}
+                convertCurrentToBands={convertCurrentToBands}
+                clearCoursePattern={clearCoursePattern}
+                hasOverrides={courseOverrides.length > 0}
               />
-              <span>Stack</span>
-            </label>
+            )}
+
+            {activeTab === 'advanced' && (
+              <AdvancedTab
+                courseOverrides={courseOverrides}
+                addOverride={addOverride}
+                updateOverride={updateOverride}
+                removeOverride={removeOverride}
+                seriesRanges={seriesRanges}
+                addSeriesRange={addSeriesRange}
+                updateSeriesRange={updateSeriesRange}
+                removeSeriesRange={removeSeriesRange}
+                selectableBlocks={selectableBlocks}
+              />
+            )}
           </div>
         </div>
 
-        <div
-          className={`text-sm ${
-            isCurveMakeup && wedgeRequired
-              ? 'opacity-40 pointer-events-none select-none'
-              : ''
-          }`}
-          aria-disabled={isCurveMakeup && wedgeRequired}
-        >
-          <span className="block text-ink-300 mb-1">Options</span>
-          <div className="flex flex-col gap-1">
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useFractions}
-                onChange={(e) => setUseFractions(e.target.checked)}
-                disabled={isCurveMakeup && wedgeRequired}
-              />
-              <span>Use fractions (20.02 / 20.22)</span>
-            </label>
+        {/* Footer — Cancel + Save always visible */}
+        <footer className="px-5 py-3 border-t border-ink-600 bg-ink-900/40 flex items-center justify-between gap-2">
+          <p className="text-[11px] text-ink-500 hidden sm:block">
+            {hasCoursePattern
+              ? 'Height is computed from the course pattern.'
+              : 'Use the Course pattern tab for walls with mixed-height courses.'}
+          </p>
+          <div className="flex gap-2 ml-auto">
+            <button
+              onClick={onCancel}
+              className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!canSave}
+              className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {existing ? 'Save changes' : 'Create wall type'}
+            </button>
           </div>
-        </div>
+        </footer>
       </div>
+    </div>
+  )
+}
 
-      {/* Curve readout — sits above Block composition so the user always
-          knows what radius drove the wedge / normal split, and whether the
-          curve is in a feasible build zone (custom-cut warning for the
-          tightest band). Read-only on purpose — the radius is a geometric
-          property of the drawn arc, edited by moving the curve on the plan. */}
+// ---------- Tab: Basics ----------
+
+interface BasicsTabProps {
+  name: string
+  setName: (v: string) => void
+  heightMm: number
+  setHeightMm: (v: number) => void
+  bondType: BondType
+  setBondType: (v: BondType) => void
+  useFractions: boolean
+  setUseFractions: (v: boolean) => void
+  hasCoursePattern: boolean
+  patternTotalHeight: number
+  wedgeDisablesCourseMix: boolean
+  isCurveMakeup: boolean
+  curveRadiusMm: number | undefined
+  curveZone: ReturnType<typeof curveZoneForRadius> | null
+  onJumpToPattern: () => void
+}
+
+function BasicsTab({
+  name,
+  setName,
+  heightMm,
+  setHeightMm,
+  bondType,
+  setBondType,
+  useFractions,
+  setUseFractions,
+  hasCoursePattern,
+  patternTotalHeight,
+  wedgeDisablesCourseMix,
+  isCurveMakeup,
+  curveRadiusMm,
+  curveZone,
+  onJumpToPattern,
+}: BasicsTabProps) {
+  return (
+    <div className="max-w-2xl space-y-5">
+      <label className="text-sm block">
+        <span className="block text-ink-300 mb-1.5">Name</span>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400"
+        />
+      </label>
+
+      <label className="text-sm block">
+        <span className="flex items-center justify-between text-ink-300 mb-1.5">
+          <span>Height (mm)</span>
+          {hasCoursePattern && (
+            <span className="text-[11px] text-beme-300">
+              Driven by course pattern · {patternTotalHeight} mm
+            </span>
+          )}
+        </span>
+        <input
+          type="number"
+          min="200"
+          step="50"
+          value={hasCoursePattern ? patternTotalHeight : heightMm}
+          onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
+          disabled={hasCoursePattern}
+          className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 disabled:bg-ink-800 disabled:text-ink-400 disabled:cursor-not-allowed"
+        />
+        {!hasCoursePattern && !wedgeDisablesCourseMix && (
+          <p className="text-[11px] text-ink-500 mt-1.5">
+            Mixed-height wall? Open the{' '}
+            <button
+              type="button"
+              onClick={onJumpToPattern}
+              className="text-beme-400 hover:text-beme-300 underline"
+            >
+              Course pattern
+            </button>{' '}
+            tab to spell out each band of courses (e.g. 4× 20.48 + 2× 20.71).
+          </p>
+        )}
+      </label>
+
+      <fieldset
+        className={`text-sm ${
+          wedgeDisablesCourseMix ? 'opacity-40 pointer-events-none' : ''
+        }`}
+        disabled={wedgeDisablesCourseMix}
+      >
+        <legend className="text-ink-300 mb-1.5">Bond type</legend>
+        <div className="flex gap-4">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              checked={bondType === 'stretcher'}
+              onChange={() => setBondType('stretcher')}
+            />
+            <span>Stretcher</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="radio"
+              checked={bondType === 'stack'}
+              onChange={() => setBondType('stack')}
+            />
+            <span>Stack</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset
+        className={`text-sm ${
+          wedgeDisablesCourseMix ? 'opacity-40 pointer-events-none' : ''
+        }`}
+        disabled={wedgeDisablesCourseMix}
+      >
+        <legend className="text-ink-300 mb-1.5">Options</legend>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={useFractions}
+            onChange={(e) => setUseFractions(e.target.checked)}
+          />
+          <span>Use fractions (20.02 / 20.22)</span>
+        </label>
+      </fieldset>
+
       {isCurveMakeup && (
-        <div className="mt-5 p-3 border border-ink-600 rounded-lg bg-ink-800/60">
-          <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-1">
+        <div className="mt-4 p-4 border border-ink-600 rounded-lg bg-ink-900/60">
+          <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-1.5">
             Curve geometry
           </div>
           <div className="text-sm text-ink-200">
@@ -696,113 +827,139 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
             </span>
           </div>
           {curveZone === 'custom' && (
-            <p className="mt-1 text-[11px] text-amber-400">
-              This radius is below the wedge feasibility threshold ({CURVED_WALL_MIN_FEASIBLE_RADIUS_MM}
-              mm). 20.03CW is the closest stock block but custom-cut blocks will be flagged
-              in the estimate.
+            <p className="mt-2 text-[11px] text-amber-400">
+              This radius is below the wedge feasibility threshold (
+              {CURVED_WALL_MIN_FEASIBLE_RADIUS_MM}mm). 20.03CW is the closest stock block
+              but custom-cut blocks will be flagged in the estimate.
             </p>
           )}
         </div>
       )}
+    </div>
+  )
+}
 
-      {/* Block composition */}
-      <div className="mt-5">
-        <div className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-2">
-          Block composition
-        </div>
+// ---------- Tab: Composition ----------
 
-        {/* Curve makeups: two side-by-side sections so the user sees both
-            paths the wall could take, with the one that doesn't match the
-            radius disabled and explained. Keeps the wedge/normal mental
-            model in front of the user without letting them choose the
-            wrong path for the geometry. */}
-        {isCurveMakeup ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-            {/* Wedge section */}
+interface CompositionTabProps {
+  isCurveMakeup: boolean
+  curveRadiusMm: number | undefined
+  curveZone: ReturnType<typeof curveZoneForRadius> | null
+  wedgeRequired: boolean
+  wedgeFeasible: boolean
+  wedgeBodyBlockCode: BlockCode
+  setWedgeBodyBlockCode: (v: BlockCode) => void
+  normalBodyBlockCode: BlockCode
+  setNormalBodyBlockCode: (v: BlockCode) => void
+  baseCourseBlockCode: BlockCode
+  setBaseCourseBlockCode: (v: BlockCode) => void
+  baseCourseTileCode: BlockCode | ''
+  setBaseCourseTileCode: (v: BlockCode | '') => void
+  bodyBlockCode: BlockCode
+  setBodyBlockCode: (v: BlockCode) => void
+  topCourseBlockCode: BlockCode
+  setTopCourseBlockCode: (v: BlockCode) => void
+  cornerBlockCode: BlockCode
+  setCornerBlockCode: (v: BlockCode) => void
+  halfBlockCode: BlockCode
+  setHalfBlockCode: (v: BlockCode) => void
+  selectableBlocks: BlockCode[]
+}
+
+function CompositionTab(props: CompositionTabProps) {
+  const {
+    isCurveMakeup,
+    curveRadiusMm,
+    curveZone,
+    wedgeRequired,
+    wedgeFeasible,
+    wedgeBodyBlockCode,
+    setWedgeBodyBlockCode,
+    normalBodyBlockCode,
+    setNormalBodyBlockCode,
+    baseCourseBlockCode,
+    setBaseCourseBlockCode,
+    baseCourseTileCode,
+    setBaseCourseTileCode,
+    bodyBlockCode,
+    setBodyBlockCode,
+    topCourseBlockCode,
+    setTopCourseBlockCode,
+    cornerBlockCode,
+    setCornerBlockCode,
+    halfBlockCode,
+    setHalfBlockCode,
+    selectableBlocks,
+  } = props
+
+  return (
+    <div className="max-w-3xl space-y-5">
+      {isCurveMakeup && (
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
+            Curve body block
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div
               className={`p-3 border rounded-lg ${
                 wedgeRequired
-                  ? 'border-beme-500/60 bg-ink-800'
-                  : 'border-ink-600 bg-ink-800/40 opacity-50'
+                  ? 'border-beme-500/60 bg-ink-900'
+                  : 'border-ink-600 bg-ink-900/40 opacity-50'
               }`}
-              aria-disabled={!wedgeRequired}
             >
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-ink-200">
-                  Wedge (20.03CW)
-                </span>
-                {wedgeRequired ? (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-beme-500 text-black font-medium">
-                    Active
-                  </span>
-                ) : (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-ink-700 text-ink-400">
-                    Disabled
-                  </span>
-                )}
-              </div>
-              <label className="text-sm block">
-                <span className="block text-ink-300 mb-1 text-xs">Wedge body block</span>
-                <select
-                  value={wedgeBodyBlockCode}
-                  onChange={(e) => setWedgeBodyBlockCode(e.target.value as BlockCode)}
-                  disabled={!wedgeRequired}
-                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400 disabled:cursor-not-allowed"
+                <span className="text-xs font-semibold text-ink-200">Wedge (20.03CW)</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    wedgeRequired
+                      ? 'bg-beme-500 text-black'
+                      : 'bg-ink-700 text-ink-400'
+                  }`}
                 >
-                  {selectableBlocks.map((code) => (
-                    <option key={code} value={code}>
-                      {blockLabel(code)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  {wedgeRequired ? 'Active' : 'Disabled'}
+                </span>
+              </div>
+              <BlockSelect
+                value={wedgeBodyBlockCode}
+                onChange={setWedgeBodyBlockCode}
+                options={selectableBlocks}
+                disabled={!wedgeRequired}
+                label="Wedge body block"
+              />
               <p className="mt-2 text-[11px] text-ink-400 leading-snug">
                 {wedgeRequired
                   ? wedgeFeasible
                     ? `Required for R < ${CURVED_WALL_WEDGE_RADIUS_MM}mm — wedge taper absorbs the curve.`
-                    : `R is below the wedge feasibility floor — closest stock block selected; custom cuts will be flagged.`
+                    : 'R is below the wedge feasibility floor — closest stock block selected; custom cuts will be flagged.'
                   : `Not applicable at R${Math.round(curveRadiusMm!)}mm — normal blocks fit.`}
               </p>
             </div>
-
-            {/* Normal-block section */}
             <div
               className={`p-3 border rounded-lg ${
                 !wedgeRequired
-                  ? 'border-beme-500/60 bg-ink-800'
-                  : 'border-ink-600 bg-ink-800/40 opacity-50'
+                  ? 'border-beme-500/60 bg-ink-900'
+                  : 'border-ink-600 bg-ink-900/40 opacity-50'
               }`}
-              aria-disabled={wedgeRequired}
             >
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-ink-200">
-                  Normal blocks (20.48)
-                </span>
-                {!wedgeRequired ? (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-beme-500 text-black font-medium">
-                    Active
-                  </span>
-                ) : (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-ink-700 text-ink-400">
-                    Disabled
-                  </span>
-                )}
-              </div>
-              <label className="text-sm block">
-                <span className="block text-ink-300 mb-1 text-xs">Normal body block</span>
-                <select
-                  value={normalBodyBlockCode}
-                  onChange={(e) => setNormalBodyBlockCode(e.target.value as BlockCode)}
-                  disabled={wedgeRequired}
-                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400 disabled:cursor-not-allowed"
+                <span className="text-xs font-semibold text-ink-200">Normal (20.48)</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    !wedgeRequired
+                      ? 'bg-beme-500 text-black'
+                      : 'bg-ink-700 text-ink-400'
+                  }`}
                 >
-                  {selectableBlocks.map((code) => (
-                    <option key={code} value={code}>
-                      {blockLabel(code)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  {!wedgeRequired ? 'Active' : 'Disabled'}
+                </span>
+              </div>
+              <BlockSelect
+                value={normalBodyBlockCode}
+                onChange={setNormalBodyBlockCode}
+                options={selectableBlocks}
+                disabled={wedgeRequired}
+                label="Normal body block"
+              />
               <p className="mt-2 text-[11px] text-ink-400 leading-snug">
                 {!wedgeRequired
                   ? curveZone === 'cut'
@@ -812,345 +969,204 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
               </p>
             </div>
           </div>
-        ) : null}
+        </section>
+      )}
 
-        {/* When the wedge section is the active one for this curve, the rest
-            of the wall-composition fields don't apply — wedge walls are just
-            stacked tapered blocks with no separate base / top / end-block
-            roles. Fade out and disable the section so the user sees clearly
-            that these knobs aren't relevant; the dual section above already
-            committed the body block to the wedge. Switching the curve into
-            normal-blocks territory (radius >= wedge threshold) re-enables
-            everything. */}
-        {isCurveMakeup && wedgeRequired && (
-          <div className="mb-3 p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-xs text-amber-200">
-            Wedge walls (20.03CW) use a single stacked-wedge composition.
-            The fields below — base course, top course, end terminations,
-            course overrides, course-series ranges — don't apply to a
-            wedge build and are disabled while this curve sits below the{' '}
-            {CURVED_WALL_WEDGE_RADIUS_MM}mm wedge threshold.
-          </div>
+      {isCurveMakeup && wedgeRequired && (
+        <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-xs text-amber-200">
+          Wedge walls (20.03CW) use a single stacked-wedge composition. Base / Top / End
+          termination pickers below don't apply.
+        </div>
+      )}
+
+      <section
+        className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${
+          isCurveMakeup && wedgeRequired
+            ? 'opacity-40 pointer-events-none select-none'
+            : ''
+        }`}
+      >
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 -mb-2 col-span-full">
+          Course block roles
+        </h3>
+        <BlockSelect
+          label="Base course block"
+          value={baseCourseBlockCode}
+          onChange={setBaseCourseBlockCode}
+          options={selectableBlocks}
+        />
+        <BlockSelect
+          label="Base course tile (paired)"
+          value={baseCourseTileCode || ''}
+          onChange={(v) => setBaseCourseTileCode(v as BlockCode | '')}
+          options={['', ...TILE_BLOCKS] as (BlockCode | '')[]}
+          allowEmpty
+        />
+        {!isCurveMakeup && (
+          <BlockSelect
+            label="Body course block"
+            value={bodyBlockCode}
+            onChange={setBodyBlockCode}
+            options={selectableBlocks}
+          />
         )}
+        <BlockSelect
+          label="Top course block"
+          value={topCourseBlockCode}
+          onChange={setTopCourseBlockCode}
+          options={selectableBlocks}
+        />
+        <div>
+          <BlockSelect
+            label="Full end termination"
+            value={cornerBlockCode}
+            onChange={setCornerBlockCode}
+            options={selectableBlocks}
+          />
+          <p className="text-[11px] text-ink-500 mt-1">
+            Used at corners + odd courses of stretcher bond at free ends.
+          </p>
+        </div>
+        <div>
+          <BlockSelect
+            label="Half end termination"
+            value={halfBlockCode}
+            onChange={setHalfBlockCode}
+            options={selectableBlocks}
+          />
+          <p className="text-[11px] text-ink-500 mt-1">
+            Alternates with the full end block on even courses of stretcher bond.
+          </p>
+        </div>
+      </section>
+    </div>
+  )
+}
 
-        <div
-          className={`grid grid-cols-1 gap-3 ${
-            isCurveMakeup && wedgeRequired
-              ? 'opacity-40 pointer-events-none select-none'
-              : ''
-          }`}
-          aria-disabled={isCurveMakeup && wedgeRequired}
-        >
-          <label className="text-sm">
-            <span className="block text-ink-300 mb-1">Base course block</span>
-            <select
-              value={baseCourseBlockCode}
-              onChange={(e) => setBaseCourseBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-            >
-              {selectableBlocks.map((code) => (
-                <option key={code} value={code}>
-                  {blockLabel(code)}
-                </option>
-              ))}
-            </select>
-          </label>
+// ---------- Tab: Course Pattern ----------
 
-          <label className="text-sm">
-            <span className="block text-ink-300 mb-1">Base course tile (paired)</span>
-            <select
-              value={baseCourseTileCode}
-              onChange={(e) => setBaseCourseTileCode(e.target.value as BlockCode | '')}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-            >
-              <option value="">None</option>
-              {TILE_BLOCKS.map((code) => (
-                <option key={code} value={code}>
-                  {blockLabel(code)}
-                </option>
-              ))}
-            </select>
-          </label>
+interface PatternTabProps {
+  coursePattern: CourseBand[]
+  hasCoursePattern: boolean
+  patternTotalHeight: number
+  patternTotalCourses: number
+  library: Record<BlockCode, { dimensions: { heightMm: number; widthMm: number; depthMm: number } }>
+  selectableBlocks: BlockCode[]
+  addBand: () => void
+  updateBand: (i: number, patch: Partial<CourseBand>) => void
+  removeBand: (i: number) => void
+  moveBand: (i: number, dir: -1 | 1) => void
+  convertCurrentToBands: () => void
+  clearCoursePattern: () => void
+  hasOverrides: boolean
+}
 
-          {/* For curve makeups the single Body picker is hidden — the dual
-              section above replaces it. We still render Base / Top here so the
-              user can tweak the bottom/top of a curved wall. */}
-          {!isCurveMakeup && (
-            <label className="text-sm">
-              <span className="block text-ink-300 mb-1">Body course block</span>
-              <select
-                value={bodyBlockCode}
-                onChange={(e) => setBodyBlockCode(e.target.value as BlockCode)}
-                className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-              >
-                {selectableBlocks.map((code) => (
-                  <option key={code} value={code}>
-                    {blockLabel(code)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+function PatternTab(props: PatternTabProps) {
+  const {
+    coursePattern,
+    hasCoursePattern,
+    patternTotalHeight,
+    patternTotalCourses,
+    library,
+    selectableBlocks,
+    addBand,
+    updateBand,
+    removeBand,
+    moveBand,
+    convertCurrentToBands,
+    clearCoursePattern,
+    hasOverrides,
+  } = props
 
-          <label className="text-sm">
-            <span className="block text-ink-300 mb-1">Top course block</span>
-            <select
-              value={topCourseBlockCode}
-              onChange={(e) => setTopCourseBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-            >
-              {selectableBlocks.map((code) => (
-                <option key={code} value={code}>
-                  {blockLabel(code)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {/* End terminations — full and half. Defaulted to 20.01 / 20.03
-              for SEQ usage but every block in the library is selectable
-              here so an org can wire their preferred terminations in once
-              per wall type. Used at corners (full) and at free /
-              T-junction / control-joint ends (alternating full + half on
-              stretcher bond). */}
-          <label className="text-sm">
-            <span className="block text-ink-300 mb-1">Full end termination</span>
-            <select
-              value={cornerBlockCode}
-              onChange={(e) => setCornerBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-            >
-              {selectableBlocks.map((code) => (
-                <option key={code} value={code}>
-                  {blockLabel(code)}
-                </option>
-              ))}
-            </select>
-            <span className="text-[11px] text-ink-400 mt-1 block">
-              Used at corners + on odd courses of stretcher bond at free ends. Default 20.01.
-            </span>
-          </label>
-
-          <label className="text-sm">
-            <span className="block text-ink-300 mb-1">Half end termination</span>
-            <select
-              value={halfBlockCode}
-              onChange={(e) => setHalfBlockCode(e.target.value as BlockCode)}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-800 focus:outline-none focus:border-beme-400"
-            >
-              {selectableBlocks.map((code) => (
-                <option key={code} value={code}>
-                  {blockLabel(code)}
-                </option>
-              ))}
-            </select>
-            <span className="text-[11px] text-ink-400 mt-1 block">
-              Alternates with the full end block on even courses of stretcher bond at free ends. Default 20.03.
-            </span>
-          </label>
+  if (!hasCoursePattern) {
+    return (
+      <div className="max-w-2xl mx-auto py-12 text-center">
+        <div className="text-5xl mb-4 select-none">▦</div>
+        <h3 className="text-base font-semibold text-ink-100 mb-2">
+          Build the wall as a stack of bands
+        </h3>
+        <p className="text-sm text-ink-400 mb-6 max-w-md mx-auto leading-relaxed">
+          For walls with mixed-height courses — e.g.{' '}
+          <span className="font-mono text-ink-200">4 × 20.48</span> then{' '}
+          <span className="font-mono text-ink-200">2 × 20.71</span> repeating — the
+          flat Height field can't hit the right wall height because 20.71 courses
+          are only 100 mm tall (not 200 mm).
+        </p>
+        <p className="text-sm text-ink-400 mb-6 max-w-md mx-auto leading-relaxed">
+          Spelling out bands fixes the math. The Height field on Basics will lock
+          and show the summed pattern height.
+        </p>
+        <div className="flex justify-center gap-3 flex-wrap">
+          <button
+            onClick={convertCurrentToBands}
+            className="px-4 py-2 rounded-lg bg-beme-500/15 border border-beme-500/40 text-beme-300 hover:bg-beme-500/25 text-sm font-medium transition-colors"
+          >
+            Convert this wall to a pattern
+          </button>
+          <button
+            onClick={addBand}
+            className="px-4 py-2 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 text-sm transition-colors"
+          >
+            + Add band from scratch
+          </button>
         </div>
       </div>
+    )
+  }
 
-      {/* Course pattern (bands). Lets the user spell out the wall course-by-
-          course as a repeating list of {blockCode, count}. Required for walls
-          with mixed-height courses (e.g. 4× 20.48 + 2× 20.71 stacked) that
-          the uniform-200mm-modular legacy stack can't express correctly —
-          the legacy path would call the 20.71 courses "200mm tall" and
-          undershoot the wall height. Disabled for wedge curves (a wedge wall
-          is a single stacked composition, no course mixing). */}
-      <div
-        className={`mt-5 ${
-          isCurveMakeup && wedgeRequired
-            ? 'opacity-40 pointer-events-none select-none'
-            : ''
-        }`}
-        aria-disabled={isCurveMakeup && wedgeRequired}
-      >
-        <button
-          onClick={() => setShowCoursePattern((v) => !v)}
-          className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
-        >
-          {showCoursePattern ? '−' : '+'} Course pattern (mixed heights)
-          {hasCoursePattern && ` (${coursePattern.length} band${coursePattern.length === 1 ? '' : 's'})`}
-        </button>
-
-        {showCoursePattern && (
-          <div className="mt-2 p-3 border border-ink-600 rounded-lg bg-ink-800">
-            {!hasCoursePattern ? (
-              <>
-                <p className="text-xs text-ink-400 mb-3">
-                  Build the wall as a list of <em>bands</em> — e.g.{' '}
-                  <span className="font-mono">4 × 20.48</span> then{' '}
-                  <span className="font-mono">2 × 20.71</span> repeating. Each
-                  band picks a block and a count, and the bands stack from the
-                  bottom of the wall to the top. Use this when courses aren't
-                  all the same modular height (the legacy Height field
-                  above assumes every course is 200 mm).
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={convertCurrentToBands}
-                    className="text-sm px-3 py-1.5 rounded-lg bg-beme-500/15 border border-beme-500/40 text-beme-300 hover:bg-beme-500/25 transition-colors"
-                  >
-                    Convert this wall to a pattern
-                  </button>
-                  <button
-                    onClick={addBand}
-                    className="text-sm px-3 py-1.5 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 transition-colors"
-                  >
-                    + Add band from scratch
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="text-xs text-ink-400 mb-3">
-                  Bands stack from the bottom up. Total:{' '}
-                  <span className="text-ink-200 font-mono">
-                    {patternTotalCourses} course{patternTotalCourses === 1 ? '' : 's'},{' '}
-                    {patternTotalHeight} mm
-                  </span>
-                  . The Height field above is locked while a pattern is set.
-                </p>
-                {coursePattern.map((band, i) => {
-                  const moduleH = moduleHeightForBand(band, library)
-                  return (
-                    <div
-                      key={i}
-                      className="flex items-center gap-2 mb-2 text-sm flex-wrap"
-                    >
-                      <span className="text-ink-500 font-mono text-xs w-6 text-right">
-                        {i + 1}.
-                      </span>
-                      <input
-                        type="number"
-                        min="1"
-                        value={band.count}
-                        onChange={(e) =>
-                          updateBand(i, {
-                            count: Math.max(1, parseInt(e.target.value || '1', 10)),
-                          })
-                        }
-                        className="w-16 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800"
-                      />
-                      <span className="text-ink-400 text-xs">×</span>
-                      <select
-                        value={band.blockCode}
-                        onChange={(e) =>
-                          updateBand(i, { blockCode: e.target.value as BlockCode })
-                        }
-                        className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800 min-w-0 flex-1"
-                      >
-                        {selectableBlocks.map((code) => (
-                          <option key={code} value={code}>
-                            {blockLabel(code)}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="text-[11px] text-ink-500 font-mono">
-                        ={band.count * moduleH}mm
-                      </span>
-                      <div className="flex items-center gap-0.5 ml-auto">
-                        <button
-                          onClick={() => moveBand(i, -1)}
-                          disabled={i === 0}
-                          className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
-                          aria-label="Move band up"
-                          title="Move up"
-                        >
-                          ▲
-                        </button>
-                        <button
-                          onClick={() => moveBand(i, 1)}
-                          disabled={i === coursePattern.length - 1}
-                          className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
-                          aria-label="Move band down"
-                          title="Move down"
-                        >
-                          ▼
-                        </button>
-                        <button
-                          onClick={() => removeBand(i)}
-                          className="text-rose-400 hover:text-rose-300 text-sm px-2"
-                          aria-label="Remove band"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-                <div className="flex gap-3 mt-2">
-                  <button
-                    onClick={addBand}
-                    className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
-                  >
-                    + Add band
-                  </button>
-                  <button
-                    onClick={clearCoursePattern}
-                    className="text-sm text-rose-400 hover:text-rose-300 hover:underline ml-auto"
-                  >
-                    Clear pattern
-                  </button>
-                </div>
-                {courseOverrides.length > 0 && (
-                  <p className="mt-3 text-[11px] text-amber-300">
-                    Note: per-course overrides below are <em>still</em> applied on
-                    top of this pattern. If you don't want them, clear them in
-                    the Customise specific courses section.
-                  </p>
-                )}
-              </>
-            )}
+  return (
+    <div className="flex flex-col lg:flex-row gap-6 h-full min-h-0">
+      {/* Left: band editor */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div>
+            <h3 className="text-sm font-semibold text-ink-100">Bands (bottom → top)</h3>
+            <p className="text-[11px] text-ink-400 mt-0.5 font-mono">
+              {patternTotalCourses} courses · {patternTotalHeight} mm total
+            </p>
           </div>
-        )}
-      </div>
+          <button
+            onClick={clearCoursePattern}
+            className="text-xs text-rose-400 hover:text-rose-300 hover:underline"
+          >
+            Clear pattern
+          </button>
+        </div>
 
-      {/* Per-course overrides. Same wedge-disabled treatment as the
-          composition section above — overrides don't apply to a
-          stacked-wedge wall, so we fade and disable when this curve is
-          in the wedge zone. */}
-      <div
-        className={`mt-5 ${
-          isCurveMakeup && wedgeRequired
-            ? 'opacity-40 pointer-events-none select-none'
-            : ''
-        }`}
-        aria-disabled={isCurveMakeup && wedgeRequired}
-      >
-        <button
-          onClick={() => setShowOverrides((v) => !v)}
-          className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
-        >
-          {showOverrides ? '−' : '+'} Customise specific courses
-          {courseOverrides.length > 0 && ` (${courseOverrides.length})`}
-        </button>
-
-        {showOverrides && (
-          <div className="mt-2 p-3 border border-ink-600 rounded-lg bg-ink-800">
-            {courseOverrides.length === 0 && (
-              <p className="text-xs text-ink-400 mb-2">
-                Override the block used on a specific course (e.g. a 20.140 row mid-wall for height makeup,
-                or an intermediate 20.20 bond beam).
-              </p>
-            )}
-            {courseOverrides.map((override, i) => (
-              <div key={i} className="flex items-center gap-2 mb-2 text-sm flex-wrap">
-                <span className="text-ink-300">Course</span>
+        <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+          {coursePattern.map((band, i) => {
+            const moduleH = moduleHeightForBand(band, library)
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-2 p-2 rounded-lg border border-ink-600 bg-ink-900/60"
+              >
+                <span
+                  className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+                  style={{ backgroundColor: bandColor(band.blockCode) }}
+                  aria-hidden
+                />
+                <span className="text-ink-500 font-mono text-xs w-6 text-right">
+                  {i + 1}
+                </span>
                 <input
                   type="number"
                   min="1"
-                  value={override.courseNumber}
+                  value={band.count}
                   onChange={(e) =>
-                    updateOverride(i, { courseNumber: parseInt(e.target.value || '1', 10) })
+                    updateBand(i, {
+                      count: Math.max(1, parseInt(e.target.value || '1', 10)),
+                    })
                   }
-                  className="w-16 px-2 py-1 border border-ink-600 rounded text-sm"
+                  className="w-16 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900"
                 />
-                <span className="text-ink-300">uses block</span>
+                <span className="text-ink-500 text-xs">×</span>
                 <select
-                  value={override.blockCode}
-                  onChange={(e) => updateOverride(i, { blockCode: e.target.value as BlockCode })}
-                  className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800"
+                  value={band.blockCode}
+                  onChange={(e) =>
+                    updateBand(i, { blockCode: e.target.value as BlockCode })
+                  }
+                  className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 min-w-0 flex-1"
                 >
                   {selectableBlocks.map((code) => (
                     <option key={code} value={code}>
@@ -1158,93 +1174,310 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
                     </option>
                   ))}
                 </select>
-                <button
-                  onClick={() => removeOverride(i)}
-                  className="text-rose-400 hover:text-rose-300 text-sm px-2"
-                  aria-label="Remove override"
-                >
-                  ×
-                </button>
+                <span className="text-[11px] text-ink-400 font-mono w-16 text-right">
+                  {band.count * moduleH}mm
+                </span>
+                <div className="flex items-center gap-0.5 ml-1">
+                  <button
+                    onClick={() => moveBand(i, -1)}
+                    disabled={i === 0}
+                    className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
+                    aria-label="Move band up"
+                  >
+                    ▲
+                  </button>
+                  <button
+                    onClick={() => moveBand(i, 1)}
+                    disabled={i === coursePattern.length - 1}
+                    className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
+                    aria-label="Move band down"
+                  >
+                    ▼
+                  </button>
+                  <button
+                    onClick={() => removeBand(i)}
+                    className="text-rose-400 hover:text-rose-300 text-base px-2"
+                    aria-label="Remove band"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
-            ))}
-            <button
-              onClick={addOverride}
-              className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
-            >
-              + Add course override
-            </button>
-          </div>
+            )
+          })}
+        </div>
+
+        <button
+          onClick={addBand}
+          className="mt-3 text-sm px-3 py-2 rounded-lg border border-dashed border-ink-600 text-beme-300 hover:bg-ink-700/50 transition-colors"
+        >
+          + Add band
+        </button>
+
+        {hasOverrides && (
+          <p className="mt-3 text-[11px] text-amber-300 leading-snug">
+            Note: per-course overrides on the Advanced tab still apply on top of this
+            pattern. Clear them there if you don't want them.
+          </p>
         )}
       </div>
 
-      {/* Course-series ranges — let the user mix series across courses, e.g.
-          300 series for the base 5 courses for an engineered footing, then
-          standard 200 series above. Each range overrides any subset of the
-          role-based block picks; anything left on "Default" falls back to the
-          makeup-level field above. Disabled for wedge curves (same reason
-          as Per-course overrides — wedge walls don't course-mix). */}
-      <div
-        className={`mt-5 ${
-          isCurveMakeup && wedgeRequired
-            ? 'opacity-40 pointer-events-none select-none'
-            : ''
-        }`}
-        aria-disabled={isCurveMakeup && wedgeRequired}
-      >
-        <button
-          onClick={() => setShowSeriesRanges((v) => !v)}
-          className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
-        >
-          {showSeriesRanges ? '−' : '+'} Mix block series across courses
-          {seriesRanges.length > 0 && ` (${seriesRanges.length})`}
-        </button>
-
-        {showSeriesRanges && (
-          <div className="mt-2 p-3 border border-ink-600 rounded-lg bg-ink-800">
-            {seriesRanges.length === 0 && (
-              <p className="text-xs text-ink-400 mb-2">
-                Use a different block series for a range of courses — e.g. when
-                engineering calls for 300-series (290 mm-deep) blocks on the
-                bottom 5 courses, stepping down to standard 200 series above.
-                Each range can override any subset of the role-based picks;
-                leave a field on Default to inherit from the makeup above.
-              </p>
-            )}
-            {seriesRanges.map((range, i) => (
-              <RangeRow
-                key={i}
-                range={range}
-                selectableBlocks={selectableBlocks}
-                onChange={(patch) => updateSeriesRange(i, patch)}
-                onRemove={() => removeSeriesRange(i)}
-              />
-            ))}
-            <button
-              onClick={addSeriesRange}
-              className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
-            >
-              + Add series range
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="flex gap-2 mt-5">
-        <button
-          onClick={handleSave}
-          disabled={!canSave}
-          className="px-4 py-1.5 rounded-lg bg-beme-600 text-white text-sm hover:bg-beme-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
-        >
-          {existing ? 'Save changes' : 'Create wall type'}
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-        >
-          Cancel
-        </button>
+      {/* Right: visual stack preview */}
+      <div className="w-full lg:w-72 flex-shrink-0">
+        <h3 className="text-sm font-semibold text-ink-100 mb-3">Wall preview</h3>
+        <CoursePatternPreview bands={coursePattern} library={library} />
       </div>
     </div>
+  )
+}
+
+// ---------- Visual stack preview ----------
+
+/** Stable color from a block code so the same block always renders the same hue. */
+function bandColor(code: BlockCode): string {
+  let hash = 0
+  for (let i = 0; i < code.length; i++) hash = (hash * 31 + code.charCodeAt(i)) | 0
+  const hue = (hash >>> 0) % 360
+  return `hsl(${hue}, 55%, 42%)`
+}
+
+interface CoursePatternPreviewProps {
+  bands: CourseBand[]
+  library: Record<BlockCode, { dimensions: { heightMm: number; widthMm: number; depthMm: number } }>
+}
+
+function CoursePatternPreview({ bands, library }: CoursePatternPreviewProps) {
+  const visible = bands.filter((b) => b.count > 0)
+  const totalHeight = visible.reduce(
+    (s, b) => s + b.count * moduleHeightForBand(b, library),
+    0
+  )
+
+  if (totalHeight === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px] text-xs text-ink-500 italic border-2 border-dashed border-ink-700 rounded-lg p-6 text-center">
+        Add a band to see the wall stack here.
+      </div>
+    )
+  }
+
+  // Walk the bands from top to bottom for rendering so the array order
+  // matches the visual order on the page (top of wall first in the DOM).
+  const topDown = [...visible].reverse()
+
+  // Pre-compute the y-axis labels: total at top, then running totals after
+  // subtracting each band's height. Last label is 0 at the bottom.
+  const labels: number[] = [totalHeight]
+  let running = totalHeight
+  for (const band of topDown) {
+    running -= band.count * moduleHeightForBand(band, library)
+    labels.push(running)
+  }
+
+  return (
+    <div className="flex gap-2 min-h-[400px] h-[55vh] max-h-[600px]">
+      {/* Block stack: colored bars sized by % of total height */}
+      <div className="flex-1 max-w-[140px] flex flex-col rounded-lg overflow-hidden border-2 border-ink-600 bg-ink-900 shadow-inner">
+        {topDown.map((band, idx) => {
+          const i = visible.length - 1 - idx
+          const moduleH = moduleHeightForBand(band, library)
+          const bandH = band.count * moduleH
+          const pct = (bandH / totalHeight) * 100
+          return (
+            <div
+              key={i}
+              style={{
+                flexBasis: `${pct}%`,
+                minHeight: 0,
+                backgroundColor: bandColor(band.blockCode),
+              }}
+              className="flex items-center justify-center text-white font-mono leading-tight px-1 text-center border-b border-white/15 last:border-b-0 overflow-hidden"
+              title={`Band ${i + 1}: ${band.count}× ${band.blockCode} = ${bandH}mm (${moduleH}mm/course)`}
+            >
+              {pct >= 8 ? (
+                <span className="text-[11px] font-medium">
+                  {band.count}× {band.blockCode}
+                </span>
+              ) : pct >= 4 ? (
+                <span className="text-[9px]">{band.count}×</span>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Ruler — labels at top of column + at each band boundary, distributed
+          via flex so the label sits at the bottom of its band's strip. */}
+      <div className="flex flex-col text-[10px] text-ink-400 font-mono w-14">
+        <div className="leading-none h-3">{labels[0]}mm</div>
+        {topDown.map((band, idx) => {
+          const i = visible.length - 1 - idx
+          const bandH = band.count * moduleHeightForBand(band, library)
+          const pct = (bandH / totalHeight) * 100
+          return (
+            <div
+              key={i}
+              style={{ flexBasis: `${pct}%`, minHeight: 0 }}
+              className="flex items-end leading-none pb-0"
+            >
+              {labels[idx + 1]}mm
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ---------- Tab: Advanced ----------
+
+interface AdvancedTabProps {
+  courseOverrides: CourseOverride[]
+  addOverride: () => void
+  updateOverride: (i: number, patch: Partial<CourseOverride>) => void
+  removeOverride: (i: number) => void
+  seriesRanges: CourseSeriesRange[]
+  addSeriesRange: () => void
+  updateSeriesRange: (i: number, patch: Partial<CourseSeriesRange>) => void
+  removeSeriesRange: (i: number) => void
+  selectableBlocks: BlockCode[]
+}
+
+function AdvancedTab(props: AdvancedTabProps) {
+  const {
+    courseOverrides,
+    addOverride,
+    updateOverride,
+    removeOverride,
+    seriesRanges,
+    addSeriesRange,
+    updateSeriesRange,
+    removeSeriesRange,
+    selectableBlocks,
+  } = props
+
+  return (
+    <div className="max-w-3xl space-y-8">
+      <section>
+        <h3 className="text-sm font-semibold text-ink-100 mb-2">
+          Per-course overrides
+        </h3>
+        <p className="text-xs text-ink-400 mb-3 leading-relaxed">
+          Override the block used on a specific course (e.g. an intermediate 20.20
+          bond beam mid-wall). Indexed from the base course (course 1 = base).
+        </p>
+        <div className="space-y-2">
+          {courseOverrides.map((override, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-2 p-2 rounded-lg border border-ink-600 bg-ink-900/60 text-sm flex-wrap"
+            >
+              <span className="text-ink-400">Course</span>
+              <input
+                type="number"
+                min="1"
+                value={override.courseNumber}
+                onChange={(e) =>
+                  updateOverride(i, {
+                    courseNumber: parseInt(e.target.value || '1', 10),
+                  })
+                }
+                className="w-16 px-2 py-1 border border-ink-600 rounded bg-ink-900"
+              />
+              <span className="text-ink-400">uses</span>
+              <select
+                value={override.blockCode}
+                onChange={(e) =>
+                  updateOverride(i, { blockCode: e.target.value as BlockCode })
+                }
+                className="px-2 py-1 border border-ink-600 rounded bg-ink-900 flex-1 min-w-0"
+              >
+                {selectableBlocks.map((code) => (
+                  <option key={code} value={code}>
+                    {blockLabel(code)}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={() => removeOverride(i)}
+                className="text-rose-400 hover:text-rose-300 text-base px-2"
+                aria-label="Remove override"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={addOverride}
+          className="mt-3 text-sm px-3 py-2 rounded-lg border border-dashed border-ink-600 text-beme-300 hover:bg-ink-700/50 transition-colors"
+        >
+          + Add override
+        </button>
+      </section>
+
+      <section>
+        <h3 className="text-sm font-semibold text-ink-100 mb-2">
+          Course-series ranges
+        </h3>
+        <p className="text-xs text-ink-400 mb-3 leading-relaxed">
+          Use a different block series for a range of courses — e.g. 300-series for the
+          bottom 5 courses, 200-series above. Each field left on Default falls back to
+          the main composition picks.
+        </p>
+        <div className="space-y-3">
+          {seriesRanges.map((range, i) => (
+            <RangeRow
+              key={i}
+              range={range}
+              selectableBlocks={selectableBlocks}
+              onChange={(patch) => updateSeriesRange(i, patch)}
+              onRemove={() => removeSeriesRange(i)}
+            />
+          ))}
+        </div>
+        <button
+          onClick={addSeriesRange}
+          className="mt-3 text-sm px-3 py-2 rounded-lg border border-dashed border-ink-600 text-beme-300 hover:bg-ink-700/50 transition-colors"
+        >
+          + Add series range
+        </button>
+      </section>
+    </div>
+  )
+}
+
+// ---------- Helpers ----------
+
+interface BlockSelectProps {
+  label: string
+  value: BlockCode | ''
+  onChange: (v: BlockCode | '') => void
+  options: (BlockCode | '')[]
+  disabled?: boolean
+  allowEmpty?: boolean
+}
+
+function BlockSelect({ label, value, onChange, options, disabled, allowEmpty }: BlockSelectProps) {
+  return (
+    <label className="text-sm block">
+      <span className="block text-ink-300 mb-1.5">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as BlockCode | '')}
+        disabled={disabled}
+        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 disabled:cursor-not-allowed disabled:bg-ink-800 disabled:text-ink-400"
+      >
+        {allowEmpty && <option value="">None</option>}
+        {options
+          .filter((c) => c !== '' || !allowEmpty)
+          .map((code) => (
+            <option key={code} value={code}>
+              {code ? blockLabel(code) : 'None'}
+            </option>
+          ))}
+      </select>
+    </label>
   )
 }
 
@@ -1257,18 +1490,11 @@ interface RangeRowProps {
   onRemove: () => void
 }
 
-/**
- * One series range editor. Course bounds on the top line, then a 2-column
- * grid of optional block-code overrides (each with a Default option that
- * stores the field as undefined so the calc engine falls back to the
- * makeup-level pick). Kept compact because a user will typically have only
- * one or two ranges per wall type.
- */
 function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps) {
   return (
-    <div className="mb-3 p-2 border border-ink-600 rounded bg-ink-700/30">
-      <div className="flex items-center gap-2 mb-2 text-sm flex-wrap">
-        <span className="text-ink-300">Courses</span>
+    <div className="p-3 border border-ink-600 rounded-lg bg-ink-900/60">
+      <div className="flex items-center gap-2 mb-3 text-sm flex-wrap">
+        <span className="text-ink-400">Courses</span>
         <input
           type="number"
           min="1"
@@ -1276,9 +1502,9 @@ function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps
           onChange={(e) =>
             onChange({ fromCourse: Math.max(1, parseInt(e.target.value || '1', 10)) })
           }
-          className="w-16 px-2 py-1 border border-ink-600 rounded text-sm"
+          className="w-16 px-2 py-1 border border-ink-600 rounded bg-ink-900"
         />
-        <span className="text-ink-300">to</span>
+        <span className="text-ink-400">to</span>
         <input
           type="number"
           min="1"
@@ -1286,19 +1512,19 @@ function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps
           onChange={(e) =>
             onChange({ toCourse: Math.max(1, parseInt(e.target.value || '1', 10)) })
           }
-          className="w-16 px-2 py-1 border border-ink-600 rounded text-sm"
+          className="w-16 px-2 py-1 border border-ink-600 rounded bg-ink-900"
         />
         <span className="text-xs text-ink-500">(1 = base course)</span>
         <button
           onClick={onRemove}
-          className="ml-auto text-rose-400 hover:text-rose-300 text-sm px-2"
+          className="ml-auto text-rose-400 hover:text-rose-300 text-base px-2"
           aria-label="Remove range"
         >
           ×
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-xs">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
         <RangeFieldPicker
           label="Body"
           value={range.bodyBlockCode}
@@ -1343,10 +1569,9 @@ function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps
         />
       </div>
       {range.cornerLeadInBlockCode && (
-        <p className="mt-1 text-[10px] text-ink-500">
-          Two {range.cornerLeadInBlockCode} blocks placed between the corner block and the
-          body on every course at a corner end. Free / T-junction / control-joint ends are
-          unaffected.
+        <p className="mt-2 text-[10px] text-ink-500">
+          Two {range.cornerLeadInBlockCode} blocks placed between the corner block and
+          the body on every course at a corner end.
         </p>
       )}
     </div>
@@ -1367,7 +1592,7 @@ function RangeFieldPicker({ label, value, options, onChange }: RangeFieldPickerP
       <select
         value={value ?? ''}
         onChange={(e) => onChange((e.target.value as BlockCode) || undefined)}
-        className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-800"
+        className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900"
       >
         <option value="">Default</option>
         {options.map((code) => (
