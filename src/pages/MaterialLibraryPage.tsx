@@ -4,6 +4,7 @@ import Header from '../components/Header'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
+import LibraryTemplateControls from '../components/LibraryTemplateControls'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
@@ -136,6 +137,10 @@ export default function MaterialLibraryPage() {
             title="Blocks"
             description="Concrete blocks you supply. Code, dimensions, and what each block is used for (body, end, corner, fraction, lintel, pier, etc.). The wall-type editor pulls from this list."
           >
+            {/* Template controls: switch templates or wipe + reseed
+                without going through Settings. Read-only / admin
+                gating lives inside the component. */}
+            <LibraryTemplateControls readOnly={readOnly} />
             {/* Library health: flags missing required + advisory roles
                 so the user knows their library is set up correctly
                 before the calc engine surprises them with a fallback
