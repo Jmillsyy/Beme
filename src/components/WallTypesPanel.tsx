@@ -1350,7 +1350,11 @@ function bandColor(code: BlockCode): string {
     h ^= h >>> 16
   }
   const hue = ((h >>> 0) * 137.508) % 360
-  return `hsl(${hue}, 62%, 46%)`
+  // Soft, light tones matching the wall-makeup palette (Tailwind-500-ish
+  // mid-saturation, mid-light) rather than the saturated dark hues the
+  // first pass used. Reads as a soft elevation drawing instead of
+  // hi-vis stage markings.
+  return `hsl(${hue}, 55%, 62%)`
 }
 
 /**
@@ -1388,19 +1392,22 @@ function PreviewLegend({
   if (items.length === 0) return null
   return (
     <div className="mt-3 pt-3 border-t border-ink-700/60">
-      <div className="text-[10px] uppercase tracking-wide text-ink-500 mb-1.5 font-semibold">
+      <div className="text-[10px] uppercase tracking-wide text-ink-500 mb-2 font-semibold">
         Legend
       </div>
-      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+      <div className="flex flex-col gap-1">
         {items.map((it) => (
-          <div key={it.code} className="flex items-center gap-1.5 text-[10px] font-mono">
+          <div
+            key={it.code}
+            className="flex items-center gap-2 text-[11px] min-w-0"
+          >
             <span
-              className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+              className="inline-block w-3.5 h-3.5 rounded-sm flex-shrink-0 ring-1 ring-black/40"
               style={{ backgroundColor: bandColor(it.code) }}
               aria-hidden
             />
-            <span className="text-ink-200">{it.code}</span>
-            <span className="text-ink-500 text-[9px]">{it.role}</span>
+            <span className="text-ink-200 font-mono truncate">{it.code}</span>
+            <span className="text-ink-500 ml-auto text-[10px]">{it.role}</span>
           </div>
         ))}
       </div>
