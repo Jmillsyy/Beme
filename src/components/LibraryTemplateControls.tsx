@@ -46,19 +46,26 @@ export default function LibraryTemplateControls({
   const blockCount = Object.keys(library).length
 
   function handleClear() {
+    const supplyCount = settings.supplyItems?.length ?? 0
     const ok = window.confirm(
-      `Clear all ${blockCount} block${blockCount === 1 ? '' : 's'} from your library?\n\n` +
-        'This is destructive — it wipes the library wholesale and syncs the empty state ' +
-        "to the cloud. You'll be able to pick a new template or add blocks manually after.\n\n" +
+      `Reset library?\n\n` +
+        `This will clear:\n` +
+        `  · ${blockCount} block${blockCount === 1 ? '' : 's'}\n` +
+        (supplyCount > 0
+          ? `  · ${supplyCount} supply item${supplyCount === 1 ? '' : 's'}\n`
+          : '') +
+        `  · The active template assignment\n\n` +
+        "You'll be able to pick a new template or rebuild manually. " +
         'Cancel if you just want to switch templates — that keeps your custom blocks.'
     )
     if (!ok) return
-    // Wipe library + clear the saved template key so the next region
-    // pick is treated as a fresh seed (no "you have custom blocks"
-    // merge prompt for a blank library).
+    // Wipe block library + supply items + clear the saved template
+    // key so the next region pick is treated as a fresh seed (no "you
+    // have custom blocks" merge prompt for a blank library).
     setBlockLibrary({})
     updateUserSettings({
       preferences: { libraryTemplateKey: undefined },
+      supplyItems: [],
     })
   }
 
