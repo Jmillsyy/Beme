@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type {
   WallMakeup,
   BondType,
+  CourseBand,
   CourseOverride,
   CourseSeriesRange,
 } from '../types/walls'
@@ -13,6 +14,11 @@ import {
   CURVED_WALL_MIN_FEASIBLE_RADIUS_MM,
   curveZoneForRadius,
 } from '../lib/blockCalc'
+import {
+  convertMakeupToBands,
+  getMakeupHeightMm,
+  moduleHeightForBand,
+} from '../lib/makeups'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -153,8 +159,16 @@ export default function WallTypesPanel({
                   (corners, fractions, base/top blocks) lives behind Edit so
                   the card can give the wall-type NAME the room it needs. */}
               <div className="text-xs text-ink-400">
-                {m.bondType} bond · {m.heightMm}mm · Body {m.bodyBlockCode}
+                {m.bondType} bond · {getMakeupHeightMm(m)}mm · Body {m.bodyBlockCode}
               </div>
+              {m.coursePattern && m.coursePattern.length > 0 && (
+                <div className="text-xs text-beme-300 mt-1 font-mono">
+                  Pattern:{' '}
+                  {m.coursePattern
+                    .map((b) => `${b.count}×${b.blockCode}`)
+                    .join(' + ')}
+                </div>
+              )}
               {m.courseOverrides && m.courseOverrides.length > 0 && (
                 <div className="text-xs text-ink-400 mt-1">
                   {m.courseOverrides.length} course override
@@ -298,6 +312,108 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
     (existing?.courseOverrides ?? []).length > 0
   )
 
+  // ---- Course pattern (bands) state ----
+  // When set, the wall is built from a repeating list of {blockCode, count}
+  // bands rather than from the uniform 200mm-modular legacy stack. Lets the
+  // user spec walls like "4× 20.48 + 2× 20.71" for mixed-height runs that
+  // the legacy heightMm + courseOverrides path can't express correctly
+  // (the legacy path assumes every course is 200mm modular).
+  const [coursePattern, setCoursePattern] = useState<CourseBand[]>(
+    existing?.coursePattern ?? []
+  )
+  const [showCoursePattern, setShowCoursePattern] = useState(
+    (existing?.coursePattern ?? []).length > 0
+  )
+  const hasCoursePattern = coursePattern.length > 0
+  const patternTotalHeight = useMemo(
+    () =>
+      coursePattern.reduce(
+        (sum, b) => sum + (b.count > 0 ? b.count * moduleHeightForBand(b, library) : 0),
+        0
+      ),
+    [coursePattern, library]
+  )
+  const patternTotalCourses = useMemo(
+    () => coursePattern.reduce((sum, b) => sum + Math.max(0, b.count), 0),
+    [coursePattern]
+  )
+
+  function addBand() {
+    setCoursePattern((prev) => [
+      ...prev,
+      { blockCode: bodyBlockCode || '20.48', count: 1 },
+    ])
+    setShowCoursePattern(true)
+  }
+
+  function updateBand(index: number, patch: Partial<CourseBand>) {
+    setCoursePattern((prev) => prev.map((b, i) => (i === index ? { ...b, ...patch } : b)))
+  }
+
+  function removeBand(index: number) {
+    setCoursePattern((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  function moveBand(index: number, direction: -1 | 1) {
+    setCoursePattern((prev) => {
+      const next = [...prev]
+      const target = index + direction
+      if (target < 0 || target >= next.length) return prev
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
+  }
+
+  function convertCurrentToBands() {
+    // Use the user's in-flight form state, not the saved makeup — so if they
+    // tweaked the height / blocks before clicking Convert, those edits seed
+    // the bands list. Carries the same { lossy } warning if courseOverrides
+    // are in play (overrides aren't translated band-for-band).
+    const draft: WallMakeup = {
+      id: existing?.id ?? 'draft',
+      name,
+      bondType,
+      heightMm,
+      baseCourseBlockCode,
+      baseCourseTileCode: baseCourseTileCode || undefined,
+      bodyBlockCode,
+      topCourseBlockCode,
+      cornerBlockCode,
+      halfBlockCode,
+      useFractions,
+      courseOverrides,
+    }
+    const { bands, lossy } = convertMakeupToBands(draft)
+    if (bands.length === 0) {
+      window.alert('Wall is too short to convert (less than one course).')
+      return
+    }
+    if (
+      lossy &&
+      !window.confirm(
+        'This wall type has per-course overrides which can’t be translated band-for-band. ' +
+          'Convert anyway? You’ll be able to edit the bands directly after — the overrides will be cleared.'
+      )
+    ) {
+      return
+    }
+    setCoursePattern(bands)
+    setShowCoursePattern(true)
+    if (lossy) setCourseOverrides([])
+  }
+
+  function clearCoursePattern() {
+    if (
+      !window.confirm(
+        'Clear the course pattern and revert this wall type to a uniform-height makeup? ' +
+          'The Height field above will take over again.'
+      )
+    ) {
+      return
+    }
+    setCoursePattern([])
+  }
+
   function addOverride() {
     setCourseOverrides((prev) => [...prev, { courseNumber: 2, blockCode: '20.48' }])
     setShowOverrides(true)
@@ -408,11 +524,25 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         ? wedgeBodyBlockCode
         : normalBodyBlockCode
       : bodyBlockCode
+    // Drop any zero-count or invalid bands. When bands survive, the wall is
+    // bands-driven and we store the SUMMED height into heightMm too so older
+    // code paths that still read makeup.heightMm directly see the right
+    // total (the calc engine routes everything through getMakeupHeightMm).
+    const cleanedPattern = coursePattern.filter(
+      (b) => b.count > 0 && !!BLOCK_LIBRARY[b.blockCode]
+    )
+    const finalHeightMm =
+      cleanedPattern.length > 0
+        ? cleanedPattern.reduce(
+            (sum, b) => sum + b.count * moduleHeightForBand(b, library),
+            0
+          )
+        : heightMm
     const updated: WallMakeup = {
       id,
       name: name.trim() || 'New wall type',
       bondType,
-      heightMm,
+      heightMm: finalHeightMm,
       baseCourseBlockCode,
       baseCourseTileCode: baseCourseTileCode || undefined,
       bodyBlockCode: resolvedBodyBlockCode,
@@ -422,6 +552,7 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
       useFractions,
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
+      coursePattern: cleanedPattern.length > 0 ? cleanedPattern : undefined,
       // Preserve the curve marker so editing the makeup doesn't accidentally
       // convert it into a straight-wall makeup on save.
       curveRadiusMm: existing?.curveRadiusMm,
@@ -429,7 +560,8 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
     onSave(updated)
   }
 
-  const canSave = name.trim().length > 0 && heightMm >= 200
+  const canSave =
+    name.trim().length > 0 && (hasCoursePattern ? patternTotalHeight > 0 : heightMm >= 200)
 
   return (
     // When editing an existing wall type, the form reads as a dropdown of
@@ -459,14 +591,22 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
         </label>
 
         <label className="text-sm">
-          <span className="block text-ink-300 mb-1">Height (mm)</span>
+          <span className="block text-ink-300 mb-1">
+            Height (mm)
+            {hasCoursePattern && (
+              <span className="ml-2 text-[11px] text-ink-500 font-normal">
+                (driven by course pattern below)
+              </span>
+            )}
+          </span>
           <input
             type="number"
             min="200"
             step="50"
-            value={heightMm}
+            value={hasCoursePattern ? patternTotalHeight : heightMm}
             onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400"
+            disabled={hasCoursePattern}
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm focus:outline-none focus:border-beme-400 disabled:bg-ink-800/50 disabled:text-ink-400 disabled:cursor-not-allowed"
           />
         </label>
 
@@ -808,6 +948,162 @@ function WallTypeForm({ existing, onSave, onCancel }: WallTypeFormProps) {
             </span>
           </label>
         </div>
+      </div>
+
+      {/* Course pattern (bands). Lets the user spell out the wall course-by-
+          course as a repeating list of {blockCode, count}. Required for walls
+          with mixed-height courses (e.g. 4× 20.48 + 2× 20.71 stacked) that
+          the uniform-200mm-modular legacy stack can't express correctly —
+          the legacy path would call the 20.71 courses "200mm tall" and
+          undershoot the wall height. Disabled for wedge curves (a wedge wall
+          is a single stacked composition, no course mixing). */}
+      <div
+        className={`mt-5 ${
+          isCurveMakeup && wedgeRequired
+            ? 'opacity-40 pointer-events-none select-none'
+            : ''
+        }`}
+        aria-disabled={isCurveMakeup && wedgeRequired}
+      >
+        <button
+          onClick={() => setShowCoursePattern((v) => !v)}
+          className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
+        >
+          {showCoursePattern ? '−' : '+'} Course pattern (mixed heights)
+          {hasCoursePattern && ` (${coursePattern.length} band${coursePattern.length === 1 ? '' : 's'})`}
+        </button>
+
+        {showCoursePattern && (
+          <div className="mt-2 p-3 border border-ink-600 rounded-lg bg-ink-800">
+            {!hasCoursePattern ? (
+              <>
+                <p className="text-xs text-ink-400 mb-3">
+                  Build the wall as a list of <em>bands</em> — e.g.{' '}
+                  <span className="font-mono">4 × 20.48</span> then{' '}
+                  <span className="font-mono">2 × 20.71</span> repeating. Each
+                  band picks a block and a count, and the bands stack from the
+                  bottom of the wall to the top. Use this when courses aren't
+                  all the same modular height (the legacy Height field
+                  above assumes every course is 200 mm).
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={convertCurrentToBands}
+                    className="text-sm px-3 py-1.5 rounded-lg bg-beme-500/15 border border-beme-500/40 text-beme-300 hover:bg-beme-500/25 transition-colors"
+                  >
+                    Convert this wall to a pattern
+                  </button>
+                  <button
+                    onClick={addBand}
+                    className="text-sm px-3 py-1.5 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 transition-colors"
+                  >
+                    + Add band from scratch
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-ink-400 mb-3">
+                  Bands stack from the bottom up. Total:{' '}
+                  <span className="text-ink-200 font-mono">
+                    {patternTotalCourses} course{patternTotalCourses === 1 ? '' : 's'},{' '}
+                    {patternTotalHeight} mm
+                  </span>
+                  . The Height field above is locked while a pattern is set.
+                </p>
+                {coursePattern.map((band, i) => {
+                  const moduleH = moduleHeightForBand(band, library)
+                  return (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 mb-2 text-sm flex-wrap"
+                    >
+                      <span className="text-ink-500 font-mono text-xs w-6 text-right">
+                        {i + 1}.
+                      </span>
+                      <input
+                        type="number"
+                        min="1"
+                        value={band.count}
+                        onChange={(e) =>
+                          updateBand(i, {
+                            count: Math.max(1, parseInt(e.target.value || '1', 10)),
+                          })
+                        }
+                        className="w-16 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800"
+                      />
+                      <span className="text-ink-400 text-xs">×</span>
+                      <select
+                        value={band.blockCode}
+                        onChange={(e) =>
+                          updateBand(i, { blockCode: e.target.value as BlockCode })
+                        }
+                        className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-800 min-w-0 flex-1"
+                      >
+                        {selectableBlocks.map((code) => (
+                          <option key={code} value={code}>
+                            {blockLabel(code)}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[11px] text-ink-500 font-mono">
+                        ={band.count * moduleH}mm
+                      </span>
+                      <div className="flex items-center gap-0.5 ml-auto">
+                        <button
+                          onClick={() => moveBand(i, -1)}
+                          disabled={i === 0}
+                          className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
+                          aria-label="Move band up"
+                          title="Move up"
+                        >
+                          ▲
+                        </button>
+                        <button
+                          onClick={() => moveBand(i, 1)}
+                          disabled={i === coursePattern.length - 1}
+                          className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
+                          aria-label="Move band down"
+                          title="Move down"
+                        >
+                          ▼
+                        </button>
+                        <button
+                          onClick={() => removeBand(i)}
+                          className="text-rose-400 hover:text-rose-300 text-sm px-2"
+                          aria-label="Remove band"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+                <div className="flex gap-3 mt-2">
+                  <button
+                    onClick={addBand}
+                    className="text-sm text-beme-400 hover:text-beme-300 hover:underline"
+                  >
+                    + Add band
+                  </button>
+                  <button
+                    onClick={clearCoursePattern}
+                    className="text-sm text-rose-400 hover:text-rose-300 hover:underline ml-auto"
+                  >
+                    Clear pattern
+                  </button>
+                </div>
+                {courseOverrides.length > 0 && (
+                  <p className="mt-3 text-[11px] text-amber-300">
+                    Note: per-course overrides below are <em>still</em> applied on
+                    top of this pattern. If you don't want them, clear them in
+                    the Customise specific courses section.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Per-course overrides. Same wedge-disabled treatment as the
