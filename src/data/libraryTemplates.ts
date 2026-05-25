@@ -18,6 +18,7 @@
  */
 
 import type { Block, BlockCode } from '../types/blocks'
+import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BLOCK_LIBRARY } from './blockLibrary'
 
 /** Discriminator key — stored on the user / org to pick a template. */
@@ -37,11 +38,18 @@ export interface LibraryTemplate {
    */
   description: string
   /**
-   * The seed library. Stored as Record<BlockCode, Block> so the calc
-   * engine and library page can treat it identically to the current
-   * BLOCK_LIBRARY shape.
+   * The seed block library. Stored as Record<BlockCode, Block> so the
+   * calc engine and library page can treat it identically to the
+   * current BLOCK_LIBRARY shape.
    */
   blocks: Record<BlockCode, Block>
+  /**
+   * The seed brick library — regional standard face brick(s). Same
+   * shape as BRICK_LIBRARY so users can drop in a template and get a
+   * working brick catalogue immediately. Region-specific because
+   * face sizes vary materially (AU 230×76, US ~203×57, UK 215×65).
+   */
+  bricks: Record<BrickCode, BrickType>
 }
 
 // ─── US — CMU (Concrete Masonry Unit) ──────────────────────────────────────
@@ -207,6 +215,96 @@ export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
+// ─── Brick library presets ─────────────────────────────────────────────────
+// Region-specific because face sizes vary materially across markets. Users
+// add their own custom bricks via the BrickLibraryPanel after seeding.
+
+/** Standard AU brick set (matches the legacy seed library). */
+export const AU_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
+  standard: {
+    code: 'standard',
+    name: 'Standard 230×76',
+    description: 'The default Australian face brick. ~48 bricks/m².',
+    widthMm: 230,
+    heightMm: 76,
+    depthMm: 110,
+  },
+  maxi: {
+    code: 'maxi',
+    name: 'Maxi 290×90',
+    description: 'Larger format — wider and slightly taller. ~33 bricks/m².',
+    widthMm: 290,
+    heightMm: 90,
+    depthMm: 110,
+  },
+  'double-height': {
+    code: 'double-height',
+    name: 'Double-height 230×162',
+    description: 'Twice the height of a standard. ~24 bricks/m².',
+    widthMm: 230,
+    heightMm: 162,
+    depthMm: 110,
+  },
+}
+
+/** US modular face brick set. ~7 bricks/sq ft (~75/m²). */
+export const US_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
+  modular: {
+    code: 'modular',
+    name: 'Modular 7-5/8" × 2-1/4"',
+    description:
+      'Standard US modular brick. 7-5/8" × 2-1/4" × 3-5/8" (~194 × 57 × 92mm). ' +
+      'Roughly 6.86 bricks per sq ft (≈ 74 / m²).',
+    widthMm: 194,
+    heightMm: 57,
+    depthMm: 92,
+  },
+  queen: {
+    code: 'queen',
+    name: 'Queen size 7-5/8" × 2-3/4"',
+    description:
+      'Queen brick — slightly taller face. 7-5/8" × 2-3/4" × 2-3/4" (~194 × 70 × 70mm). ' +
+      '~5.76 bricks per sq ft (≈ 62 / m²).',
+    widthMm: 194,
+    heightMm: 70,
+    depthMm: 70,
+  },
+  utility: {
+    code: 'utility',
+    name: 'Utility 11-5/8" × 3-5/8"',
+    description:
+      'Utility brick — large oversize for fast coverage. 11-5/8" × 3-5/8" × 3-5/8" ' +
+      '(~295 × 92 × 92mm). ~3 bricks per sq ft (≈ 32 / m²).',
+    widthMm: 295,
+    heightMm: 92,
+    depthMm: 92,
+  },
+}
+
+/** UK standard face brick + popular alternatives. */
+export const UK_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
+  standard: {
+    code: 'standard',
+    name: 'UK Standard 215×65',
+    description:
+      'BS EN 771 standard UK clay brick. 215 × 65 × 102.5mm with 10mm mortar ' +
+      'joint gives the 225 × 75mm modular grid. ~60 bricks per m².',
+    widthMm: 215,
+    heightMm: 65,
+    depthMm: 102.5,
+  },
+  imperial: {
+    code: 'imperial',
+    name: 'Imperial 215×73',
+    description:
+      'Older Imperial-equivalent brick used in conservation projects. 215 × 73 × ' +
+      '102.5mm — works on a 225 × 83mm coursing grid.',
+    widthMm: 215,
+    heightMm: 73,
+    depthMm: 102.5,
+  },
+}
+
 // ─── Template registry ─────────────────────────────────────────────────────
 // All templates exported as an ordered array so the region picker can
 // iterate them in the order they should appear in the UI.
@@ -220,30 +318,36 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     description:
       'South-east QLD masonry block set — 20.48 H block body, 20.01 / 20.03 ' +
       'corners, 20.71 / 20.140 height makeup, 20.13 / 20.25 / 20.18 lintels, ' +
-      '40.925 piers, 50.45 cleanout tiles, and the 300-series footing blocks.',
+      '40.925 piers, 50.45 cleanout tiles, and the 300-series footing blocks. ' +
+      'Bricks: 230×76 standard + maxi + double-height.',
     blocks: DEFAULT_BLOCK_LIBRARY,
+    bricks: AU_BRICK_LIBRARY,
   },
   {
     key: 'us-cmu',
-    displayName: 'United States (CMU)',
+    displayName: 'United States (CMU + modular)',
     region: 'US',
     mortarJointMm: 10, // 3/8" nominal
     description:
       'Standard 8" Concrete Masonry Unit set — body, corner, half, bond ' +
       'beam, and three lintel sizes covering the typical head height range. ' +
-      'Add 6" / 10" / 12" CMUs from the library page if your projects use them.',
+      'Bricks: modular + queen + utility face brick. Add 6" / 10" / 12" CMUs ' +
+      'from the library page if your projects use them.',
     blocks: US_CMU_LIBRARY,
+    bricks: US_BRICK_LIBRARY,
   },
   {
     key: 'uk-block',
-    displayName: 'United Kingdom (concrete block)',
+    displayName: 'United Kingdom (concrete block + BS clay brick)',
     region: 'UK',
     mortarJointMm: 10,
     description:
       'Dense aggregate 100mm concrete block (440 × 215 × 100mm) with ' +
-      'pre-stressed concrete lintels. Add 140 / 215mm thick blocks or ' +
-      'aerated alternatives from the library page as needed.',
+      'pre-stressed concrete lintels. Bricks: 215×65 BS standard + 215×73 ' +
+      'imperial. Add 140 / 215mm thick blocks or aerated alternatives ' +
+      'from the library page as needed.',
     blocks: UK_BLOCK_LIBRARY,
+    bricks: UK_BRICK_LIBRARY,
   },
   {
     key: 'blank',
@@ -251,10 +355,11 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: '—',
     mortarJointMm: 10,
     description:
-      "No seed blocks — you'll add everything from scratch via the " +
-      'material library page. Pick this only if none of the regional ' +
+      "No seed blocks or bricks — you'll add everything from scratch via " +
+      'the material library page. Pick this only if none of the regional ' +
       "templates is close to your supplier's product range.",
     blocks: {},
+    bricks: {},
   },
 ]
 

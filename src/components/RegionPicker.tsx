@@ -5,6 +5,7 @@ import {
   type LibraryTemplateKey,
 } from '../data/libraryTemplates'
 import { getBlockLibrary, setBlockLibrary } from '../data/blockLibrary'
+import { BRICK_LIBRARY, setBrickLibrary } from '../data/brickLibrary'
 import { updateUserSettings, getUserSettings } from '../lib/userSettings'
 
 interface RegionPickerProps {
@@ -64,18 +65,29 @@ export default function RegionPicker({
   function applyTemplate(key: LibraryTemplateKey) {
     const template = getLibraryTemplate(key)
     if (!template) return
-    const current = getBlockLibrary()
-    const currentCodes = Object.keys(current)
-    const templateCodes = Object.keys(template.blocks)
+    const currentBlocks = getBlockLibrary()
+    const currentBlockCodes = Object.keys(currentBlocks)
+    const currentBricks = BRICK_LIBRARY
+    const currentBrickCodes = Object.keys(currentBricks)
 
-    // Custom blocks = anything in current that's NOT in this template.
-    // If the user is on the AU library + picks AU again, currentCodes
-    // and templateCodes overlap entirely so customBlocks is empty.
-    const customBlocks = currentCodes.filter((c) => !(c in template.blocks))
+    // Custom items = anything in current that's NOT in this template.
+    // Computed for blocks AND bricks because templates carry both
+    // (Step 2.x added regional brick library presets).
+    const customBlocks = currentBlockCodes.filter(
+      (c) => !(c in template.blocks)
+    )
+    const customBricks = currentBrickCodes.filter(
+      (c) => !(c in template.bricks)
+    )
 
-    // Two paths: empty library or no custom blocks → seed wholesale.
-    if (currentCodes.length === 0 || customBlocks.length === 0) {
+    // Two paths: empty libraries / no custom items → seed wholesale.
+    const isCleanSlate =
+      (currentBlockCodes.length === 0 || customBlocks.length === 0) &&
+      (currentBrickCodes.length === 0 || customBricks.length === 0)
+
+    if (isCleanSlate) {
       setBlockLibrary({ ...template.blocks })
+      setBrickLibrary({ ...template.bricks })
       updateUserSettings({
         preferences: { libraryTemplateKey: key },
       })
@@ -83,22 +95,32 @@ export default function RegionPicker({
       return
     }
 
-    // Custom blocks present — confirm with the user. Merge by default,
-    // replace as a destructive option.
+    // Custom items present — confirm with the user. Merge by default,
+    // template wins on code collision. Single prompt covers both
+    // blocks and bricks so the user sees the full scope of what's
+    // about to change.
+    const partsLine = [
+      customBlocks.length > 0
+        ? `${customBlocks.length} custom block${customBlocks.length === 1 ? '' : 's'}`
+        : '',
+      customBricks.length > 0
+        ? `${customBricks.length} custom brick${customBricks.length === 1 ? '' : 's'}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' + ')
     const choice = window.confirm(
-      `You have ${customBlocks.length} custom block${
-        customBlocks.length === 1 ? '' : 's'
-      } in your library that aren't part of the ${template.displayName} template.\n\n` +
-        '"OK" — KEEP your custom blocks AND add the template blocks on top (merge).\n' +
-        '"Cancel" — abort the switch, leave the library untouched.'
+      `You have ${partsLine} in your library that aren't part of the ${template.displayName} template.\n\n` +
+        '"OK" — KEEP your custom items AND add the template ones on top (merge).\n' +
+        '"Cancel" — abort the switch, leave the libraries untouched.'
     )
     if (!choice) return
 
-    // Merge: template blocks WIN for any code collision (so the user
-    // gets the canonical template version of any block that's also
-    // in their custom list).
-    const merged = { ...current, ...template.blocks }
-    setBlockLibrary(merged)
+    // Merge: template items WIN on code collision (so the user gets
+    // the canonical template version of any code that's also in
+    // their custom list).
+    setBlockLibrary({ ...currentBlocks, ...template.blocks })
+    setBrickLibrary({ ...currentBricks, ...template.bricks })
     updateUserSettings({
       preferences: { libraryTemplateKey: key },
     })

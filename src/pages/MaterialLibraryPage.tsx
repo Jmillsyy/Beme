@@ -5,6 +5,7 @@ import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import LibraryTemplateControls from '../components/LibraryTemplateControls'
+import LibrarySectionControls from '../components/LibrarySectionControls'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
@@ -131,16 +132,24 @@ export default function MaterialLibraryPage() {
           )}
         </div>
 
-        <div className="space-y-8 mt-8">
+        {/* Top-level template controls + master reset. Sits above every
+            section so the user can pick / switch / wipe their whole
+            library in one place. Per-section reset chips live inside
+            LibrarySectionControls below. */}
+        <div className="mt-6">
+          <LibraryTemplateControls readOnly={readOnly} />
+        </div>
+
+        <div className="space-y-8 mt-2">
           {/* Blocks */}
           <Section
             title="Blocks"
             description="Concrete blocks you supply. Code, dimensions, and what each block is used for (body, end, corner, fraction, lintel, pier, etc.). The wall-type editor pulls from this list."
           >
-            {/* Template controls: switch templates or wipe + reseed
-                without going through Settings. Read-only / admin
-                gating lives inside the component. */}
-            <LibraryTemplateControls readOnly={readOnly} />
+            {/* Per-section controls — shows the empty-state hero with
+                regional preset chips when the section is empty, and
+                a small Reset chip when populated. */}
+            <LibrarySectionControls kind="block" readOnly={readOnly} />
             {/* Library health: flags missing required + advisory roles
                 so the user knows their library is set up correctly
                 before the calc engine surprises them with a fallback
@@ -154,6 +163,7 @@ export default function MaterialLibraryPage() {
             title="Bricks"
             description="Brick types you supply. Dimensions, mortar joint, and the auto-calculated bricks-per-square-metre rate."
           >
+            <LibrarySectionControls kind="brick" readOnly={readOnly} />
             <BrickLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
           </Section>
 
@@ -163,6 +173,7 @@ export default function MaterialLibraryPage() {
             title="Supply items"
             description="Anything you add to estimates by rate — cement, ties, rebar, flashings, sealants, etc. Pick a unit (per block, per m², per lineal m…), set a rate, and we'll add the count to every applicable estimate."
           >
+            <LibrarySectionControls kind="supply" readOnly={readOnly} />
             <SupplyItemsEditor readOnly={readOnly} />
           </Section>
         </div>
