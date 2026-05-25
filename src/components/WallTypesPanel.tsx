@@ -560,7 +560,7 @@ function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModal
       aria-label={existing ? `Edit wall type ${existing.name}` : 'New wall type'}
     >
       <div
-        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-5xl h-[88vh] max-h-[900px] flex flex-col overflow-hidden"
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-6xl h-[90vh] max-h-[960px] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -703,9 +703,10 @@ function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModal
           {/* Right rail: live visual stack preview. Shows on every tab so
               changes anywhere in the form (height, body block, pattern)
               produce immediate feedback. Hidden on narrow viewports to
-              give the form room — modal max-width is 5xl which is
-              ~1024px, so the rail kicks in at lg (1024px+). */}
-          <aside className="hidden lg:flex w-56 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4 min-h-0">
+              give the form room — kicks in at lg (1024px+). Wider rail
+              (80 = 320px) gives the wall section room to render the
+              bond pattern clearly on tall walls. */}
+          <aside className="hidden lg:flex w-80 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4 min-h-0">
             <div className="flex items-baseline justify-between mb-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400">
                 Wall preview
@@ -1380,12 +1381,14 @@ function CoursePatternPreview({ bands, library, bondType }: CoursePatternPreview
   }
 
   return (
-    <div className="flex gap-2 min-h-[300px] h-[55vh] max-h-[600px]">
+    <div className="flex gap-2 min-h-[360px] h-[65vh] max-h-[720px]">
       {/* Wall section. Each course is a row; blocks within a row stretch
           to fill the row width proportionally. Stretcher even-course
           offset is achieved by inserting half-width filler blocks at
-          each end so the visible course is still the same total width. */}
-      <div className="flex-1 max-w-[170px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner">
+          each end so the visible course is still the same total width.
+          Section fills the rail width (capped to keep aspect sensible
+          when the rail is widened further). */}
+      <div className="flex-1 max-w-[240px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner">
         {courses.map((code, courseIdx) => {
           // courseIdx 0 = bottom of wall (base). flex-col-reverse means
           // we render the array in normal order but DOM/visual order is
