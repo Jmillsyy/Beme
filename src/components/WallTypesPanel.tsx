@@ -1583,6 +1583,15 @@ function CoursePatternPreview({
   const fullPct = 100 / TOTAL_UNITS
   const halfPct = 50 / TOTAL_UNITS
 
+  // Real-world wall section dimensions. The wall preview locks to this
+  // aspect ratio so it doesn't stretch / squash when the parent's flex
+  // slot is bigger or smaller — a 4000mm wall ALWAYS looks taller than a
+  // 2400mm wall, and 20.48 block faces ALWAYS look ~2:1 wide because
+  // each full block is 400mm modular wide vs 200mm modular tall.
+  const BLOCK_MODULE_MM = 400
+  const REPRESENTATIVE_WIDTH_MM = TOTAL_UNITS * BLOCK_MODULE_MM
+  const wallAspect = `${REPRESENTATIVE_WIDTH_MM} / ${totalHeight}`
+
   // Boundary labels for the side ruler — total mm at top, then the
   // running total at each band BOUNDARY (not each course, to avoid label
   // crowding on tall walls). Bottom is always 0.
@@ -1599,15 +1608,34 @@ function CoursePatternPreview({
   }
 
   return (
-    <div className="flex gap-2 h-full min-h-[280px]">
-      {/* Wall section. Each course is a row; blocks within a row stretch
-          to fill the row width proportionally. Stretcher even-course
-          offset is achieved by inserting half-width filler blocks at
-          each end so the visible course is still the same total width.
-          h-full + min-h-0 lets the preview obey its parent's flex slot
-          (so the legend below always has room) while still claiming a
-          sensible floor on tiny viewports. */}
-      <div className="flex-1 max-w-[240px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner min-h-0">
+    // h-full + min-h-[280px] sets the slot we can scale within; items-start
+    // so the wall sits at the top of the rail and shorter walls don't
+    // float visually centred. justify-start keeps the wall + labels
+    // grouped on the left so the legend below them aligns to the same
+    // gutter.
+    <div className="flex h-full min-h-[280px] items-start justify-start">
+      {/* Wall section + absolute-positioned ruler labels.
+
+          aspectRatio = REPRESENTATIVE_WIDTH_MM / totalHeight so the wall
+          element scales uniformly within its container — a 4000mm wall
+          looks taller than a 2400mm wall, and every 20.48 block face
+          renders at its real 400:200 (2:1) proportion. maxH 100% caps
+          tall walls to the parent slot; maxW 220px caps short/wide
+          walls so they don't blow past the rail width.
+
+          Ruler labels are absolutely positioned relative to this same
+          element so they always sit at the right vertical position
+          regardless of the wall's actual rendered height. */}
+      <div
+        style={{
+          aspectRatio: wallAspect,
+          maxHeight: '100%',
+          maxWidth: '200px',
+          height: '100%',
+        }}
+        className="relative shrink-0"
+      >
+        <div className="flex flex-col-reverse h-full w-full rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner">
         {courses.map((code, courseIdx) => {
           // courseIdx 0 = bottom of wall (base). flex-col-reverse means
           // we render the array in normal order but DOM/visual order is
@@ -1663,28 +1691,25 @@ function CoursePatternPreview({
             </div>
           )
         })}
-      </div>
+        </div>
 
-      {/* Right-side ruler — band boundaries only (not every course) so the
-          labels stay readable on a 24-course wall. Top-of-wall label sits
-          above the strips; each band's strip then shows the running total
-          at its BOTTOM edge so labels line up with the visible mortar
-          line between bands. */}
-      <div className="flex flex-col text-[10px] text-ink-400 font-mono w-12 shrink-0 leading-none">
-        <div>{totalHeight}mm</div>
-        {topDownBands.map((band, idx) => {
-          const bandH = band.count * ((library[band.blockCode]?.dimensions.heightMm ?? 190) + 10)
-          const pct = (bandH / totalHeight) * 100
-          return (
-            <div
-              key={idx}
-              style={{ flexBasis: `${pct}%`, minHeight: 0 }}
-              className="flex items-end"
-            >
-              {labels[idx + 1]}mm
-            </div>
-          )
-        })}
+        {/* Band-boundary labels float to the right of the wall section.
+            Each label is positioned by % from the bottom of the wall, so
+            it always sits at the right vertical position regardless of
+            how big the wall actually rendered. translateY(50%) centres
+            the label vertically on its boundary line. */}
+        {labels.map((mm, i) => (
+          <div
+            key={i}
+            className="absolute left-full ml-1.5 text-[10px] text-ink-400 font-mono whitespace-nowrap leading-none pointer-events-none"
+            style={{
+              bottom: `${(mm / totalHeight) * 100}%`,
+              transform: 'translateY(50%)',
+            }}
+          >
+            {mm}mm
+          </div>
+        ))}
       </div>
     </div>
   )
