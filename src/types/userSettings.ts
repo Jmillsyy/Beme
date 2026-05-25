@@ -55,6 +55,18 @@ export interface UserPreferences {
   /** What clicking "+ New estimate" defaults to on the dashboard. */
   defaultProjectType: 'block' | 'brick'
   /**
+   * The block-library template the user picked at signup (or via
+   * Settings → Library template). Drives the seed block set, the default
+   * mortar joint for new makeups, and the regional flavour of the
+   * onboarding / settings copy.
+   *
+   * Optional / undefined for legacy users — they continue running on the
+   * AU-SEQ seed library that's been live since v1. Set to one of the
+   * keys from LIBRARY_TEMPLATES in src/data/libraryTemplates.ts.
+   */
+  libraryTemplateKey?: 'au-seq' | 'us-cmu' | 'uk-block' | 'blank'
+
+  /**
    * Regional feature toggles — which "extras" the estimator typically prices
    * into their jobs. Different markets use different practices and the user
    * shouldn't have to wade past line items that never apply to them. These

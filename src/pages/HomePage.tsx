@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import Header from '../components/Header'
 import DonutChart from '../components/DonutChart'
 import LocalMigrationBanner from '../components/LocalMigrationBanner'
+import RegionPicker from '../components/RegionPicker'
 import {
   type ProjectOutcome,
   type ProjectStatus,
@@ -85,6 +86,23 @@ function nextOutcome(o: ProjectOutcome | undefined): ProjectOutcome | undefined 
 export default function HomePage() {
   const { signedIn, user, loading: authLoading } = useAuth()
   const { currentOrg, loading: orgsLoading } = useOrganisations()
+  const { settings } = useUserSettings()
+  // Region picker shows on first signin if the user hasn't picked a
+  // library template yet. Existing AU users see it once and can pick
+  // au-seq (no change to their library). Dismissable; reappears next
+  // signin until picked so they're nudged toward it without being hard-
+  // gated.
+  const [showRegionPicker, setShowRegionPicker] = useState(false)
+  useEffect(() => {
+    if (
+      signedIn &&
+      !authLoading &&
+      !orgsLoading &&
+      !settings.preferences.libraryTemplateKey
+    ) {
+      setShowRegionPicker(true)
+    }
+  }, [signedIn, authLoading, orgsLoading, settings.preferences.libraryTemplateKey])
 
   // Wait for both auth and org info to resolve before deciding which dashboard
   // to render. Otherwise the personal dashboard flashes on first paint for org
@@ -128,6 +146,17 @@ export default function HomePage() {
           </div>
         )}
       </main>
+
+      {/* First-signin region picker — appears once when the user hasn't
+          chosen a library template yet. Dismissable so it doesn't hard-
+          block anyone, but reappears next signin until they pick. */}
+      {showRegionPicker && (
+        <RegionPicker
+          allowSkip
+          onPicked={() => setShowRegionPicker(false)}
+          onCancel={() => setShowRegionPicker(false)}
+        />
+      )}
     </div>
   )
 }

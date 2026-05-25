@@ -11,6 +11,8 @@ import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
+import { getLibraryTemplate } from '../data/libraryTemplates'
+import RegionPicker from '../components/RegionPicker'
 import {
   updateOrganisationLogo,
   useOrganisations,
@@ -543,6 +545,7 @@ function BusinessTab({ business }: { business: BusinessProfile }) {
 function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
   const set = (p: Partial<UserPreferences>) => updateUserSettings({ preferences: p })
   const [, setTheme] = useTheme()
+  const [showRegionPicker, setShowRegionPicker] = useState(false)
 
   // Keep the theme module in sync with settings.preferences.theme.
   function handleThemeChange(t: ThemePref) {
@@ -623,6 +626,42 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
         </Field>
       </FieldGroup>
 
+      {/* Library template — shows the regional block set the user is on
+          and lets them switch (which seeds / merges the new template's
+          blocks). Setting lives on preferences.libraryTemplateKey. */}
+      <FieldGroup
+        title="Library template"
+        description="The regional block set your library is seeded from. Switching merges the new template's blocks on top of your existing library — your custom blocks stay."
+      >
+        <Field
+          label="Current template"
+          hint={
+            preferences.libraryTemplateKey
+              ? 'Click Switch template to pick a different region or reseed the library.'
+              : 'No template picked yet. Click Switch template to choose one.'
+          }
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex-1 text-sm text-ink-200 font-mono">
+              {(() => {
+                const t = preferences.libraryTemplateKey
+                  ? getLibraryTemplate(preferences.libraryTemplateKey)
+                  : undefined
+                return t
+                  ? `${t.displayName} (${Object.keys(t.blocks).length} blocks)`
+                  : 'Not set — running on the AU SEQ default'
+              })()}
+            </div>
+            <button
+              onClick={() => setShowRegionPicker(true)}
+              className="text-sm px-3 py-1.5 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 transition-colors flex-shrink-0"
+            >
+              Switch template
+            </button>
+          </div>
+        </Field>
+      </FieldGroup>
+
       {/* Regional features — toggle off line items that don't apply in your
           market. New brick projects pick up these defaults; per-project
           overrides are still available in the brick settings panel. */}
@@ -670,6 +709,16 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
           }
         />
       </FieldGroup>
+
+      {/* Region picker mounted at the Preferences tab root so it floats
+          over everything when the user clicks Switch template. */}
+      {showRegionPicker && (
+        <RegionPicker
+          allowSkip
+          onPicked={() => setShowRegionPicker(false)}
+          onCancel={() => setShowRegionPicker(false)}
+        />
+      )}
     </PanelCard>
   )
 }
