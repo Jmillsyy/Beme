@@ -38,7 +38,7 @@ import type {
 } from '../types/walls'
 import {
   createDefaultBrickMakeups,
-  createDefaultPierMakeups,
+  createDefaultFreestandingPierMakeup,
   createDefaultTiedPierMakeup,
   createDefaultWallMakeup,
   getMakeupHeightMm,
@@ -521,8 +521,21 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   // ---------- Pier state (block mode) ----------
   const [piersByPage, setPiersByPage] = useState<Record<number, Pier[]>>({})
-  /** Library of pier makeups available in this project (seeded with two defaults). */
-  const [pierMakeups, setPierMakeups] = useState<PierMakeup[]>(() => createDefaultPierMakeups())
+  /**
+   * Library of pier makeups available in this project. Starts EMPTY — the
+   * Pier types list only populates once the user places a pier (or
+   * explicitly clicks + Add). Drawing the first pier auto-creates a
+   * matching makeup via the fallback path in handleTiedPierPlaced /
+   * handleFreestandingPierPlaced.
+   */
+  const [pierMakeups, setPierMakeups] = useState<PierMakeup[]>([])
+  /**
+   * Which pier makeup is "active" — i.e. the one used when the user clicks
+   * to place the next pier. Parallels activeMakeupId for walls. Clicking a
+   * pier type in the right-rail panel sets this; drawing a pier honours it.
+   * Null until the user adds or auto-creates a pier type.
+   */
+  const [activePierMakeupId, setActivePierMakeupId] = useState<string | null>(null)
   /** True while the user is choosing a wall to drop a tied pier onto. */
   const [placingTiedPier, setPlacingTiedPier] = useState(false)
   /** True while the user is choosing a point on the plan to drop a freestanding pier. */
@@ -542,8 +555,22 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       return next
     })
   }, [])
-  /** Default height (mm) for newly-placed freestanding piers — multiple of 200. */
-  const [freestandingPierHeightMm, setFreestandingPierHeightMm] = useState(2400)
+  /**
+   * Seed height (mm) for newly-placed freestanding piers. Always 2400 at
+   * placement; the user adjusts per pier from the pier inspector after
+   * placing (parallel to walls, which inherit makeup height and can be
+   * overridden per-wall). Tied piers ignore this entirely — they inherit
+   * the host wall's height.
+   */
+  const FREESTANDING_PIER_INITIAL_HEIGHT_MM = 2400
+  /**
+   * Default height (mm) used the *first* time a curve in a given zone is drawn
+   * — that height seeds the new makeup. Subsequent curves that dedup into an
+   * existing makeup inherit the makeup's existing height (the user can still
+   * edit the makeup in the Wall Types panel). Surfaced as an input in the
+   * "Drawing curve" banner so the user can pick the height up front.
+   */
+  const [newCurveHeightMm, setNewCurveHeightMm] = useState(2400)
 
   const pierMakeupsById = useMemo(
     () => Object.fromEntries(pierMakeups.map((m) => [m.id, m])),
@@ -823,7 +850,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         setWallsByPage(migratedWallsByPage)
         setOpeningsByPage(proj.openingsByPage)
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
-        if (proj.pierMakeups && proj.pierMakeups.length > 0) setPierMakeups(proj.pierMakeups)
+        // Hydrate pier makeups from save (or reset to empty if the project
+        // has none — switching from a project WITH piers to one WITHOUT
+        // mustn't carry the previous project's pier types over).
+        const savedPiers = proj.pierMakeups ?? []
+        setPierMakeups(savedPiers)
+        const savedActive = proj.activePierMakeupId
+        const resolvedActive =
+          savedActive && savedPiers.some((m) => m.id === savedActive)
+            ? savedActive
+            : savedPiers[0]?.id ?? null
+        setActivePierMakeupId(resolvedActive)
         setCurrentPage(proj.currentPage || 1)
         if (proj.makeups && proj.makeups.length > 0) {
           setMakeups(proj.makeups)
@@ -1096,7 +1133,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       supplyItemSelections,
       supplyItemRateOverrides,
       ...(mode === 'block'
-        ? { makeups, activeMakeupId, blockExportInclusions, pierMakeups }
+        ? {
+            makeups,
+            activeMakeupId,
+            blockExportInclusions,
+            pierMakeups,
+            activePierMakeupId: activePierMakeupId ?? undefined,
+          }
         : {}),
       ...(mode === 'brick'
         ? {
@@ -1247,7 +1290,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         openingsByPage,
         piersByPage,
         currentPage,
-        ...(mode === 'block' ? { makeups, activeMakeupId, pierMakeups } : {}),
+        ...(mode === 'block'
+          ? {
+              makeups,
+              activeMakeupId,
+              pierMakeups,
+              activePierMakeupId: activePierMakeupId ?? undefined,
+            }
+          : {}),
         ...(mode === 'brick'
           ? { brickSettings, brickMakeups, activeBrickMakeupId, exportInclusions }
           : {}),
@@ -1431,6 +1481,101 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     }
     return counts
   }, [allPiers])
+
+  // Auto-prune ORPHANED pier makeups. Every pier makeup is auto-created (on
+  // first pier placement or via + Add then immediate use), so a makeup with
+  // zero piers using it is just visual clutter. Whenever the pier counts
+  // change we drop any makeup that no longer has a pier. The active pier id
+  // is re-pointed at the first remaining makeup so the next placement still
+  // has a valid target.
+  useEffect(() => {
+    setPierMakeups((prev) => {
+      const inUse = prev.filter((m) => (pierCountsByMakeupId[m.id] ?? 0) > 0)
+      if (inUse.length === prev.length) return prev
+      return inUse
+    })
+  }, [pierCountsByMakeupId])
+
+  useEffect(() => {
+    if (activePierMakeupId && !pierMakeups.some((m) => m.id === activePierMakeupId)) {
+      setActivePierMakeupId(pierMakeups[0]?.id ?? null)
+    }
+  }, [pierMakeups, activePierMakeupId])
+
+  // Auto-prune ORPHANED curve wall makeups. A curve makeup is identified by
+  // having a curveRadiusMm — those are always auto-created when the user
+  // draws a curve. If the last wall using one is deleted, the makeup is
+  // visual clutter (no other curve will exactly match its radius). Same
+  // active-id repoint guard as for piers.
+  useEffect(() => {
+    setMakeups((prev) => {
+      const filtered = prev.filter((m) => {
+        const isCurveMakeup = typeof m.curveRadiusMm === 'number'
+        if (!isCurveMakeup) return true
+        return (wallCountsByMakeupId[m.id] ?? 0) > 0
+      })
+      if (filtered.length === prev.length) return prev
+      return filtered
+    })
+  }, [wallCountsByMakeupId])
+
+  // Migrate legacy wedge curve makeups in-place. Old wedge curves were
+  // created with the default 20.45 cleanout + 50.45 tile base course
+  // because createDefaultWallMakeup seeds them and the wedge override
+  // didn't reach the base / tile fields. A wedge wall has no 200-series
+  // cleanout — every block is the same 20.03CW. We detect any wedge
+  // makeup (curveRadiusMm set + body is 20.03CW) that still carries the
+  // legacy base/tile and normalise it so the wall preview + calc engine
+  // see a uniform stacked-wedge column. Runs once per `makeups` change;
+  // the early-return when nothing needs fixing keeps it cheap.
+  useEffect(() => {
+    setMakeups((prev) => {
+      let changed = false
+      const next = prev.map((m) => {
+        const isWedge =
+          typeof m.curveRadiusMm === 'number' && m.bodyBlockCode === '20.03CW'
+        if (!isWedge) return m
+        const needsBaseFix = m.baseCourseBlockCode !== '20.03CW'
+        const needsTileFix = m.baseCourseTileCode !== undefined
+        const needsCornerFix = m.cornerBlockCode !== '20.03CW'
+        const needsHalfFix = m.halfBlockCode !== '20.03CW'
+        const needsTopFix = m.topCourseBlockCode !== '20.03CW'
+        const needsBondFix = m.bondType !== 'stack'
+        if (
+          !needsBaseFix &&
+          !needsTileFix &&
+          !needsCornerFix &&
+          !needsHalfFix &&
+          !needsTopFix &&
+          !needsBondFix
+        ) {
+          return m
+        }
+        changed = true
+        return {
+          ...m,
+          baseCourseBlockCode: '20.03CW' as const,
+          baseCourseTileCode: undefined,
+          cornerBlockCode: '20.03CW' as const,
+          halfBlockCode: '20.03CW' as const,
+          topCourseBlockCode: '20.03CW' as const,
+          bondType: 'stack' as const,
+        }
+      })
+      return changed ? next : prev
+    })
+    // We only want to react to the makeups identity changing — running
+    // setMakeups in here with the same value short-circuits via the
+    // early `return prev`, so this is safe against infinite loops.
+  }, [makeups])
+
+  useEffect(() => {
+    if (mode !== 'block') return
+    if (!makeups.some((m) => m.id === activeMakeupId)) {
+      const next = makeups[0]?.id
+      if (next) setActiveMakeupId(next)
+    }
+  }, [makeups, activeMakeupId, mode])
 
   /**
    * Per-wall physical thickness in mm. For block walls, derived from the makeup's body
@@ -1659,21 +1804,70 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       ? `R${Math.round(radiusMm)}mm`
       : 'straight-ish'
 
-    // Auto-create a wall type for this curve. Each curve gets its own
-    // makeup so the user can rename it / set a specific height in the
-    // Wall Types panel without affecting other curves. Default height
-    // 2400mm — the user can override per-curve via the wall's
-    // heightMmOverride or by editing the makeup.
-    const curveMakeup = createDefaultWallMakeup({
-      name: `Curved wall — ${radiusLabel}`,
-      heightMm: 2400,
+    // Dedup: if there's already a curve makeup for the same zone (which
+    // dictates the body block) with the same height, reuse it. Two curves
+    // drawn for the same intent — a wedge run at the same wall height —
+    // become a single row in the Wall Types panel with count N rather than
+    // N separate types. The new wall's actual radius is stored on the wall
+    // geometry (start/mid/end → arcFromThreePoints), so each instance keeps
+    // its own arc; only the makeup is shared.
+    const existingCurveMakeup = makeups.find((m) => {
+      if (typeof m.curveRadiusMm !== 'number' || !isFinite(m.curveRadiusMm)) return false
+      const existingZone = curveZoneForRadius(m.curveRadiusMm)
+      if (existingZone !== zone) return false
+      if (m.bodyBlockCode !== bodyBlock) return false
+      if (m.heightMm !== newCurveHeightMm) return false
+      return true
     })
-    curveMakeup.bodyBlockCode = bodyBlock
-    // Stamp the radius so the Wall Types panel can render the dual
-    // wedge / normal-block composition UI for this makeup and pick
-    // the right section to enable based on the curve's zone.
-    if (isFinite(radiusMm)) {
-      curveMakeup.curveRadiusMm = radiusMm
+
+    let makeupId: string
+    let nextMakeups = makeups
+    let nextMakeupsById = makeupsById
+    if (existingCurveMakeup) {
+      makeupId = existingCurveMakeup.id
+    } else {
+      // Auto-create a wall type for this curve. Height comes from the
+      // current "new curve height" input (surfaced in the drawing-curve
+      // banner) so the user picks it up front. They can still rename /
+      // tweak in the Wall Types panel later.
+      // Wedge / custom curves use the 20.03CW wedge block stacked — every
+      // course identical, no stretcher offset, no full/half end alternation.
+      // That's how a wedge wall is built in reality (the taper takes care of
+      // the curve; there's no other block in the composition). Standard /
+      // cut curves stay on the stretcher + 20.48 + 20.01/20.03 default since
+      // they use ordinary blocks.
+      const isWedgeMakeup = zone === 'wedge' || zone === 'custom'
+      const curveMakeup = createDefaultWallMakeup({
+        name: `Curved wall — ${radiusLabel}`,
+        heightMm: newCurveHeightMm,
+        bondType: isWedgeMakeup ? 'stack' : 'stretcher',
+      })
+      curveMakeup.bodyBlockCode = bodyBlock
+      curveMakeup.topCourseBlockCode = bodyBlock
+      if (isWedgeMakeup) {
+        // For a wedge wall every block is the same 20.03CW — no
+        // distinct corner, half, base or tile blocks. The default
+        // createDefaultWallMakeup seeds 20.45 + 50.45 for the base
+        // course (cleanout + tile) which doesn't apply to wedge
+        // curves: there's no 200-series cleanout on a wedge run.
+        // Stamping every role to the wedge block keeps the wall
+        // preview as a uniform stacked-square column AND keeps the
+        // calc engine from tallying a phantom 20.45 / 50.45.
+        curveMakeup.cornerBlockCode = bodyBlock
+        curveMakeup.halfBlockCode = bodyBlock
+        curveMakeup.baseCourseBlockCode = bodyBlock
+        curveMakeup.baseCourseTileCode = undefined
+      }
+      // Stamp the radius so the Wall Types panel can render the dual
+      // wedge / normal-block composition UI for this makeup and pick
+      // the right section to enable based on the curve's zone.
+      if (isFinite(radiusMm)) {
+        curveMakeup.curveRadiusMm = radiusMm
+      }
+      makeupId = curveMakeup.id
+      nextMakeups = [...makeups, curveMakeup]
+      nextMakeupsById = { ...makeupsById, [curveMakeup.id]: curveMakeup }
+      setMakeups(nextMakeups)
     }
 
     const rawWall: Wall = {
@@ -1681,7 +1875,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
           ? crypto.randomUUID()
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      makeupId: curveMakeup.id,
+      makeupId,
       startX: startMm.x,
       startY: startMm.y,
       endX: endMm.x,
@@ -1692,17 +1886,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       midX: midMm.x,
       midY: midMm.y,
     }
-    // Add the makeup BEFORE adding the wall so the wall's makeupId always
-    // resolves to a real row, even if React batches the two state writes.
-    const nextMakeups = [...makeups, curveMakeup]
-    const nextMakeupsById = { ...makeupsById, [curveMakeup.id]: curveMakeup }
-    setMakeups(nextMakeups)
     const existing = wallsByPage[currentPage] ?? []
     const newWalls = [...existing, rawWall]
     const thicknesses = computeWallThicknessByWallId(newWalls, nextMakeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
     setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
-  }, [mode, wallsByPage, currentPage, makeups, makeupsById, brickSettings])
+  }, [mode, wallsByPage, currentPage, makeups, makeupsById, brickSettings, newCurveHeightMm])
 
   /**
    * Split a wall at a click point along its centreline. Replaces the original wall with
@@ -2007,6 +2196,35 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     const len = Math.sqrt(dx * dx + dy * dy)
     if (len === 0) return
     const clamped = Math.max(200, Math.min(len - 200, alongMm))
+    // Use the active pier makeup. If the active one is for the wrong placement
+    // kind (or undefined), fall back to the first tied makeup in the list, or
+    // create a fresh one as a last resort. Drawing another tied pier without
+    // changing types reuses the same makeup → schedule shows ONE pier type
+    // with count N, not N separate types. We pick the "default tied" pattern
+    // as the dedup template — if a makeup with that exact pattern + placement
+    // already exists, reuse it before creating a fresh row.
+    let makeupId = activePierMakeupId
+    const active = makeupId
+      ? pierMakeups.find((m) => m.id === makeupId)
+      : null
+    if (!active || active.suggestedPlacement !== 'tied') {
+      const defaultPattern = createDefaultTiedPierMakeup().coursePattern
+      const dedup = pierMakeups.find(
+        (m) =>
+          m.suggestedPlacement === 'tied' &&
+          m.coursePattern.length === defaultPattern.length &&
+          m.coursePattern.every((c, i) => c === defaultPattern[i])
+      )
+      const fallback = dedup ?? pierMakeups.find((m) => m.suggestedPlacement === 'tied')
+      if (fallback) {
+        makeupId = fallback.id
+      } else {
+        const fresh = createDefaultTiedPierMakeup('Tied pier 1')
+        setPierMakeups((prev) => [...prev, fresh])
+        makeupId = fresh.id
+      }
+      setActivePierMakeupId(makeupId)
+    }
     const pier: Pier = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -2015,18 +2233,45 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       type: 'tied',
       wallId,
       alongMm: clamped,
-      pierMakeupId: defaultPierMakeupId('tied'),
+      pierMakeupId: makeupId!,
     }
     setPiersByPage((prev) => ({
       ...prev,
       [currentPage]: [...(prev[currentPage] ?? []), pier],
     }))
     setPlacingTiedPier(false)
-  }, [mode, wallsByPage, currentPage, pierMakeups])
+  }, [mode, wallsByPage, currentPage, pierMakeups, activePierMakeupId])
 
-  /** Place a freestanding pier at the click coordinates. Inherits the current default height. */
+  /** Place a freestanding pier at the click coordinates. Pier height comes
+   *  from the active makeup (`makeup.heightMm`) so two freestanding piers of
+   *  the same type are always the same height — edit the type's height in
+   *  its modal to change them all together. */
   const handleFreestandingPierPlaced = useCallback(function handleFreestandingPierPlaced(xMm: number, yMm: number) {
     if (mode !== 'block') return
+    let makeupId = activePierMakeupId
+    let makeup = makeupId
+      ? pierMakeups.find((m) => m.id === makeupId) ?? null
+      : null
+    if (!makeup || makeup.suggestedPlacement !== 'freestanding') {
+      const defaultPattern = createDefaultFreestandingPierMakeup().coursePattern
+      const dedup = pierMakeups.find(
+        (m) =>
+          m.suggestedPlacement === 'freestanding' &&
+          m.coursePattern.length === defaultPattern.length &&
+          m.coursePattern.every((c, i) => c === defaultPattern[i])
+      )
+      const fallback = dedup ?? pierMakeups.find((m) => m.suggestedPlacement === 'freestanding')
+      if (fallback) {
+        makeupId = fallback.id
+        makeup = fallback
+      } else {
+        const fresh = createDefaultFreestandingPierMakeup('Freestanding pier 1')
+        setPierMakeups((prev) => [...prev, fresh])
+        makeupId = fresh.id
+        makeup = fresh
+      }
+      setActivePierMakeupId(makeupId)
+    }
     const pier: Pier = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -2035,15 +2280,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       type: 'freestanding',
       x: xMm,
       y: yMm,
-      heightMm: freestandingPierHeightMm,
-      pierMakeupId: defaultPierMakeupId('freestanding'),
+      // Inherit the type's height. Legacy fallback to 2400 if the makeup
+      // predates the type-level height field.
+      heightMm: makeup?.heightMm ?? FREESTANDING_PIER_INITIAL_HEIGHT_MM,
+      pierMakeupId: makeupId!,
     }
     setPiersByPage((prev) => ({
       ...prev,
       [currentPage]: [...(prev[currentPage] ?? []), pier],
     }))
     setPlacingFreestandingPier(false)
-  }, [mode, currentPage, freestandingPierHeightMm, pierMakeups])
+  }, [mode, currentPage, pierMakeups, activePierMakeupId])
 
   const handlePierSelect = useCallback(
     (pierId: string | null) => {
@@ -2109,6 +2356,27 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   function handleUpdatePierMakeup(updated: PierMakeup) {
     setPierMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+    // Propagate the type's heightMm to every freestanding pier of this type
+    // so the modal's height field is the single editing surface. Tied piers
+    // are unaffected (they always inherit the host wall's height).
+    if (updated.suggestedPlacement === 'freestanding' && typeof updated.heightMm === 'number') {
+      const newHeight = updated.heightMm
+      setPiersByPage((prev) => {
+        const next: Record<number, Pier[]> = {}
+        let changed = false
+        for (const [pageStr, piers] of Object.entries(prev)) {
+          const pageNum = Number(pageStr)
+          next[pageNum] = piers.map((p) => {
+            if (p.type === 'freestanding' && p.pierMakeupId === updated.id && p.heightMm !== newHeight) {
+              changed = true
+              return { ...p, heightMm: newHeight }
+            }
+            return p
+          })
+        }
+        return changed ? next : prev
+      })
+    }
   }
 
   function handleDeletePierMakeup(id: string) {
@@ -2130,6 +2398,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         }
         return next
       })
+      // If the deleted makeup was the active one, switch the active id to
+      // the first remaining makeup so the next pier-draw has a valid target.
+      if (activePierMakeupId === id) {
+        setActivePierMakeupId(remaining[0]?.id ?? null)
+      }
       return remaining
     })
   }
@@ -3698,6 +3971,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     onDeleteMakeup={handleDeleteMakeup}
                     pierMakeups={pierMakeups}
                     pierCountsByMakeupId={pierCountsByMakeupId}
+                    activePierMakeupId={activePierMakeupId}
+                    onSetActivePier={setActivePierMakeupId}
                     onAddPierMakeup={handleAddPierMakeup}
                     onUpdatePierMakeup={handleUpdatePierMakeup}
                     onDeletePierMakeup={handleDeletePierMakeup}
@@ -4364,14 +4639,34 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 to cancel.
               </span>
             ) : drawingCurveMode ? (
-              <span className="text-violet-200">
-                Curved wall: click the <strong>first wall</strong>, then the{' '}
-                <strong>second wall</strong>, then a <strong>midpoint</strong> on the arc.
-                Press{' '}
-                <kbd className="px-1.5 py-0.5 rounded border border-violet-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
-                  Esc
-                </kbd>{' '}
-                to cancel.
+              <span className="text-violet-200 inline-flex items-center gap-2 flex-wrap">
+                <span>
+                  Curved wall: click the <strong>first wall</strong>, then the{' '}
+                  <strong>second wall</strong>, then a <strong>midpoint</strong> on the arc.
+                </span>
+                <label className="inline-flex items-center gap-1.5 text-xs">
+                  <span className="text-violet-300">Height</span>
+                  <input
+                    type="number"
+                    min={200}
+                    step={200}
+                    value={newCurveHeightMm}
+                    onChange={(e) => {
+                      const n = Number(e.target.value)
+                      if (Number.isFinite(n) && n > 0) setNewCurveHeightMm(n)
+                    }}
+                    title="Height for newly-created curved-wall types. Existing types keep their own height."
+                    className="w-20 px-1.5 py-0.5 rounded border border-violet-500/40 bg-ink-900 text-ink-50 text-xs font-mono"
+                  />
+                  <span className="text-violet-300">mm</span>
+                </label>
+                <span>
+                  Press{' '}
+                  <kbd className="px-1.5 py-0.5 rounded border border-violet-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                    Esc
+                  </kbd>{' '}
+                  to cancel.
+                </span>
               </span>
             ) : placingOpening ? (
               <span className="text-amber-200">
@@ -4392,8 +4687,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
               </span>
             ) : placingFreestandingPier ? (
               <span className="text-teal-200">
-                Click on a wall for a <strong>tied pier</strong>, or anywhere else for a{' '}
-                <strong>freestanding pier</strong>. Press{' '}
+                Click on a wall for a <strong>tied pier</strong> (height inherits
+                the wall) or anywhere else for a <strong>freestanding pier</strong>
+                {' '}(edit its height in the inspector after placing). Press{' '}
                 <kbd className="px-1.5 py-0.5 rounded border border-teal-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
                   Esc
                 </kbd>{' '}
@@ -5518,7 +5814,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           canvas on smaller screens. */}
       <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
-        {/* Wall types management panel (block mode) */}
+        {/* Wall types management panel (block mode) — pier types live
+            inside this panel too, listed below the wall types. */}
         {mode === 'block' && (
           <WallTypesPanel
             makeups={makeups}
@@ -5530,15 +5827,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             onDeleteMakeup={handleDeleteMakeup}
             pierMakeups={pierMakeups}
             pierCountsByMakeupId={pierCountsByMakeupId}
+            activePierMakeupId={activePierMakeupId}
+            onSetActivePier={setActivePierMakeupId}
             onAddPierMakeup={handleAddPierMakeup}
             onUpdatePierMakeup={handleUpdatePierMakeup}
             onDeletePierMakeup={handleDeletePierMakeup}
+            selectedPier={selectedPier ?? null}
+            onReassignPierMakeup={handleReassignPierMakeup}
+            onDeletePier={handleDeletePier}
+            onDeselectPier={() => setSelectedPierId(null)}
           />
         )}
-        {/* Pier types + block library used to live in their own panels here.
-            Pier types are now folded into WallTypesPanel above; block-library
-            management has moved to the /library page (Composition tab of the
-            wall-type editor has a link). */}
 
         {/* Brick wall types + settings + library (brick mode) */}
         {mode === 'brick' && (
@@ -5687,16 +5986,30 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
  * without losing their place in the workspace (the router-link preserves
  * the project in the back history).
  */
+function RequestBreadcrumb({ request }: { request: EstimateRequest }) {
+  return (
+    <div className="px-6 pt-4 pb-3">
+      <Link
+        to={`/requests/${request.id}`}
+        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+      >
+        <span className="text-base leading-none">←</span>
+        <span>
+          Request from{' '}
+          <span className="font-medium text-ink-50">{request.customerName}</span>
+          {request.customerCompany && (
+            <span className="text-ink-400"> · {request.customerCompany}</span>
+          )}
+        </span>
+      </Link>
+    </div>
+  )
+}
+
 /**
  * Multi-page PDF thumbnail rail. Extracted from PdfWorkspace and memoised
  * because the per-page <Page> rendering is the most expensive part of the
- * workspace render — without memoisation, every zoom tick reconciled all
- * `numPages` PDF page components, which is what made the lag scale with
- * page count on plans with many sheets.
- *
- * Props are deliberately narrow: only the values the sidebar actually
- * depends on are passed in, so the memo holds during zoom (none of these
- * change while the user is wheeling).
+ * workspace render.
  */
 interface ThumbnailSidebarProps {
   sidebarRef: React.RefObject<HTMLDivElement | null>
@@ -5705,11 +6018,7 @@ interface ThumbnailSidebarProps {
   currentPage: number
   pagesData: Record<number, { pageScaleRatio?: number; scalePxPerMm?: number }>
   onSelectPage: (pageNum: number) => void
-  /** Wall count per page — drives the "X walls" caption and shows the
-   *  Clear button only for pages that have something to clear. */
   wallCountsByPage?: Record<number, number>
-  /** Delete every wall, opening, and pier on the given page. Called from
-   *  the per-thumbnail Clear button. Confirmation lives at the call site. */
   onClearPage?: (pageNum: number) => void
 }
 
@@ -5729,9 +6038,6 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
       className="w-44 flex-shrink-0 max-h-full overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2 shadow-lg"
     >
       <Document
-        // Same fix as the main viewer: re-mount the thumbnail Document when
-        // the displayed PDF changes so its inner Pages re-rasterise against
-        // the new file instead of showing the previous file's thumbnails.
         key={pdfFile?.name ?? 'no-file'}
         file={pdfFile}
         loading={null}
@@ -5740,9 +6046,6 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
         <div className="space-y-2.5">
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
             const isCurrent = pageNum === currentPage
-            // "Scaled" if either the new page-ratio is set (post-fix projects)
-            // or the legacy px/mm field is present (legacy projects, until
-            // migration runs on PDF load).
             const hasScale =
               !!pagesData[pageNum]?.pageScaleRatio ||
               !!pagesData[pageNum]?.scalePxPerMm
@@ -5790,10 +6093,6 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                     </div>
                   )}
                 </button>
-                {/* Clear page: removes every wall, opening, and pier on this
-                    page so a stale earlier-attempt page can be dropped
-                    permanently. Hover-visible to avoid mis-clicks during
-                    normal page navigation; confirmation dialog on click. */}
                 {canClear && (
                   <button
                     onClick={(e) => {
@@ -5818,30 +6117,8 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   )
 })
 
-function RequestBreadcrumb({ request }: { request: EstimateRequest }) {
-  return (
-    <div className="px-6 pt-4 pb-3">
-      <Link
-        to={`/requests/${request.id}`}
-        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
-      >
-        <span className="text-base leading-none">←</span>
-        <span>
-          Request from{' '}
-          <span className="font-medium text-ink-50">{request.customerName}</span>
-          {request.customerCompany && (
-            <span className="text-ink-400"> · {request.customerCompany}</span>
-          )}
-        </span>
-      </Link>
-    </div>
-  )
-}
-
 /**
- * Page heading for the workspace — matches the Dashboard's typography on the
- * home page. Sits below the ProjectBar so the user always knows whether
- * they're in a brick or block workspace.
+ * Page heading for the workspace.
  */
 function WorkspacePageHeading({ mode }: { mode: 'block' | 'brick' | undefined }) {
   if (mode === 'brick') {

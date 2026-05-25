@@ -19,7 +19,7 @@ import { generateProjectId, saveProject } from './projectStorage'
 import { createDefaultProjectDetails, createDefaultExportInclusions } from './brickExport'
 import { createDefaultBlockExportInclusions } from './blockExport'
 import { createDefaultBrickSettings } from './brickCalc'
-import { createDefaultWallMakeup, createDefaultPierMakeups } from './makeups'
+import { createDefaultWallMakeup } from './makeups'
 import { isSupabaseConfigured, supabase } from './supabase'
 
 const PLANS_BUCKET = 'estimate-request-plans'
@@ -490,7 +490,7 @@ export async function pickUpEstimateRequest(request: EstimateRequest): Promise<s
     wallsByPage: {},
     openingsByPage: {},
     piersByPage: {},
-    pierMakeups: createDefaultPierMakeups(),
+    pierMakeups: [],
     currentPage: 1,
     ...(request.type === 'block'
       ? {

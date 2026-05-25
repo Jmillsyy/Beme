@@ -703,7 +703,8 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       {myProjects.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
               Your projects
             </h3>
             <div className="flex items-center gap-3">
@@ -741,7 +742,8 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       {teamProjects.length > 0 && (
         <section className="mt-8">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
               In-progress projects
             </h3>
             <div className="flex items-center gap-3">
@@ -786,7 +788,8 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           keeps the dashboard layout consistent week to week. */}
       <section className="mt-8">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+            <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
             Team — recently completed
           </h3>
           <Link
@@ -951,13 +954,19 @@ function ProjectInProgressRow({
               </span>
               {typeof project.referenceNumber === 'number' && (
                 <span
-                  className="text-[11px] tabular-nums font-semibold text-ink-300"
+                  className="text-[11px] tabular-nums font-semibold text-beme-400/80"
                   title="Reference number — quote this when looking the project up."
                 >
                   #{formatRef(project.referenceNumber)}
                 </span>
               )}
-              <span className="text-[10px] uppercase tracking-wider text-ink-400">
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
+                  project.type === 'brick'
+                    ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                    : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
+                }`}
+              >
                 {project.type === 'brick' ? 'Brick' : 'Block'}
               </span>
               {ownerName && !isMyProject && (
@@ -1082,7 +1091,7 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
               {title}
             </span>
             {typeof project.referenceNumber === 'number' && (
-              <span className="text-[11px] tabular-nums font-semibold text-ink-300">
+              <span className="text-[11px] tabular-nums font-semibold text-beme-400/80">
                 #{formatRef(project.referenceNumber)}
               </span>
             )}
@@ -1091,7 +1100,13 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
             <div className="text-xs text-ink-400 truncate">{sub}</div>
           )}
         </div>
-        <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-400">
+        <span
+          className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
+            project.type === 'brick'
+              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+              : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
+          }`}
+        >
           {project.type === 'brick' ? 'Brick' : 'Block'}
         </span>
       </div>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type {
+  Pier,
   PierMakeup,
   WallMakeup,
   BondType,
@@ -31,12 +32,22 @@ interface WallTypesPanelProps {
   onUpdateMakeup: (makeup: WallMakeup) => void
   onDeleteMakeup: (id: string) => void
 
-  /** Pier types now live in this same panel as a separate card group. */
+  /** Pier types live in this panel as a separate card group below wall
+   *  types. Click a card to activate the type used when placing piers. */
   pierMakeups: PierMakeup[]
   pierCountsByMakeupId: Record<string, number>
+  activePierMakeupId: string | null
+  onSetActivePier: (id: string) => void
   onAddPierMakeup: (makeup: PierMakeup) => void
   onUpdatePierMakeup: (makeup: PierMakeup) => void
   onDeletePierMakeup: (id: string) => void
+
+  /** Selected pier on the canvas (or null). When set, the panel renders an
+   *  inline "Selected pier" inspector under the matching pier-type card. */
+  selectedPier?: Pier | null
+  onReassignPierMakeup?: (pierId: string, pierMakeupId: string) => void
+  onDeletePier?: (pierId: string) => void
+  onDeselectPier?: () => void
 }
 
 function generateMakeupId(): string {
@@ -63,16 +74,31 @@ export default function WallTypesPanel({
   onDeleteMakeup,
   pierMakeups,
   pierCountsByMakeupId,
+  activePierMakeupId,
+  onSetActivePier,
   onAddPierMakeup,
   onUpdatePierMakeup,
   onDeletePierMakeup,
+  selectedPier = null,
+  onReassignPierMakeup,
+  onDeletePier,
+  onDeselectPier,
 }: WallTypesPanelProps) {
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** Outer-level pier editor state — drives the "+ Add pier" / "Edit pier"
+   *  flow from the panel directly so the user path mirrors wall types. */
+  const [pierEditingId, setPierEditingId] = useState<string | null>(null)
+  const editingPierMakeup =
+    pierEditingId && pierEditingId !== 'new'
+      ? pierMakeups.find((m) => m.id === pierEditingId) ?? null
+      : null
   const [expanded, setExpanded] = useState(true)
 
   const editingMakeup =
-    editingId && editingId !== 'new' ? makeups.find((m) => m.id === editingId) : null
+    editingId && editingId !== 'new'
+      ? makeups.find((m) => m.id === editingId) ?? null
+      : null
 
   const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
 
@@ -207,10 +233,117 @@ export default function WallTypesPanel({
         </div>
       )}
 
-      {/* Modal lives at the panel root so it floats over everything, not
-          inline in the list. Mounted only while editing/adding so the form
-          state (and its hooks) get fresh defaults each open. Pier types
-          are managed from inside this modal too — see the Piers tab. */}
+      {/* Pier types — listed under the wall types in the same panel.
+          Each pier card is click-to-activate (parallel to wall-type
+          activation). "+ Add" opens the pier editor modal (same UX as
+          wall "+ Add"). When a pier is selected on the canvas, an inline
+          inspector renders under its matching card. */}
+      {expanded && (
+        <div className="mt-3 pt-3 border-t border-ink-600/60">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Pier types
+            </h4>
+            <button
+              onClick={() => setPierEditingId('new')}
+              className="text-xs px-2 py-0.5 rounded-md bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors"
+            >
+              + Add
+            </button>
+          </div>
+          <div className="flex flex-col gap-2 pb-1">
+            {pierMakeups.length === 0 && (
+              <p className="text-xs text-ink-400 italic">
+                No pier types yet. + Add to create one.
+              </p>
+            )}
+            {pierMakeups.map((pm) => {
+              const isActive = pm.id === activePierMakeupId
+              const pierCount = pierCountsByMakeupId[pm.id] ?? 0
+              const canDelete = pierMakeups.length > 1 && pierCount === 0
+              const selectionBelongsHere =
+                !!selectedPier && selectedPier.pierMakeupId === pm.id
+              return (
+                <div key={pm.id} className="flex flex-col">
+                  <button
+                    onClick={() => onSetActivePier(pm.id)}
+                    className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                      isActive
+                        ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                        : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
+                    } ${selectionBelongsHere ? 'rounded-b-none border-b-0' : ''}`}
+                  >
+                    {isActive && (
+                      <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                        Active
+                      </span>
+                    )}
+                    <div className="flex items-start gap-2 mb-1 pr-12">
+                      <span
+                        className={`inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 ${
+                          pm.suggestedPlacement === 'tied'
+                            ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                            : 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
+                        }`}
+                      >
+                        {pm.suggestedPlacement === 'tied' ? 'Tied' : 'Free'}
+                      </span>
+                      <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                        {pm.name}
+                      </div>
+                    </div>
+                    <div className="text-xs text-ink-400 font-mono break-words">
+                      {pm.coursePattern.join(' · ')}
+                    </div>
+                    <div className="text-xs text-ink-500 mt-2">
+                      {pierCount} pier{pierCount === 1 ? '' : 's'} using this
+                    </div>
+                    <div className="flex gap-3 mt-2">
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setPierEditingId(pm.id)
+                        }}
+                        className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
+                      >
+                        Edit
+                      </span>
+                      {canDelete && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (window.confirm(`Delete pier type "${pm.name}"?`)) {
+                              onDeletePierMakeup(pm.id)
+                            }
+                          }}
+                          className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                        >
+                          Delete
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  {selectionBelongsHere && (
+                    <SelectedPierInspector
+                      selectedPier={selectedPier}
+                      pierMakeups={pierMakeups}
+                      onReassign={onReassignPierMakeup}
+                      onDelete={onDeletePier}
+                      onDeselect={onDeselectPier}
+                    />
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Wall-type editor modal */}
       {editingId !== null && (
         <WallTypeEditorModal
           existing={editingId === 'new' ? null : editingMakeup}
@@ -220,11 +353,23 @@ export default function WallTypesPanel({
             else onUpdateMakeup(m)
             setEditingId(null)
           }}
-          pierMakeups={pierMakeups}
-          pierCountsByMakeupId={pierCountsByMakeupId}
-          onAddPierMakeup={onAddPierMakeup}
-          onUpdatePierMakeup={onUpdatePierMakeup}
-          onDeletePierMakeup={onDeletePierMakeup}
+        />
+      )}
+
+      {/* Pier type editor — same flow as wall-type "+ Add" */}
+      {pierEditingId !== null && (
+        <PierTypeEditorModal
+          existing={pierEditingId === 'new' ? null : editingPierMakeup}
+          onCancel={() => setPierEditingId(null)}
+          onSave={(pm) => {
+            if (pierEditingId === 'new') {
+              onAddPierMakeup(pm)
+              onSetActivePier(pm.id)
+            } else {
+              onUpdatePierMakeup(pm)
+            }
+            setPierEditingId(null)
+          }}
         />
       )}
     </div>
@@ -233,23 +378,12 @@ export default function WallTypesPanel({
 
 // ---------- Internal: WallTypeEditorModal ----------
 
-type TabKey = 'basics' | 'composition' | 'pattern' | 'advanced' | 'piers'
+type TabKey = 'basics' | 'composition' | 'pattern' | 'advanced'
 
 interface WallTypeEditorModalProps {
   existing: WallMakeup | null
   onSave: (makeup: WallMakeup) => void
   onCancel: () => void
-
-  /** Pier types are project-level (not bound to a specific wall type) but
-   *  managed from inside this modal as a Piers tab — that's the user's
-   *  preferred home for them after the right-rail PierTypesPanel was
-   *  retired. The same list of pierMakeups appears in every wall-type
-   *  editor; edits round-trip through the parent's handlers. */
-  pierMakeups: PierMakeup[]
-  pierCountsByMakeupId: Record<string, number>
-  onAddPierMakeup: (makeup: PierMakeup) => void
-  onUpdatePierMakeup: (makeup: PierMakeup) => void
-  onDeletePierMakeup: (id: string) => void
 }
 
 /**
@@ -273,19 +407,7 @@ function WallTypeEditorModal({
   existing,
   onSave,
   onCancel,
-  pierMakeups,
-  pierCountsByMakeupId,
-  onAddPierMakeup,
-  onUpdatePierMakeup,
-  onDeletePierMakeup,
 }: WallTypeEditorModalProps) {
-  /** Nested pier-edit state — null = none open, 'new' = adding,
-   *  otherwise the id of the pier makeup being edited. */
-  const [editingPierId, setEditingPierId] = useState<string | null>(null)
-  const editingPierMakeup =
-    editingPierId && editingPierId !== 'new'
-      ? pierMakeups.find((m) => m.id === editingPierId) ?? null
-      : null
   const { library } = useBlockLibrary()
   const selectableBlocks = useMemo<BlockCode[]>(
     () =>
@@ -596,11 +718,8 @@ function WallTypeEditorModal({
           : undefined,
       disabled: wedgeDisablesCourseMix,
     },
-    {
-      key: 'piers',
-      label: 'Piers',
-      badge: pierMakeups.length > 0 ? `${pierMakeups.length}` : undefined,
-    },
+    // Piers used to live as a tab inside this modal. They now have their
+    // own "+ Add" / "Edit" buttons in the Pier types section of the panel.
   ]
 
   return (
@@ -751,15 +870,6 @@ function WallTypeEditorModal({
               />
             )}
 
-            {activeTab === 'piers' && (
-              <PiersTab
-                pierMakeups={pierMakeups}
-                pierCountsByMakeupId={pierCountsByMakeupId}
-                onEdit={(id) => setEditingPierId(id)}
-                onAdd={() => setEditingPierId('new')}
-                onDelete={onDeletePierMakeup}
-              />
-            )}
           </div>
 
           {/* Right rail: live visual stack preview. Shows on every tab so
@@ -830,23 +940,6 @@ function WallTypeEditorModal({
         </footer>
       </div>
 
-      {/* Nested pier-edit modal: when the user opens Edit/Add from inside
-          the Piers tab, this modal stacks above the wall-type modal.
-          z-index inside the inner modal stays the same as the wall modal,
-          but rendering it AFTER the wall modal markup is enough to put it
-          on top in the stacking context. Click-outside on the inner modal
-          closes only the inner one — the wall modal stays visible behind. */}
-      {editingPierId !== null && (
-        <PierTypeEditorModal
-          existing={editingPierId === 'new' ? null : editingPierMakeup}
-          onCancel={() => setEditingPierId(null)}
-          onSave={(pm) => {
-            if (editingPierId === 'new') onAddPierMakeup(pm)
-            else onUpdatePierMakeup(pm)
-            setEditingPierId(null)
-          }}
-        />
-      )}
     </div>
   )
 }
@@ -1571,25 +1664,36 @@ function CoursePatternPreview({
   // for total-height math above and for the per-course row sizing below.
   const heightOf = (code: BlockCode) =>
     (library[code]?.dimensions.heightMm ?? 190) + 10
+  // Course-width per code (block face width + 10mm mortar) — so 20.03CW
+  // (190+10 = 200mm modular) renders half as wide as 20.48 (390+10 =
+  // 400mm modular). Lets wedge curves draw with square faces instead of
+  // the 2:1 horizontal rectangle 20.48 uses.
+  const widthOf = (code: BlockCode) =>
+    (library[code]?.dimensions.widthMm ?? 390) + 10
 
   // Representative number of BODY blocks across the wall section. The
-  // end-termination columns sit either side, so the total visual width
-  // is BLOCKS_ACROSS + 2 full-block units. On stretcher even courses
-  // the end blocks are half-width and an extra body block fills in,
-  // matching how the real wall maths works out (the wall length is the
-  // same, the body count and end-block widths flip together).
+  // end-termination columns sit either side. We compute each course's
+  // actual modular width below (based on its body block code) and use
+  // the MAX across all courses as the wall's representative width — so
+  // a wall with wedge bodies renders narrower than one with standard
+  // bodies, and the block faces always show at their real aspect.
   const BLOCKS_ACROSS = 4
-  const TOTAL_UNITS = BLOCKS_ACROSS + 2 // full-block widths total
-  const fullPct = 100 / TOTAL_UNITS
-  const halfPct = 50 / TOTAL_UNITS
+  const bodyWidthOf = (code: BlockCode) => widthOf(code)
+  const cornerWidth = widthOf(cornerBlockCode)
+  const halfWidth = widthOf(halfBlockCode)
 
-  // Real-world wall section dimensions. The wall preview locks to this
-  // aspect ratio so it doesn't stretch / squash when the parent's flex
-  // slot is bigger or smaller — a 4000mm wall ALWAYS looks taller than a
-  // 2400mm wall, and 20.48 block faces ALWAYS look ~2:1 wide because
-  // each full block is 400mm modular wide vs 200mm modular tall.
-  const BLOCK_MODULE_MM = 400
-  const REPRESENTATIVE_WIDTH_MM = TOTAL_UNITS * BLOCK_MODULE_MM
+  // Per-course modular width: even (stretcher) rows = halfW + (n+1)·bodyW + halfW,
+  // odd / stack rows = cornerW + n·bodyW + cornerW. We take the max so
+  // the wall preview locks to the widest course's width.
+  const courseModularWidths = courses.map((code, idx) => {
+    const isEven = (idx + 1) % 2 === 0
+    const bodyW = bodyWidthOf(code)
+    if (bondType === 'stretcher' && isEven) {
+      return halfWidth + (BLOCKS_ACROSS + 1) * bodyW + halfWidth
+    }
+    return cornerWidth + BLOCKS_ACROSS * bodyW + cornerWidth
+  })
+  const REPRESENTATIVE_WIDTH_MM = Math.max(...courseModularWidths, 1)
   const wallAspect = `${REPRESENTATIVE_WIDTH_MM} / ${totalHeight}`
 
   // Boundary labels for the side ruler — total mm at top, then the
@@ -1646,31 +1750,28 @@ function CoursePatternPreview({
           const isEven = courseNum % 2 === 0
           const useHalves = bondType === 'stretcher' && isEven
 
-          // Build the cells for this course. End-termination cells use
-          // the cornerBlockCode / halfBlockCode colours so the user can
-          // see where the corner and half blocks land; body cells use
-          // the band's blockCode colour.
+          // Build the cells for this course. Each cell's width is its
+          // block's modular width (face + mortar) as a percentage of the
+          // wall's representative width, so a 20.03CW cell (200mm)
+          // renders half as wide as a 20.48 cell (400mm).
           const bodyFill = bandColor(code)
           const cornerFill = bandColor(cornerBlockCode)
           const halfFill = bandColor(halfBlockCode)
+          const bodyW = bodyWidthOf(code)
+          const toPct = (w: number) => (w / REPRESENTATIVE_WIDTH_MM) * 100
           const cells: { widthPct: number; color: string; label: string }[] = []
           if (useHalves) {
-            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body + half
-            // end. Total = 0.5 + (n+1) + 0.5 = n + 2 full-block widths,
-            // same total as the odd-course row below — that's why the
-            // bond pattern reads as an offset rather than a width change.
-            cells.push({ widthPct: halfPct, color: halfFill, label: halfBlockCode })
+            cells.push({ widthPct: toPct(halfWidth), color: halfFill, label: halfBlockCode })
             for (let i = 0; i < BLOCKS_ACROSS + 1; i++) {
-              cells.push({ widthPct: fullPct, color: bodyFill, label: code })
+              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: code })
             }
-            cells.push({ widthPct: halfPct, color: halfFill, label: halfBlockCode })
+            cells.push({ widthPct: toPct(halfWidth), color: halfFill, label: halfBlockCode })
           } else {
-            // Stack bond OR stretcher odd: full end + N body + full end.
-            cells.push({ widthPct: fullPct, color: cornerFill, label: cornerBlockCode })
+            cells.push({ widthPct: toPct(cornerWidth), color: cornerFill, label: cornerBlockCode })
             for (let i = 0; i < BLOCKS_ACROSS; i++) {
-              cells.push({ widthPct: fullPct, color: bodyFill, label: code })
+              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: code })
             }
-            cells.push({ widthPct: fullPct, color: cornerFill, label: cornerBlockCode })
+            cells.push({ widthPct: toPct(cornerWidth), color: cornerFill, label: cornerBlockCode })
           }
 
           return (
@@ -1833,127 +1934,80 @@ function AdvancedTab(props: AdvancedTabProps) {
   )
 }
 
-// ---------- Tab: Piers ----------
+// ---------- Selected pier inspector ----------
 
-interface PiersTabProps {
+interface SelectedPierInspectorProps {
+  selectedPier: Pier
   pierMakeups: PierMakeup[]
-  pierCountsByMakeupId: Record<string, number>
-  onEdit: (id: string) => void
-  onAdd: () => void
-  onDelete: (id: string) => void
+  onReassign?: (pierId: string, pierMakeupId: string) => void
+  onDelete?: (pierId: string) => void
+  onDeselect?: () => void
 }
 
 /**
- * Lists every pier type defined in the project and lets the user add or
- * edit them inline. Pier types are project-level (not bound to a single
- * wall type), so the same list appears in every wall-type editor's
- * Piers tab — editing here mutates the project's pier makeups via the
- * round-trip handlers.
+ * Inline editor for the currently-selected pier on the canvas, rendered
+ * directly under the matching pier-type card in the sidebar. Replaces the
+ * old floating "selected pier" banner — this lives in the right rail so
+ * pier editing feels like wall editing.
  *
- * Edit / Add opens the nested PierTypeEditorModal mounted at the wall
- * modal's root, which stacks on top of the wall modal (the wall modal
- * stays visible behind the pier modal, so the user has visual context).
+ * Freestanding piers get a Height input (per-instance). Tied piers show
+ * a hint that height is inherited from the host wall.
  */
-function PiersTab({
+function SelectedPierInspector({
+  selectedPier,
   pierMakeups,
-  pierCountsByMakeupId,
-  onEdit,
-  onAdd,
+  onReassign,
   onDelete,
-}: PiersTabProps) {
+  onDeselect,
+}: SelectedPierInspectorProps) {
   return (
-    <div className="max-w-3xl">
-      <div className="flex items-baseline justify-between mb-3 gap-2">
-        <div>
-          <h3 className="text-sm font-semibold text-ink-100">Pier types</h3>
-          <p className="text-[11px] text-ink-500 mt-0.5">
-            Project-level pier definitions. Each one can be dropped on the plan
-            as a tied (built into a wall) or freestanding pier.
-          </p>
-        </div>
-        <button
-          onClick={onAdd}
-          className="text-sm px-3 py-1.5 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
-        >
-          + Add pier type
-        </button>
+    <div
+      className="p-2.5 rounded-b-lg border border-t-0 border-beme-500 bg-beme-500/5 flex flex-col gap-2"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-300">
+        Selected pier
+      </div>
+      <div className="text-[11px] text-ink-400 italic">
+        {selectedPier.type === 'freestanding'
+          ? `Freestanding pier · ${selectedPier.heightMm}mm. Click Edit on the type above to change the height.`
+          : 'Tied pier — height inherits the host wall. Edit the wall to change it.'}
       </div>
 
-      {pierMakeups.length === 0 && (
-        <div className="py-12 text-center text-ink-500 border-2 border-dashed border-ink-700 rounded-lg">
-          <div className="text-3xl mb-2 select-none">⦿</div>
-          <p className="text-sm">No pier types yet.</p>
-          <p className="text-xs mt-1">
-            Add one to drop tied or freestanding piers on the plan.
-          </p>
-        </div>
+      {pierMakeups.length > 1 && onReassign && (
+        <label className="flex items-center gap-2 text-xs text-ink-200">
+          <span className="w-14 flex-shrink-0">Type</span>
+          <select
+            value={selectedPier.pierMakeupId ?? ''}
+            onChange={(e) => onReassign(selectedPier.id, e.target.value)}
+            className="flex-1 min-w-0 px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50"
+          >
+            {pierMakeups.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
 
-      <div className="space-y-2">
-        {pierMakeups.map((pm) => {
-          const usage = pierCountsByMakeupId[pm.id] ?? 0
-          const canDelete = pierMakeups.length > 1 && usage === 0
-          return (
-            <div
-              key={pm.id}
-              className="p-3 rounded-lg border border-ink-600 bg-ink-900/60"
-            >
-              <div className="flex items-start gap-3 flex-wrap">
-                {/* Block-stack mini-preview: 4 cells representing the
-                    pattern repeating up the pier. Reads as a tiny pier
-                    sat next to the name. */}
-                <div className="flex flex-col-reverse w-6 h-12 rounded-sm overflow-hidden border border-ink-600 bg-ink-950 flex-shrink-0">
-                  {Array.from({ length: 4 }).map((_, i) => {
-                    const code = pm.coursePattern[i % pm.coursePattern.length]
-                    return (
-                      <div
-                        key={i}
-                        style={{ backgroundColor: bandColor(code) }}
-                        className="flex-1 border-t border-black/30 first:border-t-0"
-                        title={`Course ${i + 1}: ${code}`}
-                      />
-                    )
-                  })}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-ink-100 break-words">
-                    {pm.name}
-                  </div>
-                  <div className="text-xs text-ink-400 mt-0.5">
-                    {pm.suggestedPlacement === 'tied' ? 'Tied' : 'Freestanding'}
-                    {' · '}
-                    <span className="font-mono">
-                      {pm.coursePattern.join(' / ')}
-                    </span>
-                  </div>
-                  <div className="text-xs text-ink-500 mt-1">
-                    {usage} pier{usage === 1 ? '' : 's'} using this
-                  </div>
-                </div>
-                <div className="flex gap-3 ml-auto items-center">
-                  <button
-                    onClick={() => onEdit(pm.id)}
-                    className="text-xs text-beme-400 hover:text-beme-300 hover:underline"
-                  >
-                    Edit
-                  </button>
-                  {canDelete && (
-                    <button
-                      onClick={() => {
-                        if (window.confirm(`Delete pier type "${pm.name}"?`)) {
-                          onDelete(pm.id)
-                        }
-                      }}
-                      className="text-xs text-rose-400 hover:text-rose-300 hover:underline"
-                    >
-                      Delete
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          )
-        })}
+      <div className="flex gap-2 mt-1">
+        {onDelete && (
+          <button
+            onClick={() => onDelete(selectedPier.id)}
+            className="px-2 py-1 rounded border border-rose-500/40 text-xs text-rose-300 hover:bg-rose-500/10 transition-colors"
+          >
+            Delete pier
+          </button>
+        )}
+        {onDeselect && (
+          <button
+            onClick={onDeselect}
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-ink-700 transition-colors"
+          >
+            Deselect
+          </button>
+        )}
       </div>
     </div>
   )
@@ -2162,6 +2216,12 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
       ? existing.coursePattern
       : ['40.925', '20.01']
   )
+  // Height for freestanding pier types (in mm). Saving propagates the value
+  // to every freestanding pier of this type so the modal is the single
+  // editing surface — matches how walls work (edit the type's height, every
+  // wall of that type updates). Tied piers ignore this and inherit the
+  // host wall's height.
+  const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
 
   function updateSlot(idx: number, code: BlockCode) {
     setPattern((prev) => prev.map((c, i) => (i === idx ? code : c)))
@@ -2195,6 +2255,9 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
       name: name.trim() || 'New pier type',
       suggestedPlacement: placement,
       coursePattern: pattern,
+      // Only persist heightMm for freestanding makeups — tied piers don't
+      // use a type-level height (they inherit the wall).
+      heightMm: placement === 'freestanding' ? heightMm : undefined,
     }
     onSave(updated)
   }
@@ -2291,6 +2354,27 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
                 </label>
               </div>
             </fieldset>
+
+            {placement === 'freestanding' && (
+              <label className="text-sm block">
+                <span className="block text-ink-300 mb-1.5">Height (mm)</span>
+                <input
+                  type="number"
+                  min={200}
+                  step={200}
+                  value={heightMm}
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value || '0', 10)
+                    if (Number.isFinite(n)) setHeightMm(Math.max(200, n))
+                  }}
+                  className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 font-mono"
+                />
+                <p className="text-[11px] text-ink-500 mt-1.5">
+                  Applies to every freestanding pier of this type. Tied piers
+                  inherit the host wall's height instead.
+                </p>
+              </label>
+            )}
 
             <section>
               <div className="flex items-baseline justify-between mb-2">

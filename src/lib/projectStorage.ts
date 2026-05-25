@@ -176,6 +176,10 @@ export interface SavedProject {
   piersByPage?: Record<number, Pier[]>
   /** Pier makeups (block mode). Optional — older saved projects predate this field. */
   pierMakeups?: PierMakeup[]
+  /** Currently-active pier makeup id, if any. Used to seed the next-placed
+   *  pier's makeup. Optional + nullable for projects saved before the
+   *  panel-level active-pier-makeup state existed. */
+  activePierMakeupId?: string | null
   /** Last-viewed page number. */
   currentPage: number
 

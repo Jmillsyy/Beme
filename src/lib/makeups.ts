@@ -100,6 +100,7 @@ export function createDefaultFreestandingPierMakeup(
     name,
     coursePattern: ['40.925'],
     suggestedPlacement: 'freestanding',
+    heightMm: 2400,
   }
 }
 

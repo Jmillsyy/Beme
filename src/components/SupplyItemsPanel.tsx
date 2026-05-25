@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import type { SupplyItem, SupplyItemUnit } from '../types/userSettings'
 import { useUserSettings } from '../lib/userSettings'
 
@@ -113,22 +114,31 @@ function SupplyItemsPanelImpl({
 
   return (
     <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-2 text-left group mb-2"
-      >
-        <span className="text-ink-500 group-hover:text-ink-300 text-xs">
-          {expanded ? '▾' : '▸'}
-        </span>
-        <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300">
-          Supply items
-        </h3>
-        <span className="text-xs text-ink-400 truncate min-w-0">
-          {applicableItems.length === 0
-            ? '· nothing in your Material library'
-            : `· ${includedCount} of ${applicableItems.length} included`}
-        </span>
-      </button>
+      <div className="flex items-center gap-2 mb-2 min-w-0">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-2 text-left group flex-1 min-w-0 whitespace-nowrap"
+        >
+          <span className="text-ink-500 group-hover:text-ink-300 text-xs flex-shrink-0">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300 flex-shrink-0">
+            Supply items
+          </h3>
+          <span className="text-xs text-ink-400 truncate min-w-0">
+            {applicableItems.length === 0
+              ? '· none'
+              : `· ${includedCount}/${applicableItems.length}`}
+          </span>
+        </button>
+        <Link
+          to="/library#supply-items"
+          className="text-xs px-2 py-0.5 rounded-md bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors whitespace-nowrap flex-shrink-0"
+          title="Open the Material library, scrolled to Supply items"
+        >
+          + Add
+        </Link>
+      </div>
 
       {expanded && (
         <>

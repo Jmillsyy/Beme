@@ -355,6 +355,14 @@ export interface PierMakeup {
   coursePattern: BlockCode[]
   /** Hint for which placement button picks this makeup as the default. */
   suggestedPlacement: 'tied' | 'freestanding'
+  /**
+   * Height for piers of this type, in mm. Used by freestanding piers — they
+   * inherit this when placed and update when the makeup is edited. Tied
+   * piers ignore this and always take their host wall's height.
+   *
+   * Optional + missing on saves predating the type-level pier-height field.
+   */
+  heightMm?: number
 }
 
 /**

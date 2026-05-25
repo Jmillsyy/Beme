@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import Header from '../components/Header'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
@@ -38,6 +38,24 @@ export default function MaterialLibraryPage() {
    * loaded immediately since there's nothing to fetch.
    */
   const [membersLoaded, setMembersLoaded] = useState<boolean>(!currentOrg)
+
+  // SPA navigation doesn't auto-scroll to a URL fragment the way a full
+  // page load does, so we do it ourselves: when the location hash changes
+  // (or on first mount with a hash present), find the matching element
+  // and scroll it into view. The `scroll-mt-24` utility on each Section
+  // leaves room for the sticky header so the heading isn't tucked under
+  // it after the scroll lands.
+  const location = useLocation()
+  useEffect(() => {
+    if (!location.hash) return
+    const id = location.hash.slice(1)
+    // Wait one frame so the Sections have laid out before we measure.
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(id)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [location.hash])
 
   // Load members so we can resolve the current user's role inside the org.
   // No-op for personal accounts.
@@ -130,6 +148,7 @@ export default function MaterialLibraryPage() {
 
           {/* Supply items */}
           <Section
+            id="supply-items"
             title="Supply items"
             description="Anything you add to estimates by rate — cement, ties, rebar, flashings, sealants, etc. Pick a unit (per block, per m², per lineal m…), set a rate, and we'll add the count to every applicable estimate."
           >
@@ -145,13 +164,15 @@ function Section({
   title,
   description,
   children,
+  id,
 }: {
   title: string
   description?: string
   children: React.ReactNode
+  id?: string
 }) {
   return (
-    <section>
+    <section id={id} className="scroll-mt-24">
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-ink-100">{title}</h3>
         {description && (
