@@ -33,6 +33,36 @@ export interface CourseOverride {
 }
 
 /**
+ * One contiguous run of identical courses inside a wall's vertical stack.
+ *
+ * Walls can be specified two ways:
+ *
+ *   1. Legacy: just a target `heightMm` on the makeup. The calc engine
+ *      derives uniform 200 mm courses (190 mm block + 10 mm mortar)
+ *      and inserts optional 100/150 mm height-makeup courses at the top
+ *      to land near the target.
+ *
+ *   2. Bands: an ordered list of {blockCode, count} entries. Each entry
+ *      says "N courses of this block stacked bottom-up". The wall's
+ *      height becomes a derived sum of (count × course-modular-height)
+ *      across every band. Lets the user spec retaining-wall patterns
+ *      like "4× 20.48, 2× 20.71, 4× 20.48, ..." cleanly.
+ *
+ * Course-modular-height per band = block.heightMm + 10 mm mortar.
+ * 20.48 / 20.01 / 20.45 etc → 200 mm modular. 20.71 → 100 mm. 20.140
+ * → 150 mm. The library is the source of truth so a user-added block
+ * automatically picks up the right modular height.
+ *
+ * Bands are evaluated bottom-up (band 0 = course 1 = base).
+ */
+export interface CourseBand {
+  /** Block laid across every course in this band. */
+  blockCode: BlockCode
+  /** How many consecutive courses use this block. Must be ≥ 1. */
+  count: number
+}
+
+/**
  * A contiguous run of courses that uses a different block series than the rest
  * of the wall.
  *
@@ -139,8 +169,28 @@ export interface WallMakeup {
    * (wider, engineering-required base courses) with standard 200 series above,
    * or any analogous mix. Empty / undefined → wall uses the makeup defaults
    * for every course (legacy behaviour).
+   *
+   * Ranges reference 1-indexed course numbers. When a `coursePattern` is set
+   * on the makeup, the course numbers a range targets are determined by the
+   * bands-derived course list, not by `heightMm / 200`.
    */
   courseSeriesRanges?: CourseSeriesRange[]
+
+  /**
+   * Optional repeating course pattern. When present and non-empty, OVERRIDES
+   * the legacy "compute uniform 200 mm courses from heightMm" flow:
+   *   - Course composition comes from the bands list (bottom-up).
+   *   - Wall height becomes the sum of (count × course-modular-height) across
+   *     every band. `heightMm` is still stored (and the UI displays the
+   *     derived sum) but the bands are authoritative.
+   *   - Existing `courseSeriesRanges` and `courseOverrides` apply on top
+   *     (range = "courses 1-6 use 300 series" still works regardless of how
+   *     the bands derive the course list).
+   *
+   * Unset / empty → legacy uniform-200 mm flow. Both paths share the rest of
+   * the calc engine — only `buildCourses` branches.
+   */
+  coursePattern?: CourseBand[]
 
   // ---- Corner / termination preferences ----
   /**

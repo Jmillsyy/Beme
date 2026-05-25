@@ -4,8 +4,11 @@
  */
 
 import type { BlockCode } from '../types/blocks'
+import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type {
   BrickMakeup,
+  CourseBand,
   CourseSeriesRange,
   PierMakeup,
   BondType,
@@ -251,4 +254,117 @@ export function resolveCourseBlocks(
  */
 export function hasMixedCourseSeries(makeup: WallMakeup): boolean {
   return (makeup.courseSeriesRanges?.length ?? 0) > 0
+}
+
+// ─── Course pattern helpers ─────────────────────────────────────────────────
+
+/**
+ * Resolve a band's modular course height (mm) — the block's height plus a
+ * mortar joint. Falls back to 200 mm when the block isn't in the library
+ * (defensive: matches the legacy default rather than zeroing out a course).
+ */
+export function moduleHeightForBand(
+  band: CourseBand,
+  library: Record<BlockCode, { dimensions: { heightMm: number } }> = BLOCK_LIBRARY
+): number {
+  const block = library[band.blockCode]
+  if (!block) return 200
+  return block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
+}
+
+/**
+ * Derived wall height for a makeup. When `coursePattern` is set, the bands
+ * are authoritative — sum every band's (count × course-modular-height) and
+ * return that. Otherwise return `heightMm` (legacy uniform-200 path).
+ *
+ * Read this helper everywhere `makeup.heightMm` used to be read directly;
+ * keeps band-driven walls in lockstep with legacy walls across the UI and
+ * the export.
+ */
+export function getMakeupHeightMm(makeup: WallMakeup): number {
+  const bands = makeup.coursePattern
+  if (!bands || bands.length === 0) return makeup.heightMm
+  let sum = 0
+  for (const b of bands) {
+    if (b.count <= 0) continue
+    sum += b.count * moduleHeightForBand(b)
+  }
+  return sum
+}
+
+/**
+ * Total course count for a makeup. Bands → sum of counts; legacy → derived
+ * from heightMm / 200 (caller responsible for matching the existing
+ * calculateCourseStack behaviour).
+ */
+export function getCourseCount(makeup: WallMakeup): number {
+  const bands = makeup.coursePattern
+  if (!bands || bands.length === 0) {
+    return Math.max(0, Math.round(makeup.heightMm / 200))
+  }
+  return bands.reduce((s, b) => s + Math.max(0, b.count), 0)
+}
+
+/**
+ * Convert an existing legacy makeup into a starting bands list — used when
+ * the user clicks "Convert to course pattern" in the wall-type editor.
+ *
+ * Translates the current calc-engine output (base + N body + optional
+ * 100/150 mm height-makeup + top) into bands that produce the same
+ * physical wall. The user can then edit / repeat / add bands from there.
+ *
+ * Conservative: only handles makeups WITHOUT existing courseOverrides
+ * cleanly. If the user has overrides, we still seed the bands but flag
+ * the result as approximate via the returned `lossy` flag so the UI can
+ * tell them.
+ */
+export function convertMakeupToBands(makeup: WallMakeup): {
+  bands: CourseBand[]
+  lossy: boolean
+} {
+  const totalHeight = makeup.heightMm
+  const COURSE = 200
+  const HEIGHT_71 = 100
+  const HEIGHT_140 = 150
+  // Mirror calculateCourseStack's logic without importing it (avoid the
+  // makeups → blockCalc dependency that doesn't exist today).
+  const stdCount = Math.floor(totalHeight / COURSE)
+  let remainder = totalHeight - stdCount * COURSE
+  let has140 = false
+  let has71 = false
+  if (remainder >= HEIGHT_140) {
+    has140 = true
+    remainder -= HEIGHT_140
+  }
+  if (remainder >= HEIGHT_71) {
+    has71 = true
+    remainder -= HEIGHT_71
+  }
+  const totalCourses = stdCount + (has140 ? 1 : 0) + (has71 ? 1 : 0)
+  const bands: CourseBand[] = []
+  if (totalCourses === 0) {
+    return { bands, lossy: false }
+  }
+  // Course 1 = base; courses 2 .. (N-1) = body; height-makeup goes second-
+  // from-top; course N = top.
+  // We emit bands so each contiguous run of identical block codes collapses
+  // into a single { blockCode, count }.
+  const courses: BlockCode[] = []
+  courses.push(makeup.baseCourseBlockCode)
+  const bodyCount = Math.max(0, stdCount - 2)
+  for (let i = 0; i < bodyCount; i++) courses.push(makeup.bodyBlockCode)
+  if (has140) courses.push('20.140')
+  if (has71) courses.push('20.71')
+  if (totalCourses >= 2) courses.push(makeup.topCourseBlockCode)
+
+  for (const code of courses) {
+    const last = bands[bands.length - 1]
+    if (last && last.blockCode === code) last.count += 1
+    else bands.push({ blockCode: code, count: 1 })
+  }
+
+  return {
+    bands,
+    lossy: (makeup.courseOverrides?.length ?? 0) > 0,
+  }
 }
