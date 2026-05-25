@@ -22,7 +22,12 @@
  */
 
 import type { BlockCode } from '../types/blocks'
-import { pickLintelBlockIn, BLOCK_LIBRARY, DEFAULT_BLOCK_LIBRARY } from '../data/blockLibrary'
+import {
+  pickLintelForHeadHeightIn,
+  pickLintelBlockIn,
+  BLOCK_LIBRARY,
+  DEFAULT_BLOCK_LIBRARY,
+} from '../data/blockLibrary'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 
 // ---------- Block walls: lintel spec by head height ----------
@@ -55,7 +60,25 @@ export interface LintelSpec {
  * defined — keeps existing AU projects unchanged.
  */
 export function selectBlockLintel(headHeightMm: number): LintelSpec {
-  const block = pickLintelBlockIn(BLOCK_LIBRARY, headHeightMm)
+  // 1) Region-agnostic primary path: pick by lintelMinHeadHeightMm /
+  //    lintelMaxHeadHeightMm bucket metadata, so each region's library
+  //    can carry its own head-height thresholds. AU SEQ 20.13 / 20.25 /
+  //    20.18 are tagged 0–200 / 200–300 / 300+ in the seed library.
+  let block =
+    pickLintelForHeadHeightIn(BLOCK_LIBRARY, headHeightMm) ??
+    // 2) Older lintels without bucket metadata — fall back to the
+    //    height-based selector (smallest block whose face height ≥ head).
+    pickLintelBlockIn(BLOCK_LIBRARY, headHeightMm)
+
+  if (!block) {
+    // 3) Library has no lintel blocks at all — fall back to the SEQ
+    //    default library so older AU projects opened against a stripped
+    //    library still report sensibly.
+    block =
+      pickLintelForHeadHeightIn(DEFAULT_BLOCK_LIBRARY, headHeightMm) ??
+      pickLintelBlockIn(DEFAULT_BLOCK_LIBRARY, headHeightMm)
+  }
+
   if (block) {
     return {
       code: block.code,
@@ -63,17 +86,10 @@ export function selectBlockLintel(headHeightMm: number): LintelSpec {
       horizontalModuleMm: block.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
     }
   }
-  // Library has no lintel blocks at all — fall back to the SEQ default set so
-  // older AU projects opened against a stripped library still report sensibly.
-  const fallback = pickLintelBlockIn(DEFAULT_BLOCK_LIBRARY, headHeightMm)
-  if (fallback) {
-    return {
-      code: fallback.code,
-      verticalModuleMm: fallback.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
-      horizontalModuleMm: fallback.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
-    }
-  }
-  // Ultimate fallback — hardcoded SEQ values matching the original brief.
+
+  // 4) Ultimate fallback — even the seed library was empty. Hardcoded
+  //    SEQ values matching the original brief so the engine never
+  //    crashes on a totally-empty library state.
   if (headHeightMm >= 300) {
     return { code: '20.18', verticalModuleMm: 400, horizontalModuleMm: 200 }
   }

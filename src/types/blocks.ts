@@ -106,6 +106,21 @@ export interface Block {
   fraction?: number
   /** A block that's typically paired with this one (e.g. 20.45 ↔ 50.45). */
   pairedWith?: BlockCode
+  /**
+   * For lintel blocks ONLY: the head-height range this lintel covers, in mm.
+   * `selectBlockLintel(headHeightMm)` walks every block with the `lintel`
+   * role and picks the one whose range contains the given head height.
+   * Lets each region's library carry its own lintel rules instead of the
+   * AU 200 / 300mm thresholds being hard-coded in the calc engine.
+   *
+   * Convention: `lintelMinHeadHeightMm` is inclusive (a 200mm lintel with
+   * min=200 covers a 200mm head), `lintelMaxHeadHeightMm` is exclusive
+   * (max=300 covers up to but not including 300mm — anything ≥ 300 picks
+   * the next size up). Leave `lintelMaxHeadHeightMm` undefined for the
+   * largest lintel in the set (it's the upper-open bucket).
+   */
+  lintelMinHeadHeightMm?: number
+  lintelMaxHeadHeightMm?: number
 }
 
 /**

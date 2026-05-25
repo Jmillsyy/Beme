@@ -4,7 +4,16 @@
  */
 
 import type { BlockCode } from '../types/blocks'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import {
+  BLOCK_LIBRARY,
+  pickBaseCourse,
+  pickBaseTile,
+  pickBodyDefault,
+  pickCornerBlock,
+  pickHeightMakeupBlock,
+  pickPierBlock,
+  pickTopCourse,
+} from '../data/blockLibrary'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type {
   BrickMakeup,
@@ -60,16 +69,30 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
     useFractions = true,
   } = options
 
+  // Resolve defaults from the live library by role so a US / UK user
+  // creating their first wall type gets THEIR library's body / corner /
+  // base / tile codes — not the AU SEQ ones. Falls back to AU codes only
+  // if the library is missing role tags.
+  const bodyDefault = pickBodyDefault()?.code ?? '20.48'
+  const cornerDefault = knockoutCorners
+    ? '20.21'
+    : pickCornerBlock()?.code ?? '20.01'
+  const baseDefault = pickBaseCourse()?.code ?? '20.45'
+  const tileDefault = pickBaseTile()?.code ?? '50.45'
+  const topDefault = bondBeamOnTop
+    ? pickTopCourse()?.code ?? '20.20'
+    : bodyDefault
+
   return {
     id: uid(),
     name,
     bondType,
     heightMm,
-    baseCourseBlockCode: '20.45',
-    baseCourseTileCode: '50.45',
-    bodyBlockCode: '20.48',
-    topCourseBlockCode: bondBeamOnTop ? '20.20' : '20.48',
-    cornerBlockCode: knockoutCorners ? '20.21' : '20.01',
+    baseCourseBlockCode: baseDefault,
+    baseCourseTileCode: tileDefault,
+    bodyBlockCode: bodyDefault,
+    topCourseBlockCode: topDefault,
+    cornerBlockCode: cornerDefault,
     useFractions,
   }
 }
@@ -81,24 +104,30 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
  * Course 1 = 40.925, course 2 = 20.01, repeating up the wall height.
  */
 export function createDefaultTiedPierMakeup(name = 'Tied pier (40.925 / 20.01)'): PierMakeup {
+  // Role-driven defaults — pier block from the live library + corner
+  // block as the tie-back partner. Falls back to AU SEQ if the library
+  // doesn't tag a pier or corner.
+  const pierCode = pickPierBlock()?.code ?? '40.925'
+  const cornerCode = pickCornerBlock()?.code ?? '20.01'
   return {
     id: uid(),
     name,
-    coursePattern: ['40.925', '20.01'],
+    coursePattern: [pierCode, cornerCode],
     suggestedPlacement: 'tied',
   }
 }
 
 /**
- * Default freestanding-pier makeup — 40.925 stacked every course.
+ * Default freestanding-pier makeup — pier block stacked every course.
  */
 export function createDefaultFreestandingPierMakeup(
   name = 'Freestanding pier (40.925)'
 ): PierMakeup {
+  const pierCode = pickPierBlock()?.code ?? '40.925'
   return {
     id: uid(),
     name,
-    coursePattern: ['40.925'],
+    coursePattern: [pierCode],
     suggestedPlacement: 'freestanding',
     heightMm: 2400,
   }
@@ -354,8 +383,17 @@ export function convertMakeupToBands(makeup: WallMakeup): {
   courses.push(makeup.baseCourseBlockCode)
   const bodyCount = Math.max(0, stdCount - 2)
   for (let i = 0; i < bodyCount; i++) courses.push(makeup.bodyBlockCode)
-  if (has140) courses.push('20.140')
-  if (has71) courses.push('20.71')
+  // Height-makeup codes via role picker so a US/UK library with its own
+  // shorter-course blocks gets picked here too. Falls back to AU 20.140
+  // / 20.71 if the library has no height-makeup blocks tagged.
+  if (has140) {
+    const block150 = pickHeightMakeupBlock(HEIGHT_140)
+    courses.push((block150?.code ?? '20.140') as BlockCode)
+  }
+  if (has71) {
+    const block100 = pickHeightMakeupBlock(HEIGHT_71)
+    courses.push((block100?.code ?? '20.71') as BlockCode)
+  }
   if (totalCourses >= 2) courses.push(makeup.topCourseBlockCode)
 
   for (const code of courses) {

@@ -15,7 +15,7 @@
  */
 
 import type { BlockCode } from '../types/blocks'
-import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import { BLOCK_LIBRARY, pickHalfBlock } from '../data/blockLibrary'
 import type {
   BlockExportInclusions,
   BlockTally,
@@ -690,7 +690,9 @@ function buildWallSpecsPage(
       // stretcher bond at free ends, half alternates with full on even
       // courses. Older makeups (no halfBlockCode set) fall back to 20.03.
       const fullEndLabel = makeup.cornerBlockCode
-      const halfEndLabel = makeup.halfBlockCode ?? '20.03'
+      // Older makeups without halfBlockCode set fall back to the library's
+      // half block by role (AU SEQ: 20.03, US/UK: their equivalent).
+      const halfEndLabel = makeup.halfBlockCode ?? pickHalfBlock()?.code ?? '20.03'
 
       // Resolved wall height — sums the band counts when a course pattern is
       // set, otherwise the flat heightMm. Keeps the spec card honest for

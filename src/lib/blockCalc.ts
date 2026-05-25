@@ -27,7 +27,9 @@
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import {
   BLOCK_LIBRARY,
+  pickCornerBlock,
   pickCurveWedge,
+  pickFractionBlocks,
   pickHalfBlock,
   pickHeightMakeupBlock,
   pickLintelBlock,
@@ -359,10 +361,29 @@ interface FractionOption {
   modular: number
 }
 
-const FRACTION_OPTIONS: FractionOption[] = [
-  { code: '20.02', modular: FRAC_75_MODULE_MM },
-  { code: '20.22', modular: FRAC_875_MODULE_MM },
-]
+/**
+ * Available fraction blocks for length makeup, computed from the live
+ * library by role. Each fraction-tagged block contributes its
+ * (widthMm + mortar) as the modular size the packer can fit.
+ *
+ * AU SEQ defaults (20.02 = 290+10=300mm, 20.22 = 340+10=350mm) are the
+ * fallback when the library has no fraction blocks tagged; that way
+ * existing AU projects produce identical tallies even if the library is
+ * stripped of role tags.
+ */
+function getFractionOptions(): FractionOption[] {
+  const blocks = pickFractionBlocks()
+  if (blocks.length === 0) {
+    return [
+      { code: '20.02', modular: FRAC_75_MODULE_MM },
+      { code: '20.22', modular: FRAC_875_MODULE_MM },
+    ]
+  }
+  return blocks.map((b) => ({
+    code: b.code,
+    modular: b.dimensions.widthMm + MORTAR_MM,
+  }))
+}
 
 /**
  * Find the combination of fraction blocks (optional) and body blocks (variable count)
@@ -465,7 +486,7 @@ export function fitCourseLength(
   if (useFractions) {
     const FRACTION_OVERHANG_TOLERANCE_MM = 20
     let bestFrac: FractionOption | null = null
-    for (const f of FRACTION_OPTIONS) {
+    for (const f of getFractionOptions()) {
       const faceWidth = f.modular - MORTAR_MM
       if (faceWidth > gap + FRACTION_OVERHANG_TOLERANCE_MM) continue
       if (!bestFrac || f.modular > bestFrac.modular) bestFrac = f
@@ -1246,10 +1267,15 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   const wedge = pickCurveWedge()
   const useWedge = zone === 'wedge' && !!wedge
   const bodyCode: BlockCode = useWedge && wedge ? wedge.code : makeup.bodyBlockCode
-  // Modular face width: 20.03CW front face is 190 + 10 mortar = 200;
-  // standard body block is 390 + 10 = 400. For the cut zone the block
-  // face stays 390mm — only the back is shaved — so still 400 modular.
-  const bodyModularMm = useWedge ? 200 : BODY_BLOCK_MODULE_MM
+  // Modular face width comes from the actual block dimensions + mortar:
+  // wedge front face (typically 190+10=200mm), or standard body block
+  // (typically 390+10=400mm). For the cut zone the block face stays
+  // full width — only the back is shaved — so still uses the body's
+  // own modular.
+  const bodyBlock = BLOCK_LIBRARY[bodyCode]
+  const bodyModularMm = useWedge && wedge
+    ? wedge.dimensions.widthMm + MORTAR_MM
+    : (bodyBlock?.dimensions.widthMm ?? 390) + MORTAR_MM
 
   // Body blocks per course along the arc — ceil, leaves a touch of overshoot for safety.
   const blocksPerCourse = Math.max(1, Math.ceil(geom.arcLengthMm / bodyModularMm))
@@ -1276,7 +1302,7 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
  */
 function defaultTiedPierPattern(): BlockCode[] {
   const pier = pickPierBlock()
-  const corner = Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('corner'))
+  const corner = pickCornerBlock()
   return [pier?.code ?? '40.925', corner?.code ?? '20.01']
 }
 function defaultFreestandingPierPattern(): BlockCode[] {

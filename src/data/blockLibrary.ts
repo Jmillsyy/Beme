@@ -169,6 +169,8 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
       'them straight as stored, no rotation.',
     dimensions: { widthMm: 190, heightMm: 390, depthMm: 190 },
     roles: ['lintel'],
+    // Upper-open bucket: head heights ≥ 300mm.
+    lintelMinHeadHeightMm: 300,
   },
   '20.25': {
     code: '20.25',
@@ -178,6 +180,8 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
       '290 tall). Dimensions are the as-used dimensions — no rotation.',
     dimensions: { widthMm: 190, heightMm: 290, depthMm: 190 },
     roles: ['lintel'],
+    lintelMinHeadHeightMm: 200,
+    lintelMaxHeadHeightMm: 300,
   },
   '20.13': {
     code: '20.13',
@@ -187,6 +191,8 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
       'each side).',
     dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
     roles: ['lintel'],
+    lintelMinHeadHeightMm: 0,
+    lintelMaxHeadHeightMm: 200,
   },
   '20.12': {
     code: '20.12',
@@ -873,4 +879,160 @@ export function pickLintelBlockIn(
 }
 export function pickLintelBlock(openingHeightMm: number): Block | undefined {
   return pickLintelBlockIn(BLOCK_LIBRARY, openingHeightMm)
+}
+
+/**
+ * Lintel selected by HEAD-HEIGHT BUCKET. Walks every lintel-tagged block
+ * and picks the one whose [lintelMinHeadHeightMm, lintelMaxHeadHeightMm)
+ * range contains the given head height. Each region's library can define
+ * its own bucket boundaries — AU SEQ uses 0–200 / 200–300 / 300+ via the
+ * 20.13 / 20.25 / 20.18 triple; US / UK regions will set different bands
+ * on their own lintel blocks.
+ *
+ * Falls back to `pickLintelBlockIn` (height-based selection) for any
+ * lintel block that doesn't carry the head-height-range metadata yet —
+ * so libraries imported before this field existed keep working.
+ *
+ * Returns undefined only if the library has no lintel blocks at all.
+ */
+export function pickLintelForHeadHeightIn(
+  library: Record<BlockCode, Block>,
+  headHeightMm: number
+): Block | undefined {
+  const lintels = Object.values(library).filter((b) => b.roles.includes('lintel'))
+  if (lintels.length === 0) return undefined
+  // Prefer blocks with explicit range metadata.
+  const byRange = lintels.find((b) => {
+    if (b.lintelMinHeadHeightMm === undefined) return false
+    const min = b.lintelMinHeadHeightMm
+    const max = b.lintelMaxHeadHeightMm
+    return headHeightMm >= min && (max === undefined || headHeightMm < max)
+  })
+  if (byRange) return byRange
+  // Fallback: height-based selection for libraries without range metadata.
+  return pickLintelBlockIn(library, headHeightMm)
+}
+export function pickLintelForHeadHeight(headHeightMm: number): Block | undefined {
+  return pickLintelForHeadHeightIn(BLOCK_LIBRARY, headHeightMm)
+}
+
+/**
+ * The default body block — the block placed across body courses unless
+ * the user picks something else in the wall-type makeup. Picks the first
+ * block with the `body` role; returns undefined if the library has none.
+ *
+ * The CALC ENGINE uses this only as a fallback when a makeup doesn't
+ * specify bodyBlockCode (rare); the WALL-TYPE EDITOR uses it to seed the
+ * default body picker when the user creates a new wall type.
+ */
+export function pickBodyDefaultIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('body'))
+}
+export function pickBodyDefault(): Block | undefined {
+  return pickBodyDefaultIn(BLOCK_LIBRARY)
+}
+
+/**
+ * The default full-block end termination / corner block — used at wall
+ * corners and at odd-course free ends in stretcher bond. Picks the
+ * first block with the `corner` role; falls back to `end-termination`
+ * if no explicit corner exists.
+ */
+export function pickCornerBlockIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return (
+    Object.values(library).find((b) => b.roles.includes('corner')) ??
+    Object.values(library).find(
+      (b) => b.roles.includes('end-termination') && b.fraction !== 0.5
+    )
+  )
+}
+export function pickCornerBlock(): Block | undefined {
+  return pickCornerBlockIn(BLOCK_LIBRARY)
+}
+
+/**
+ * The base course block (cleanout block in AU SEQ) used on course 1 of
+ * every wall. Picks the first block with the `base-course` role.
+ */
+export function pickBaseCourseIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('base-course'))
+}
+export function pickBaseCourse(): Block | undefined {
+  return pickBaseCourseIn(BLOCK_LIBRARY)
+}
+
+/**
+ * The base course tile (paired with base-course blocks). Picks the first
+ * block with the `base-tile` role; returns undefined if the library
+ * doesn't ship a base tile (some regions don't use one).
+ */
+export function pickBaseTileIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('base-tile'))
+}
+export function pickBaseTile(): Block | undefined {
+  return pickBaseTileIn(BLOCK_LIBRARY)
+}
+
+/**
+ * The top-course / bond-beam block. Picks the first block with the
+ * `top-course` role; returns undefined if the library has no dedicated
+ * top course block (then the makeup's bodyBlockCode is used).
+ */
+export function pickTopCourseIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('top-course'))
+}
+export function pickTopCourse(): Block | undefined {
+  return pickTopCourseIn(BLOCK_LIBRARY)
+}
+
+/**
+ * Corner lead-in block — placed between a deeper-than-body corner
+ * (e.g. 300-series 30.01) and the body to get back on stretcher bond.
+ * Picks the first block with the `corner-lead-in` role; returns
+ * undefined if no lead-in defined in the library (AU 200-series, for
+ * instance, doesn't need one).
+ */
+export function pickCornerLeadInIn(
+  library: Record<BlockCode, Block>
+): Block | undefined {
+  return Object.values(library).find((b) => b.roles.includes('corner-lead-in'))
+}
+export function pickCornerLeadIn(): Block | undefined {
+  return pickCornerLeadInIn(BLOCK_LIBRARY)
+}
+
+/**
+ * Pick a fraction block whose `fraction` field is closest to (but not
+ * exceeding) the target. Lets the calc engine ask for "the 3/4 block"
+ * or "the 7/8 block" without naming SEQ codes. Excludes the half block
+ * (reserved for end terminations even though it's technically 1/2).
+ */
+export function pickFractionByFractionIn(
+  library: Record<BlockCode, Block>,
+  targetFraction: number,
+  tolerance = 0.01
+): Block | undefined {
+  return Object.values(library).find(
+    (b) =>
+      b.roles.includes('fraction') &&
+      !b.roles.includes('end-termination') &&
+      b.fraction !== undefined &&
+      Math.abs(b.fraction - targetFraction) <= tolerance
+  )
+}
+export function pickFractionByFraction(
+  targetFraction: number,
+  tolerance = 0.01
+): Block | undefined {
+  return pickFractionByFractionIn(BLOCK_LIBRARY, targetFraction, tolerance)
 }
