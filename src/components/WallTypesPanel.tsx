@@ -722,7 +722,11 @@ function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModal
                 : 'Derived from Basics + Composition. Switch to Course pattern for full control.'}
             </p>
             <div className="flex-1 min-h-0">
-              <CoursePatternPreview bands={previewBands} library={library} />
+              <CoursePatternPreview
+                bands={previewBands}
+                library={library}
+                bondType={bondType}
+              />
             </div>
           </aside>
         </div>
@@ -1312,81 +1316,139 @@ function bandColor(code: BlockCode): string {
 interface CoursePatternPreviewProps {
   bands: CourseBand[]
   library: Record<BlockCode, { dimensions: { heightMm: number; widthMm: number; depthMm: number } }>
+  bondType: BondType
 }
 
-function CoursePatternPreview({ bands, library }: CoursePatternPreviewProps) {
+/**
+ * Renders a small wall-section diagram showing the actual bond pattern
+ * (stretcher = even courses offset by half a block, stack = all courses
+ * aligned) with each block tinted by its block code. Mortar joints are
+ * rendered as thin dark lines between blocks and between courses.
+ *
+ * The diagram is a representative section ~4 full-block widths wide; the
+ * exact wall length isn't shown because the preview lives in a narrow
+ * rail. What matters here is the BOND pattern and the colour distribution
+ * (where the height-makeup courses sit, etc.).
+ */
+function CoursePatternPreview({ bands, library, bondType }: CoursePatternPreviewProps) {
   const visible = bands.filter((b) => b.count > 0)
-  const totalHeight = visible.reduce(
-    (s, b) => s + b.count * moduleHeightForBand(b, library),
+  // Expand the band list into a flat per-course block-code array so we
+  // can lay out each course independently — needed because course N+1
+  // might use a different block code from course N (e.g. 20.48 → 20.71).
+  const courses: BlockCode[] = []
+  for (const band of visible) {
+    for (let i = 0; i < band.count; i++) courses.push(band.blockCode)
+  }
+  const totalHeight = courses.reduce(
+    (s, code) => s + ((library[code]?.dimensions.heightMm ?? 190) + 10),
     0
   )
 
-  if (totalHeight === 0) {
+  if (totalHeight === 0 || courses.length === 0) {
     return (
-      <div className="flex items-center justify-center min-h-[400px] text-xs text-ink-500 italic border-2 border-dashed border-ink-700 rounded-lg p-6 text-center">
-        Add a band to see the wall stack here.
+      <div className="flex items-center justify-center min-h-[300px] text-xs text-ink-500 italic border-2 border-dashed border-ink-700 rounded-lg p-6 text-center">
+        Add a band to see the wall preview here.
       </div>
     )
   }
 
-  // Walk the bands from top to bottom for rendering so the array order
-  // matches the visual order on the page (top of wall first in the DOM).
-  const topDown = [...visible].reverse()
+  // Course-height per code (block face height + 10mm mortar). Used both
+  // for total-height math above and for the per-course row sizing below.
+  const heightOf = (code: BlockCode) =>
+    (library[code]?.dimensions.heightMm ?? 190) + 10
 
-  // Pre-compute the y-axis labels: total at top, then running totals after
-  // subtracting each band's height. Last label is 0 at the bottom.
+  // Representative number of full-block widths shown across the wall.
+  // 4 is enough to make the offset pattern obvious without crowding the
+  // narrow rail. For stretcher even courses we render as
+  // [half, full, full, full, half] so the total visual width matches the
+  // odd-course [full, full, full, full] layout exactly.
+  const BLOCKS_ACROSS = 4
+
+  // Boundary labels for the side ruler — total mm at top, then the
+  // running total at each band BOUNDARY (not each course, to avoid label
+  // crowding on tall walls). Bottom is always 0.
+  // labels[0] = totalHeight (top of wall)
+  // labels[i+1] = bottom of the i-th band from the top (= top of the
+  //               (i+1)-th band from the top), counting bands top-down.
+  // labels[N] = 0 (bottom of wall)
+  const topDownBands = [...visible].reverse()
   const labels: number[] = [totalHeight]
   let running = totalHeight
-  for (const band of topDown) {
-    running -= band.count * moduleHeightForBand(band, library)
+  for (const band of topDownBands) {
+    running -= band.count * ((library[band.blockCode]?.dimensions.heightMm ?? 190) + 10)
     labels.push(running)
   }
 
   return (
-    <div className="flex gap-2 min-h-[400px] h-[55vh] max-h-[600px]">
-      {/* Block stack: colored bars sized by % of total height */}
-      <div className="flex-1 max-w-[140px] flex flex-col rounded-lg overflow-hidden border-2 border-ink-600 bg-ink-900 shadow-inner">
-        {topDown.map((band, idx) => {
-          const i = visible.length - 1 - idx
-          const moduleH = moduleHeightForBand(band, library)
-          const bandH = band.count * moduleH
-          const pct = (bandH / totalHeight) * 100
+    <div className="flex gap-2 min-h-[300px] h-[55vh] max-h-[600px]">
+      {/* Wall section. Each course is a row; blocks within a row stretch
+          to fill the row width proportionally. Stretcher even-course
+          offset is achieved by inserting half-width filler blocks at
+          each end so the visible course is still the same total width. */}
+      <div className="flex-1 max-w-[170px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner">
+        {courses.map((code, courseIdx) => {
+          // courseIdx 0 = bottom of wall (base). flex-col-reverse means
+          // we render the array in normal order but DOM/visual order is
+          // reversed so course[0] sits at the bottom of the column.
+          const courseNum = courseIdx + 1 // 1-indexed
+          const h = heightOf(code)
+          const pct = (h / totalHeight) * 100
+          const isEven = courseNum % 2 === 0
+          const useHalves = bondType === 'stretcher' && isEven
+
+          // Build the cells for this course. All cells get tinted by the
+          // course's body block colour — the preview doesn't model the
+          // corner/half end blocks (which would tint the end cells
+          // differently); it shows the bond pattern by GEOMETRY only.
+          const fill = bandColor(code)
+          const cells: { widthPct: number }[] = []
+          if (useHalves) {
+            // Half + (n-1) full + half — same total width as a full row.
+            const halfPct = 100 / (BLOCKS_ACROSS * 2)
+            const fullPct = 100 / BLOCKS_ACROSS
+            cells.push({ widthPct: halfPct })
+            for (let i = 0; i < BLOCKS_ACROSS - 1; i++) cells.push({ widthPct: fullPct })
+            cells.push({ widthPct: halfPct })
+          } else {
+            for (let i = 0; i < BLOCKS_ACROSS; i++) {
+              cells.push({ widthPct: 100 / BLOCKS_ACROSS })
+            }
+          }
+
           return (
             <div
-              key={i}
-              style={{
-                flexBasis: `${pct}%`,
-                minHeight: 0,
-                backgroundColor: bandColor(band.blockCode),
-              }}
-              className="flex items-center justify-center text-white font-mono leading-tight px-1 text-center border-b border-white/15 last:border-b-0 overflow-hidden"
-              title={`Band ${i + 1}: ${band.count}× ${band.blockCode} = ${bandH}mm (${moduleH}mm/course)`}
+              key={courseIdx}
+              style={{ flexBasis: `${pct}%`, minHeight: 0 }}
+              className="flex w-full border-b border-black/40 last:border-b-0"
+              title={`Course ${courseNum}: ${code} (${h}mm modular)`}
             >
-              {pct >= 8 ? (
-                <span className="text-[11px] font-medium">
-                  {band.count}× {band.blockCode}
-                </span>
-              ) : pct >= 4 ? (
-                <span className="text-[9px]">{band.count}×</span>
-              ) : null}
+              {cells.map((c, i) => (
+                <div
+                  key={i}
+                  style={{ width: `${c.widthPct}%`, backgroundColor: fill }}
+                  className="border-r border-black/30 last:border-r-0"
+                />
+              ))}
             </div>
           )
         })}
       </div>
 
-      {/* Ruler — labels at top of column + at each band boundary, distributed
-          via flex so the label sits at the bottom of its band's strip. */}
-      <div className="flex flex-col text-[10px] text-ink-400 font-mono w-14">
-        <div className="leading-none h-3">{labels[0]}mm</div>
-        {topDown.map((band, idx) => {
-          const i = visible.length - 1 - idx
-          const bandH = band.count * moduleHeightForBand(band, library)
+      {/* Right-side ruler — band boundaries only (not every course) so the
+          labels stay readable on a 24-course wall. Top-of-wall label sits
+          above the strips; each band's strip then shows the running total
+          at its BOTTOM edge so labels line up with the visible mortar
+          line between bands. */}
+      <div className="flex flex-col text-[10px] text-ink-400 font-mono w-12 shrink-0 leading-none">
+        <div>{totalHeight}mm</div>
+        {topDownBands.map((band, idx) => {
+          const bandH = band.count * ((library[band.blockCode]?.dimensions.heightMm ?? 190) + 10)
           const pct = (bandH / totalHeight) * 100
           return (
             <div
-              key={i}
+              key={idx}
               style={{ flexBasis: `${pct}%`, minHeight: 0 }}
-              className="flex items-end leading-none pb-0"
+              className="flex items-end"
             >
               {labels[idx + 1]}mm
             </div>
