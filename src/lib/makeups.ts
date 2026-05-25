@@ -370,7 +370,18 @@ export function convertMakeupToBands(makeup: WallMakeup): {
     has71 = true
     remainder -= HEIGHT_71
   }
-  const totalCourses = stdCount + (has140 ? 1 : 0) + (has71 ? 1 : 0)
+  // Resolve height-makeup blocks up-front so we know whether the active
+  // library actually carries them. US / UK libraries typically DON'T
+  // (height-makeup is an AU-specific construction practice — the rest
+  // of the world bedts in extra mortar to make up oddments). If a
+  // height-makeup band isn't available, skip the corresponding course
+  // entirely rather than emit a code that doesn't exist in the library.
+  const heightMakeup150 = has140 ? pickHeightMakeupBlock(HEIGHT_140) : undefined
+  const heightMakeup100 = has71 ? pickHeightMakeupBlock(HEIGHT_71) : undefined
+  const effectiveHas140 = has140 && !!heightMakeup150
+  const effectiveHas71 = has71 && !!heightMakeup100
+  const totalCourses =
+    stdCount + (effectiveHas140 ? 1 : 0) + (effectiveHas71 ? 1 : 0)
   const bands: CourseBand[] = []
   if (totalCourses === 0) {
     return { bands, lossy: false }
@@ -383,16 +394,11 @@ export function convertMakeupToBands(makeup: WallMakeup): {
   courses.push(makeup.baseCourseBlockCode)
   const bodyCount = Math.max(0, stdCount - 2)
   for (let i = 0; i < bodyCount; i++) courses.push(makeup.bodyBlockCode)
-  // Height-makeup codes via role picker so a US/UK library with its own
-  // shorter-course blocks gets picked here too. Falls back to AU 20.140
-  // / 20.71 if the library has no height-makeup blocks tagged.
-  if (has140) {
-    const block150 = pickHeightMakeupBlock(HEIGHT_140)
-    courses.push((block150?.code ?? '20.140') as BlockCode)
+  if (effectiveHas140 && heightMakeup150) {
+    courses.push(heightMakeup150.code as BlockCode)
   }
-  if (has71) {
-    const block100 = pickHeightMakeupBlock(HEIGHT_71)
-    courses.push((block100?.code ?? '20.71') as BlockCode)
+  if (effectiveHas71 && heightMakeup100) {
+    courses.push(heightMakeup100.code as BlockCode)
   }
   if (totalCourses >= 2) courses.push(makeup.topCourseBlockCode)
 

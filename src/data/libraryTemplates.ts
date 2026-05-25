@@ -62,9 +62,11 @@ export const US_CMU_LIBRARY: Record<BlockCode, Block> = {
     description:
       'Standard 8 inch Concrete Masonry Unit, the main body block. Open-end ' +
       'or open-bottom configurations are both used regionally — Beme treats ' +
-      'them interchangeably for tally purposes.',
+      'them interchangeably for tally purposes. Also doubles as the pier ' +
+      'block — US masonry typically builds piers from the same body unit ' +
+      'grouted solid rather than using a dedicated pier block.',
     dimensions: { widthMm: 397, heightMm: 194, depthMm: 194 },
-    roles: ['body'],
+    roles: ['body', 'pier'],
   },
   'CMU8-C': {
     code: 'CMU8-C',
@@ -145,9 +147,11 @@ export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     name: '100mm Block (body)',
     description:
       'Standard 440 × 215 × 100mm dense aggregate concrete block. Main ' +
-      'body course block.',
+      'body course block — also doubles as the pier block (UK piers are ' +
+      'typically the same body unit stacked, sometimes grouted, rather ' +
+      'than a dedicated pier block).',
     dimensions: { widthMm: 440, heightMm: 215, depthMm: 100 },
-    roles: ['body'],
+    roles: ['body', 'pier'],
   },
   'BLK-100-C': {
     code: 'BLK-100-C',
