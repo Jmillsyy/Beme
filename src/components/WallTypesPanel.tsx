@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import type {
+  PierMakeup,
   WallMakeup,
   BondType,
   CourseBand,
@@ -28,6 +30,13 @@ interface WallTypesPanelProps {
   onAddMakeup: (makeup: WallMakeup) => void
   onUpdateMakeup: (makeup: WallMakeup) => void
   onDeleteMakeup: (id: string) => void
+
+  /** Pier types now live in this same panel as a separate card group. */
+  pierMakeups: PierMakeup[]
+  pierCountsByMakeupId: Record<string, number>
+  onAddPierMakeup: (makeup: PierMakeup) => void
+  onUpdatePierMakeup: (makeup: PierMakeup) => void
+  onDeletePierMakeup: (id: string) => void
 }
 
 function generateMakeupId(): string {
@@ -52,10 +61,21 @@ export default function WallTypesPanel({
   onAddMakeup,
   onUpdateMakeup,
   onDeleteMakeup,
+  pierMakeups,
+  pierCountsByMakeupId,
+  onAddPierMakeup,
+  onUpdatePierMakeup,
+  onDeletePierMakeup,
 }: WallTypesPanelProps) {
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** Same pattern for piers — null = none open, 'new' = adding, id = editing */
+  const [editingPierId, setEditingPierId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
+  const editingPierMakeup =
+    editingPierId && editingPierId !== 'new'
+      ? pierMakeups.find((m) => m.id === editingPierId)
+      : null
 
   const editingMakeup =
     editingId && editingId !== 'new' ? makeups.find((m) => m.id === editingId) : null
@@ -193,6 +213,93 @@ export default function WallTypesPanel({
         </div>
       )}
 
+      {/* Pier types — listed in the same panel so the right rail has one
+          "types" container instead of two. Visually separated with a
+          subheader + divider; cards use a stack of circle markers so the
+          eye picks them out from the wall-type swatches above. */}
+      {expanded && (
+        <div className="mt-4 pt-3 border-t border-ink-700">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-400">
+              Pier types
+              <span className="ml-2 text-ink-500 font-normal normal-case">
+                · {pierMakeups.length}
+              </span>
+            </h4>
+            <button
+              onClick={() => setEditingPierId('new')}
+              className="text-xs px-2 py-0.5 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 transition-colors"
+            >
+              + Add pier
+            </button>
+          </div>
+          <div className="flex flex-col gap-2">
+            {pierMakeups.length === 0 && (
+              <p className="text-[11px] text-ink-500 italic px-1">
+                No pier types yet. Add one to drop tied or freestanding piers on
+                the plan.
+              </p>
+            )}
+            {pierMakeups.map((pm) => {
+              const usage = pierCountsByMakeupId[pm.id] ?? 0
+              const canDelete = pierMakeups.length > 1 && usage === 0
+              return (
+                <div
+                  key={pm.id}
+                  className="w-full p-2.5 rounded-lg border border-ink-600 bg-ink-700/40"
+                >
+                  <div className="flex items-start gap-2 mb-1">
+                    {/* Stack of circle dots to differentiate from the wall
+                        swatch above (square block). Reads as "column of
+                        blocks" which is what a pier is. */}
+                    <span className="text-ink-400 leading-[0.6] text-lg mt-0.5 flex-shrink-0">
+                      ⦿
+                    </span>
+                    <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                      {pm.name}
+                    </div>
+                  </div>
+                  <div className="text-xs text-ink-400">
+                    {pm.suggestedPlacement === 'tied' ? 'Tied' : 'Freestanding'} ·{' '}
+                    Pattern{' '}
+                    <span className="font-mono">
+                      {pm.coursePattern.join(' / ')}
+                    </span>
+                  </div>
+                  <div className="text-xs text-ink-500 mt-1.5">
+                    {usage} pier{usage === 1 ? '' : 's'} using this
+                  </div>
+                  <div className="flex gap-3 mt-1.5">
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setEditingPierId(pm.id)}
+                      className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
+                    >
+                      Edit
+                    </span>
+                    {canDelete && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (window.confirm(`Delete pier type "${pm.name}"?`)) {
+                            onDeletePierMakeup(pm.id)
+                          }
+                        }}
+                        className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                      >
+                        Delete
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Modal lives at the panel root so it floats over everything, not
           inline in the list. Mounted only while editing/adding so the form
           state (and its hooks) get fresh defaults each open. */}
@@ -204,6 +311,18 @@ export default function WallTypesPanel({
             if (editingId === 'new') onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
+          }}
+        />
+      )}
+
+      {editingPierId !== null && (
+        <PierTypeEditorModal
+          existing={editingPierId === 'new' ? null : editingPierMakeup}
+          onCancel={() => setEditingPierId(null)}
+          onSave={(pm) => {
+            if (editingPierId === 'new') onAddPierMakeup(pm)
+            else onUpdatePierMakeup(pm)
+            setEditingPierId(null)
           }}
         />
       )}
@@ -1129,6 +1248,23 @@ function CompositionTab(props: CompositionTabProps) {
           </p>
         </div>
       </section>
+
+      {/* Block-library shortcut. The workspace no longer carries a
+          BlockLibraryPanel in the right rail; anyone who needs a block
+          that isn't in the dropdowns above jumps to the material library
+          page from here. Open in a new tab so the in-progress estimate
+          doesn't get unloaded. */}
+      <p className="text-[11px] text-ink-500 pt-1">
+        Need a block that isn't listed?{' '}
+        <Link
+          to="/library"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-beme-400 hover:text-beme-300 underline"
+        >
+          Manage blocks in the material library ↗
+        </Link>
+      </p>
     </div>
   )
 }
@@ -1866,5 +2002,337 @@ function RangeFieldPicker({ label, value, options, onChange }: RangeFieldPickerP
         ))}
       </select>
     </label>
+  )
+}
+
+// ---------- Internal: PierTypeEditorModal ----------
+
+interface PierTypeEditorModalProps {
+  existing: PierMakeup | null
+  onSave: (makeup: PierMakeup) => void
+  onCancel: () => void
+}
+
+/**
+ * Editor for a pier type. Same modal pattern + visual rail as the wall-type
+ * editor — kept simpler because PierMakeup itself is simpler (name +
+ * placement + course pattern, no bond / openings / curve handling).
+ *
+ * Course pattern: an ordered list of block codes that CYCLES up the pier.
+ * For a tied pier built into a 2400mm wall (12 courses), pattern [40.925,
+ * 20.01] gives 6× 40.925 + 6× 20.01 alternating. The preview shows the
+ * pattern repeating to fill a representative pier height so the user can
+ * see what they'll get.
+ */
+function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModalProps) {
+  const { library } = useBlockLibrary()
+
+  // Block options: pier-relevant codes first, then everything else sorted.
+  // Mirrors the original PierTypesPanel preference list so users see the
+  // codes they actually pick at the top of the dropdown.
+  const PIER_PREFERRED: BlockCode[] = ['40.925', '20.01', '20.21', '20.48', '20.03']
+  const blockOptions = useMemo<BlockCode[]>(() => {
+    const allBlocks: BlockCode[] = Object.values(library)
+      .map((b) => b.code)
+      .filter((c) => c !== '50.45')
+    const preferred = PIER_PREFERRED.filter((c) => allBlocks.includes(c))
+    const rest = allBlocks.filter((c) => !PIER_PREFERRED.includes(c)).sort()
+    return [...preferred, ...rest]
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [library])
+
+  const [name, setName] = useState(existing?.name ?? 'New pier type')
+  const [placement, setPlacement] = useState<'tied' | 'freestanding'>(
+    existing?.suggestedPlacement ?? 'tied'
+  )
+  const [pattern, setPattern] = useState<BlockCode[]>(
+    existing?.coursePattern && existing.coursePattern.length > 0
+      ? existing.coursePattern
+      : ['40.925', '20.01']
+  )
+
+  function updateSlot(idx: number, code: BlockCode) {
+    setPattern((prev) => prev.map((c, i) => (i === idx ? code : c)))
+  }
+  function addSlot() {
+    const last = pattern[pattern.length - 1] ?? '40.925'
+    setPattern((prev) => [...prev, last])
+  }
+  function removeSlot(idx: number) {
+    if (pattern.length <= 1) return
+    setPattern((prev) => prev.filter((_, i) => i !== idx))
+  }
+  function moveSlot(idx: number, dir: -1 | 1) {
+    setPattern((prev) => {
+      const next = [...prev]
+      const target = idx + dir
+      if (target < 0 || target >= next.length) return prev
+      ;[next[idx], next[target]] = [next[target], next[idx]]
+      return next
+    })
+  }
+
+  function handleSave() {
+    if (!name.trim() || pattern.length === 0) return
+    const updated: PierMakeup = {
+      id:
+        existing?.id ??
+        (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `pm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`),
+      name: name.trim() || 'New pier type',
+      suggestedPlacement: placement,
+      coursePattern: pattern,
+    }
+    onSave(updated)
+  }
+
+  // Esc closes — mirrors WallTypeEditorModal so the keyboard UX is uniform
+  // across both editors.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  // Pier preview: walk the pattern repeated enough times to fill a
+  // representative 12-course pier (2400mm) so the user sees the cycle.
+  // Each course renders as a single block-wide row (piers are 1 block
+  // wide per course) tinted by the slot's block code.
+  const PREVIEW_COURSES = 12
+  const previewCourses: BlockCode[] = []
+  for (let i = 0; i < PREVIEW_COURSES; i++) {
+    previewCourses.push(pattern[i % pattern.length] ?? pattern[0])
+  }
+
+  const canSave = name.trim().length > 0 && pattern.length > 0
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label={existing ? `Edit pier type ${existing.name}` : 'New pier type'}
+    >
+      <div
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-3xl h-[80vh] max-h-[760px] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-ink-100 truncate">
+              {existing ? 'Edit pier type' : 'New pier type'}
+              {existing && (
+                <span className="text-ink-400 font-normal"> — {existing.name}</span>
+              )}
+            </h2>
+            <p className="text-[11px] text-ink-500 mt-0.5">
+              {pattern.length}-course pattern · {placement}
+            </p>
+          </div>
+          <button
+            onClick={onCancel}
+            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
+
+        {/* Body: form on the left, preview rail on the right (same shape
+            as the wall type modal) */}
+        <div className="flex flex-1 min-h-0">
+          {/* Form area */}
+          <div className="flex-1 overflow-y-auto p-6 min-w-0 max-w-2xl space-y-5">
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1.5">Name</span>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400"
+              />
+            </label>
+
+            <fieldset className="text-sm">
+              <legend className="text-ink-300 mb-1.5">Default placement</legend>
+              <div className="flex flex-col gap-1.5">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={placement === 'tied'}
+                    onChange={() => setPlacement('tied')}
+                  />
+                  <span>Tied (built into a wall)</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={placement === 'freestanding'}
+                    onChange={() => setPlacement('freestanding')}
+                  />
+                  <span>Freestanding</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <section>
+              <div className="flex items-baseline justify-between mb-2">
+                <h3 className="text-sm font-semibold text-ink-100">
+                  Course pattern{' '}
+                  <span className="text-[11px] font-normal text-ink-500">
+                    (cycles up the pier)
+                  </span>
+                </h3>
+              </div>
+              <p className="text-[11px] text-ink-500 mb-3 leading-relaxed">
+                The pattern repeats from the base course up. e.g.{' '}
+                <span className="font-mono">40.925 / 20.01</span> alternates the
+                pier block and a tie-back corner block every other course.
+              </p>
+              <div className="space-y-2">
+                {pattern.map((code, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center gap-2 p-2 rounded-lg border border-ink-600 bg-ink-900/60"
+                  >
+                    <span
+                      className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+                      style={{ backgroundColor: bandColor(code) }}
+                      aria-hidden
+                    />
+                    <span className="text-ink-500 font-mono text-xs w-12 text-right">
+                      c{idx + 1}
+                    </span>
+                    <select
+                      value={code}
+                      onChange={(e) => updateSlot(idx, e.target.value as BlockCode)}
+                      className="px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 flex-1 min-w-0"
+                    >
+                      {blockOptions.map((c) => (
+                        <option key={c} value={c}>
+                          {blockLabel(c)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-0.5 ml-1">
+                      <button
+                        onClick={() => moveSlot(idx, -1)}
+                        disabled={idx === 0}
+                        className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
+                        aria-label="Move course up"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        onClick={() => moveSlot(idx, 1)}
+                        disabled={idx === pattern.length - 1}
+                        className="text-ink-400 hover:text-ink-200 disabled:opacity-30 disabled:cursor-not-allowed text-xs px-1"
+                        aria-label="Move course down"
+                      >
+                        ▼
+                      </button>
+                      <button
+                        onClick={() => removeSlot(idx)}
+                        disabled={pattern.length <= 1}
+                        className="text-rose-400 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed text-base px-2"
+                        aria-label="Remove course"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={addSlot}
+                className="mt-3 text-sm px-3 py-2 rounded-lg border border-dashed border-ink-600 text-beme-300 hover:bg-ink-700/50 transition-colors"
+              >
+                + Add course slot
+              </button>
+            </section>
+
+            {/* Block-library link — sends the user to /library when they
+                need to add or edit a block that isn't in the dropdown. */}
+            <p className="text-[11px] text-ink-500 pt-1">
+              Need a block that isn't listed?{' '}
+              <Link
+                to="/library"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-beme-400 hover:text-beme-300 underline"
+              >
+                Manage blocks in the material library ↗
+              </Link>
+            </p>
+          </div>
+
+          {/* Right rail: pier preview */}
+          <aside className="hidden lg:flex w-72 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4 min-h-0">
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400">
+                Pier preview
+              </h3>
+              <span className="text-[10px] text-ink-500 font-mono">
+                {PREVIEW_COURSES} courses
+              </span>
+            </div>
+            <p className="text-[10px] text-ink-500 mb-3 leading-snug">
+              Shows the pattern repeating to fill a representative pier height
+              (~2400 mm). The actual pier height comes from the wall (tied) or
+              the placed pier's height (freestanding).
+            </p>
+            <div className="flex-1 min-h-0 flex gap-2">
+              {/* Single-column block stack — piers are one block wide per
+                  course in the preview. Each cell rendered with the block's
+                  band colour so the pattern repeats visibly. */}
+              <div className="flex-1 max-w-[120px] flex flex-col-reverse rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner min-h-0 mx-auto">
+                {previewCourses.map((code, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      flexBasis: `${100 / PREVIEW_COURSES}%`,
+                      minHeight: 0,
+                      backgroundColor: bandColor(code),
+                    }}
+                    className="flex items-center justify-center text-white font-mono text-[10px] border-b border-black/40 last:border-b-0"
+                    title={`Course ${i + 1}: ${code}`}
+                  >
+                    {code}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <PreviewLegend
+              bands={pattern.map((c) => ({ blockCode: c, count: 1 }))}
+              cornerBlockCode={pattern[0]}
+              halfBlockCode={pattern[0]}
+              bondType="stack"
+            />
+          </aside>
+        </div>
+
+        {/* Footer — Cancel + Save always visible */}
+        <footer className="px-5 py-3 border-t border-ink-600 bg-ink-900/40 flex items-center justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {existing ? 'Save changes' : 'Create pier type'}
+          </button>
+        </footer>
+      </div>
+    </div>
   )
 }

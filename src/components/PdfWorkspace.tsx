@@ -4,13 +4,11 @@ import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
-import BlockLibraryPanel from './BlockLibraryPanel'
 import SupplyItemsPanel from './SupplyItemsPanel'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import BrickLibraryPanel from './BrickLibraryPanel'
-import PierTypesPanel from './PierTypesPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickTypesPanel from './BrickTypesPanel'
 import BrickTallyPanel from './BrickTallyPanel'
@@ -2100,8 +2098,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   // ---------- Pier makeup CRUD ----------
 
-  function handleAddPierMakeup() {
-    const next = createDefaultTiedPierMakeup('New pier type')
+  function handleAddPierMakeup(makeup?: PierMakeup) {
+    // The new merged WallTypesPanel pier modal builds the PierMakeup
+    // itself (name, pattern, placement) and passes it through. Older
+    // call paths that just want a blank default still work — we fall
+    // back to createDefaultTiedPierMakeup when no makeup is supplied.
+    const next = makeup ?? createDefaultTiedPierMakeup('New pier type')
     setPierMakeups((prev) => [...prev, next])
   }
 
@@ -3694,15 +3696,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                     onAddMakeup={handleAddMakeup}
                     onUpdateMakeup={handleUpdateMakeup}
                     onDeleteMakeup={handleDeleteMakeup}
-                  />
-                  <PierTypesPanel
                     pierMakeups={pierMakeups}
                     pierCountsByMakeupId={pierCountsByMakeupId}
-                    onAddMakeup={handleAddPierMakeup}
-                    onUpdateMakeup={handleUpdatePierMakeup}
-                    onDeleteMakeup={handleDeletePierMakeup}
+                    onAddPierMakeup={handleAddPierMakeup}
+                    onUpdatePierMakeup={handleUpdatePierMakeup}
+                    onDeletePierMakeup={handleDeletePierMakeup}
                   />
-                  <BlockLibraryPanel />
                 </>
               )}
               {mode === 'brick' && (
@@ -5529,22 +5528,17 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             onAddMakeup={handleAddMakeup}
             onUpdateMakeup={handleUpdateMakeup}
             onDeleteMakeup={handleDeleteMakeup}
-          />
-        )}
-
-        {/* Pier types management panel (block mode) */}
-        {mode === 'block' && (
-          <PierTypesPanel
             pierMakeups={pierMakeups}
             pierCountsByMakeupId={pierCountsByMakeupId}
-            onAddMakeup={handleAddPierMakeup}
-            onUpdateMakeup={handleUpdatePierMakeup}
-            onDeleteMakeup={handleDeletePierMakeup}
+            onAddPierMakeup={handleAddPierMakeup}
+            onUpdatePierMakeup={handleUpdatePierMakeup}
+            onDeletePierMakeup={handleDeletePierMakeup}
           />
         )}
-
-        {/* Block library (block mode) — user-editable catalogue of every block */}
-        {mode === 'block' && <BlockLibraryPanel />}
+        {/* Pier types + block library used to live in their own panels here.
+            Pier types are now folded into WallTypesPanel above; block-library
+            management has moved to the /library page (Composition tab of the
+            wall-type editor has a link). */}
 
         {/* Brick wall types + settings + library (brick mode) */}
         {mode === 'brick' && (
