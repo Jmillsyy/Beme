@@ -1036,10 +1036,28 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
         qty = rate * blockRun_m
         noteRate = `${rate} per lineal metre`
         break
-      case 'per-opening':
-        qty = rate * openings.length
-        noteRate = `${rate} per opening`
+      case 'per-opening': {
+        // Optional opening-width range filter — used for lintels / sills /
+        // any per-opening supply that depends on opening size. No range
+        // means the supply applies to every opening (per-block behaviour).
+        const min = item.openingWidthMinMm
+        const max = item.openingWidthMaxMm
+        const inScope =
+          min === undefined && max === undefined
+            ? openings.length
+            : openings.filter(
+                (o) =>
+                  (min === undefined || o.widthMm >= min) &&
+                  (max === undefined || o.widthMm < max)
+              ).length
+        qty = rate * inScope
+        const rangeLabel =
+          min !== undefined || max !== undefined
+            ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
+            : ''
+        noteRate = `${rate} per opening${rangeLabel}`
         break
+      }
       case 'per-brick':
         // Block estimate — brick-relative rates don't apply.
         continue

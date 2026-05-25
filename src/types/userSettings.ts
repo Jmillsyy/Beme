@@ -154,6 +154,21 @@ export interface SupplyItem {
    * individual items if a job doesn't need this particular supply.
    */
   enabledByDefault: boolean
+  /**
+   * For `unit: 'per-opening'` supplies ONLY — restrict the count to
+   * openings whose WIDTH falls within this range (mm). Lets the user
+   * configure lintels / sills / heads as supply items that auto-pick
+   * based on opening width:
+   *
+   *   - "Galintel 100×100" → openingWidthMinMm 1200, openingWidthMaxMm 1800
+   *   - "Steel angle L 3.5×3.5" → openingWidthMinMm 1800, openingWidthMaxMm 3000
+   *
+   * Either bound undefined means "open" on that side. Both undefined
+   * means the supply applies to EVERY opening (which is the
+   * pre-existing per-opening behaviour, kept for back-compat).
+   */
+  openingWidthMinMm?: number
+  openingWidthMaxMm?: number
 }
 
 export interface UserSettings {

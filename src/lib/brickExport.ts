@@ -588,10 +588,29 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
         qty = rate * brickRun_m
         noteRate = `${rate} per lineal metre`
         break
-      case 'per-opening':
-        qty = rate * tally.openingCount
-        noteRate = `${rate} per opening`
+      case 'per-opening': {
+        // If the supply item carries an opening-width range (used for
+        // lintels / sills / heads), only count openings whose width
+        // falls within that range. No range = applies to every opening
+        // (the pre-existing behaviour for ties / flashings / etc.).
+        const min = item.openingWidthMinMm
+        const max = item.openingWidthMaxMm
+        const inScope =
+          min === undefined && max === undefined
+            ? openings.length
+            : openings.filter(
+                (o) =>
+                  (min === undefined || o.widthMm >= min) &&
+                  (max === undefined || o.widthMm < max)
+              ).length
+        qty = rate * inScope
+        const rangeLabel =
+          min !== undefined || max !== undefined
+            ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
+            : ''
+        noteRate = `${rate} per opening${rangeLabel}`
         break
+      }
       case 'per-block':
         // Brick estimate — block-relative rates don't apply.
         continue

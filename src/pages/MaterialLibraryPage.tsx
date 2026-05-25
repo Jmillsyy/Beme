@@ -366,6 +366,14 @@ function SupplyItemForm({
   const [enabledByDefault, setEnabledByDefault] = useState(
     existing?.enabledByDefault ?? true
   )
+  // Opening-width range — only meaningful for unit: 'per-opening'.
+  // Empty string = unbounded on that side. Stored as numbers on save.
+  const [openingWidthMin, setOpeningWidthMin] = useState<number | ''>(
+    existing?.openingWidthMinMm ?? ''
+  )
+  const [openingWidthMax, setOpeningWidthMax] = useState<number | ''>(
+    existing?.openingWidthMaxMm ?? ''
+  )
 
   const canSave =
     name.trim().length > 0 && rate > 0 && (appliesToBlock || appliesToBrick)
@@ -379,6 +387,10 @@ function SupplyItemForm({
     const appliesTo: ('block' | 'brick')[] = []
     if (appliesToBlock) appliesTo.push('block')
     if (appliesToBrick) appliesTo.push('brick')
+    // Only persist opening-width range for per-opening supplies — the
+    // fields are hidden for other units, and storing them would just
+    // confuse the next editor open.
+    const isPerOpening = unit === 'per-opening'
     onSave({
       id: existing?.id ?? generateId(),
       name: name.trim(),
@@ -387,6 +399,12 @@ function SupplyItemForm({
       rate,
       appliesTo,
       enabledByDefault,
+      ...(isPerOpening && openingWidthMin !== ''
+        ? { openingWidthMinMm: openingWidthMin }
+        : {}),
+      ...(isPerOpening && openingWidthMax !== ''
+        ? { openingWidthMaxMm: openingWidthMax }
+        : {}),
     })
   }
 
@@ -435,6 +453,59 @@ function SupplyItemForm({
           </select>
           {unitHint && <p className="text-xs text-ink-400 mt-1">{unitHint}</p>}
         </label>
+
+        {/* Opening-width range — only shown for per-opening supplies.
+            Used for lintels / sills / heads where the item depends on
+            the opening's width (e.g. Galintel 100×100 for 1200–1800mm
+            openings, steel angle for >1800mm). Leave both blank to
+            apply to every opening (ties, sealants, flashings, etc.). */}
+        {unit === 'per-opening' && (
+          <div className="md:col-span-2 p-3 rounded-lg border border-ink-700 bg-ink-900/40">
+            <div className="text-xs font-semibold text-ink-300 mb-1">
+              Opening width range (optional)
+            </div>
+            <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+              Limit this supply to openings whose width sits within the
+              range. Use it for lintels (e.g. one Galintel 100×100 per
+              opening between 1200mm and 1800mm wide). Leave both blank
+              to apply to every opening.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs">
+                <span className="block text-ink-400 mb-1">Min width (mm)</span>
+                <input
+                  type="number"
+                  value={openingWidthMin}
+                  min="0"
+                  step="50"
+                  onChange={(e) =>
+                    setOpeningWidthMin(
+                      e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10))
+                    )
+                  }
+                  placeholder="any"
+                  className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50"
+                />
+              </label>
+              <label className="text-xs">
+                <span className="block text-ink-400 mb-1">Max width (mm)</span>
+                <input
+                  type="number"
+                  value={openingWidthMax}
+                  min="0"
+                  step="50"
+                  onChange={(e) =>
+                    setOpeningWidthMax(
+                      e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10))
+                    )
+                  }
+                  placeholder="any"
+                  className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50"
+                />
+              </label>
+            </div>
+          </div>
+        )}
 
         <label className="text-sm md:col-span-2">
           <span className="block text-ink-300 mb-1">Description (optional)</span>
