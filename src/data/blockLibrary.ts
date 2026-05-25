@@ -92,10 +92,12 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     name: 'Cleanout Block',
     description:
       'Base course block with a knockout for cleaning out core debris before grouting. Runs ' +
-      'the entirety of the base course except at the ends.',
+      'the entirety of the base course except at the ends. Paired 1:1 with the 50.45 cleanout ' +
+      'tile that sits on top of the knockout.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
     roles: ['base-course'],
     pairedWith: '50.45',
+    pairedPer: 1,
   },
   '50.45': {
     code: '50.45',
@@ -260,6 +262,7 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 290 },
     roles: ['base-course'],
     pairedWith: '50.45',
+    pairedPer: 1,
   },
   '30.71': {
     code: '30.71',

@@ -1380,13 +1380,11 @@ function CompositionTab(props: CompositionTabProps) {
           onChange={setBaseCourseBlockCode}
           options={selectableBlocks}
         />
-        <BlockSelect
-          label="Base course tile (paired)"
-          value={baseCourseTileCode || ''}
-          onChange={(v) => setBaseCourseTileCode(v as BlockCode | '')}
-          options={['', ...TILE_BLOCKS] as (BlockCode | '')[]}
-          allowEmpty
-        />
+        {/* Base course tile picker removed — pairing now lives on the
+            BLOCK in the material library (Block.pairedWith /
+            Block.pairedPer). Picking 20.45 as the base course
+            automatically tallies 50.45 tiles at the configured 1:1
+            ratio; no makeup-level field required. */}
         {!isCurveMakeup && (
           <BlockSelect
             label="Body course block"

@@ -418,6 +418,15 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
     existing?.roles ?? (roleSeed ? [roleSeed] : ['body'])
   )
   const [fraction, setFraction] = useState<number | ''>(existing?.fraction ?? '')
+  // Pairing fields — any block can be paired with another so the calc
+  // engine automatically tallies the partner block. Drives the AU
+  // 20.45 ↔ 50.45 cleanout-tile pairing without hardcoding it; other
+  // regions can pair their own blocks the same way (e.g. CMU cap
+  // blocks, header courses, etc.).
+  const [pairedWith, setPairedWith] = useState<BlockCode | ''>(
+    existing?.pairedWith ?? ''
+  )
+  const [pairedPer, setPairedPer] = useState<number>(existing?.pairedPer ?? 1)
 
   // Block built-in code rename to avoid breaking the calc engine. Built-in
   // block codes are fixed; only their name / description / dimensions are editable.
@@ -448,7 +457,13 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
       },
       roles,
       ...(fraction !== '' ? { fraction } : {}),
-      ...(existing?.pairedWith ? { pairedWith: existing.pairedWith } : {}),
+      ...(pairedWith ? { pairedWith, pairedPer } : {}),
+      ...(existing?.lintelMinHeadHeightMm !== undefined
+        ? { lintelMinHeadHeightMm: existing.lintelMinHeadHeightMm }
+        : {}),
+      ...(existing?.lintelMaxHeadHeightMm !== undefined
+        ? { lintelMaxHeadHeightMm: existing.lintelMaxHeadHeightMm }
+        : {}),
     }
     onSave(block)
   }
@@ -585,6 +600,54 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
               />
             </label>
           </div>
+
+          {/* Pairing — any block can be paired with another so the calc
+              engine adds the partner to the tally whenever this block
+              appears. Replaces the old hardcoded base-course-tile
+              setup; works for any pairing (e.g. CMU + cap block,
+              base block + cleanout tile, brick header + bedding). */}
+          <fieldset className="rounded-lg border border-ink-700 bg-ink-900/40 p-3">
+            <legend className="px-1 text-ink-300 text-xs">Paired block (optional)</legend>
+            <p className="text-[11px] text-ink-500 leading-snug mb-2">
+              When this block is tallied, the paired block is added at
+              the chosen ratio. Use this for blocks that always ship
+              together — e.g. AU 20.45 cleanout + 50.45 tile (1:1).
+            </p>
+            <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+              <label className="block">
+                <span className="block text-ink-400 text-[11px] mb-1">Pairs with</span>
+                <select
+                  value={pairedWith}
+                  onChange={(e) => setPairedWith(e.target.value as BlockCode | '')}
+                  className="w-full px-2 py-1.5 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50 font-mono"
+                >
+                  <option value="">— None —</option>
+                  {existingCodes
+                    .filter((c) => c !== (existing?.code ?? trimmedCode))
+                    .sort()
+                    .map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="block text-ink-400 text-[11px] mb-1">Ratio (1 paired per)</span>
+                <select
+                  value={pairedPer}
+                  onChange={(e) => setPairedPer(parseInt(e.target.value, 10))}
+                  disabled={!pairedWith}
+                  className="w-full px-2 py-1.5 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50 disabled:opacity-50"
+                >
+                  <option value={1}>1:1</option>
+                  <option value={2}>1:2</option>
+                  <option value={3}>1:3</option>
+                  <option value={4}>1:4</option>
+                </select>
+              </label>
+            </div>
+          </fieldset>
 
           <fieldset>
             <legend className="block text-ink-300 text-xs mb-2">Roles</legend>

@@ -104,8 +104,20 @@ export interface Block {
    * e.g. 0.75 for 20.02 (three-quarter), 0.5 for 20.03 (half).
    */
   fraction?: number
-  /** A block that's typically paired with this one (e.g. 20.45 ↔ 50.45). */
+  /** A block that's typically paired with this one (e.g. 20.45 ↔ 50.45).
+   *  Whenever this block is tallied, the calc engine also tallies the
+   *  paired code at a ratio of `1 / pairedPer` items per this block.
+   *  Library editors can set the pairing per-block so it applies
+   *  everywhere — not just on the base course — and matches whatever
+   *  the user's region calls for. */
   pairedWith?: BlockCode
+  /**
+   * How many of THIS block one paired block covers. 1 means 1:1
+   * (one paired per one of this block — e.g. one 50.45 tile per
+   * 20.45 cleanout). 2 means 1:2 (one paired per two of this block).
+   * 3, 4, … similarly. Undefined defaults to 1:1.
+   */
+  pairedPer?: number
   /**
    * For lintel blocks ONLY: the head-height range this lintel covers, in mm.
    * `selectBlockLintel(headHeightMm)` walks every block with the `lintel`

@@ -794,7 +794,11 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
       else baseType = 'body'
       for (let i = 0; i < band.count; i++) {
         const isFirstCourse = courseIndex === 0
-        const pairedTile = isFirstCourse ? block?.pairedWith : undefined
+        // Pairing is a property of the BLOCK (library), so whenever the
+        // user puts a paired block on a course we emit its tile. The
+        // ratio (pairedPer) is read at tally time so the count is
+        // correct regardless of where the block lands on the wall.
+        const pairedTile = block?.pairedWith
         out.push({
           type: isFirstCourse && pairedTile ? 'base' : baseType,
           bodyBlock: band.blockCode,
@@ -827,10 +831,16 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
   // ---- Course 1: base ----
   {
     const b = blocksForCourse(1)
+    // Pairing now lives on the BLOCK (library) — whenever 20.45 is
+    // tallied, the calc engine adds a 50.45 at the block's pairedPer
+    // ratio. Fall back to the makeup's baseCourseTileCode for older
+    // saves that explicitly set it before block-level pairing existed.
+    const baseBlock = BLOCK_LIBRARY[b.baseCourseBlockCode]
+    const pairedTile = baseBlock?.pairedWith ?? b.baseCourseTileCode
     courses.push({
       type: 'base',
       bodyBlock: b.baseCourseBlockCode,
-      pairedTile: b.baseCourseTileCode,
+      pairedTile,
     })
   }
 
@@ -1016,8 +1026,14 @@ export function calculateWallTally(
 
     addToTally(tally, course.bodyBlock, fit.bodyCount)
 
+    // Paired-tile count uses the BODY block's pairedPer ratio from
+    // the library: 1 means 1:1 (one tile per block — AU default for
+    // 20.45 + 50.45), 2 means 1:2 (one tile per two blocks), etc.
+    // Always rounded up so the bricklayer never runs short.
+    const bodyBlockDef = BLOCK_LIBRARY[course.bodyBlock]
+    const pairedPer = bodyBlockDef?.pairedPer ?? 1
     if (course.pairedTile && fit.bodyCount > 0) {
-      addToTally(tally, course.pairedTile, fit.bodyCount)
+      addToTally(tally, course.pairedTile, Math.ceil(fit.bodyCount / pairedPer))
     }
 
     if (leadInCode && (startLeadInCount > 0 || endLeadInCount > 0)) {
@@ -1094,8 +1110,16 @@ function applyOpeningAdjustments(
     if (next > 0) tally[code] = next
     else delete tally[code]
     if (course.pairedTile) {
+      // Subtract paired tiles at the same ratio they were ADDED — using
+      // the BODY block's pairedPer (1 = 1:1, 2 = 1:2, etc.). Without
+      // this, a 1:2 pairing would have its tiles subtracted faster
+      // than they were tallied, leaving negative remainders that the
+      // export would zero out and misreport.
+      const bodyDef = BLOCK_LIBRARY[course.bodyBlock]
+      const pairedPer = bodyDef?.pairedPer ?? 1
+      const tilesToSubtract = Math.ceil(n / pairedPer)
       const tileCur = tally[course.pairedTile] ?? 0
-      const tileNext = Math.max(0, tileCur - n)
+      const tileNext = Math.max(0, tileCur - tilesToSubtract)
       if (tileNext > 0) tally[course.pairedTile] = tileNext
       else delete tally[course.pairedTile]
     }
