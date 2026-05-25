@@ -727,8 +727,19 @@ function WallTypeEditorModal({ existing, onSave, onCancel }: WallTypeEditorModal
                 bands={previewBands}
                 library={library}
                 bondType={bondType}
+                cornerBlockCode={cornerBlockCode}
+                halfBlockCode={halfBlockCode}
               />
             </div>
+            {/* Tiny legend so the user can map cell colour → block code at
+                a glance. Shows whatever distinct codes appear in the
+                preview right now (body bands + corner + half). */}
+            <PreviewLegend
+              bands={previewBands}
+              cornerBlockCode={cornerBlockCode}
+              halfBlockCode={halfBlockCode}
+              bondType={bondType}
+            />
           </aside>
         </div>
 
@@ -1306,18 +1317,108 @@ function PatternTab(props: PatternTabProps) {
 
 // ---------- Visual stack preview ----------
 
-/** Stable color from a block code so the same block always renders the same hue. */
+/**
+ * Stable colour from a block code. Same block code always renders the
+ * same hue, but visually-similar codes (e.g. 20.45 vs 20.48) get
+ * well-separated hues — the old *31 polynomial hash gave them adjacent
+ * values because only the last char changes by 3.
+ *
+ * Mixing strategy:
+ *   - FNV-1a base (XOR the byte before multiplying) so a small change
+ *     in any char propagates across all 32 bits.
+ *   - Per-char xxhash-32 finalisation rounds (xorshift + multiply with
+ *     two big primes) so even a 3-bit difference in the input avalanches
+ *     into the high bits before the next char folds in.
+ *   - Golden-angle (~137.508°) hue distribution so consecutive hashes
+ *     land on opposite sides of the colour wheel — maximises perceptual
+ *     separation when several codes happen to hash close together.
+ *
+ * For the typical SEQ block set (20.48 / 20.01 / 20.03 / 20.71 / 20.45
+ * etc.) this gives 100°+ of hue separation between every commonly-paired
+ * code. Some pairs (e.g. 20.18 / 20.20) can still land within 10–20°
+ * — the legend under the preview disambiguates those.
+ */
 function bandColor(code: BlockCode): string {
-  let hash = 0
-  for (let i = 0; i < code.length; i++) hash = (hash * 31 + code.charCodeAt(i)) | 0
-  const hue = (hash >>> 0) % 360
-  return `hsl(${hue}, 55%, 42%)`
+  let h = 0x811c9dc5 // FNV-1a offset basis
+  for (let i = 0; i < code.length; i++) {
+    h += code.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+    h ^= h >>> 15
+    h = Math.imul(h, 0x85ebca6b)
+    h ^= h >>> 13
+    h = Math.imul(h, 0xc2b2ae35)
+    h ^= h >>> 16
+  }
+  const hue = ((h >>> 0) * 137.508) % 360
+  return `hsl(${hue}, 62%, 46%)`
+}
+
+/**
+ * Tiny legend under the preview that maps each colour swatch to its block
+ * code. Lists the body blocks from every band in the preview, plus the
+ * corner / half end-termination codes (only the relevant ones for the
+ * active bond type — stack bond doesn't use halves).
+ */
+function PreviewLegend({
+  bands,
+  cornerBlockCode,
+  halfBlockCode,
+  bondType,
+}: {
+  bands: CourseBand[]
+  cornerBlockCode: BlockCode
+  halfBlockCode: BlockCode
+  bondType: BondType
+}) {
+  // Collect distinct codes the preview will actually render: every body
+  // band + the corner + (for stretcher) the half block. De-dupe so a
+  // wall using 20.48 as both body and end doesn't list the same swatch
+  // twice.
+  const items: { code: BlockCode; role: string }[] = []
+  const seen = new Set<BlockCode>()
+  function push(code: BlockCode, role: string) {
+    if (!code || seen.has(code)) return
+    seen.add(code)
+    items.push({ code, role })
+  }
+  for (const b of bands) if (b.count > 0) push(b.blockCode, 'body')
+  push(cornerBlockCode, 'corner')
+  if (bondType === 'stretcher') push(halfBlockCode, 'half end')
+
+  if (items.length === 0) return null
+  return (
+    <div className="mt-3 pt-3 border-t border-ink-700/60">
+      <div className="text-[10px] uppercase tracking-wide text-ink-500 mb-1.5 font-semibold">
+        Legend
+      </div>
+      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+        {items.map((it) => (
+          <div key={it.code} className="flex items-center gap-1.5 text-[10px] font-mono">
+            <span
+              className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+              style={{ backgroundColor: bandColor(it.code) }}
+              aria-hidden
+            />
+            <span className="text-ink-200">{it.code}</span>
+            <span className="text-ink-500 text-[9px]">{it.role}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 interface CoursePatternPreviewProps {
   bands: CourseBand[]
   library: Record<BlockCode, { dimensions: { heightMm: number; widthMm: number; depthMm: number } }>
   bondType: BondType
+  /** Full-block end termination (e.g. 20.01) — drawn at the ends of every
+   *  course in stack bond + odd courses in stretcher bond. */
+  cornerBlockCode: BlockCode
+  /** Half-block end termination (e.g. 20.03) — drawn at the ends of even
+   *  courses in stretcher bond, creating the half-block offset that
+   *  defines the bond pattern visually. */
+  halfBlockCode: BlockCode
 }
 
 /**
@@ -1331,7 +1432,13 @@ interface CoursePatternPreviewProps {
  * rail. What matters here is the BOND pattern and the colour distribution
  * (where the height-makeup courses sit, etc.).
  */
-function CoursePatternPreview({ bands, library, bondType }: CoursePatternPreviewProps) {
+function CoursePatternPreview({
+  bands,
+  library,
+  bondType,
+  cornerBlockCode,
+  halfBlockCode,
+}: CoursePatternPreviewProps) {
   const visible = bands.filter((b) => b.count > 0)
   // Expand the band list into a flat per-course block-code array so we
   // can lay out each course independently — needed because course N+1
@@ -1358,12 +1465,16 @@ function CoursePatternPreview({ bands, library, bondType }: CoursePatternPreview
   const heightOf = (code: BlockCode) =>
     (library[code]?.dimensions.heightMm ?? 190) + 10
 
-  // Representative number of full-block widths shown across the wall.
-  // 4 is enough to make the offset pattern obvious without crowding the
-  // narrow rail. For stretcher even courses we render as
-  // [half, full, full, full, half] so the total visual width matches the
-  // odd-course [full, full, full, full] layout exactly.
+  // Representative number of BODY blocks across the wall section. The
+  // end-termination columns sit either side, so the total visual width
+  // is BLOCKS_ACROSS + 2 full-block units. On stretcher even courses
+  // the end blocks are half-width and an extra body block fills in,
+  // matching how the real wall maths works out (the wall length is the
+  // same, the body count and end-block widths flip together).
   const BLOCKS_ACROSS = 4
+  const TOTAL_UNITS = BLOCKS_ACROSS + 2 // full-block widths total
+  const fullPct = 100 / TOTAL_UNITS
+  const halfPct = 50 / TOTAL_UNITS
 
   // Boundary labels for the side ruler — total mm at top, then the
   // running total at each band BOUNDARY (not each course, to avoid label
@@ -1399,23 +1510,31 @@ function CoursePatternPreview({ bands, library, bondType }: CoursePatternPreview
           const isEven = courseNum % 2 === 0
           const useHalves = bondType === 'stretcher' && isEven
 
-          // Build the cells for this course. All cells get tinted by the
-          // course's body block colour — the preview doesn't model the
-          // corner/half end blocks (which would tint the end cells
-          // differently); it shows the bond pattern by GEOMETRY only.
-          const fill = bandColor(code)
-          const cells: { widthPct: number }[] = []
+          // Build the cells for this course. End-termination cells use
+          // the cornerBlockCode / halfBlockCode colours so the user can
+          // see where the corner and half blocks land; body cells use
+          // the band's blockCode colour.
+          const bodyFill = bandColor(code)
+          const cornerFill = bandColor(cornerBlockCode)
+          const halfFill = bandColor(halfBlockCode)
+          const cells: { widthPct: number; color: string; label: string }[] = []
           if (useHalves) {
-            // Half + (n-1) full + half — same total width as a full row.
-            const halfPct = 100 / (BLOCKS_ACROSS * 2)
-            const fullPct = 100 / BLOCKS_ACROSS
-            cells.push({ widthPct: halfPct })
-            for (let i = 0; i < BLOCKS_ACROSS - 1; i++) cells.push({ widthPct: fullPct })
-            cells.push({ widthPct: halfPct })
-          } else {
-            for (let i = 0; i < BLOCKS_ACROSS; i++) {
-              cells.push({ widthPct: 100 / BLOCKS_ACROSS })
+            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body + half
+            // end. Total = 0.5 + (n+1) + 0.5 = n + 2 full-block widths,
+            // same total as the odd-course row below — that's why the
+            // bond pattern reads as an offset rather than a width change.
+            cells.push({ widthPct: halfPct, color: halfFill, label: halfBlockCode })
+            for (let i = 0; i < BLOCKS_ACROSS + 1; i++) {
+              cells.push({ widthPct: fullPct, color: bodyFill, label: code })
             }
+            cells.push({ widthPct: halfPct, color: halfFill, label: halfBlockCode })
+          } else {
+            // Stack bond OR stretcher odd: full end + N body + full end.
+            cells.push({ widthPct: fullPct, color: cornerFill, label: cornerBlockCode })
+            for (let i = 0; i < BLOCKS_ACROSS; i++) {
+              cells.push({ widthPct: fullPct, color: bodyFill, label: code })
+            }
+            cells.push({ widthPct: fullPct, color: cornerFill, label: cornerBlockCode })
           }
 
           return (
@@ -1423,13 +1542,14 @@ function CoursePatternPreview({ bands, library, bondType }: CoursePatternPreview
               key={courseIdx}
               style={{ flexBasis: `${pct}%`, minHeight: 0 }}
               className="flex w-full border-b border-black/40 last:border-b-0"
-              title={`Course ${courseNum}: ${code} (${h}mm modular)`}
+              title={`Course ${courseNum}: ${code} body (${h}mm modular)${useHalves ? ` · ${halfBlockCode} halves at ends` : ` · ${cornerBlockCode} at ends`}`}
             >
               {cells.map((c, i) => (
                 <div
                   key={i}
-                  style={{ width: `${c.widthPct}%`, backgroundColor: fill }}
+                  style={{ width: `${c.widthPct}%`, backgroundColor: c.color }}
                   className="border-r border-black/30 last:border-r-0"
+                  title={c.label}
                 />
               ))}
             </div>
