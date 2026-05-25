@@ -49,7 +49,7 @@ import type {
 import { findCornerPoints } from './junctions'
 import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
-import { resolveCourseBlocks } from './makeups'
+import { getCourseCount, getMakeupHeightMm, resolveCourseBlocks } from './makeups'
 import { getUserSettings } from './userSettings'
 
 /**
@@ -740,6 +740,61 @@ export interface CourseSpec {
  * override is a single explicit code that knows what it's doing.
  */
 export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec[] {
+  // ---- Bands path: makeup.coursePattern wins over the stack-driven flow ----
+  // When the user defines an explicit list of bands, those bands ARE the
+  // course composition; the legacy "uniform 200 mm courses + optional
+  // height-makeup at the top" math is skipped. The bands enumerate
+  // exactly which block sits on each course bottom-up, so the resulting
+  // CourseSpec[] just maps each band to its `count` courses.
+  //
+  // Course-type classification per band block:
+  //   - 200 mm modular block (190 + 10 mortar) → 'body' so end-block
+  //     alternation (full / half) fires in stretcher bond.
+  //   - 100 mm modular (90 + 10) → 'height-71' so the course is a
+  //     full-width fill with no end-block carve-out.
+  //   - 150 mm modular (140 + 10) → 'height-140', same treatment.
+  //   - Anything else → 'body' as a safe default.
+  // First course gets special handling: if its band block carries a
+  // `pairedWith` tile in the library (cleanout pattern, e.g. 20.45/50.45),
+  // it's emitted as type 'base' with the paired tile so the project tally
+  // counts the tile separately. Otherwise it's whatever the block height
+  // dictates.
+  if (makeup.coursePattern && makeup.coursePattern.length > 0) {
+    void stack
+    const out: CourseSpec[] = []
+    let courseIndex = 0
+    for (const band of makeup.coursePattern) {
+      if (band.count <= 0) continue
+      const block = BLOCK_LIBRARY[band.blockCode]
+      const heightMm = block?.dimensions.heightMm ?? 190
+      let baseType: CourseType
+      if (heightMm <= 100) baseType = 'height-71'
+      else if (heightMm <= 150) baseType = 'height-140'
+      else baseType = 'body'
+      for (let i = 0; i < band.count; i++) {
+        const isFirstCourse = courseIndex === 0
+        const pairedTile = isFirstCourse ? block?.pairedWith : undefined
+        out.push({
+          type: isFirstCourse && pairedTile ? 'base' : baseType,
+          bodyBlock: band.blockCode,
+          pairedTile,
+        })
+        courseIndex++
+      }
+    }
+    // courseOverrides still apply on top (1-indexed against the bands-
+    // derived course list). Caller picked specific block for specific row.
+    if (makeup.courseOverrides) {
+      for (const override of makeup.courseOverrides) {
+        const idx = override.courseNumber - 1
+        if (idx >= 0 && idx < out.length) {
+          out[idx] = { ...out[idx], bodyBlock: override.blockCode }
+        }
+      }
+    }
+    return out
+  }
+
   const courses: CourseSpec[] = []
 
   // Per-course block resolution lives on the makeups module so the UI and the
@@ -831,7 +886,11 @@ export function calculateWallTally(
   if (isCurvedWall(wall)) {
     return calculateCurvedWallTally(wall, makeup)
   }
-  const heightMm = wall.heightMmOverride ?? makeup.heightMm
+  // For bands-driven walls, makeup.heightMm may be stale — getMakeupHeightMm
+  // sums the actual course pattern. heightMmOverride still takes priority for
+  // legacy (non-bands) walls; bands walls ignore the override because the
+  // pattern itself defines the wall height.
+  const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
   const stack = calculateCourseStack(heightMm)
   const plan = planWall(wall, makeup, thicknessByWallId, wallsById)
   const courses = buildCourses(stack, makeup)
@@ -990,7 +1049,12 @@ function applyOpeningAdjustments(
   makeup: WallMakeup,
   courses: CourseSpec[]
 ): void {
-  const wallHeightMm = wall.heightMmOverride ?? makeup.heightMm
+  // Bands-aware: use the actual summed band height instead of the legacy
+  // makeup.heightMm field (which may be stale for coursePattern walls).
+  // Note: sill/head course indexing still assumes 200mm modular per course —
+  // mixed-height bands within an opening span will give approximate head
+  // positioning. Task #95 (per-course heightMm metadata) addresses that.
+  const wallHeightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
 
   const sillCoursesFloor = Math.floor(opening.sillHeightMm / COURSE_MODULE_MM)
   const openingCourses = Math.max(0, Math.floor(opening.heightMm / COURSE_MODULE_MM))
@@ -1164,7 +1228,7 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   )
   if (!geom) return {}
 
-  const heightMm = wall.heightMmOverride ?? makeup.heightMm
+  const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
   const courseCount = Math.round(heightMm / COURSE_MODULE_MM)
   if (courseCount <= 0) return {}
 
@@ -1251,9 +1315,15 @@ export function calculateTiedPierTally(
   makeup: WallMakeup,
   pierMakeup?: PierMakeup
 ): BlockTally {
-  const heightMm = wall.heightMmOverride ?? makeup.heightMm
+  // Bands-driven walls: course count comes from the band counts directly
+  // (so a wall with 4×20.48 + 2×20.71 pattern reports 6 courses regardless
+  // of what stack.totalCourses would say from the legacy 200mm-modular path).
+  const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
   const stack = calculateCourseStack(heightMm)
-  const N = stack.totalCourses
+  const N =
+    makeup.coursePattern && makeup.coursePattern.length > 0
+      ? getCourseCount(makeup)
+      : stack.totalCourses
   if (N <= 0) return {}
   const pattern = pierMakeup?.coursePattern?.length
     ? pierMakeup.coursePattern
@@ -1371,9 +1441,12 @@ export function calculateProjectTally(
     // is that the pier replaces an H block's worth of material at each displacement
     // course, regardless of whether the wall course is a base, body, top, or height-makeup
     // row. Base-course tiles + cleanout layout around the pier are unaffected.
-    const heightMm = wall.heightMmOverride ?? makeup.heightMm
+    const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
     const stack = calculateCourseStack(heightMm)
-    const totalCourses = stack.totalCourses
+    const totalCourses =
+      makeup.coursePattern && makeup.coursePattern.length > 0
+        ? getCourseCount(makeup)
+        : stack.totalCourses
     const pattern =
       pierMakeup?.coursePattern?.length
         ? pierMakeup.coursePattern
@@ -1432,46 +1505,37 @@ export function calculateCornerAdjustment(
     const makeup = makeupsById[firstWall.makeupId]
     if (!makeup) continue
 
-    const heightMm = firstWall.heightMmOverride ?? makeup.heightMm
+    // Walk the wall's actual course list — works the same for bands-driven
+    // walls and legacy walls because buildCourses returns a unified
+    // CourseSpec[] either way. For each shared-corner block we subtract
+    // (n-1) copies of the blockCode that ROW puts at the corner column.
+    //
+    //  - Standard courses ('base' / 'body' / 'top'): corner column carries
+    //    the wall's corner block (resolveCourseBlocks honours any 300/200
+    //    series range overlay for that row).
+    //  - Height-makeup rows ('height-71' / 'height-140'): the height-makeup
+    //    block IS the corner column — there's no separate corner column at
+    //    that row. Subtract the height-makeup block itself.
+    const heightMm = firstWall.heightMmOverride ?? getMakeupHeightMm(makeup)
     const stack = calculateCourseStack(heightMm)
-    if (stack.totalCourses <= 0) continue
+    const courses = buildCourses(stack, makeup)
+    if (courses.length <= 0) continue
 
-    // Each course's corner column contributes whatever block code that COURSE
-    // resolves to. With a 300-series range covering courses 1-5, the bottom
-    // five corner-column subtractions are 30.01, the rest are 20.01 — so we
-    // walk the stack rather than scaling a single code by standardCount.
-    const standardCornerColumn = stack.standardCount
-    if (standardCornerColumn > 0) {
-      // Build the course list the same way calculateWallTally does — bases,
-      // bodies, height-makeup, top — and read the corner block per course.
-      const courses = buildCourses(stack, makeup)
-      for (let ci = 0; ci < courses.length; ci++) {
-        const courseNumber = ci + 1
-        const course = courses[ci]
-        if (course.type === 'height-71' || course.type === 'height-140') continue
+    for (let ci = 0; ci < courses.length; ci++) {
+      const courseNumber = ci + 1
+      const course = courses[ci]
+      if (course.type === 'height-71' || course.type === 'height-140') {
+        // Height-makeup courses: the block itself fills the corner column,
+        // so dedup against the course's actual blockCode.
+        addToTally(adjustment, course.bodyBlock, n - 1)
+      } else {
+        // Standard courses: dedup against the corner block resolved for
+        // this row (range overlay-aware).
         const resolved = resolveCourseBlocks(makeup, courseNumber)
         addToTally(adjustment, resolved.cornerBlockCode, n - 1)
       }
     }
-    // Height-makeup courses contribute the height-makeup block itself at the
-    // corner column. Use the resolved height-makeup code so a 300-series
-    // height-makeup row dedups to 30.71 (when one's defined for the range).
-    if (stack.has71) {
-      // buildCourses lays courses out as: base(1), bodies(2..standardCount-1),
-      // [140](standardCount), [71](next), top(last). So the 71 row's 1-indexed
-      // course number is standardCount + (has140 ? 1 : 0).
-      const heightMakeupCourseNumber = stack.standardCount + (stack.has140 ? 1 : 0)
-      const resolved = resolveCourseBlocks(makeup, heightMakeupCourseNumber)
-      addToTally(adjustment, resolved.heightMakeup71BlockCode, n - 1)
-    }
-    if (stack.has140) {
-      // Look up the 140 mm height-makeup block by role so corner-column
-      // dedup works for any region's library, not just SEQ 20.140.
-      const block140 = pickHeightMakeupBlock(140)
-      if (block140) {
-        addToTally(adjustment, block140.code, n - 1)
-      }
-    }
+    void pickHeightMakeupBlock // legacy helper retained for non-bands callers
   }
 
   return adjustment
