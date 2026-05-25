@@ -7,6 +7,7 @@
  */
 
 import type { BrickLintelEntry, BrickSettings, Opening, Wall } from '../types/walls'
+import { BRICK_LIBRARY } from '../data/brickLibrary'
 import { brickLintelBearingMm } from './lintels'
 import { getUserSettings } from './userSettings'
 
@@ -154,11 +155,14 @@ export function calculateBrickTally(
 /**
  * Sensible defaults for a fresh brick estimate.
  *
- * Defaults to the 'standard' brick type from the library (230×76 face). The
- * brick library may rename or re-dimension that type; we don't compute the
- * rate here because the library hasn't loaded yet at module init. The brick
- * settings panel reconciles `bricksPerSquareMetre` against the active type
- * whenever it changes.
+ * Picks the first brick code in the live BRICK_LIBRARY so a US user with
+ * the US-modular library gets 'modular' as the default, a UK user gets
+ * 'standard' (BS 215×65), AU users get the legacy 'standard' (230×76).
+ * Falls back to 'standard' as a last resort if the library is empty.
+ *
+ * Initial bricks/m² is computed from the chosen brick's face dimensions
+ * + the makeup mortar (default 10mm). The brick settings panel keeps
+ * this in lockstep with the active brick type after creation.
  */
 export function createDefaultBrickSettings(): BrickSettings {
   // Ties + plascourse default to "enabled if your region uses them" so a new
@@ -166,10 +170,20 @@ export function createDefaultBrickSettings(): BrickSettings {
   // markets where these don't apply. Per-project overrides remain in the
   // brick settings panel.
   const regional = getUserSettings().preferences.regionalFeatures
+  const firstBrick = Object.values(BRICK_LIBRARY)[0]
+  const brickTypeCode = firstBrick?.code ?? 'standard'
+  // Compute bricks/m² from the brick's face area + assumed 10mm joint.
+  // (faceW + 10) × (faceH + 10) = m²-area per brick; flip for rate.
+  const computedRate = firstBrick
+    ? Math.round(
+        1_000_000 /
+          ((firstBrick.widthMm + 10) * (firstBrick.heightMm + 10))
+      )
+    : 48
   return {
     defaultWallHeightMm: 2400,
-    brickTypeCode: 'standard',
-    bricksPerSquareMetre: 48, // 230×76 + 10mm joint → ~48/m²
+    brickTypeCode,
+    bricksPerSquareMetre: computedRate,
     ties: { enabled: regional.brickTies, perSquareMetre: 2 },
     plascourse: { enabled: regional.plascourse, metresPerUnit: 30 },
   }

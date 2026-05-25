@@ -10,7 +10,17 @@ import type {
   CourseSeriesRange,
 } from '../types/walls'
 import type { BlockCode } from '../types/blocks'
-import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
+import {
+  BLOCK_LIBRARY,
+  pickBaseCourse,
+  pickBaseTile,
+  pickBodyDefault,
+  pickCornerBlock,
+  pickCurveWedge,
+  pickHalfBlock,
+  pickTopCourse,
+  useBlockLibrary,
+} from '../data/blockLibrary'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import {
   CURVED_WALL_WEDGE_RADIUS_MM,
@@ -411,10 +421,15 @@ function WallTypeEditorModal({
   onCancel,
 }: WallTypeEditorModalProps) {
   const { library } = useBlockLibrary()
+  // Selectable blocks for the wall composition dropdowns. Filter out
+  // anything tagged 'base-tile' — tiles are paired with their cleanout
+  // block via Block.pairedWith / pairedPer, not picked manually for
+  // wall composition. Region-agnostic (any region's tile block gets
+  // tagged 'base-tile' and is excluded from these dropdowns).
   const selectableBlocks = useMemo<BlockCode[]>(
     () =>
       Object.values(library)
-        .filter((b) => b.code !== '50.45')
+        .filter((b) => !b.roles.includes('base-tile'))
         .map((b) => b.code)
         .sort(),
     [library]
@@ -426,23 +441,32 @@ function WallTypeEditorModal({
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
   const [useFractions, setUseFractions] = useState(existing?.useFractions ?? true)
 
+  // Defaults for new wall types come from the LIVE library via the role
+  // pickers — so a US user creating their first wall type lands on
+  // CMU8 / CMU8-C / CMU8-H instead of the AU SEQ codes. Existing wall
+  // types keep the codes they were saved with. The hardcoded SEQ codes
+  // remain as a last-resort fallback only if both the live library AND
+  // the seed are empty / role-stripped.
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
-    existing?.baseCourseBlockCode ?? '20.45'
+    existing?.baseCourseBlockCode ?? pickBaseCourse()?.code ?? '20.45'
   )
   const [baseCourseTileCode, setBaseCourseTileCode] = useState<BlockCode | ''>(
-    existing?.baseCourseTileCode ?? '50.45'
+    existing?.baseCourseTileCode ?? pickBaseTile()?.code ?? ''
   )
   const [bodyBlockCode, setBodyBlockCode] = useState<BlockCode>(
-    existing?.bodyBlockCode ?? '20.48'
+    existing?.bodyBlockCode ?? pickBodyDefault()?.code ?? '20.48'
   )
   const [topCourseBlockCode, setTopCourseBlockCode] = useState<BlockCode>(
-    existing?.topCourseBlockCode ?? '20.48'
+    existing?.topCourseBlockCode ??
+      pickTopCourse()?.code ??
+      pickBodyDefault()?.code ??
+      '20.48'
   )
   const [cornerBlockCode, setCornerBlockCode] = useState<BlockCode>(
-    existing?.cornerBlockCode ?? '20.01'
+    existing?.cornerBlockCode ?? pickCornerBlock()?.code ?? '20.01'
   )
   const [halfBlockCode, setHalfBlockCode] = useState<BlockCode>(
-    existing?.halfBlockCode ?? '20.03'
+    existing?.halfBlockCode ?? pickHalfBlock()?.code ?? '20.03'
   )
 
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(
@@ -468,9 +492,13 @@ function WallTypeEditorModal({
   )
 
   function addBand() {
+    // Default new band to the current body block, then to the live
+    // library's body-tagged block, then to the AU code as last resort.
+    const defaultCode =
+      bodyBlockCode || pickBodyDefault()?.code || '20.48'
     setCoursePattern((prev) => [
       ...prev,
-      { blockCode: bodyBlockCode || '20.48', count: 1 },
+      { blockCode: defaultCode, count: 1 },
     ])
   }
   function updateBand(index: number, patch: Partial<CourseBand>) {
@@ -535,7 +563,10 @@ function WallTypeEditorModal({
   }
 
   function addOverride() {
-    setCourseOverrides((prev) => [...prev, { courseNumber: 2, blockCode: '20.48' }])
+    // Override defaults to the current body block so a US user picking
+    // 'add override' gets CMU8, not the AU 20.48.
+    const defaultCode = bodyBlockCode || pickBodyDefault()?.code || '20.48'
+    setCourseOverrides((prev) => [...prev, { courseNumber: 2, blockCode: defaultCode }])
   }
   function updateOverride(index: number, patch: Partial<CourseOverride>) {
     setCourseOverrides((prev) =>
@@ -551,19 +582,17 @@ function WallTypeEditorModal({
   )
 
   function addSeriesRange() {
+    // Seed a blank range — every field undefined so the user picks
+    // their own codes from the live library via the RangeRow dropdowns.
+    // Pre-filling 30-series AU codes was wrong outside AU (US/UK
+    // libraries don't have 30.xx codes, so the user would see a list
+    // of invalid blocks). The user picks their region's "secondary
+    // series" blocks via the dropdowns instead.
     setSeriesRanges((prev) => [
       ...prev,
       {
         fromCourse: 1,
         toCourse: 5,
-        bodyBlockCode: '30.48',
-        cornerBlockCode: '30.01',
-        halfBlockCode: '30.03',
-        baseCourseBlockCode: '30.45',
-        baseCourseTileCode: '50.45',
-        heightMakeup71BlockCode: '30.71',
-        cornerLeadInBlockCode: '30.02',
-        cornerLeadInCount: 2,
       },
     ])
   }
@@ -581,10 +610,14 @@ function WallTypeEditorModal({
   const curveZone = isCurveMakeup ? curveZoneForRadius(curveRadiusMm) : null
   const wedgeFeasible = isCurveMakeup && curveRadiusMm >= CURVED_WALL_MIN_FEASIBLE_RADIUS_MM
   const [wedgeBodyBlockCode, setWedgeBodyBlockCode] = useState<BlockCode>(
-    existing && wedgeRequired ? existing.bodyBlockCode : '20.03CW'
+    existing && wedgeRequired
+      ? existing.bodyBlockCode
+      : pickCurveWedge()?.code ?? '20.03CW'
   )
   const [normalBodyBlockCode, setNormalBodyBlockCode] = useState<BlockCode>(
-    existing && !wedgeRequired && isCurveMakeup ? existing.bodyBlockCode : '20.48'
+    existing && !wedgeRequired && isCurveMakeup
+      ? existing.bodyBlockCode
+      : pickBodyDefault()?.code ?? '20.48'
   )
   // A wedge curve has no use for course-mixing fields — disable Pattern /
   // Advanced tabs and force back to Basics if the user lands there.
@@ -2360,28 +2393,48 @@ interface PierTypeEditorModalProps {
 function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModalProps) {
   const { library } = useBlockLibrary()
 
-  // Block options: pier-relevant codes first, then everything else sorted.
-  // Mirrors the original PierTypesPanel preference list so users see the
-  // codes they actually pick at the top of the dropdown.
-  const PIER_PREFERRED: BlockCode[] = ['40.925', '20.01', '20.21', '20.48', '20.03']
+  // Block options for the pier-pattern dropdowns. Pier-tagged blocks
+  // appear first (so US users see CMU8 at the top, AU sees 40.925),
+  // followed by corner-tagged, then the rest alphabetical. Base tiles
+  // are filtered out (they're never used in piers).
   const blockOptions = useMemo<BlockCode[]>(() => {
-    const allBlocks: BlockCode[] = Object.values(library)
+    const all = Object.values(library).filter(
+      (b) => !b.roles.includes('base-tile')
+    )
+    const pierTagged = all
+      .filter((b) => b.roles.includes('pier'))
       .map((b) => b.code)
-      .filter((c) => c !== '50.45')
-    const preferred = PIER_PREFERRED.filter((c) => allBlocks.includes(c))
-    const rest = allBlocks.filter((c) => !PIER_PREFERRED.includes(c)).sort()
-    return [...preferred, ...rest]
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const cornerTagged = all
+      .filter((b) => !b.roles.includes('pier') && b.roles.includes('corner'))
+      .map((b) => b.code)
+    const pierSet = new Set(pierTagged)
+    const cornerSet = new Set(cornerTagged)
+    const rest = all
+      .filter((b) => !pierSet.has(b.code) && !cornerSet.has(b.code))
+      .map((b) => b.code)
+      .sort()
+    return [...pierTagged, ...cornerTagged, ...rest]
   }, [library])
 
   const [name, setName] = useState(existing?.name ?? 'New pier type')
   const [placement, setPlacement] = useState<'tied' | 'freestanding'>(
     existing?.suggestedPlacement ?? 'tied'
   )
+  // Seed pattern for a new pier: live library's pier block + corner
+  // block (or any sensible region defaults). Existing piers keep their
+  // saved pattern. Fallback to AU codes only if the library has
+  // nothing tagged.
+  const seedPierCode = pickBodyDefault()?.code ?? '20.48'
+  const seedCornerCode = pickCornerBlock()?.code ?? '20.01'
+  // Use pier-tagged code if there is one (AU 40.925); otherwise body
+  // (US/UK use the body block as the pier per Step 3.5).
+  const seedPierPrimary =
+    Object.values(library).find((b) => b.roles.includes('pier'))?.code ??
+    seedPierCode
   const [pattern, setPattern] = useState<BlockCode[]>(
     existing?.coursePattern && existing.coursePattern.length > 0
       ? existing.coursePattern
-      : ['40.925', '20.01']
+      : [seedPierPrimary, seedCornerCode]
   )
   // Height for freestanding pier types (in mm). Saving propagates the value
   // to every freestanding pier of this type so the modal is the single
@@ -2394,7 +2447,9 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
     setPattern((prev) => prev.map((c, i) => (i === idx ? code : c)))
   }
   function addSlot() {
-    const last = pattern[pattern.length - 1] ?? '40.925'
+    // Default new slot to whatever the last slot is. If the pattern's
+    // empty, fall back to the seed pier code (region-aware).
+    const last = pattern[pattern.length - 1] ?? seedPierPrimary
     setPattern((prev) => [...prev, last])
   }
   function removeSlot(idx: number) {
