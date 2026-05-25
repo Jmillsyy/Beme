@@ -1629,9 +1629,9 @@ function CoursePatternPreview({
       <div
         style={{
           aspectRatio: wallAspect,
-          maxHeight: '100%',
+          width: '100%',
           maxWidth: '200px',
-          height: '100%',
+          maxHeight: '100%',
         }}
         className="relative shrink-0"
       >
