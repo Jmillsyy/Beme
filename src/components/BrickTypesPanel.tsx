@@ -560,35 +560,67 @@ function BrickWallPreview({
     )
   }
 
-  // Render bottom→top: segments are bottom-to-top, but SVG y starts at
-  // the TOP, so iterate in reverse and stack rows downward.
-  const rows: { y: number; height: number; brick: BrickType; offset: boolean; colour: typeof PALETTE[number] }[] = []
+  // Render bottom→top in mm space, but SVG y goes downward, so we walk
+  // segments TOP→BOTTOM and stack rows downward. The crucial detail:
+  // each segment must fill ITS ENTIRE allocated heightMm in the preview
+  // — if `floor(seg.heightMm / pitch)` leaves a remainder (e.g. 13.45
+  // double-height courses on a wall that allows 13 full + a stub), we
+  // render the stub as a partial top course in that band so adjacent
+  // bands don't have a phantom gap where the leftover sits.
+  const rows: {
+    y: number
+    height: number
+    brick: BrickType
+    offset: boolean
+    colour: typeof PALETTE[number]
+  }[] = []
   let yCursor = 0
   const segmentsTopDown = [...segments].reverse()
   for (const seg of segmentsTopDown) {
     const colour = PALETTE[seg.bandIndex % PALETTE.length]
     const pitch = seg.brick.heightMm + (seg.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
-    const courseCount = Math.max(1, Math.floor(seg.heightMm / pitch))
-    // Compute the offset parity for the bottom-most course in this band
-    // so adjacent bands keep the stretcher offset continuous.
-    const segBottomYmm = wallHeightMm - (yCursor + seg.heightMm)
-    const bottomCourseIndexFromGround = Math.floor(segBottomYmm / pitch)
-    for (let i = 0; i < courseCount; i++) {
-      const courseTop = yCursor + i * pitch
-      // Course #0 (bottom) starts flush left, every odd course shifts by
-      // half a face length. Indexing is from the GROUND up so adjacent
-      // bands hand off cleanly.
-      const courseIndexFromGround = courseCount - 1 - i + bottomCourseIndexFromGround
+    const bandTopY = yCursor
+    const bandBottomY = yCursor + seg.heightMm
+    const fullCourses = Math.floor(seg.heightMm / pitch)
+    const leftover = seg.heightMm - fullCourses * pitch
+    // Bottom-most full course in this band, indexed from the wall's
+    // ground up — used to keep the stretcher offset continuous across
+    // band boundaries (so the half-brick step doesn't flip when the
+    // brick type changes).
+    const segBottomFromGroundMm = wallHeightMm - bandBottomY
+    const bottomCourseIndexFromGround = Math.floor(segBottomFromGroundMm / pitch)
+
+    // Full courses, drawn from the bottom of the band upwards.
+    for (let c = 0; c < fullCourses; c++) {
+      const courseBottomY = bandBottomY - c * pitch
+      const courseTopY = courseBottomY - pitch
+      const courseIndexFromGround = bottomCourseIndexFromGround + c
       const offset = courseIndexFromGround % 2 === 1
       rows.push({
-        y: courseTop,
+        y: courseTopY,
         height: pitch,
         brick: seg.brick,
         offset,
         colour,
       })
     }
-    yCursor += seg.heightMm
+    // Partial top course — happens whenever the band's allocated height
+    // doesn't divide evenly into the brick pitch. Sits at the very top
+    // of the band so the next band above (or the wall top) lands flush
+    // against full bricks.
+    if (leftover > 1) {
+      const courseTopY = bandTopY
+      const courseIndexFromGround = bottomCourseIndexFromGround + fullCourses
+      const offset = courseIndexFromGround % 2 === 1
+      rows.push({
+        y: courseTopY,
+        height: leftover,
+        brick: seg.brick,
+        offset,
+        colour,
+      })
+    }
+    yCursor = bandBottomY
   }
 
   return (
@@ -633,13 +665,19 @@ function BrickWallPreview({
           })}
         </svg>
       </div>
-      {/* Legend: one row per band, with brick name + course count. */}
+      {/* Legend ordered TOP → BOTTOM so the rows in the swatch list
+          line up with what the eye reads in the preview above.
+          `segments` is bottom-to-top, so reverse for display. */}
       <div className="flex flex-col gap-1">
-        {segments.map((seg, i) => {
+        {[...segments].reverse().map((seg, i) => {
           const colour = PALETTE[seg.bandIndex % PALETTE.length]
           const pitch =
             seg.brick.heightMm + (seg.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
-          const courses = Math.max(1, Math.floor(seg.heightMm / pitch))
+          // Course count rounds UP when there's a partial top course in
+          // the band so the legend matches what the user sees rendered.
+          const fullCourses = Math.floor(seg.heightMm / pitch)
+          const leftover = seg.heightMm - fullCourses * pitch
+          const courses = Math.max(1, fullCourses + (leftover > 1 ? 1 : 0))
           return (
             <div key={i} className="flex items-center gap-2 text-[11px]">
               <span
