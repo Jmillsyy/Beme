@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { BrickCourseRange, BrickMakeup } from '../types/walls'
+import type { BrickCode, BrickType } from '../types/bricks'
+import { DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { useBrickLibrary } from '../data/brickLibrary'
 import { wallTypeColor } from '../lib/wallTypeColors'
 
@@ -236,7 +238,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
       aria-label={existing ? `Edit brick wall type ${existing.name}` : 'New brick wall type'}
     >
       <div
-        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden"
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -262,8 +264,11 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
           </button>
         </header>
 
-        {/* Body */}
-        <div className="p-5 space-y-4">
+        {/* Body — two columns on lg+: form on the left, live wall
+            preview on the right. Stacks on smaller widths so phones /
+            narrow split-screen still work. */}
+        <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-auto">
+          <div className="p-5 space-y-4 flex-1 min-w-0">
           <label className="text-sm block">
             <span className="block text-ink-300 mb-1">Name</span>
             <input
@@ -407,6 +412,35 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               </div>
             )}
           </div>
+          </div>
+
+          {/* Right rail: live wall preview. Stacks bottom-to-top so the
+              first band (course 1) sits at the floor exactly like a real
+              wall. Single-brick types still get a preview — it just shows
+              one band of the main brick. */}
+          <aside className="hidden lg:flex w-72 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4">
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400">
+                Wall preview
+              </h3>
+              <span className="text-[10px] text-ink-500 font-mono tabular-nums">
+                {heightMm} mm
+              </span>
+            </div>
+            <p className="text-[10px] text-ink-500 mb-3 leading-snug">
+              {courseRanges.length === 0
+                ? 'Single layer of the main brick.'
+                : `${courseRanges.length} band${courseRanges.length === 1 ? '' : 's'}, stacked bottom to top.`}
+            </p>
+            <div className="flex-1 min-h-0">
+              <BrickWallPreview
+                wallHeightMm={heightMm}
+                mainBrickCode={brickTypeCode}
+                courseRanges={courseRanges}
+                library={library}
+              />
+            </div>
+          </aside>
         </div>
 
         {/* Footer */}
@@ -425,6 +459,201 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
             {existing ? 'Save changes' : 'Create brick wall type'}
           </button>
         </footer>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Internal: BrickWallPreview ----------
+
+interface BrickWallPreviewProps {
+  wallHeightMm: number
+  mainBrickCode: string
+  courseRanges: BrickCourseRange[]
+  library: Record<BrickCode, BrickType>
+}
+
+/**
+ * Live SVG preview of a brick wall as configured in the modal. Resolves
+ * the makeup's main brick + course bands into segments bottom-to-top,
+ * then renders each course as a row of bricks in stretcher bond (every
+ * other course offset by half a face length).
+ *
+ * Each band gets its own colour band so the user can see at a glance
+ * where one brick type stops and the next starts.
+ */
+function BrickWallPreview({
+  wallHeightMm,
+  mainBrickCode,
+  courseRanges,
+  library,
+}: BrickWallPreviewProps) {
+  const segments = useMemo(() => {
+    // Build a normalised range list ordered by fromCourse. If the
+    // bottom course isn't covered explicitly, prepend the main brick
+    // so the wall starts somewhere.
+    const ranges = (courseRanges ?? []).filter(
+      (r) =>
+        r.brickTypeCode && Number.isFinite(r.fromCourse) && r.fromCourse >= 1
+    )
+    const sorted = [...ranges].sort((a, b) => a.fromCourse - b.fromCourse)
+    if (sorted.length === 0) {
+      // Pure single-brick wall.
+      const brick = mainBrickCode ? library[mainBrickCode] : undefined
+      if (!brick) return []
+      return [{ brick, heightMm: wallHeightMm, bandIndex: 0 }]
+    }
+    if (sorted[0].fromCourse !== 1) {
+      sorted.unshift({ fromCourse: 1, brickTypeCode: mainBrickCode })
+    }
+    const out: Array<{ brick: BrickType; heightMm: number; bandIndex: number }> = []
+    let cursorMm = 0
+    for (let i = 0; i < sorted.length; i++) {
+      const range = sorted[i]
+      const next = sorted[i + 1]
+      const brick = library[range.brickTypeCode]
+      if (!brick) continue
+      const pitch = brick.heightMm + (brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
+      const remaining = wallHeightMm - cursorMm
+      if (remaining <= 0) break
+      let bandHeight: number
+      if (next) {
+        const courses = Math.max(0, next.fromCourse - range.fromCourse)
+        bandHeight = Math.min(courses * pitch, remaining)
+      } else {
+        bandHeight = remaining
+      }
+      if (bandHeight <= 0) continue
+      out.push({ brick, heightMm: bandHeight, bandIndex: i })
+      cursorMm += bandHeight
+    }
+    return out
+  }, [wallHeightMm, mainBrickCode, courseRanges, library])
+
+  // Width of the preview wall section — wide enough to show ~2.5 bricks
+  // so the stretcher bond reads as a pattern. Fixed in mm-space so the
+  // SVG scales naturally; the parent container handles fit-to-fill.
+  const widestFaceMm = Math.max(
+    ...segments.map((s) => s.brick.widthMm + (s.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)),
+    230
+  )
+  const viewWidth = Math.max(widestFaceMm * 2.5, 400)
+  const viewHeight = Math.max(wallHeightMm, 100)
+
+  // Band palette — matches the spirit of WallTypesPanel's wall-type
+  // colours so an estimator switching between block / brick projects
+  // sees the same visual language.
+  const PALETTE = [
+    { fill: '#ED7D31', stroke: '#9A3F08' },
+    { fill: '#2563eb', stroke: '#1e3a8a' },
+    { fill: '#16a34a', stroke: '#14532d' },
+    { fill: '#7c3aed', stroke: '#4c1d95' },
+    { fill: '#db2777', stroke: '#831843' },
+    { fill: '#0891b2', stroke: '#164e63' },
+  ]
+
+  if (segments.length === 0) {
+    return (
+      <div className="h-full w-full flex items-center justify-center text-[11px] text-ink-500 italic border border-dashed border-ink-700 rounded-lg">
+        Pick a main brick to see the preview.
+      </div>
+    )
+  }
+
+  // Render bottom→top: segments are bottom-to-top, but SVG y starts at
+  // the TOP, so iterate in reverse and stack rows downward.
+  const rows: { y: number; height: number; brick: BrickType; offset: boolean; colour: typeof PALETTE[number] }[] = []
+  let yCursor = 0
+  const segmentsTopDown = [...segments].reverse()
+  for (const seg of segmentsTopDown) {
+    const colour = PALETTE[seg.bandIndex % PALETTE.length]
+    const pitch = seg.brick.heightMm + (seg.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
+    const courseCount = Math.max(1, Math.floor(seg.heightMm / pitch))
+    // Compute the offset parity for the bottom-most course in this band
+    // so adjacent bands keep the stretcher offset continuous.
+    const segBottomYmm = wallHeightMm - (yCursor + seg.heightMm)
+    const bottomCourseIndexFromGround = Math.floor(segBottomYmm / pitch)
+    for (let i = 0; i < courseCount; i++) {
+      const courseTop = yCursor + i * pitch
+      // Course #0 (bottom) starts flush left, every odd course shifts by
+      // half a face length. Indexing is from the GROUND up so adjacent
+      // bands hand off cleanly.
+      const courseIndexFromGround = courseCount - 1 - i + bottomCourseIndexFromGround
+      const offset = courseIndexFromGround % 2 === 1
+      rows.push({
+        y: courseTop,
+        height: pitch,
+        brick: seg.brick,
+        offset,
+        colour,
+      })
+    }
+    yCursor += seg.heightMm
+  }
+
+  return (
+    <div className="h-full w-full flex flex-col gap-2">
+      <div className="flex-1 min-h-0 border border-ink-700 rounded-lg bg-ink-900/40 overflow-hidden">
+        <svg
+          viewBox={`0 0 ${viewWidth} ${viewHeight}`}
+          xmlns="http://www.w3.org/2000/svg"
+          preserveAspectRatio="xMidYMid meet"
+          className="w-full h-full"
+        >
+          {rows.map((row, i) => {
+            const faceMm =
+              row.brick.widthMm + (row.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
+            const mortarMm = row.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM
+            const brickFaceHeight = row.height - mortarMm
+            // Tile bricks across the preview width. Start at -offset so
+            // the offset stretcher row pulls a half-brick into view at
+            // the left edge.
+            const startX = row.offset ? -faceMm / 2 : 0
+            const bricks: number[] = []
+            for (let x = startX; x < viewWidth + faceMm; x += faceMm) {
+              bricks.push(x)
+            }
+            return (
+              <g key={i}>
+                {bricks.map((x, j) => (
+                  <rect
+                    key={j}
+                    x={x + mortarMm / 2}
+                    y={row.y + mortarMm / 2}
+                    width={Math.max(0, row.brick.widthMm)}
+                    height={Math.max(0, brickFaceHeight)}
+                    fill={row.colour.fill}
+                    stroke={row.colour.stroke}
+                    strokeWidth={Math.max(1, mortarMm * 0.4)}
+                    opacity={0.92}
+                  />
+                ))}
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+      {/* Legend: one row per band, with brick name + course count. */}
+      <div className="flex flex-col gap-1">
+        {segments.map((seg, i) => {
+          const colour = PALETTE[seg.bandIndex % PALETTE.length]
+          const pitch =
+            seg.brick.heightMm + (seg.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
+          const courses = Math.max(1, Math.floor(seg.heightMm / pitch))
+          return (
+            <div key={i} className="flex items-center gap-2 text-[11px]">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+                style={{ backgroundColor: colour.fill }}
+                aria-hidden
+              />
+              <span className="text-ink-200 flex-1 truncate">{seg.brick.name}</span>
+              <span className="text-ink-500 tabular-nums flex-shrink-0">
+                {courses} course{courses === 1 ? '' : 's'}
+              </span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
