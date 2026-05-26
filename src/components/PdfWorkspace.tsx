@@ -3816,7 +3816,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                 You can edit these later from Project details.
               </span>
               <button
-                onClick={() => setStartupGateOpen(false)}
+                onClick={() => {
+                  // Drop the gate first so the workspace renders immediately,
+                  // then persist in the background. This is the moment the
+                  // project officially "exists" — saving it now means it shows
+                  // up on the dashboard's Projects list even if the user
+                  // closes the tab before uploading a PDF or drawing
+                  // anything. handleSaveProject is safe with no pdfFile +
+                  // empty walls/pages, and the savingRef guard keeps a
+                  // racing autosave at bay.
+                  setStartupGateOpen(false)
+                  void handleSaveProject()
+                }}
                 disabled={!projectDetails.projectName.trim()}
                 className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
