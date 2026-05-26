@@ -6,59 +6,20 @@
  * per m²" rate, and add ties / plascourse / lintels according to the brief's rules.
  */
 
-import type { BrickLintelEntry, BrickSettings, Opening, Wall } from '../types/walls'
+import type { BrickSettings, Opening, Wall } from '../types/walls'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
-import { brickLintelBearingMm } from './lintels'
 import { getUserSettings } from './userSettings'
 
-// ---------- Brick lintel catalogue ----------
-
-export type LintelProfile = 'Flatbar' | '100×100 Galintel' | '100×150 Galintel'
-
-export interface BrickLintelSize {
-  lengthMm: number
-  profile: LintelProfile
-}
-
-/**
- * Stock lintel sizes available from suppliers. The calculation rounds the required
- * length (opening width + bearing) up to the smallest size in this list that fits.
- */
-export const BRICK_LINTEL_SIZES: BrickLintelSize[] = [
-  // Flatbar — small openings
-  { lengthMm: 600, profile: 'Flatbar' },
-  { lengthMm: 700, profile: 'Flatbar' },
-  { lengthMm: 800, profile: 'Flatbar' },
-  { lengthMm: 900, profile: 'Flatbar' },
-  { lengthMm: 1000, profile: 'Flatbar' },
-  // 100×100 Galintels
-  { lengthMm: 1200, profile: '100×100 Galintel' },
-  { lengthMm: 1500, profile: '100×100 Galintel' },
-  { lengthMm: 1800, profile: '100×100 Galintel' },
-  { lengthMm: 2100, profile: '100×100 Galintel' },
-  { lengthMm: 2400, profile: '100×100 Galintel' },
-  { lengthMm: 2700, profile: '100×100 Galintel' },
-  // 100×150 Galintels
-  { lengthMm: 3000, profile: '100×150 Galintel' },
-  { lengthMm: 3300, profile: '100×150 Galintel' },
-  { lengthMm: 3600, profile: '100×150 Galintel' },
-  { lengthMm: 4000, profile: '100×150 Galintel' },
-  { lengthMm: 4200, profile: '100×150 Galintel' },
-  { lengthMm: 4500, profile: '100×150 Galintel' },
-  { lengthMm: 5000, profile: '100×150 Galintel' },
-  { lengthMm: 5200, profile: '100×150 Galintel' },
-  { lengthMm: 5500, profile: '100×150 Galintel' },
-  { lengthMm: 6000, profile: '100×150 Galintel' },
-]
-
-/**
- * Returns the smallest stock lintel size that's >= the required length, or null if the
- * required length exceeds the largest available size (6000mm). Callers should flag null
- * results as "custom — exceeds stock sizes".
- */
-export function selectBrickLintelSize(requiredLengthMm: number): BrickLintelSize | null {
-  return BRICK_LINTEL_SIZES.find((s) => s.lengthMm >= requiredLengthMm) ?? null
-}
+// ---------- Brick tally ----------
+//
+// Lintels used to be a first-class concept in this tally, with a
+// hardcoded AU Galintel catalogue + bearing rules. The catalogue
+// didn't fit US (steel angles) or UK (concrete + IG) construction,
+// so lintels now live as PER-OPENING supply items the user defines
+// in the material library with an optional opening-width range
+// (see SupplyItem.openingWidthMinMm / openingWidthMaxMm). The brick
+// export + brick tally tally those supply items per opening the
+// same way they tally ties and flashings.
 
 export interface BrickTally {
   /** Number of walls drawn. */
@@ -71,10 +32,6 @@ export interface BrickTally {
   totalAreaSqMm: number
   /** Number of face bricks (areaSqM × bricksPerSquareMetre, rounded up). */
   brickCount: number
-  /** Per-opening lintel entries. */
-  lintels: BrickLintelEntry[]
-  /** Sum of `lintels[].totalLintelLengthMm`. */
-  totalLintelLengthMm: number
   /** Total brick ties (if enabled), else 0. */
   tiesCount: number
   /** Total plascourse units (if enabled), else 0. */
@@ -105,23 +62,8 @@ export function calculateBrickTally(
     totalAreaSqMm += len * height
   }
 
-  const lintels: BrickLintelEntry[] = []
-  let totalLintelLengthMm = 0
-
   for (const op of openings) {
     totalAreaSqMm -= op.widthMm * op.heightMm
-
-    const bearingEachSideMm = brickLintelBearingMm(op.widthMm)
-    const requiredLengthMm = op.widthMm + 2 * bearingEachSideMm
-    const selectedLintel = selectBrickLintelSize(requiredLengthMm)
-    lintels.push({
-      openingId: op.id,
-      openingWidthMm: op.widthMm,
-      bearingEachSideMm,
-      requiredLengthMm,
-      selectedLintel,
-    })
-    if (selectedLintel) totalLintelLengthMm += selectedLintel.lengthMm
   }
 
   if (totalAreaSqMm < 0) totalAreaSqMm = 0
@@ -145,8 +87,6 @@ export function calculateBrickTally(
     totalLinealMm,
     totalAreaSqMm,
     brickCount,
-    lintels,
-    totalLintelLengthMm,
     tiesCount,
     plascourseCount,
   }

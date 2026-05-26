@@ -127,7 +127,7 @@ function computeWallThicknessByWallId(
   }
   return map
 }
-import { createDefaultBrickSettings, selectBrickLintelSize } from '../lib/brickCalc'
+import { createDefaultBrickSettings } from '../lib/brickCalc'
 import {
   createDefaultExportInclusions,
   createDefaultProjectDetails,
@@ -135,7 +135,7 @@ import {
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions } from '../lib/junctions'
 import { wallTypeColor } from '../lib/wallTypeColors'
-import { selectBlockLintel, brickLintelBearingMm, brickLintelTotalLengthMm } from '../lib/lintels'
+import { selectBlockLintel } from '../lib/lintels'
 import {
   getEstimateRequestByProjectId,
   updateEstimateRequest,
@@ -5171,8 +5171,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       {pendingOpening && pendingOpeningWall && mode === 'brick' && (() => {
         const wallHeightMm =
           pendingOpeningWall.heightMmOverride ?? brickSettings.defaultWallHeightMm
-        const lintelLength = brickLintelTotalLengthMm(pendingOpening.widthMm)
-        const bearing = brickLintelBearingMm(pendingOpening.widthMm)
         const tooSmall = brickOpeningHeightMm < 100
         const tooTall = brickOpeningHeightMm > wallHeightMm
         return (
@@ -5241,21 +5239,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   {Math.round(pendingOpening.widthMm)} × {Math.round(brickOpeningHeightMm)}mm
                 </span>
               </div>
-              <div className="mt-1">
-                Required lintel: <span className="font-semibold">{Math.round(lintelLength)}mm</span>{' '}
-                ({bearing}mm bearing each side){' '}
-                {(() => {
-                  const sel = selectBrickLintelSize(lintelLength)
-                  return sel ? (
-                    <span className="text-amber-300">
-                      → supply <span className="font-semibold">{sel.lengthMm}mm {sel.profile}</span>
-                    </span>
-                  ) : (
-                    <span className="text-rose-400">
-                      → exceeds stock sizes (max 6000mm), custom needed
-                    </span>
-                  )
-                })()}
+              <div className="mt-1 text-amber-300">
+                Lintels for this opening come from your per-opening supply items
+                in the material library (Galintel, steel angle, etc.) — tagged
+                with an opening-width range.
               </div>
               {tooSmall && (
                 <div className="mt-1 text-rose-400">Opening height must be at least 100mm.</div>
@@ -5289,14 +5276,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           const selHead = selWallHeightMm - selectedOpening.sillHeightMm - selectedOpening.heightMm
           const selBlockLintel =
             mode === 'block' && selHead > 0 ? selectBlockLintel(selHead).code : null
-          const brickLintelLength =
-            mode === 'brick' ? brickLintelTotalLengthMm(selectedOpening.widthMm) : null
-          const brickBearing =
-            mode === 'brick' ? brickLintelBearingMm(selectedOpening.widthMm) : null
-          const brickStockLintel =
-            mode === 'brick' && brickLintelLength != null
-              ? selectBrickLintelSize(brickLintelLength)
-              : null
           return (
             <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-3">
               <div>
@@ -5309,21 +5288,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   {Math.round(selHead)}mm
                   {mode === 'block' && selBlockLintel && (
                     <span> · Lintel {selBlockLintel}</span>
-                  )}
-                  {mode === 'brick' && brickLintelLength != null && (
-                    <span>
-                      {' '}
-                      · Lintel required {Math.round(brickLintelLength)}mm ({brickBearing}mm bearing
-                      each side)
-                      {brickStockLintel ? (
-                        <span>
-                          {' '}
-                          → <span className="font-semibold">{brickStockLintel.lengthMm}mm {brickStockLintel.profile}</span>
-                        </span>
-                      ) : (
-                        <span className="text-rose-400"> → custom (exceeds 6000mm)</span>
-                      )}
-                    </span>
                   )}{' '}
                   · on a {Math.round(selWallHeightMm)}mm wall
                 </div>

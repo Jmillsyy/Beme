@@ -69,7 +69,9 @@ function generateMakeupId(): string {
   return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-const TILE_BLOCKS: BlockCode[] = ['50.45']
+// Tile codes were enumerated here as a literal list for the (now-
+// removed) Composition tab tile picker. Pairing has lifted to the
+// block library so this constant is no longer needed.
 
 function blockLabel(code: BlockCode): string {
   const b = BLOCK_LIBRARY[code]
@@ -455,7 +457,11 @@ function WallTypeEditorModal({
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
     existing?.baseCourseBlockCode ?? pickBaseCourse()?.code ?? bodyFallback
   )
-  const [baseCourseTileCode, setBaseCourseTileCode] = useState<BlockCode | ''>(
+  // Tile code is no longer user-editable on the makeup (pairing lives
+  // on the block in the library now), but we still round-trip it
+  // through save so older makeups keep their explicit tile code if
+  // the user hasn't migrated to library-level pairing yet.
+  const [baseCourseTileCode] = useState<BlockCode | ''>(
     existing?.baseCourseTileCode ?? pickBaseTile()?.code ?? ''
   )
   const [bodyBlockCode, setBodyBlockCode] = useState<BlockCode>(
@@ -982,8 +988,6 @@ function WallTypeEditorModal({
                 setNormalBodyBlockCode={setNormalBodyBlockCode}
                 baseCourseBlockCode={baseCourseBlockCode}
                 setBaseCourseBlockCode={setBaseCourseBlockCode}
-                baseCourseTileCode={baseCourseTileCode}
-                setBaseCourseTileCode={setBaseCourseTileCode}
                 bodyBlockCode={bodyBlockCode}
                 setBodyBlockCode={setBodyBlockCode}
                 topCourseBlockCode={topCourseBlockCode}
@@ -1273,8 +1277,6 @@ interface CompositionTabProps {
   setNormalBodyBlockCode: (v: BlockCode) => void
   baseCourseBlockCode: BlockCode
   setBaseCourseBlockCode: (v: BlockCode) => void
-  baseCourseTileCode: BlockCode | ''
-  setBaseCourseTileCode: (v: BlockCode | '') => void
   bodyBlockCode: BlockCode
   setBodyBlockCode: (v: BlockCode) => void
   topCourseBlockCode: BlockCode
@@ -1299,8 +1301,6 @@ function CompositionTab(props: CompositionTabProps) {
     setNormalBodyBlockCode,
     baseCourseBlockCode,
     setBaseCourseBlockCode,
-    baseCourseTileCode,
-    setBaseCourseTileCode,
     bodyBlockCode,
     setBodyBlockCode,
     topCourseBlockCode,
@@ -1918,15 +1918,15 @@ function CoursePatternPreview({
         className="relative shrink-0"
       >
         <div className="flex flex-col-reverse h-full w-full rounded-md overflow-hidden border-2 border-ink-600 bg-ink-950 shadow-inner">
-        {courses.map((code, courseIdx) => {
+        {courses.map((_code, courseIdx) => {
           // courseIdx 0 = bottom of wall (base). flex-col-reverse means
           // we render the array in normal order but DOM/visual order is
           // reversed so course[0] sits at the bottom of the column.
           const courseNum = courseIdx + 1 // 1-indexed
           // Resolve this course's actual body / corner / half codes —
           // honours courseSeriesRanges (300 series on bottom courses,
-          // etc.) and courseOverrides per course. `code` from the bands
-          // array is the fallback; resolveForCourse may swap it.
+          // etc.) and courseOverrides per course. The band's own code
+          // is the starting point; resolveForCourse may swap it.
           const resolved = resolveForCourse(courseNum)
           const bodyCode = resolved.body
           const cornerCode = resolved.corner

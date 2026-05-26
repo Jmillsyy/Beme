@@ -463,11 +463,11 @@ function buildAssumptions(
   void totalLinealMm
   void plascourseCount
 
-  if (inclusions.lintels) {
-    items.push(
-      'Lintels are sized at opening width plus bearing each side: 100mm ≤ 800mm openings, 150mm for 800–4000mm openings, 200mm for openings over 4000mm.'
-    )
-  }
+  // Lintel assumption text removed — lintels are now per-opening supply
+  // items the user defines themselves (with optional opening-width
+  // ranges). Each lintel supply item's note appears below in the
+  // supply-items section of the assumption list, so the reader still
+  // knows what's being priced.
 
   // Supply items contributed from the user's Material library — each item
   // tells the reader the rate that was applied, in the same plain-English
@@ -485,37 +485,10 @@ function buildAssumptions(
   return items
 }
 
-interface LintelGroup {
-  lengthMm: number
-  profile: string
-  count: number
-}
-
-function groupLintels(
-  lintels: ReturnType<typeof calculateBrickTally>['lintels']
-): { groups: LintelGroup[]; oversizedCount: number; total: number } {
-  const map = new Map<string, LintelGroup>()
-  let oversizedCount = 0
-  let total = 0
-  for (const entry of lintels) {
-    if (!entry.selectedLintel) {
-      oversizedCount++
-      continue
-    }
-    total++
-    const key = `${entry.selectedLintel.lengthMm}-${entry.selectedLintel.profile}`
-    const existing = map.get(key)
-    if (existing) existing.count++
-    else
-      map.set(key, {
-        lengthMm: entry.selectedLintel.lengthMm,
-        profile: entry.selectedLintel.profile,
-        count: 1,
-      })
-  }
-  const groups = Array.from(map.values()).sort((a, b) => a.lengthMm - b.lengthMm)
-  return { groups, oversizedCount, total }
-}
+// groupLintels + LintelGroup removed — brick lintels now flow through
+// the supply-item pipeline (per-opening unit with optional opening-width
+// range). The user defines their own lintels in the material library
+// and they render in the Accessories section like every other supply.
 
 export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   const {
@@ -665,10 +638,6 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     projectDetails.notes,
     supplyItemNotes,
     wallHeightSummary
-  )
-
-  const { groups: lintelGroups, oversizedCount, total: lintelTotal } = groupLintels(
-    tally.lintels
   )
 
   // ---------- HTML pieces ----------
@@ -842,30 +811,10 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  const lintelsTable = inclusions.lintels && (lintelGroups.length > 0 || oversizedCount > 0)
-    ? `
-      <h2 class="section-title">Lintels</h2>
-      <table>
-        <thead>
-          <tr><th>Lintel Size</th><th class="right">Quantity</th></tr>
-        </thead>
-        <tbody>
-          ${lintelGroups
-            .map(
-              (g) =>
-                `<tr><td>${formatNumber(g.lengthMm)}mm ${escapeHtml(g.profile)}</td><td class="right">${g.count}</td></tr>`
-            )
-            .join('')}
-          ${
-            oversizedCount > 0
-              ? `<tr><td>Custom (exceeds stock sizes)</td><td class="right">${oversizedCount}</td></tr>`
-              : ''
-          }
-          <tr class="bold"><td>Total</td><td class="right">${lintelTotal + oversizedCount}</td></tr>
-        </tbody>
-      </table>
-    `
-    : ''
+  // Lintels table removed — brick lintels are now per-opening supply
+  // items in the material library, rendered in the Accessories table
+  // below alongside ties / flashings / etc.
+  const lintelsTable = ''
 
   // Accessories table is now driven exclusively by the user's supply-item
   // catalogue (Material library). The legacy BrickSettings.ties +

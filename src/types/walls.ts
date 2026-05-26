@@ -391,21 +391,10 @@ export interface Opening {
  */
 export type BlockTally = Partial<Record<BlockCode, number>>
 
-/**
- * A single lintel entry for a brick estimate.
- *
- * `requiredLengthMm` is the raw figure (opening width + 2 × bearing). The actual lintel
- * supplied (`selectedLintel`) is the next stock size up from the catalogue. `selectedLintel`
- * may be null when the required length exceeds the largest stock size — these need a
- * custom lintel and are flagged separately in the UI.
- */
-export interface BrickLintelEntry {
-  openingId: string
-  openingWidthMm: number
-  bearingEachSideMm: number
-  requiredLengthMm: number
-  selectedLintel: { lengthMm: number; profile: string } | null
-}
+// BrickLintelEntry removed — brick lintels are now per-opening supply
+// items the user defines in the material library, tagged with an
+// opening-width range. The tally / export tally those supplies
+// alongside ties, flashings, etc.
 
 /**
  * Project metadata captured before/during an estimate — used in the exported document header.

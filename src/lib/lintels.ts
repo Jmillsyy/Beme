@@ -99,21 +99,9 @@ export function selectBlockLintel(headHeightMm: number): LintelSpec {
   return { code: '20.13', verticalModuleMm: 200, horizontalModuleMm: 200 }
 }
 
-// ---------- Brick walls: bearing rule by opening width ----------
-
-/**
- * Bearing (lintel overlap) on EACH side of a brick-wall opening:
- *   - opening ≤ 800mm       → 100mm each side
- *   - 800 < opening ≤ 4000  → 150mm each side
- *   - opening > 4000mm      → 200mm each side
- */
-export function brickLintelBearingMm(openingWidthMm: number): number {
-  if (openingWidthMm <= 800) return 100
-  if (openingWidthMm <= 4000) return 150
-  return 200
-}
-
-/** Total brick-wall lintel length: opening width + bearing on both sides. */
-export function brickLintelTotalLengthMm(openingWidthMm: number): number {
-  return openingWidthMm + 2 * brickLintelBearingMm(openingWidthMm)
-}
+// Brick-lintel bearing rules previously lived here as
+// brickLintelBearingMm + brickLintelTotalLengthMm. They were AU-specific
+// (Galintel catalogue, 100/150/200mm bearings) and have been replaced
+// by per-opening supply items with optional opening-width ranges (see
+// SupplyItem.openingWidthMinMm / openingWidthMaxMm). Users define
+// their own lintels in the material library now.
