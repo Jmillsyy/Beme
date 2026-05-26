@@ -35,7 +35,7 @@ import {
   pickLintelBlock,
   pickPierBlock,
 } from '../data/blockLibrary'
-import type { BlockCode, BlockDimensions } from '../types/blocks'
+import type { BlockCode, BlockDimensions, BlockRole } from '../types/blocks'
 import type {
   BlockTally,
   BondType,
@@ -244,6 +244,31 @@ export function subtractTally(a: BlockTally, b: BlockTally): BlockTally {
     else delete result[key]
   }
   return result
+}
+
+// ---------- Stale-makeup heal ----------
+
+/**
+ * Region-swap guard. If a saved makeup carries a block code that isn't
+ * in the active library (e.g. a US user opens a project that was saved
+ * under AU), swap the code for the role-equivalent block from the live
+ * library so the tally lands on codes the user actually has.
+ *
+ * AU users see no change — every AU code is in their seed library, so
+ * this is a pass-through.
+ *
+ * The fallback chain prefers the requested role; if no block in the
+ * library carries that role, it falls back to 'body' (the only role
+ * every region's library is guaranteed to have); if even that's
+ * missing, the original code is returned untouched and the tally just
+ * reports the missing code.
+ */
+function healCode(code: BlockCode, role: BlockRole): BlockCode {
+  if (BLOCK_LIBRARY[code]) return code
+  const byRole = Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes(role))
+  if (byRole) return byRole.code
+  const byBody = Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))
+  return (byBody?.code ?? code) as BlockCode
 }
 
 // ---------- Course stack (height) ----------
@@ -786,7 +811,8 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
     let courseIndex = 0
     for (const band of makeup.coursePattern) {
       if (band.count <= 0) continue
-      const block = BLOCK_LIBRARY[band.blockCode]
+      const healedCode = healCode(band.blockCode, 'body')
+      const block = BLOCK_LIBRARY[healedCode]
       const heightMm = block?.dimensions.heightMm ?? 190
       let baseType: CourseType
       if (heightMm <= 100) baseType = 'height-71'
@@ -801,19 +827,24 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
         const pairedTile = block?.pairedWith
         out.push({
           type: isFirstCourse && pairedTile ? 'base' : baseType,
-          bodyBlock: band.blockCode,
+          bodyBlock: healedCode,
           pairedTile,
         })
         courseIndex++
       }
     }
     // courseOverrides still apply on top (1-indexed against the bands-
-    // derived course list). Caller picked specific block for specific row.
+    // derived course list). Caller picked specific block for specific
+    // row — heal that too in case the override predates the template
+    // switch.
     if (makeup.courseOverrides) {
       for (const override of makeup.courseOverrides) {
         const idx = override.courseNumber - 1
         if (idx >= 0 && idx < out.length) {
-          out[idx] = { ...out[idx], bodyBlock: override.blockCode }
+          out[idx] = {
+            ...out[idx],
+            bodyBlock: healCode(override.blockCode, 'body'),
+          }
         }
       }
     }
@@ -831,15 +862,18 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
   // ---- Course 1: base ----
   {
     const b = blocksForCourse(1)
-    // Pairing now lives on the BLOCK (library) — whenever 20.45 is
-    // tallied, the calc engine adds a 50.45 at the block's pairedPer
-    // ratio. Fall back to the makeup's baseCourseTileCode for older
-    // saves that explicitly set it before block-level pairing existed.
-    const baseBlock = BLOCK_LIBRARY[b.baseCourseBlockCode]
+    // Heal the base code against the live library so a stale AU code
+    // on a US user's saved makeup resolves to their library's
+    // base-course block (or body block as a fallback if no
+    // base-course tagged).
+    const healedBase =
+      healCode(b.baseCourseBlockCode, 'base-course') ||
+      healCode(b.baseCourseBlockCode, 'body')
+    const baseBlock = BLOCK_LIBRARY[healedBase]
     const pairedTile = baseBlock?.pairedWith ?? b.baseCourseTileCode
     courses.push({
       type: 'base',
-      bodyBlock: b.baseCourseBlockCode,
+      bodyBlock: healedBase,
       pairedTile,
     })
   }
@@ -851,7 +885,10 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
     // after the base, so i=0 here is course 2.
     const courseNumber = 2 + i
     const b = blocksForCourse(courseNumber)
-    courses.push({ type: 'body', bodyBlock: b.bodyBlockCode })
+    courses.push({
+      type: 'body',
+      bodyBlock: healCode(b.bodyBlockCode, 'body'),
+    })
   }
 
   // ---- Height-makeup courses (placed before the top, so they end up "second from top") ----
@@ -869,15 +906,26 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
   if (stack.has71) {
     const courseNumber = courses.length + 1
     const b = blocksForCourse(courseNumber)
-    courses.push({ type: 'height-71', bodyBlock: b.heightMakeup71BlockCode })
+    // Heal — falls back to height-makeup tagged block if the saved
+    // code isn't in the library, else to a body block.
+    courses.push({
+      type: 'height-71',
+      bodyBlock: healCode(b.heightMakeup71BlockCode, 'height-makeup'),
+    })
   }
 
   // ---- Top course ----
   if (stack.totalCourses >= 2) {
     // topCourseBlockCode is a makeup-level choice (bond beam or not) — keep it
-    // makeup-driven; if a user wants a 300-series top course they'd put a
-    // 30.20 (none exists in this catalogue) on it via the makeup field.
-    courses.push({ type: 'top', bodyBlock: makeup.topCourseBlockCode })
+    // makeup-driven; heal against the live library so a stale AU top
+    // code resolves to the user's top-course (then body) block.
+    const healedTop =
+      BLOCK_LIBRARY[makeup.topCourseBlockCode]
+        ? makeup.topCourseBlockCode
+        : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('top-course'))
+            ?.code ??
+            healCode(makeup.topCourseBlockCode, 'body'))
+    courses.push({ type: 'top', bodyBlock: healedTop })
   }
 
   // ---- Apply per-course overrides ----
@@ -885,7 +933,10 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
     for (const override of makeup.courseOverrides) {
       const idx = override.courseNumber - 1 // 1-indexed -> 0-indexed
       if (idx >= 0 && idx < courses.length) {
-        courses[idx] = { ...courses[idx], bodyBlock: override.blockCode }
+        courses[idx] = {
+          ...courses[idx],
+          bodyBlock: healCode(override.blockCode, 'body'),
+        }
       }
     }
   }
@@ -940,10 +991,15 @@ export function calculateWallTally(
     isOddCourse: boolean
   ): BlockCode {
     const blocks = resolveCourseBlocks(makeup, courseNumber)
+    // Heal so a US/UK user opening a saved AU project gets THEIR
+    // corner / half block at wall ends, not the AU code that no
+    // longer exists in their library.
     if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
-      return isOddCourse ? blocks.cornerBlockCode : blocks.halfBlockCode
+      return isOddCourse
+        ? healCode(blocks.cornerBlockCode, 'corner')
+        : healCode(blocks.halfBlockCode, 'end-termination')
     }
-    return blocks.cornerBlockCode
+    return healCode(blocks.cornerBlockCode, 'corner')
   }
 
   // Cached outer-edge length for re-fitting courses whose corner ends carry a
@@ -1140,10 +1196,12 @@ function applyOpeningAdjustments(
     let bodyToSubtract: number
 
     if (isStretcher) {
-      jambCode = isOddCourse ? resolved.cornerBlockCode : resolved.halfBlockCode
+      jambCode = isOddCourse
+        ? healCode(resolved.cornerBlockCode, 'corner')
+        : healCode(resolved.halfBlockCode, 'end-termination')
       bodyToSubtract = (isOddCourse ? 2 : 1) + blocksAcrossOpening
     } else {
-      jambCode = resolved.cornerBlockCode
+      jambCode = healCode(resolved.cornerBlockCode, 'corner')
       bodyToSubtract = 2 + blocksAcrossOpening
     }
 
@@ -1580,9 +1638,11 @@ export function calculateCornerAdjustment(
         addToTally(adjustment, course.bodyBlock, n - 1)
       } else {
         // Standard courses: dedup against the corner block resolved for
-        // this row (range overlay-aware).
+        // this row (range overlay-aware). Healed against the live
+        // library so the subtraction targets the same code the wall
+        // tally added.
         const resolved = resolveCourseBlocks(makeup, courseNumber)
-        addToTally(adjustment, resolved.cornerBlockCode, n - 1)
+        addToTally(adjustment, healCode(resolved.cornerBlockCode, 'corner'), n - 1)
       }
     }
     void pickHeightMakeupBlock // legacy helper retained for non-bands callers
