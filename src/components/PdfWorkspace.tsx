@@ -316,6 +316,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    */
   const [isEmptyWorkspace, setIsEmptyWorkspace] = useState(false)
   /**
+   * Per-page calibration + intrinsic dimensions. Has to be declared up here
+   * with the rest of the workspace state so the dirty-tracker effect below
+   * can include it in its dep array without hitting JavaScript's temporal
+   * dead zone — `useState` declarations are block-scoped `const`s and
+   * reading one before its line throws a ReferenceError at runtime, which
+   * crashes the workspace to a blank screen.
+   */
+  const [pagesData, setPagesData] = useState<Record<number, PageData>>({})
+  /**
    * Whether walls of the currently active wall type should glow on the canvas.
    * Turned ON when the user activates a type (clicking it in the side panel or
    * clicking a wall on the PDF). Turned OFF when the user presses Esc with
@@ -2801,8 +2810,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const renderedPageWidth = Math.round(baseWidth * renderedZoom)
   const visualScale = zoom / renderedZoom
 
-  // Per-page data (scale and intrinsic dimensions)
-  const [pagesData, setPagesData] = useState<Record<number, PageData>>({})
+  // Per-page calibration + intrinsic dimensions used to be declared here;
+  // hoisted up to the top of the component so the dirty-tracker effect
+  // can include it in its dep array without hitting the TDZ.
 
   // Click-to-calibrate state
   const [calibrating, setCalibrating] = useState(false)
