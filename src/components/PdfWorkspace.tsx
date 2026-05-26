@@ -5606,6 +5606,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   walls={isReferenceView ? [] : currentPageWalls}
                   openings={isReferenceView ? [] : currentPageOpenings}
                   wallThicknessByWallId={wallThicknessByWallId}
+                  // Live-preview thickness for the in-progress draw —
+                  // active makeup's body block depth in block mode,
+                  // active brick type's depth in brick mode. Falls
+                  // back to 190 mm if neither resolves.
+                  activeWallThicknessMm={(() => {
+                    if (mode === 'brick') {
+                      return (
+                        BRICK_LIBRARY[brickSettings.brickTypeCode]?.depthMm ??
+                        DEFAULT_BRICK_WALL_THICKNESS_MM
+                      )
+                    }
+                    const am = makeupsById[activeMakeupId]
+                    const body =
+                      am?.bodyBlockCode &&
+                      BLOCK_LIBRARY[am.bodyBlockCode]?.dimensions.depthMm
+                    return body ?? 190
+                  })()}
                   visualWidth={renderedPageWidth}
                   visualHeight={renderedPageHeight}
                   pxPerMmAtCurrentZoom={currentScale * renderedZoom}

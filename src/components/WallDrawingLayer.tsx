@@ -79,6 +79,14 @@ interface WallDrawingLayerProps {
    * thickness (110mm default). Drives the rendered rectangle width.
    */
   wallThicknessByWallId: Record<string, number>
+  /**
+   * Thickness in mm to render the IN-PROGRESS drawing preview at —
+   * driven by the active makeup's body block depth (block mode) or the
+   * active brick type's depth (brick mode). Lets the live preview
+   * silhouette match what the committed wall will look like rather
+   * than rendering as a thin line. Falls back to 190 mm if not passed.
+   */
+  activeWallThicknessMm?: number
   visualWidth: number
   visualHeight: number
   /** Visual pixels per mm at the current zoom. */
@@ -719,6 +727,7 @@ function WallDrawingLayerInner({
   walls,
   openings,
   wallThicknessByWallId,
+  activeWallThicknessMm = 190,
   visualWidth,
   visualHeight,
   pxPerMmAtCurrentZoom,
@@ -2869,13 +2878,51 @@ function WallDrawingLayerInner({
               const previewLengthMm = hasTyped
                 ? typedNum
                 : cursorDistMm + startAdjust + endAdjust
+              // Build a thickness silhouette: offset the centreline by
+              // half the active wall thickness (block depth or brick
+              // wall thickness) on either side, in screen pixels at the
+              // current zoom. Result is a 4-point polygon along the
+              // wall direction so the user sees exactly where the wall
+              // will sit on the plan — not a thin line.
+              const segDx = endPx.x - startPx.x
+              const segDy = endPx.y - startPx.y
+              const segLen = Math.sqrt(segDx * segDx + segDy * segDy)
+              const halfThicknessPx =
+                (activeWallThicknessMm * pxPerMmAtCurrentZoom) / 2
+              const nx = segLen > 0 ? -segDy / segLen : 0
+              const ny = segLen > 0 ? segDx / segLen : 0
+              const ox = nx * halfThicknessPx
+              const oy = ny * halfThicknessPx
+              const silhouettePoints = [
+                startPx.x + ox,
+                startPx.y + oy,
+                endPx.x + ox,
+                endPx.y + oy,
+                endPx.x - ox,
+                endPx.y - oy,
+                startPx.x - ox,
+                startPx.y - oy,
+              ]
               return (
                 <>
                   <Line
+                    points={silhouettePoints}
+                    closed
+                    fill="rgba(237, 125, 49, 0.22)"
+                    stroke="#ED7D31"
+                    strokeWidth={1.5}
+                    dash={[6, 4]}
+                  />
+                  {/* Centreline guide — keeps the visual cue of the
+                      line snap point while the rectangle shows real
+                      thickness around it. Thin + 70% opaque so it
+                      doesn't fight the fill. */}
+                  <Line
                     points={[startPx.x, startPx.y, endPx.x, endPx.y]}
                     stroke="#ED7D31"
-                    strokeWidth={3}
-                    dash={[6, 4]}
+                    strokeWidth={1}
+                    opacity={0.7}
+                    dash={[2, 3]}
                   />
                   {/* Live label shows the wall's final DISPLAYED length —
                       centreline + corner extension at either end. When
