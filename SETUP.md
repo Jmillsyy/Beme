@@ -1154,12 +1154,48 @@ could still see + edit their old org projects from their now-personal
 account. Tighten by gating org-scoped projects behind ACTIVE membership;
 keep the user_id self-match for personal projects only.
 
-Run this once in the Supabase SQL editor on a database that already has
-the section-9 policies in place.
+Run this once in the Supabase SQL editor. **Safe to run regardless of
+whether section 11 has been applied** — the block below creates
+`owner_user_id` and `project_collaborators` (with RLS) if they don't
+already exist, so the tightened policies always have the prerequisites
+they reference.
 
 ```sql
+-- ─── Prereqs from section 11, idempotent ────────────────────────────────────
+-- If you've already run section 11 these are all no-ops. If you haven't,
+-- we create the owner column + the collaborators table here so the
+-- policies below have something to reference.
+
+alter table public.projects
+  add column if not exists owner_user_id uuid
+    references auth.users(id) on delete set null;
+
+-- Backfill any rows that don't have an owner yet (prefer createdByUserId
+-- stamped on the data JSONB; fall back to the original inserter).
+update public.projects
+  set owner_user_id = coalesce((data->>'createdByUserId')::uuid, user_id)
+  where owner_user_id is null;
+
+create index if not exists projects_owner_idx
+  on public.projects(owner_user_id);
+
+create table if not exists public.project_collaborators (
+  project_id  uuid not null references public.projects(id) on delete cascade,
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  granted_by  uuid references auth.users(id) on delete set null,
+  created_at  timestamptz not null default now(),
+  primary key (project_id, user_id)
+);
+
+create index if not exists project_collaborators_user_idx
+  on public.project_collaborators(user_id);
+
+alter table public.project_collaborators enable row level security;
+
 -- ─── projects: tighten SELECT ───────────────────────────────────────────────
 drop policy if exists "Owner or org member select project" on public.projects;
+drop policy if exists "Users select own projects" on public.projects;
+drop policy if exists "Project select" on public.projects;
 
 create policy "Project select"
   on public.projects for select
@@ -1173,6 +1209,9 @@ create policy "Project select"
 
 -- ─── projects: tighten UPDATE ───────────────────────────────────────────────
 drop policy if exists "Editor can update project" on public.projects;
+drop policy if exists "Owner or org member update project" on public.projects;
+drop policy if exists "Users update own projects" on public.projects;
+drop policy if exists "Project update" on public.projects;
 
 create policy "Project update"
   on public.projects for update
@@ -1200,7 +1239,10 @@ create policy "Project update"
   );
 
 -- ─── projects: tighten DELETE the same way ─────────────────────────────────
+drop policy if exists "Owner or org admin delete project" on public.projects;
 drop policy if exists "Owner or org member delete project" on public.projects;
+drop policy if exists "Users delete own projects" on public.projects;
+drop policy if exists "Project delete" on public.projects;
 
 create policy "Project delete"
   on public.projects for delete
