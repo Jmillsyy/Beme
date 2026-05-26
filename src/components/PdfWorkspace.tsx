@@ -1658,7 +1658,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    */
   const supplyMetrics = useMemo(() => {
     if (mode === 'brick') {
-      const tally = calculateBrickTally(allWalls, allOpenings, brickSettings)
+      // Pass brickMakeups so per-makeup course bands (e.g. single-height
+      // bottom course + double-height above) feed into the supply-items
+      // metrics. Brick library version is referenced below so the memo
+      // re-runs when a brick definition changes.
+      void brickLibraryVersion
+      const tally = calculateBrickTally(allWalls, allOpenings, brickSettings, brickMakeups)
       return {
         mode: 'brick' as const,
         areaSqM: tally.totalAreaSqMm / 1_000_000,
@@ -5968,6 +5973,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             walls={allWalls}
             openings={allOpenings}
             settings={brickSettings}
+            makeups={brickMakeups}
           />
         )}
 

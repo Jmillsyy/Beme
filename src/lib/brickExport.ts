@@ -510,7 +510,10 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
             : String(referenceNumber).padStart(6, '0')
         }`
       : ''
-  const tally = calculateBrickTally(walls, openings, settings)
+  // Pass makeups through so per-makeup course bands (single bottom
+  // course + double-height above, etc.) feed into the printed tally
+  // exactly as they do in the workspace tally panel.
+  const tally = calculateBrickTally(walls, openings, settings, makeups)
 
   const headerTitle =
     projectDetails.siteAddress.trim() ||
@@ -748,7 +751,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     // Tally for JUST this page's walls so the tile reads as the page's
     // own brickwork rather than the project total. Uses the same calc
     // engine as the project-wide tally.
-    const pageTally = calculateBrickTally(page.walls, page.openings, settings)
+    const pageTally = calculateBrickTally(page.walls, page.openings, settings, makeups)
     const pageLabel = page.label?.trim() || `Page ${page.pageNumber}`
     const labelSuffix = pagesToShow.length > 1 ? ` — ${pageLabel}` : ''
     planOverviewPagesArr.push(
@@ -805,6 +808,32 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
+  // Brick type breakdown — only printed when at least one wall type uses
+  // course bands (single bottom course + double-height above, etc.).
+  // For single-brick projects the tally returns an empty `bricksByType`
+  // and this section drops out entirely, leaving the simpler old layout.
+  const typeBreakdownRows = Object.entries(tally.bricksByType).sort((a, b) => b[1] - a[1])
+  const typeBreakdownTable = typeBreakdownRows.length > 0
+    ? `
+      <h2 class="section-title">Brick Type Breakdown</h2>
+      <table>
+        <thead>
+          <tr><th>Brick</th><th class="right">Quantity</th></tr>
+        </thead>
+        <tbody>
+          ${typeBreakdownRows
+            .map(([code, count]) => {
+              const brick = BRICK_LIBRARY[code]
+              const label = brick?.name ?? code ?? 'Project default'
+              return `<tr><td>${escapeHtml(label)}</td><td class="right">${count.toLocaleString()}</td></tr>`
+            })
+            .join('')}
+          <tr class="bold"><td>Total bricks</td><td class="right">${tally.brickCount.toLocaleString()}</td></tr>
+        </tbody>
+      </table>
+    `
+    : ''
+
   // Accessories table is driven exclusively by the user's supply-item
   // catalogue (Material library). Ties + plascourse used to be governed
   // by their own per-export inclusion flags and per-project BrickSettings
@@ -828,11 +857,12 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  const tablesPage = summaryTable || accessoriesTable
+  const tablesPage = summaryTable || typeBreakdownTable || accessoriesTable
     ? `
       <section class="page">
         ${pageHeader}
         ${summaryTable}
+        ${typeBreakdownTable}
         ${accessoriesTable}
       </section>
     `

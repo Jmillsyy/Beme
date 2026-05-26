@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BrickMakeup } from '../types/walls'
+import type { BrickCourseRange, BrickMakeup } from '../types/walls'
 import { useBrickLibrary } from '../data/brickLibrary'
 import { wallTypeColor } from '../lib/wallTypeColors'
 
@@ -190,6 +190,12 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
   const [name, setName] = useState(existing?.name ?? 'New brick type')
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
   const [brickTypeCode, setBrickTypeCode] = useState<string>(existing?.brickTypeCode ?? '')
+  // Optional course composition — start empty so a basic single-brick
+  // wall type is still a single decision. Adding a band turns the wall
+  // into a stack: course N to course M uses brick X, etc.
+  const [courseRanges, setCourseRanges] = useState<BrickCourseRange[]>(
+    existing?.courseRanges ?? []
+  )
 
   // Esc closes — mirrors WallTypeEditorModal so the keyboard UX is uniform.
   useEffect(() => {
@@ -205,11 +211,17 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
 
   function handleSave() {
     const id = existing?.id ?? generateMakeupId()
+    // Drop incomplete ranges (no brick selected) and sort by fromCourse
+    // before persisting so the saved shape is always normalised.
+    const cleanRanges = courseRanges
+      .filter((r) => r.brickTypeCode && Number.isFinite(r.fromCourse) && r.fromCourse >= 1)
+      .sort((a, b) => a.fromCourse - b.fromCourse)
     onSave({
       id,
       name: name.trim() || 'New brick type',
       heightMm,
       brickTypeCode,
+      ...(cleanRanges.length > 0 ? { courseRanges: cleanRanges } : {}),
     })
   }
 
@@ -275,7 +287,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
             />
           </label>
           <label className="text-sm block">
-            <span className="block text-ink-300 mb-1">Brick type</span>
+            <span className="block text-ink-300 mb-1">Main brick</span>
             <select
               value={brickTypeCode}
               onChange={(e) => setBrickTypeCode(e.target.value)}
@@ -289,10 +301,112 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               ))}
             </select>
             <span className="text-[11px] text-ink-400 mt-1 block">
-              Override the project-level brick type for walls of this category, or leave blank to use
-              the project default from Brick settings.
+              The brick used for the whole wall — or for any band you
+              haven't covered with an entry below.
             </span>
           </label>
+
+          {/* Course composition — optional. Each entry: from course X,
+              use brick Y. Last entry runs to the top of the wall. Keep
+              the section visually distinct from the basic fields above
+              so the simpler "just one brick" usage stays obvious. */}
+          <div className="pt-2 border-t border-ink-700">
+            <div className="flex items-center justify-between mb-1.5">
+              <div>
+                <div className="text-sm font-medium text-ink-200">
+                  Course composition
+                </div>
+                <div className="text-[11px] text-ink-400 mt-0.5">
+                  Stack different bricks on different courses (e.g. course
+                  1 = single-height, course 2+ = double-height). Leave
+                  empty for a single-brick wall.
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  // New band defaults to "course after the last one"
+                  // with the makeup's main brick as the seed. User
+                  // typically tweaks both.
+                  const lastFrom = courseRanges.length > 0
+                    ? Math.max(...courseRanges.map((r) => r.fromCourse))
+                    : 1
+                  setCourseRanges([
+                    ...courseRanges,
+                    {
+                      fromCourse: courseRanges.length === 0 ? 1 : lastFrom + 1,
+                      brickTypeCode: brickTypeCode || brickTypes[0]?.code || '',
+                    },
+                  ])
+                }}
+                className="text-xs px-2 py-1 rounded border border-ink-600 text-beme-300 hover:border-beme-500/60 hover:bg-ink-700 transition-colors flex-shrink-0"
+              >
+                + Add band
+              </button>
+            </div>
+
+            {courseRanges.length === 0 ? (
+              <div className="text-[11px] text-ink-500 italic py-2">
+                No bands yet — the wall is a single layer of the main brick.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2 mt-2">
+                {courseRanges.map((range, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2 p-2 border border-ink-700 rounded-lg bg-ink-900/40"
+                  >
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="text-ink-400">From course</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={range.fromCourse}
+                        onChange={(e) => {
+                          const next = [...courseRanges]
+                          next[i] = {
+                            ...range,
+                            fromCourse: Math.max(1, parseInt(e.target.value || '1', 10) || 1),
+                          }
+                          setCourseRanges(next)
+                        }}
+                        className="w-14 px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 tabular-nums"
+                      />
+                    </div>
+                    <select
+                      value={range.brickTypeCode}
+                      onChange={(e) => {
+                        const next = [...courseRanges]
+                        next[i] = { ...range, brickTypeCode: e.target.value }
+                        setCourseRanges(next)
+                      }}
+                      className="flex-1 min-w-0 px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                    >
+                      <option value="">Pick a brick…</option>
+                      {brickTypes.map((t) => (
+                        <option key={t.code} value={t.code}>
+                          {t.name} ({t.heightMm}mm)
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() =>
+                        setCourseRanges(courseRanges.filter((_, idx) => idx !== i))
+                      }
+                      className="text-xs text-rose-400 hover:text-rose-300 px-1.5"
+                      aria-label="Remove band"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <div className="text-[11px] text-ink-500 italic">
+                  Bands are read in ascending order — the last one extends
+                  to the top of the wall.
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Footer */}

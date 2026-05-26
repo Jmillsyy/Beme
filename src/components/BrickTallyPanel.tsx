@@ -1,11 +1,14 @@
 import { memo, useMemo, useState } from 'react'
-import type { BrickSettings, Opening, Wall } from '../types/walls'
+import type { BrickMakeup, BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
+import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
 
 interface BrickTallyPanelProps {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
+  /** Brick wall types — needed for per-makeup course composition. */
+  makeups?: BrickMakeup[]
 }
 
 /**
@@ -14,19 +17,25 @@ interface BrickTallyPanelProps {
  * lintels, flashings, etc.) live in the SupplyItemsPanel and are
  * managed via the material library.
  *
- * Lintels used to live here as a dedicated section with a hardcoded
- * AU Galintel catalogue. They've moved to per-opening supply items
- * with optional opening-width ranges (see SupplyItem.openingWidthMinMm).
+ * When at least one brick wall type uses `courseRanges`, the panel
+ * shows a per-brick-type breakdown (e.g. "↳ Standard 230×76 — 540 /
+ * ↳ Double-height 230×162 — 1,210") under the headline brick count so
+ * the reader can see the mix at a glance. Single-brick projects keep
+ * the old single-line look.
  *
  * Memoised so re-renders driven by zoom / pan don't recompute the tally.
  */
-function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps) {
+function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyPanelProps) {
   const [expanded, setExpanded] = useState(true)
+  // Subscribe to brick-library version so a rate change on a library
+  // brick re-tallies immediately (the per-band counts read the rate
+  // off each band's brick type at calc time).
+  const { version: brickLibraryVersion } = useBrickLibrary()
 
-  const tally = useMemo(
-    () => calculateBrickTally(walls, openings, settings),
-    [walls, openings, settings]
-  )
+  const tally = useMemo(() => {
+    void brickLibraryVersion
+    return calculateBrickTally(walls, openings, settings, makeups)
+  }, [walls, openings, settings, makeups, brickLibraryVersion])
 
   if (walls.length === 0) {
     return (
@@ -38,6 +47,8 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
 
   const areaSqM = tally.totalAreaSqMm / 1_000_000
   const lengthM = tally.totalLinealMm / 1000
+  const typeBreakdown = Object.entries(tally.bricksByType).sort((a, b) => b[1] - a[1])
+  const hasBreakdown = typeBreakdown.length > 0
 
   return (
     <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
@@ -80,17 +91,34 @@ function BrickTallyPanelImpl({ walls, openings, settings }: BrickTallyPanelProps
                 {tally.openingCount}
               </td>
             </tr>
-            <tr className="bg-ink-700/30">
+            <tr className={hasBreakdown ? 'border-b border-ink-700/60 bg-ink-700/30' : 'bg-ink-700/30'}>
               <td className="px-3 py-1.5 text-ink-200 font-medium">
                 Bricks{' '}
-                <span className="text-xs text-ink-400">
-                  ({settings.bricksPerSquareMetre}/m²)
-                </span>
+                {!hasBreakdown && (
+                  <span className="text-xs text-ink-400">
+                    ({settings.bricksPerSquareMetre}/m²)
+                  </span>
+                )}
               </td>
               <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-300">
                 {tally.brickCount.toLocaleString()}
               </td>
             </tr>
+            {hasBreakdown &&
+              typeBreakdown.map(([code, count]) => {
+                const brick = BRICK_LIBRARY[code]
+                const label = brick?.name ?? code ?? 'Project default'
+                return (
+                  <tr key={`type-${code}`} className="border-b border-ink-700/60 last:border-b-0">
+                    <td className="px-3 py-1 pl-6 text-ink-300 text-xs">
+                      ↳ {label}
+                    </td>
+                    <td className="px-3 py-1 text-right tabular-nums text-ink-200 text-xs">
+                      {count.toLocaleString()}
+                    </td>
+                  </tr>
+                )
+              })}
           </tbody>
         </table>
       )}

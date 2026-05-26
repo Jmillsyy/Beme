@@ -497,15 +497,18 @@ export interface BrickSettings {
 /**
  * Brick wall makeup — the per-wall spec for a category of brick wall.
  *
- * Parallel to {@link WallMakeup} (block) but with a much smaller field set
- * because brick walls don't have course composition, corner-block rules,
- * pier types, or any of the other things that make a block wall layered.
- * The user defines a handful of named types ("Facework", "Rendered", etc.)
+ * Parallel to {@link WallMakeup} (block) but with a much smaller field
+ * set because brick walls don't have corner-block rules, pier types,
+ * or the other layered behaviours that make a block wall complex. The
+ * user defines a handful of named types ("Facework", "Rendered", etc.)
  * and assigns each drawn brick wall to one. The wall picks up the
  * makeup's height + brick type at calc time.
  *
- * Brick ties / plascourse / per-m² rate stay on the project-level
- * {@link BrickSettings} — they're job-wide accounting rules, not per-wall.
+ * **Course composition (optional).** When {@link courseRanges} is set
+ * and non-empty, the wall is built as a stack of brick bands instead
+ * of a single brick type — e.g. "course 1 = single-height, courses 2+
+ * = double-height". The legacy {@link brickTypeCode} stays as the
+ * main brick used for the entire wall when courseRanges is empty.
  */
 export interface BrickMakeup {
   /** Unique id within the project. */
@@ -517,8 +520,42 @@ export interface BrickMakeup {
    * BrickLibrary. Each makeup carries its own brick type so a single
    * project can mix face brick on the exterior with common brick on the
    * party walls without retallying.
+   *
+   * When {@link courseRanges} is set, this remains the "main" brick
+   * used for any portion of the wall not covered by an explicit range.
+   * With courseRanges empty/undefined, this brick is used for the whole
+   * wall.
    */
   brickTypeCode: string
   /** Wall height (mm) applied to walls of this type by default. */
   heightMm: number
+  /**
+   * Optional course composition — a stack of brick bands within the
+   * wall. Each entry says "from this course number upwards, use this
+   * brick type" until the next entry takes over. Ranges are evaluated
+   * in ascending order; the highest-numbered fromCourse extends to the
+   * top of the wall.
+   *
+   * Example: `[{ fromCourse: 1, brickTypeCode: 'standard' },
+   *           { fromCourse: 2, brickTypeCode: 'double-height' }]`
+   * → bottom course is single-height brick, everything above is
+   *   double-height.
+   *
+   * Undefined or empty means the wall is a single layer of
+   * {@link brickTypeCode} brick (backward-compatible default).
+   */
+  courseRanges?: BrickCourseRange[]
+}
+
+/**
+ * One band within a {@link BrickMakeup.courseRanges} stack. The band
+ * extends from {@link fromCourse} (1-indexed; 1 = bottom course)
+ * upwards until the next band's fromCourse, or to the top of the wall
+ * if it's the last band.
+ */
+export interface BrickCourseRange {
+  /** 1-indexed course number where this band starts. 1 = bottom row. */
+  fromCourse: number
+  /** Brick type code from the user's brick library. */
+  brickTypeCode: string
 }
