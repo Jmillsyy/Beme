@@ -1433,7 +1433,7 @@ function tallyFromCoursePattern(pattern: BlockCode[], courseCount: number): Bloc
  * The pier column runs the wall's full course count. Each course's block comes from the
  * tied pier's `PierMakeup.coursePattern` (cycling). The default pattern is
  * `['40.925', '20.01']` (alternating), matching the brief — but users can configure any
- * pattern via the PierTypesPanel.
+ * pattern via the Pier types section of WallTypesPanel.
  *
  * Body-block displacement (subtracting one body block per course at the pier position
  * on the wall) is applied at the project level — see {@link calculateProjectTally}.

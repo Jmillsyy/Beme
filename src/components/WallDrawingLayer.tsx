@@ -33,8 +33,6 @@ function MeasurementChip({
   y: number
   text: string
   bg?: string
-  /** @deprecated — text colour came from this param when it was a pill */
-  color?: string
   fontSize?: number
   align?: 'left' | 'center' | 'right'
   rotation?: number
