@@ -147,73 +147,42 @@ export default function HomePage() {
 function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
   return (
     <aside className="w-full lg:w-[300px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-4">
-      {/* Start something new — anchored at the TOP of the rail so the
-          highest-frequency action is the first thing the user's eye lands on.
-          The hierarchy is intentional: Block + Brick estimates are the
-          headline actions (this is a brick-and-block estimating app), so
-          they read as big cards with chunkier padding and a larger title.
-          "+ New request" is a useful but secondary feature — for orgs that
-          want to route an estimate through a teammate — so it sits below
-          a divider as a compact pill button. */}
+      {/* Material library — promoted to the rail's top card. Block + brick
+          estimate buttons live in the main dashboard column already, so
+          duplicating them here was visual noise. The Material library is
+          the next-most-frequent destination from the dashboard (users
+          tune blocks, bricks, and supply items between projects), so it
+          gets the same prominent treatment the estimate cards used to.
+          "+ New request" stays under it for org users — the only org-
+          specific creation action that doesn't surface in the main
+          column. */}
       <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-          Start something new
-        </h3>
-        <div className="flex flex-col gap-3">
-          <Link
-            to="/project/block"
-            className="px-4 py-5 rounded-lg bg-ink-900 border-2 border-beme-500 shadow-md shadow-beme-500/20 hover:bg-ink-800 hover:shadow-beme-500/40 transition-all group flex items-center gap-3.5"
-          >
-            <span
-              className="inline-block w-1.5 h-14 rounded-full bg-beme-500 flex-shrink-0"
-              aria-hidden
-            />
-            <div className="flex-1 text-left">
-              <div className="font-bold text-base leading-tight text-ink-50">
-                Block estimate
-              </div>
-              <div className="text-xs text-ink-300 group-hover:text-ink-200 mt-1">
-                Draw walls, openings, piers, lintels
-              </div>
+        <Link
+          to="/library"
+          className="px-4 py-5 rounded-lg bg-ink-900 border-2 border-beme-500 shadow-md shadow-beme-500/20 hover:bg-ink-800 hover:shadow-beme-500/40 transition-all group flex items-center gap-3.5"
+        >
+          <span
+            className="inline-block w-1.5 h-14 rounded-full bg-beme-500 flex-shrink-0"
+            aria-hidden
+          />
+          <div className="flex-1 text-left">
+            <div className="font-bold text-base leading-tight text-ink-50">
+              Material library
             </div>
-            <span className="text-beme-400 group-hover:text-beme-300 text-lg">→</span>
-          </Link>
-          <Link
-            to="/project/brick"
-            className="px-4 py-5 rounded-lg bg-ink-900 border-2 border-beme-500 shadow-md shadow-beme-500/20 hover:bg-ink-800 hover:shadow-beme-500/40 transition-all group flex items-center gap-3.5"
-          >
-            <span
-              className="inline-block w-1.5 h-14 rounded-full bg-beme-500 flex-shrink-0"
-              aria-hidden
-            />
-            <div className="flex-1 text-left">
-              <div className="font-bold text-base leading-tight text-ink-50">
-                Brick estimate
-              </div>
-              <div className="text-xs text-ink-300 group-hover:text-ink-200 mt-1">
-                Trace walls, calculate brickwork area
-              </div>
+            <div className="text-xs text-ink-300 group-hover:text-ink-200 mt-1">
+              Blocks, bricks, supply items
             </div>
-            <span className="text-beme-400 group-hover:text-beme-300 text-lg">→</span>
+          </div>
+          <span className="text-beme-400 group-hover:text-beme-300 text-lg">→</span>
+        </Link>
+        {isOrgUser && (
+          <Link
+            to="/requests/new"
+            className="mt-3 block px-3 py-2 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-200 text-xs hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors text-center"
+          >
+            + New request for a teammate
           </Link>
-          {isOrgUser && (
-            <>
-              <div className="flex items-center gap-2 pt-1 pb-0.5">
-                <span className="flex-1 h-px bg-ink-700/60" aria-hidden />
-                <span className="text-[10px] uppercase tracking-[0.12em] text-ink-500">
-                  Or send to a teammate
-                </span>
-                <span className="flex-1 h-px bg-ink-700/60" aria-hidden />
-              </div>
-              <Link
-                to="/requests/new"
-                className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-200 text-xs hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors text-center"
-              >
-                + New request
-              </Link>
-            </>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Find by reference number — every project has a 6-digit ID stamped
@@ -231,7 +200,9 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           Shortcuts
         </h3>
         <nav className="flex flex-col">
-          <SidebarLink to="/library" title="Material library" desc="Blocks, bricks, supply items" />
+          {/* Material library used to live here as a SidebarLink — promoted
+              to the rail's top card so the Shortcuts list stays tight and
+              the library is one click away from any dashboard view. */}
           <SidebarLink to="/guide" title="Beme guide" desc="Full walkthrough + shortcuts" />
           {isOrgUser && (
             <SidebarLink to="/requests" title="All requests" desc="Every estimate across the team" />
