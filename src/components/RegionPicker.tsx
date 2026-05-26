@@ -70,57 +70,39 @@ export default function RegionPicker({
     const currentBricks = BRICK_LIBRARY
     const currentBrickCodes = Object.keys(currentBricks)
 
-    // Custom items = anything in current that's NOT in this template.
-    // Computed for blocks AND bricks because templates carry both
-    // (Step 2.x added regional brick library presets).
-    const customBlocks = currentBlockCodes.filter(
-      (c) => !(c in template.blocks)
-    )
-    const customBricks = currentBrickCodes.filter(
-      (c) => !(c in template.bricks)
-    )
+    // If the user already has items in their library, switching is
+    // destructive — confirm before wiping. Items in the OLD library
+    // that aren't in the new template are lost; items already in the
+    // new template come back fresh. The whole library is overwritten
+    // wholesale (no merge) so the user always ends up with exactly
+    // the new template's content + nothing else.
+    const isAlreadyClean =
+      currentBlockCodes.length === 0 && currentBrickCodes.length === 0
+    const isSameTemplate = settings.preferences.libraryTemplateKey === key
 
-    // Two paths: empty libraries / no custom items → seed wholesale.
-    const isCleanSlate =
-      (currentBlockCodes.length === 0 || customBlocks.length === 0) &&
-      (currentBrickCodes.length === 0 || customBricks.length === 0)
-
-    if (isCleanSlate) {
-      setBlockLibrary({ ...template.blocks })
-      setBrickLibrary({ ...template.bricks })
-      updateUserSettings({
-        preferences: { libraryTemplateKey: key },
-      })
-      onPicked(key)
-      return
+    if (!isAlreadyClean && !isSameTemplate) {
+      const lossParts = [
+        currentBlockCodes.length > 0
+          ? `${currentBlockCodes.length} block${currentBlockCodes.length === 1 ? '' : 's'}`
+          : '',
+        currentBrickCodes.length > 0
+          ? `${currentBrickCodes.length} brick${currentBrickCodes.length === 1 ? '' : 's'}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' + ')
+      const ok = window.confirm(
+        `Switch to ${template.displayName}?\n\n` +
+          `This will REPLACE your current library — your ${lossParts} ` +
+          'will be deleted, and the new template will be loaded fresh.\n\n' +
+          'Any custom blocks or bricks you added will be lost. Cancel ' +
+          'if you want to keep them.'
+      )
+      if (!ok) return
     }
 
-    // Custom items present — confirm with the user. Merge by default,
-    // template wins on code collision. Single prompt covers both
-    // blocks and bricks so the user sees the full scope of what's
-    // about to change.
-    const partsLine = [
-      customBlocks.length > 0
-        ? `${customBlocks.length} custom block${customBlocks.length === 1 ? '' : 's'}`
-        : '',
-      customBricks.length > 0
-        ? `${customBricks.length} custom brick${customBricks.length === 1 ? '' : 's'}`
-        : '',
-    ]
-      .filter(Boolean)
-      .join(' + ')
-    const choice = window.confirm(
-      `You have ${partsLine} in your library that aren't part of the ${template.displayName} template.\n\n` +
-        '"OK" — KEEP your custom items AND add the template ones on top (merge).\n' +
-        '"Cancel" — abort the switch, leave the libraries untouched.'
-    )
-    if (!choice) return
-
-    // Merge: template items WIN on code collision (so the user gets
-    // the canonical template version of any code that's also in
-    // their custom list).
-    setBlockLibrary({ ...currentBlocks, ...template.blocks })
-    setBrickLibrary({ ...currentBricks, ...template.bricks })
+    setBlockLibrary({ ...template.blocks })
+    setBrickLibrary({ ...template.bricks })
     updateUserSettings({
       preferences: { libraryTemplateKey: key },
     })
