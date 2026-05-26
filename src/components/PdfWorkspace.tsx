@@ -828,7 +828,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         // Loading a saved project bypasses the startup gate — the details
         // already exist, no need to ask for them again.
         setStartupGateOpen(false)
-        setPagesData(proj.pagesData)
+        // Defensive `?? {}` guards: projects saved via the create-time
+        // gate save (no PDF, no walls, no pages) sometimes serialise
+        // these record fields without them, and a hot reload then opens
+        // the project against state that expects `pagesData[currentPage]`
+        // to be an object. An undefined state value would blank the
+        // workspace on next render because `pagesData[currentPage]`
+        // throws. Fall back to an empty record so an empty project loads
+        // into the upload zone cleanly.
+        setPagesData(proj.pagesData ?? {})
         // Loading a project replaces the workspace state wholesale — wipe the
         // undo / redo stacks so the user can't accidentally "undo" all the way
         // back to the previous project's blank state. Also seed the snapshot
@@ -857,8 +865,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const migratedWallsByPage = proj.type === 'brick'
           ? migrateBrickWalls(proj.wallsByPage, defaultBrickMakeupId)
           : proj.wallsByPage
-        setWallsByPage(migratedWallsByPage)
-        setOpeningsByPage(proj.openingsByPage)
+        setWallsByPage(migratedWallsByPage ?? {})
+        setOpeningsByPage(proj.openingsByPage ?? {})
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
         // Hydrate pier makeups from save (or reset to empty if the project
         // has none — switching from a project WITH piers to one WITHOUT
