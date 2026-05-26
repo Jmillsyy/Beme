@@ -34,6 +34,7 @@ import type {
   WallMakeup,
 } from '../types/walls'
 import { isSupabaseConfigured, supabase } from './supabase'
+import { getOrgState } from './organisations'
 
 export type ProjectType = 'block' | 'brick'
 export type ProjectStatus = 'in-progress' | 'completed'
@@ -609,7 +610,25 @@ async function cloudListProjects(_userId: string): Promise<SavedProject[]> {
     .select('*')
     .order('updated_at', { ascending: false })
   if (error) throw new Error(`Project list failed: ${error.message}`)
-  return (data as CloudProjectRow[]).map(rowToProjectMeta)
+  const rows = (data as CloudProjectRow[]).map(rowToProjectMeta)
+
+  // Defence in depth against the RLS-leak bug: if a project is stamped
+  // with an organisationId but the CURRENT signed-in user isn't a member
+  // of that org any more (they were removed from / left it), don't
+  // surface the row on the dashboard. The RLS `Owner or org member`
+  // policy lets `user_id = auth.uid()` through, so a project the user
+  // created while in an org still passes RLS after they're removed —
+  // but it's still owned by the org. We filter client-side here so
+  // those projects disappear from the personal dashboard until the
+  // RLS policy itself is tightened (see SETUP.md migration in section
+  // "Remove user_id self-bypass on org-stamped projects").
+  const memberOrgIds = new Set(
+    getOrgState().organisations.map((o) => o.id)
+  )
+  return rows.filter((p) => {
+    if (!p.organisationId) return true
+    return memberOrgIds.has(p.organisationId)
+  })
 }
 
 async function cloudDeleteProject(id: string, userId: string): Promise<void> {
@@ -849,8 +868,22 @@ export function canEditProject(opts: {
   currentUserId: string | null
   isAdminOfOrg: boolean
   collaboratorUserIds: string[]
+  /**
+   * Whether the current user is STILL a member of the project's
+   * organisation. Defaults to true for back-compat with old call sites;
+   * the dashboard / workspace pass `false` for projects whose org is
+   * no longer in the user's org list, so a removed-from-org user
+   * can't edit org-scoped projects they used to author.
+   */
+  isCurrentMemberOfOrg?: boolean
 }): boolean {
-  const { project, currentUserId, isAdminOfOrg, collaboratorUserIds } = opts
+  const {
+    project,
+    currentUserId,
+    isAdminOfOrg,
+    collaboratorUserIds,
+    isCurrentMemberOfOrg = true,
+  } = opts
   if (!currentUserId) return false
   // Personal project (no org) — the original author is the only editor.
   // Fall back to ownerUserId, then createdByUserId, since older personal
@@ -860,7 +893,11 @@ export function canEditProject(opts: {
     if (!author) return true // legacy local-only project, no recorded author
     return author === currentUserId
   }
-  // Org project — apply the full ladder.
+  // Org project — first gate: must still be a member of the org. A
+  // removed user keeps their `owner_user_id` on the row but loses
+  // edit rights instantly. Stops the "I left the org, I can still
+  // open + change all my old projects" bug.
+  if (!isCurrentMemberOfOrg) return false
   if (isAdminOfOrg) return true
   const owner = project.ownerUserId ?? project.createdByUserId
   if (owner && owner === currentUserId) return true

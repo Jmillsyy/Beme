@@ -1143,3 +1143,99 @@ this migration ran ends up owned by whoever first saved it (their user_id).
 Estimate-request projects ended up owned by the picker because the app
 already stamps `createdByUserId` on pickup. After running this once, the
 client app starts enforcing the read-only rule on its next deploy.
+
+## 12. Remove the user_id self-bypass on org-stamped projects
+
+The earlier policies allowed a user to SELECT / UPDATE any row where
+`user_id = auth.uid()`, regardless of the row's `organisation_id`. That
+ran fine while a user stayed in their org, but if the org admin removed
+the user (or they left), the row's `user_id` still matched and the user
+could still see + edit their old org projects from their now-personal
+account. Tighten by gating org-scoped projects behind ACTIVE membership;
+keep the user_id self-match for personal projects only.
+
+Run this once in the Supabase SQL editor on a database that already has
+the section-9 policies in place.
+
+```sql
+-- ─── projects: tighten SELECT ───────────────────────────────────────────────
+drop policy if exists "Owner or org member select project" on public.projects;
+
+create policy "Project select"
+  on public.projects for select
+  using (
+    -- Personal projects: the original author is the only viewer.
+    (organisation_id is null and user_id = auth.uid())
+    or
+    -- Org-scoped projects: caller must currently be a member of THAT org.
+    (organisation_id is not null and public.is_org_member(organisation_id))
+  );
+
+-- ─── projects: tighten UPDATE ───────────────────────────────────────────────
+drop policy if exists "Editor can update project" on public.projects;
+
+create policy "Project update"
+  on public.projects for update
+  using (
+    -- Personal: author only.
+    (organisation_id is null and user_id = auth.uid())
+    or
+    -- Org: current member with edit rights (admin, project owner,
+    -- or collaborator). Member check is intentionally OUTSIDE the
+    -- inner OR so a removed user can't sneak through via owner_user_id.
+    (
+      organisation_id is not null
+      and public.is_org_member(organisation_id)
+      and (
+        public.is_org_admin(organisation_id)
+        or owner_user_id = auth.uid()
+        or exists (
+          select 1
+          from public.project_collaborators c
+          where c.project_id = projects.id
+            and c.user_id = auth.uid()
+        )
+      )
+    )
+  );
+
+-- ─── projects: tighten DELETE the same way ─────────────────────────────────
+drop policy if exists "Owner or org member delete project" on public.projects;
+
+create policy "Project delete"
+  on public.projects for delete
+  using (
+    (organisation_id is null and user_id = auth.uid())
+    or
+    (
+      organisation_id is not null
+      and public.is_org_member(organisation_id)
+      and (
+        public.is_org_admin(organisation_id)
+        or owner_user_id = auth.uid()
+      )
+    )
+  );
+```
+
+**What the migration fixes.** A user who was once in an organisation
+but has since been removed can no longer SELECT, UPDATE or DELETE the
+org's projects from their personal account — RLS rejects the row
+because they're not in `organisation_members` for that org any more.
+The personal projects they own (organisation_id IS NULL) still pass
+through `user_id = auth.uid()` so their actual personal data stays
+visible to them.
+
+**Side effect on existing data.** Existing org projects are unaffected
+in the database — the row still has organisation_id set. They simply
+become invisible / read-only for removed users. If you want to give a
+removed user a fresh personal copy of an org project they used to own,
+the org admin can clone it locally and unstamp the organisation_id
+(or build a 'project export' affordance later).
+
+**Belt-and-braces.** The client app (since commit including
+projectStorage.ts cloudListProjects) also filters out org-stamped
+projects whose organisation_id isn't in the user's current org list.
+That means even if you forget to run this SQL, removed users see a
+clean personal dashboard — but the SQL still needs to run to block
+mutations via the database directly.
