@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from 'react'
-import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
+import { Stage, Layer, Line, Circle, Rect, Text, Group, Label, Tag } from 'react-konva'
 import type Konva from 'konva'
 import type { Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
@@ -10,6 +10,63 @@ import { hexToRgba } from '../lib/wallTypeColors'
 interface Point {
   x: number
   y: number
+}
+
+/**
+ * Refined measurement label — a small rounded pill behind the text so
+ * dimensions stay legible no matter what's behind them on the PDF
+ * background (light walls, dark hatching, etc.). One shared component
+ * used by every measurement label on the canvas (wall lengths, opening
+ * dimensions, ruler distances, pier dimensions, in-progress previews).
+ *
+ * Defaults to white text on a near-black pill — universal contrast.
+ * Pass `bg` / `color` to tint per-context (selection / ruler / etc.).
+ */
+function MeasurementChip({
+  x,
+  y,
+  text,
+  bg = 'rgba(15, 23, 42, 0.92)', // slate-900 @ 92%
+  color = '#ffffff',
+  fontSize = 11,
+  align = 'left',
+  rotation,
+  listening = false,
+}: {
+  x: number
+  y: number
+  text: string
+  bg?: string
+  color?: string
+  fontSize?: number
+  align?: 'left' | 'center' | 'right'
+  rotation?: number
+  listening?: boolean
+}) {
+  // offsetX = -1 nudges the pill so it doesn't sit exactly on the
+  // measurement endpoint — gives the eye a small breathing margin.
+  const dx =
+    align === 'center' ? -text.length * fontSize * 0.27 : align === 'right' ? -text.length * fontSize * 0.55 : 0
+  return (
+    <Label x={x + dx} y={y} listening={listening} rotation={rotation}>
+      <Tag
+        fill={bg}
+        cornerRadius={3}
+        shadowColor="rgba(0,0,0,0.35)"
+        shadowBlur={2}
+        shadowOpacity={0.5}
+        shadowOffsetY={1}
+      />
+      <Text
+        text={text}
+        padding={4}
+        fill={color}
+        fontSize={fontSize}
+        fontStyle="500"
+        fontFamily="system-ui, -apple-system, 'Segoe UI', sans-serif"
+      />
+    </Label>
+  )
 }
 
 interface WallDrawingLayerProps {
@@ -2428,14 +2485,11 @@ function WallDrawingLayerInner({
                 })
               })()}
 
-              <Text
+              <MeasurementChip
                 x={midX + 8}
-                y={midY - 18}
+                y={midY - 20}
                 text={formatMm(len)}
-                fontSize={14}
-                fill={isSelected ? '#1e40af' : '#C5530A'}
-                fontStyle="bold"
-                listening={false}
+                bg={isSelected ? 'rgba(30, 64, 175, 0.95)' : 'rgba(15, 23, 42, 0.92)'}
               />
             </Group>
           )
@@ -2500,14 +2554,12 @@ function WallDrawingLayerInner({
               />
               <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
               <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
-              <Text
-                x={midX - 35}
-                y={midY + 10}
+              <MeasurementChip
+                x={midX}
+                y={midY + 8}
                 text={`${Math.round(opening.widthMm)} × ${Math.round(opening.heightMm)}`}
-                fontSize={12}
-                fill={isSelected ? '#1e40af' : '#92400E'}
-                fontStyle="bold"
-                listening={false}
+                bg={isSelected ? 'rgba(30, 64, 175, 0.95)' : 'rgba(146, 64, 14, 0.95)'}
+                align="center"
               />
             </Group>
           )
@@ -2569,9 +2621,9 @@ function WallDrawingLayerInner({
                       strokeWidth={6}
                       opacity={0.5}
                     />
-                    <Text
+                    <MeasurementChip
                       x={(startPosPx.x + endPx.x) / 2 + 8}
-                      y={(startPosPx.y + endPx.y) / 2 + 10}
+                      y={(startPosPx.y + endPx.y) / 2 + 6}
                       text={
                         hasTyped
                           ? `${typedOpeningWidthMm} mm ⏎`
@@ -2579,9 +2631,7 @@ function WallDrawingLayerInner({
                             ? `${typedOpeningWidthMm} mm …`
                             : `${Math.round(previewWidth)} mm wide`
                       }
-                      fontSize={12}
-                      fill={hasTyped ? '#3B82F6' : '#92400E'}
-                      fontStyle="bold"
+                      bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : 'rgba(146, 64, 14, 0.95)'}
                     />
                   </>
                 )
@@ -2833,9 +2883,9 @@ function WallDrawingLayerInner({
                       label shows the cursor + extension. When typed, the
                       typed value IS the intended displayed length, so the
                       label echoes it back as-is. */}
-                  <Text
+                  <MeasurementChip
                     x={(startPx.x + endPx.x) / 2 + 8}
-                    y={(startPx.y + endPx.y) / 2 - 18}
+                    y={(startPx.y + endPx.y) / 2 - 20}
                     text={
                       hasTyped
                         ? `${typedLengthMm} mm ⏎`
@@ -2843,9 +2893,7 @@ function WallDrawingLayerInner({
                           ? `${typedLengthMm} mm …`
                           : formatMm(previewLengthMm)
                     }
-                    fontSize={14}
-                    fill={hasTyped ? '#3B82F6' : '#C5530A'}
-                    fontStyle="bold"
+                    bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : 'rgba(237, 125, 49, 0.95)'}
                   />
                 </>
               )
@@ -3072,13 +3120,11 @@ function WallDrawingLayerInner({
                 strokeWidth={1.5}
                 listening={false}
               />
-              <Text
+              <MeasurementChip
                 x={midPx.x + 8}
-                y={midPx.y - 18}
+                y={midPx.y - 20}
                 text={formatMm(lengthMm)}
-                fontSize={14}
-                fill="#a21caf"
-                fontStyle="bold"
+                bg={isSelected ? 'rgba(162, 28, 175, 0.95)' : 'rgba(217, 70, 239, 0.92)'}
                 listening={false}
               />
             </Group>
@@ -3101,13 +3147,11 @@ function WallDrawingLayerInner({
                 opacity={0.85}
               />
               <Circle x={startPx.x} y={startPx.y} radius={5} fill="#d946ef" stroke="white" strokeWidth={2} />
-              <Text
+              <MeasurementChip
                 x={(startPx.x + endPx.x) / 2 + 8}
-                y={(startPx.y + endPx.y) / 2 - 18}
+                y={(startPx.y + endPx.y) / 2 - 20}
                 text={formatMm(lengthMm)}
-                fontSize={14}
-                fill="#a21caf"
-                fontStyle="bold"
+                bg="rgba(217, 70, 239, 0.92)"
               />
             </Group>
           )
