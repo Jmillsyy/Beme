@@ -560,68 +560,49 @@ function BrickWallPreview({
     )
   }
 
-  // Render bottom→top in mm space, but SVG y goes downward, so we walk
-  // segments TOP→BOTTOM and stack rows downward. The crucial detail:
-  // each segment must fill ITS ENTIRE allocated heightMm in the preview
-  // — if `floor(seg.heightMm / pitch)` leaves a remainder (e.g. 13.45
-  // double-height courses on a wall that allows 13 full + a stub), we
-  // render the stub as a partial top course in that band so adjacent
-  // bands don't have a phantom gap where the leftover sits.
-  const rows: {
-    y: number
+  // Walk segments TOP→BOTTOM in SVG mm-space. For each segment build
+  // (a) a backing rectangle that fills the band's ENTIRE allocated
+  // height with the band colour, and (b) a list of horizontal course
+  // gridlines + vertical stretcher-bond gridlines drawn on top. The
+  // backing rectangle approach makes it impossible for a leftover /
+  // partial course to leave an empty strip between bands — every mm
+  // of the band is covered by the colour even when a course doesn't
+  // fit neatly.
+  interface BandRender {
+    topY: number
     height: number
     brick: BrickType
-    offset: boolean
+    pitch: number
     colour: typeof PALETTE[number]
-  }[] = []
+    /** Course index from the ground for the band's bottom-most course,
+     *  used to pick the stretcher offset parity. */
+    bottomCourseIndexFromGround: number
+  }
+  const bandRenders: BandRender[] = []
   let yCursor = 0
   const segmentsTopDown = [...segments].reverse()
   for (const seg of segmentsTopDown) {
     const colour = PALETTE[seg.bandIndex % PALETTE.length]
     const pitch = seg.brick.heightMm + (seg.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
-    const bandTopY = yCursor
     const bandBottomY = yCursor + seg.heightMm
-    const fullCourses = Math.floor(seg.heightMm / pitch)
-    const leftover = seg.heightMm - fullCourses * pitch
-    // Bottom-most full course in this band, indexed from the wall's
-    // ground up — used to keep the stretcher offset continuous across
-    // band boundaries (so the half-brick step doesn't flip when the
-    // brick type changes).
     const segBottomFromGroundMm = wallHeightMm - bandBottomY
     const bottomCourseIndexFromGround = Math.floor(segBottomFromGroundMm / pitch)
-
-    // Full courses, drawn from the bottom of the band upwards.
-    for (let c = 0; c < fullCourses; c++) {
-      const courseBottomY = bandBottomY - c * pitch
-      const courseTopY = courseBottomY - pitch
-      const courseIndexFromGround = bottomCourseIndexFromGround + c
-      const offset = courseIndexFromGround % 2 === 1
-      rows.push({
-        y: courseTopY,
-        height: pitch,
-        brick: seg.brick,
-        offset,
-        colour,
-      })
-    }
-    // Partial top course — happens whenever the band's allocated height
-    // doesn't divide evenly into the brick pitch. Sits at the very top
-    // of the band so the next band above (or the wall top) lands flush
-    // against full bricks.
-    if (leftover > 1) {
-      const courseTopY = bandTopY
-      const courseIndexFromGround = bottomCourseIndexFromGround + fullCourses
-      const offset = courseIndexFromGround % 2 === 1
-      rows.push({
-        y: courseTopY,
-        height: leftover,
-        brick: seg.brick,
-        offset,
-        colour,
-      })
-    }
+    bandRenders.push({
+      topY: yCursor,
+      height: seg.heightMm,
+      brick: seg.brick,
+      pitch,
+      colour,
+      bottomCourseIndexFromGround,
+    })
     yCursor = bandBottomY
   }
+
+  // Mortar gridline thickness in mm — needs to be wide enough to read
+  // against the band colour at preview scale. The mortar is drawn as
+  // dark gridlines (horizontal between courses, vertical between
+  // bricks) on top of the solid band fill.
+  const mortarWidthMm = 8
 
   return (
     <div className="h-full w-full flex flex-col gap-2">
@@ -632,36 +613,84 @@ function BrickWallPreview({
           preserveAspectRatio="xMidYMid meet"
           className="w-full h-full"
         >
-          {rows.map((row, i) => {
+          {/* 1. Backing rectangle per band: fills the entire band height
+                with the band colour. No matter how the course gridlines
+                land, the band itself is always continuous so adjacent
+                bands meet without any visible gap. */}
+          {bandRenders.map((band, i) => (
+            <rect
+              key={`band-${i}`}
+              x={0}
+              y={band.topY}
+              width={viewWidth}
+              height={band.height}
+              fill={band.colour.fill}
+              opacity={0.94}
+            />
+          ))}
+          {/* 2. Course gridlines + vertical brick gridlines on top of
+                the backing fills. Each band gets its own brick subdivision
+                pattern at the brick's pitch — partial top courses just
+                drop the last gridline naturally without leaving a gap. */}
+          {bandRenders.map((band, i) => {
             const faceMm =
-              row.brick.widthMm + (row.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
-            const mortarMm = row.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM
-            const brickFaceHeight = row.height - mortarMm
-            // Tile bricks across the preview width. Start at -offset so
-            // the offset stretcher row pulls a half-brick into view at
-            // the left edge.
-            const startX = row.offset ? -faceMm / 2 : 0
-            const bricks: number[] = []
-            for (let x = startX; x < viewWidth + faceMm; x += faceMm) {
-              bricks.push(x)
+              band.brick.widthMm + (band.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
+            const bandBottomY = band.topY + band.height
+            const lines: JSX.Element[] = []
+            // Horizontal mortar lines: one at the TOP of each course,
+            // starting from the band's bottom-most course and walking
+            // up. The very bottom of the wall doesn't get a top line
+            // (there's no course above it), and we stop drawing past
+            // the band's top edge.
+            let lineY = bandBottomY - band.pitch
+            while (lineY > band.topY - 0.5) {
+              lines.push(
+                <line
+                  key={`h-${i}-${lineY}`}
+                  x1={0}
+                  y1={lineY}
+                  x2={viewWidth}
+                  y2={lineY}
+                  stroke={band.colour.stroke}
+                  strokeWidth={mortarWidthMm}
+                  opacity={0.55}
+                />
+              )
+              lineY -= band.pitch
             }
-            return (
-              <g key={i}>
-                {bricks.map((x, j) => (
-                  <rect
-                    key={j}
-                    x={x + mortarMm / 2}
-                    y={row.y + mortarMm / 2}
-                    width={Math.max(0, row.brick.widthMm)}
-                    height={Math.max(0, brickFaceHeight)}
-                    fill={row.colour.fill}
-                    stroke={row.colour.stroke}
-                    strokeWidth={Math.max(1, mortarMm * 0.4)}
-                    opacity={0.92}
+            // Vertical mortar lines: walk every course in the band and
+            // place a vertical mark at each brick boundary. Alternating
+            // courses shift by half a face so the bond reads.
+            let courseBottom = bandBottomY
+            let courseIndexFromGround = band.bottomCourseIndexFromGround
+            // Draw down from the band's top into the band so each course
+            // gets its verticals. We walk in CourseBottom decreasing.
+            while (courseBottom > band.topY + 0.5) {
+              const offset = courseIndexFromGround % 2 === 1
+              const startX = offset ? -faceMm / 2 : 0
+              const courseTop = Math.max(band.topY, courseBottom - band.pitch)
+              // Place a vertical line at the end of each brick face
+              // within the visible width. Skip the line at x=0 / x=viewWidth
+              // (those are the wall edges, not internal mortar).
+              for (let x = startX + band.brick.widthMm; x < viewWidth; x += faceMm) {
+                if (x <= 0 || x >= viewWidth) continue
+                lines.push(
+                  <line
+                    key={`v-${i}-${courseIndexFromGround}-${x}`}
+                    x1={x}
+                    y1={courseTop}
+                    x2={x}
+                    y2={courseBottom}
+                    stroke={band.colour.stroke}
+                    strokeWidth={mortarWidthMm}
+                    opacity={0.55}
                   />
-                ))}
-              </g>
-            )
+                )
+              }
+              courseBottom -= band.pitch
+              courseIndexFromGround += 1
+            }
+            return <g key={`grid-${i}`}>{lines}</g>
           })}
         </svg>
       </div>
