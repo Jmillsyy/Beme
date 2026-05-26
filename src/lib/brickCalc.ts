@@ -8,7 +8,6 @@
 
 import type { BrickSettings, Opening, Wall } from '../types/walls'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
-import { getUserSettings } from './userSettings'
 
 // ---------- Brick tally ----------
 //
@@ -91,15 +90,10 @@ export function calculateBrickTally(
  * Falls back to 'standard' as a last resort if the library is empty.
  *
  * Initial bricks/m² is computed from the chosen brick's face dimensions
- * + the makeup mortar (default 10mm). The brick settings panel keeps
- * this in lockstep with the active brick type after creation.
+ * + the makeup mortar (default 10mm). Ties + plascourse live as supply
+ * items in the Material library, not on BrickSettings any more.
  */
 export function createDefaultBrickSettings(): BrickSettings {
-  // Ties + plascourse default to "enabled if your region uses them" so a new
-  // brick project pre-ticks the boxes for AU/UK users and pre-unticks for
-  // markets where these don't apply. Per-project overrides remain in the
-  // brick settings panel.
-  const regional = getUserSettings().preferences.regionalFeatures
   const firstBrick = Object.values(BRICK_LIBRARY)[0]
   const brickTypeCode = firstBrick?.code ?? 'standard'
   // Compute bricks/m² from the brick's face area + assumed 10mm joint.
@@ -114,7 +108,5 @@ export function createDefaultBrickSettings(): BrickSettings {
     defaultWallHeightMm: 2400,
     brickTypeCode,
     bricksPerSquareMetre: computedRate,
-    ties: { enabled: regional.brickTies, perSquareMetre: 2 },
-    plascourse: { enabled: regional.plascourse, metresPerUnit: 30 },
   }
 }

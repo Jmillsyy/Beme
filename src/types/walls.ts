@@ -431,8 +431,6 @@ export interface BrickExportInclusions {
    */
   measurements: boolean
   brickAreaSummary: boolean
-  brickTies: boolean
-  plascourse: boolean
   disclaimer: boolean
 }
 
@@ -487,16 +485,13 @@ export interface BrickSettings {
    * Typical Australian face brick ≈ 48–57 depending on the brick size.
    */
   bricksPerSquareMetre: number
-  /** Brick ties — added per m² of brickwork when enabled. */
-  ties: {
-    enabled: boolean
-    perSquareMetre: number
-  }
-  /** Plascourse — one unit per `metresPerUnit` of brickwork when enabled. */
-  plascourse: {
-    enabled: boolean
-    metresPerUnit: number
-  }
+  // Brick ties + plascourse used to live on this type as
+  // `ties: { enabled, perSquareMetre }` and `plascourse: { enabled,
+  // metresPerUnit }`. Both are now plain supply items in the Material
+  // library — the user can edit the per-m² and per-m rates from one
+  // place and toggle them per-project via the supplyItemSelections map.
+  // Removing the duplicate config from BrickSettings keeps a single
+  // source of truth.
 }
 
 /**

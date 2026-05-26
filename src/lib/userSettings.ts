@@ -153,13 +153,10 @@ export async function initUserSettings(): Promise<void> {
       preferences: {
         ...defaults.preferences,
         ...(saved.preferences ?? {}),
-        // regionalFeatures is a nested object — merge field-by-field so a
-        // partial saved payload (or one from before this field existed)
-        // gets sensible defaults for missing toggles.
-        regionalFeatures: {
-          ...defaults.preferences.regionalFeatures,
-          ...(saved.preferences?.regionalFeatures ?? {}),
-        },
+        // Older saved payloads may carry `currency` or `regionalFeatures`
+        // — both retired. The spread above lets them pass through into
+        // the in-memory object harmlessly since the type drops them; the
+        // next save will write the trimmed shape.
       },
       defaults: { ...defaults.defaults, ...(saved.defaults ?? {}) },
       // Backfill supply items for existing users who installed Beme before

@@ -38,7 +38,6 @@ import {
 } from '../types/bricks'
 import type {
   BusinessProfile,
-  Currency,
   DateFormat,
   EstimatingDefaults,
   Theme as ThemePref,
@@ -60,7 +59,7 @@ interface Tab {
 const TABS: Tab[] = [
   { key: 'profile', label: 'Profile', description: 'You — name, contact, role' },
   { key: 'business', label: 'Business', description: 'Used on every quote you export' },
-  { key: 'preferences', label: 'Preferences', description: 'Units, currency, date, theme' },
+  { key: 'preferences', label: 'Preferences', description: 'Units, date, theme, library template' },
   { key: 'defaults', label: 'Defaults', description: 'Starting values for new estimates' },
   {
     key: 'organisation',
@@ -556,7 +555,7 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
   return (
     <PanelCard
       title="Preferences"
-      description="How beme displays things — units, currency, date format, theme."
+      description="How beme displays things — units, date format, theme."
     >
       <FieldGroup>
         <Field
@@ -573,20 +572,7 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
           />
         </Field>
 
-        <Field label="Currency">
-          <Select<Currency>
-            value={preferences.currency}
-            onChange={(v) => set({ currency: v })}
-            options={[
-              { value: 'AUD', label: 'Australian Dollar — A$' },
-              { value: 'NZD', label: 'New Zealand Dollar — NZ$' },
-              { value: 'USD', label: 'US Dollar — $' },
-              { value: 'CAD', label: 'Canadian Dollar — C$' },
-              { value: 'GBP', label: 'British Pound — £' },
-              { value: 'EUR', label: 'Euro — €' },
-            ]}
-          />
-        </Field>
+        {/* Currency was retired — beme estimates quantities, not prices. */}
 
         <Field label="Date format">
           <Select<DateFormat>
@@ -662,47 +648,13 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
         </Field>
       </FieldGroup>
 
-      {/* Regional features — toggle off line items that don't apply in your
-          market. New brick projects pick up these defaults; per-project
-          overrides are still available in the brick settings panel. */}
-      <FieldGroup
-        title="Regional features"
-        description="Different markets use different masonry conventions. Turn off anything you don't price into your estimates and it'll be hidden from new project tallies and exports."
-      >
-        {/* The "Lintels" toggle has been retired. Block lintels are now
-            driven entirely by the library — tag a block with the 'lintel'
-            role to use it; leave the role off and openings get an empty
-            head course. Brick lintels are per-opening supply items in the
-            Material library with their own enable / include flags. The
-            regional setting flag (regionalFeatures.lintels) is preserved
-            on the type so older saved settings still load. */}
-        <Toggle
-          label="Brick ties"
-          hint="Ties between brick veneer and structural backing in cavity walls. Universal in AU/UK/NZ/US but the rate per m² varies by code."
-          checked={preferences.regionalFeatures.brickTies}
-          onChange={(checked) =>
-            set({
-              regionalFeatures: {
-                ...preferences.regionalFeatures,
-                brickTies: checked,
-              },
-            })
-          }
-        />
-        <Toggle
-          label="Plascourse (DPC)"
-          hint="Damp-proof course / plastic course at the base of brick walls. AU & UK terminology. US construction typically uses flashing membrane priced under sealants instead."
-          checked={preferences.regionalFeatures.plascourse}
-          onChange={(checked) =>
-            set({
-              regionalFeatures: {
-                ...preferences.regionalFeatures,
-                plascourse: checked,
-              },
-            })
-          }
-        />
-      </FieldGroup>
+      {/* Regional features (lintels / brick ties / plascourse) used to
+          live here as a FieldGroup. Each of those line items is now
+          driven by the Material library directly — block lintels via
+          the 'lintel' BlockRole, brick lintels + ties + plascourse via
+          supply items the user can add, edit, or disable from one
+          place. Removed the parallel set of toggles so there's a single
+          source of truth. */}
 
       {/* Region picker mounted at the Preferences tab root so it floats
           over everything when the user clicks Switch template. */}

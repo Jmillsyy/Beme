@@ -169,24 +169,10 @@ function BrickExportPanelImpl({
           checked={inclusions.brickAreaSummary}
           onChange={(v) => patch({ brickAreaSummary: v })}
         />
-        {/* "Lintels" toggle was a no-op since brick lintels became
-            per-opening supply items. The matching supply rows are
-            governed by the Material library's enable / include flags,
-            so there's no separate per-export switch to render. */}
-        <Toggle
-          label="Brick ties"
-          checked={inclusions.brickTies}
-          onChange={(v) => patch({ brickTies: v })}
-          disabled={!settings.ties.enabled}
-          disabledHint="Enable brick ties in Brick settings first"
-        />
-        <Toggle
-          label="Plascourse"
-          checked={inclusions.plascourse}
-          onChange={(v) => patch({ plascourse: v })}
-          disabled={!settings.plascourse.enabled}
-          disabledHint="Enable plascourse in Brick settings first"
-        />
+        {/* Brick ties / plascourse / lintels used to be per-export
+            toggles. All three are now driven by the Material library's
+            supply-item flags (enable + per-project include), so no
+            separate per-export switches are needed. */}
         <Toggle
           label="Disclaimer page"
           checked={inclusions.disclaimer}

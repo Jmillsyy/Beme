@@ -9,7 +9,7 @@
  * Deep imperial input support is v2.
  */
 
-import type { Currency, DateFormat, Units } from '../types/userSettings'
+import type { DateFormat, Units } from '../types/userSettings'
 
 const MM_PER_INCH = 25.4
 const MM_PER_FOOT = 304.8
@@ -103,38 +103,10 @@ function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b)
 }
 
-// ─── Currency ──────────────────────────────────────────────────────────────
-
-/** Currency symbol for a code. */
-export function currencySymbol(c: Currency): string {
-  switch (c) {
-    case 'AUD':
-    case 'USD':
-    case 'NZD':
-    case 'CAD':
-      return '$'
-    case 'GBP':
-      return '£'
-    case 'EUR':
-      return '€'
-  }
-}
-
-/**
- * Format a monetary amount. Uses the browser's Intl.NumberFormat under the
- * hood so we get the correct currency code positioning per locale.
- */
-export function formatCurrency(amount: number, currency: Currency = 'AUD'): string {
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  } catch {
-    return `${currencySymbol(currency)}${Math.round(amount).toLocaleString()}`
-  }
-}
+// Currency helpers (currencySymbol + formatCurrency) lived here until
+// the Currency preference was retired — beme estimates quantities, not
+// prices, so neither helper had any callers. Deleted to keep the
+// formatter module focused on units + dates.
 
 // ─── Date ──────────────────────────────────────────────────────────────────
 

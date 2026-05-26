@@ -806,26 +806,13 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     : ''
 
   // Accessories table is driven exclusively by the user's supply-item
-  // catalogue (Material library). Brick Ties + Plascourse default-seeded
-  // supply items handle what BrickSettings.ties / .plascourse used to
-  // describe.
-  //
-  // Two layers of gating apply per matching supply row:
-  //   1. settings.ties.enabled / settings.plascourse.enabled — project-
-  //      level "does this estimate include ties / plascourse at all".
-  //      Off → the row is suppressed entirely (the per-export toggle in
-  //      the export panel is also disabled in that case).
-  //   2. inclusions.brickTies / inclusions.plascourse — per-export
-  //      override so the user can still hide the section on a specific
-  //      output even if the project itself includes it.
-  // Either layer set to false suppresses the row.
+  // catalogue (Material library). Ties + plascourse used to be governed
+  // by their own per-export inclusion flags and per-project BrickSettings
+  // toggles, but both layers have been retired — the user enables /
+  // disables a supply item from one place (the Material library entry)
+  // and overrides it per-project via supplyItemSelections.
   const accessoriesRows: string[] = []
   for (const row of supplyRows) {
-    const nameLower = row.name.toLowerCase()
-    const isTie = nameLower.includes('brick tie')
-    const isPlascourse = nameLower.includes('plascourse')
-    if (isTie && (!settings.ties.enabled || !inclusions.brickTies)) continue
-    if (isPlascourse && (!settings.plascourse.enabled || !inclusions.plascourse)) continue
     accessoriesRows.push(
       `<tr><td>${escapeHtml(row.name)}</td><td class="right">${row.qty.toLocaleString()}</td></tr>`
     )
@@ -1210,7 +1197,6 @@ export function createDefaultProjectDetails(): ProjectDetails {
  * appear in every new project. The user can still re-enable per project.
  */
 export function createDefaultExportInclusions(): BrickExportInclusions {
-  const regional = getUserSettings().preferences.regionalFeatures
   return {
     assumptions: true,
     wallLayout: true,
@@ -1218,8 +1204,6 @@ export function createDefaultExportInclusions(): BrickExportInclusions {
     // if the user drew them, they likely want them carried through.
     measurements: true,
     brickAreaSummary: true,
-    brickTies: regional.brickTies,
-    plascourse: regional.plascourse,
     disclaimer: true,
   }
 }

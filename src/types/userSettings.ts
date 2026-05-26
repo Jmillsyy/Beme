@@ -8,7 +8,6 @@
  */
 
 export type Units = 'metric' | 'imperial'
-export type Currency = 'AUD' | 'USD' | 'GBP' | 'EUR' | 'NZD' | 'CAD'
 export type DateFormat = 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD'
 export type Theme = 'dark' | 'light'
 
@@ -49,7 +48,6 @@ export interface BusinessProfile {
 
 export interface UserPreferences {
   units: Units
-  currency: Currency
   dateFormat: DateFormat
   theme: Theme
   /** What clicking "+ New estimate" defaults to on the dashboard. */
@@ -66,34 +64,12 @@ export interface UserPreferences {
    */
   libraryTemplateKey?: 'au-seq' | 'us-cmu' | 'uk-block' | 'blank'
 
-  /**
-   * Regional feature toggles — which "extras" the estimator typically prices
-   * into their jobs. Different markets use different practices and the user
-   * shouldn't have to wade past line items that never apply to them. These
-   * defaults flow into new brick projects' BrickSettings and export
-   * inclusions; users can still override per-project.
-   *
-   * Defaults to all-on so existing AU users see no change.
-   */
-  regionalFeatures: {
-    /**
-     * Lintel calculation + export. Retired in favour of role-driven
-     * library tagging (block lintels via the 'lintel' BlockRole) and
-     * supply-items metadata (brick lintels). Kept on the type so older
-     * saved settings still parse; nothing reads it any more.
-     */
-    lintels?: boolean
-    /**
-     * Brick ties between veneer and structural backing. Universal in cavity
-     * construction (AU/UK/NZ/US) but rate per m² and supplier vary.
-     */
-    brickTies: boolean
-    /**
-     * Plascourse / DPC (damp-proof course). AU + UK term. US equivalent is
-     * usually a flashing membrane priced under sealants, not masonry.
-     */
-    plascourse: boolean
-  }
+  // Currency + regional features were retired. Beme estimates quantities,
+  // not prices, so a currency selector was misleading. Regional feature
+  // toggles (lintels / brick ties / plascourse) are now driven by the
+  // Material library directly — block lintels via the 'lintel' BlockRole,
+  // brick lintels / ties / plascourse via supply items with their own
+  // enable / include flags. Single source of truth.
 }
 
 export interface EstimatingDefaults {
@@ -211,14 +187,9 @@ export function createDefaultUserSettings(): UserSettings {
     },
     preferences: {
       units: 'metric',
-      currency: 'AUD',
       dateFormat: 'DD/MM/YYYY',
       theme: 'dark',
       defaultProjectType: 'block',
-      regionalFeatures: {
-        brickTies: true,
-        plascourse: true,
-      },
     },
     defaults: {
       defaultWallHeightMm: 2400,
