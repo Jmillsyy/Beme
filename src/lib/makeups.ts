@@ -400,17 +400,39 @@ export function convertMakeupToBands(makeup: WallMakeup): {
   // from-top; course N = top.
   // We emit bands so each contiguous run of identical block codes collapses
   // into a single { blockCode, count }.
+  // Stale-makeup guard: if the makeup carries codes that aren't in the
+  // active library (e.g. a US user opening a project saved under AU),
+  // heal each role through the picker so the synthesised bands point
+  // at real codes. Keeps the wall preview legible AND keeps the calc
+  // engine tied to library items.
+  const healBase =
+    BLOCK_LIBRARY[makeup.baseCourseBlockCode]
+      ? makeup.baseCourseBlockCode
+      : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('base-course'))?.code ??
+          Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))?.code ??
+          makeup.baseCourseBlockCode)
+  const healBody =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]
+      ? makeup.bodyBlockCode
+      : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))?.code ??
+          makeup.bodyBlockCode)
+  const healTop =
+    BLOCK_LIBRARY[makeup.topCourseBlockCode]
+      ? makeup.topCourseBlockCode
+      : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('top-course'))?.code ??
+          healBody)
+
   const courses: BlockCode[] = []
-  courses.push(makeup.baseCourseBlockCode)
+  courses.push(healBase)
   const bodyCount = Math.max(0, stdCount - 2)
-  for (let i = 0; i < bodyCount; i++) courses.push(makeup.bodyBlockCode)
+  for (let i = 0; i < bodyCount; i++) courses.push(healBody)
   if (effectiveHas140 && heightMakeup150) {
     courses.push(heightMakeup150.code as BlockCode)
   }
   if (effectiveHas71 && heightMakeup100) {
     courses.push(heightMakeup100.code as BlockCode)
   }
-  if (totalCourses >= 2) courses.push(makeup.topCourseBlockCode)
+  if (totalCourses >= 2) courses.push(healTop)
 
   for (const code of courses) {
     const last = bands[bands.length - 1]

@@ -792,10 +792,20 @@ function WallTypeEditorModal({
         override?.blockCode ??
         rangeOverride ??
         bandBody
+
+      // Stale-makeup guard. If a saved wall makeup references a code
+      // that doesn't exist in the active library (e.g. a US user
+      // opening a project saved on AU), swap to the library's body /
+      // corner / half via the role pickers. This keeps the preview
+      // legible AND keeps the tally tied to real codes in the user's
+      // library.
+      const heal = (code: BlockCode, fallback: () => BlockCode | undefined): BlockCode =>
+        library[code] ? code : fallback() ?? code
+
       return {
-        body,
-        corner: resolved.cornerBlockCode,
-        half: resolved.halfBlockCode,
+        body: heal(body, () => pickBodyDefault()?.code),
+        corner: heal(resolved.cornerBlockCode, () => pickCornerBlock()?.code),
+        half: heal(resolved.halfBlockCode, () => pickHalfBlock()?.code),
       }
     }
   }, [previewMakeup, previewBands, courseOverrides, library])
