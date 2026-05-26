@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from 'react'
-import { Stage, Layer, Line, Circle, Rect, Text, Group, Label, Tag } from 'react-konva'
+import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
 import type { Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
@@ -13,22 +13,18 @@ interface Point {
 }
 
 /**
- * Refined measurement label — a small rounded pill behind the text so
- * dimensions stay legible no matter what's behind them on the PDF
- * background (light walls, dark hatching, etc.). One shared component
- * used by every measurement label on the canvas (wall lengths, opening
- * dimensions, ruler distances, pier dimensions, in-progress previews).
- *
- * Defaults to white text on a near-black pill — universal contrast.
- * Pass `bg` / `color` to tint per-context (selection / ruler / etc.).
+ * Shared measurement label — bare colored text, no background.
+ * Centralised so font + sizing stay consistent across every drawing
+ * (wall lengths, opening dimensions, ruler distances, in-progress
+ * previews). Pass `bg` (kept as the parameter name for back-compat
+ * with the chip era) to colour the text per-context.
  */
 function MeasurementChip({
   x,
   y,
   text,
-  bg = 'rgba(15, 23, 42, 0.92)', // slate-900 @ 92%
-  color = '#ffffff',
-  fontSize = 11,
+  bg = '#0f172a',
+  fontSize = 13,
   align = 'left',
   rotation,
   listening = false,
@@ -37,35 +33,39 @@ function MeasurementChip({
   y: number
   text: string
   bg?: string
+  /** @deprecated — text colour came from this param when it was a pill */
   color?: string
   fontSize?: number
   align?: 'left' | 'center' | 'right'
   rotation?: number
   listening?: boolean
 }) {
-  // offsetX = -1 nudges the pill so it doesn't sit exactly on the
-  // measurement endpoint — gives the eye a small breathing margin.
+  // Centred / right-aligned labels need the text offset by half / full
+  // width respectively. Konva's Text doesn't measure until render so
+  // we estimate from glyph count × fontSize × ~0.55 char-width ratio.
   const dx =
-    align === 'center' ? -text.length * fontSize * 0.27 : align === 'right' ? -text.length * fontSize * 0.55 : 0
+    align === 'center'
+      ? -text.length * fontSize * 0.28
+      : align === 'right'
+      ? -text.length * fontSize * 0.55
+      : 0
+  // Drop the alpha if the colour came in as rgba — bare text wants
+  // the solid hue so the readout pops against the PDF.
+  const textFill = bg.startsWith('rgba')
+    ? bg.replace(/rgba\((\d+),\s*(\d+),\s*(\d+),.*\)/, 'rgb($1, $2, $3)')
+    : bg
   return (
-    <Label x={x + dx} y={y} listening={listening} rotation={rotation}>
-      <Tag
-        fill={bg}
-        cornerRadius={3}
-        shadowColor="rgba(0,0,0,0.35)"
-        shadowBlur={2}
-        shadowOpacity={0.5}
-        shadowOffsetY={1}
-      />
-      <Text
-        text={text}
-        padding={4}
-        fill={color}
-        fontSize={fontSize}
-        fontStyle="500"
-        fontFamily="system-ui, -apple-system, 'Segoe UI', sans-serif"
-      />
-    </Label>
+    <Text
+      x={x + dx}
+      y={y}
+      text={text}
+      fontSize={fontSize}
+      fill={textFill}
+      fontStyle="600"
+      fontFamily="system-ui, -apple-system, 'Segoe UI', sans-serif"
+      listening={listening}
+      rotation={rotation}
+    />
   )
 }
 
