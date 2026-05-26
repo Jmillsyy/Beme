@@ -805,19 +805,27 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  // Accessories table is now driven exclusively by the user's supply-item
-  // catalogue (Material library). The legacy BrickSettings.ties +
-  // BrickSettings.plascourse rows have been retired — both are now
-  // default-seeded supply items (Brick Ties, Plascourse) that the user can
-  // edit / disable / rate-tune from one place. Inclusion toggles
-  // (`inclusions.brickTies` / `inclusions.plascourse`) still suppress the
-  // matching row when off, so the existing per-export checkboxes keep
-  // working.
+  // Accessories table is driven exclusively by the user's supply-item
+  // catalogue (Material library). Brick Ties + Plascourse default-seeded
+  // supply items handle what BrickSettings.ties / .plascourse used to
+  // describe.
+  //
+  // Two layers of gating apply per matching supply row:
+  //   1. settings.ties.enabled / settings.plascourse.enabled — project-
+  //      level "does this estimate include ties / plascourse at all".
+  //      Off → the row is suppressed entirely (the per-export toggle in
+  //      the export panel is also disabled in that case).
+  //   2. inclusions.brickTies / inclusions.plascourse — per-export
+  //      override so the user can still hide the section on a specific
+  //      output even if the project itself includes it.
+  // Either layer set to false suppresses the row.
   const accessoriesRows: string[] = []
   for (const row of supplyRows) {
     const nameLower = row.name.toLowerCase()
-    if (!inclusions.brickTies && nameLower.includes('brick tie')) continue
-    if (!inclusions.plascourse && nameLower.includes('plascourse')) continue
+    const isTie = nameLower.includes('brick tie')
+    const isPlascourse = nameLower.includes('plascourse')
+    if (isTie && (!settings.ties.enabled || !inclusions.brickTies)) continue
+    if (isPlascourse && (!settings.plascourse.enabled || !inclusions.plascourse)) continue
     accessoriesRows.push(
       `<tr><td>${escapeHtml(row.name)}</td><td class="right">${row.qty.toLocaleString()}</td></tr>`
     )
