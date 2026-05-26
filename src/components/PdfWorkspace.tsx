@@ -104,8 +104,16 @@ function computeWallThicknessByWallId(
     // series above) the wall is physically stepped — but its plan-view
     // footprint is the wider course, since narrower courses sit inside it. We
     // walk the makeup's body, base, top and any range overrides and pick the
-    // largest depth from the library, falling back to 190 mm.
-    let depth = 190
+    // largest depth from the library.
+    //
+    // The fallback (190 mm — AU 190-series default) is ONLY used when the
+    // makeup doesn't resolve to any library block at all. Previously the
+    // function seeded `depth = 190` and only replaced it if a library entry
+    // was wider, which meant any region whose blocks are narrower than 190 mm
+    // (UK 100 mm block, US 4" CMU, etc.) ignored the library entirely and
+    // rendered as 190 mm AU walls. Now the floor only kicks in when there's
+    // genuinely nothing to read.
+    let depth: number | null = null
     if (makeup) {
       const candidateCodes = [
         makeup.bodyBlockCode,
@@ -120,10 +128,12 @@ function computeWallThicknessByWallId(
       ].filter((c): c is string => !!c)
       for (const code of candidateCodes) {
         const d = BLOCK_LIBRARY[code]?.dimensions.depthMm
-        if (typeof d === 'number' && d > depth) depth = d
+        if (typeof d === 'number' && (depth === null || d > depth)) {
+          depth = d
+        }
       }
     }
-    map[w.id] = depth
+    map[w.id] = depth ?? 190
   }
   return map
 }
