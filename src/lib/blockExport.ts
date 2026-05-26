@@ -34,7 +34,6 @@ import {
 } from './blockCalc'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
 import { rasterisePdfPage } from './pdfRaster'
-import { selectBlockLintel } from './lintels'
 import { downloadPdfFromHtml } from './pdfExport'
 import { getMakeupHeightMm } from './makeups'
 import { getUserSettings } from './userSettings'
@@ -1103,24 +1102,6 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     }
   })
 
-  // Openings detail: index, wall, dimensions, head, lintel
-  const openingsDetail = openings.map((o, i) => {
-    const wall = walls.find((w) => w.id === o.wallId)
-    const makeup = wall ? makeupsById[wall.makeupId] : undefined
-    const wallHeightMm = wall?.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
-    const headMm = wallHeightMm - o.sillHeightMm - o.heightMm
-    const lintel = headMm > 0 ? selectBlockLintel(headMm) : null
-    return {
-      index: i + 1,
-      wallNumber: wall ? walls.indexOf(wall) + 1 : null,
-      makeupName: makeup?.name ?? '—',
-      widthMm: o.widthMm,
-      heightMm: o.heightMm,
-      sillMm: o.sillHeightMm,
-      headMm,
-      lintelCode: lintel?.code ?? null,
-    }
-  })
 
   const headerTitle =
     projectDetails.siteAddress.trim() ||
@@ -1500,67 +1481,10 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
       })()
     : ''
 
-  // Page 4: Openings + lintels
-  const openingsTable = inclusions.openingsList && openings.length > 0
-    ? `
-      <h2 class="section-title">Openings &amp; Lintels</h2>
-      <p class="page-intro">
-        ${openings.length} opening${openings.length === 1 ? '' : 's'}
-        · Lintels selected by head height (see Assumptions)
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th style="width: 40px">#</th>
-            <th>Wall type</th>
-            <th class="right" style="width: 90px">Width (mm)</th>
-            <th class="right" style="width: 90px">Height (mm)</th>
-            <th class="right" style="width: 70px">Sill (mm)</th>
-            <th class="right" style="width: 70px">Head (mm)</th>
-            <th style="width: 70px">Lintel</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${openingsDetail
-            .map(
-              (o) =>
-                `<tr>
-                  <td>${o.index}</td>
-                  <td>${escapeHtml(o.makeupName)}</td>
-                  <td class="right tabular">${formatNumber(o.widthMm)}</td>
-                  <td class="right tabular">${formatNumber(o.heightMm)}</td>
-                  <td class="right tabular">${formatNumber(o.sillMm)}</td>
-                  <td class="right tabular">${formatNumber(o.headMm)}</td>
-                  <td class="mono">${o.lintelCode ?? '—'}</td>
-                </tr>`
-            )
-            .join('')}
-          ${(() => {
-            const totalWidth = openings.reduce((s, o) => s + o.widthMm, 0)
-            const totalAreaSqM =
-              openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0) / 1_000_000
-            return `<tr class="bold">
-              <td colspan="2">Total — ${openings.length} opening${openings.length === 1 ? '' : 's'} (${formatNumber(totalAreaSqM, 2)} m²)</td>
-              <td class="right tabular">${formatNumber(totalWidth)}</td>
-              <td class="right tabular">—</td>
-              <td class="right tabular">—</td>
-              <td class="right tabular">—</td>
-              <td class="mono">—</td>
-            </tr>`
-          })()}
-        </tbody>
-      </table>
-    `
-    : ''
-
-  const openingsPage = openingsTable
-    ? `
-      <section class="page">
-        ${pageHeader}
-        ${openingsTable}
-      </section>
-    `
-    : ''
+  // Openings & Lintels page used to live here; it was retired when the
+  // Wall Layout pages started visualising openings inline with their
+  // walls. The wall-type breakdown above (and per-wall lintel rows)
+  // covers any per-opening detail an estimator needs.
 
   // Page 5: Disclaimer
   const disclaimerPage = inclusions.disclaimer
@@ -2066,7 +1990,6 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   ${wallSpecsPage}
   ${planOverviewPage}
   ${breakdownPages}
-  ${openingsPage}
   ${/* Grand Total sits just before the disclaimer so the customer's
        last data-bearing page is the actual order quantities — the page
        they'll quote and order from. Disclaimer wraps the document so
@@ -2099,10 +2022,6 @@ export function createDefaultBlockExportInclusions(): BlockExportInclusions {
     wallSpecs: true,
     blockSchedule: true,
     wallTypeBreakdown: true,
-    // Openings & lintels section is removed from the export options UI and
-    // defaults off — keep the flag in the type for backward-compat with
-    // already-saved projects so older saves still load cleanly.
-    openingsList: false,
     // Ruler measurements default ON — if the user took the trouble to draw
     // them on the plan they almost certainly want them carried through into
     // the exported PDF. Toggle hides them when not wanted.

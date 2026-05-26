@@ -502,8 +502,8 @@ export interface BlockExportInclusions {
   blockSchedule: boolean
   /** Breakdown of the schedule grouped by wall type (makeup). */
   wallTypeBreakdown: boolean
-  /** List of openings with dimensions, head, sill, and chosen lintel block. */
-  openingsList: boolean
+  // openingsList was retired with the dedicated Openings & Lintels page.
+  // The dashboard / wall layout pages cover opening visualisation now.
   /**
    * Overlay the user's on-canvas ruler measurements (dashed lines with the
    * measured distance) onto each Wall Layout overview. Useful when sharing

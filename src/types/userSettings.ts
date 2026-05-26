@@ -42,8 +42,7 @@ export interface BusinessProfile {
    * exported estimate header. (Upload UI is v2 — for now you paste a URL.)
    */
   logoUrl: string
-  /** Default GST / tax rate as a decimal (0.10 for 10% AU GST). */
-  defaultTaxRate: number
+  // defaultTaxRate retired — beme estimates quantities, not prices.
 }
 
 export interface UserPreferences {
@@ -217,7 +216,6 @@ export function createDefaultUserSettings(): UserSettings {
       phone: '',
       website: '',
       logoUrl: '',
-      defaultTaxRate: 0.1,
     },
     preferences: {
       units: 'metric',

@@ -713,18 +713,8 @@ function BusinessTab({ business, set }: { business: BusinessProfile; set: (p: Pa
               onChange={(v) => set({ logoUrl: v })}
             />
           </Field>
-          <Field
-            label="Default tax rate"
-            hint="Applied to quotes. 10% for Australian GST."
-          >
-            <NumberInput
-              value={Math.round(business.defaultTaxRate * 1000) / 10}
-              onChange={(v) => set({ defaultTaxRate: v / 100 })}
-              min={0}
-              step={0.5}
-              suffix="%"
-            />
-          </Field>
+          {/* Tax rate field retired — beme estimates quantities, not
+              prices. */}
         </FieldGroup>
 
       </PanelCard>
