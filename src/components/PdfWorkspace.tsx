@@ -1799,7 +1799,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // 'wedge' (665-1500mm): 20.03CW wedge.
     // 'custom' (< 665mm): wedge is closest stock; calc-engine + assumptions
     //    flag that custom blocks are really needed.
-    const bodyBlock = zone === 'wedge' || zone === 'custom' ? '20.03CW' : '20.48'
+    // Wedge / custom curves prefer a curve-tight tagged block from the
+    // live library (AU's 20.03CW, or whatever the user's region has
+    // tagged). When NO wedge is defined in the library — common
+    // outside AU, since US / UK don't ship a dedicated wedge — fall
+    // back to the body block. The export's curve assumption note
+    // already explains that cuts are required at that radius.
+    const wedgeBlock =
+      Object.values(BLOCK_LIBRARY).find((b) =>
+        b.roles.includes('curve-tight')
+      )?.code
+    const bodyDefault =
+      Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))?.code ??
+      '20.48'
+    const bodyBlock =
+      zone === 'wedge' || zone === 'custom'
+        ? wedgeBlock ?? bodyDefault
+        : bodyDefault
     const radiusLabel = isFinite(radiusMm)
       ? `R${Math.round(radiusMm)}mm`
       : 'straight-ish'

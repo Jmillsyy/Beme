@@ -2494,12 +2494,17 @@ function WallDrawingLayerInner({
                 })
               })()}
 
-              <MeasurementChip
-                x={midX + 8}
-                y={midY - 20}
-                text={formatMm(len)}
-                bg={isSelected ? 'rgba(30, 64, 175, 0.95)' : 'rgba(15, 23, 42, 0.92)'}
-              />
+              {/* Wall length only shows when the wall is selected —
+                  keeps the plan view clean while drawing / panning,
+                  surfaces the dimension on demand. */}
+              {isSelected && (
+                <MeasurementChip
+                  x={midX + 8}
+                  y={midY - 20}
+                  text={formatMm(len)}
+                  bg="#1e40af"
+                />
+              )}
             </Group>
           )
         })}

@@ -398,12 +398,12 @@ interface FractionOption {
  */
 function getFractionOptions(): FractionOption[] {
   const blocks = pickFractionBlocks()
-  if (blocks.length === 0) {
-    return [
-      { code: '20.02', modular: FRAC_75_MODULE_MM },
-      { code: '20.22', modular: FRAC_875_MODULE_MM },
-    ]
-  }
+  // No fraction blocks in the library? Return empty — the wall just
+  // rounds up its body count, no fractional fillers. We DON'T fall
+  // back to AU 20.02 / 20.22 here because those codes don't exist
+  // in US / UK libraries; emitting them would surface a phantom AU
+  // block in non-AU tallies.
+  if (blocks.length === 0) return []
   return blocks.map((b) => ({
     code: b.code,
     modular: b.dimensions.widthMm + MORTAR_MM,
@@ -870,7 +870,12 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
       healCode(b.baseCourseBlockCode, 'base-course') ||
       healCode(b.baseCourseBlockCode, 'body')
     const baseBlock = BLOCK_LIBRARY[healedBase]
-    const pairedTile = baseBlock?.pairedWith ?? b.baseCourseTileCode
+    // Pairing is now ONLY a library-level property (Block.pairedWith).
+    // The legacy `makeup.baseCourseTileCode` fallback used to keep
+    // 50.45 on AU walls after the pairing migration; dropping it
+    // here means US/UK walls (whose body block has no pairedWith)
+    // no longer tally a phantom AU tile.
+    const pairedTile = baseBlock?.pairedWith
     courses.push({
       type: 'base',
       bodyBlock: healedBase,
