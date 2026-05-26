@@ -1,40 +1,38 @@
 /**
  * Lintel rules — pure functions implementing the rules from the Project Brief.
  *
- * Block walls: lintel blocks fill the head course above each opening. The
- * library stores each lintel's dimensions in the as-used orientation
- * (widthMm = horizontal face when placed, heightMm = vertical extent). No
- * rotation at calc time — Beme just uses width × height as stored and
- * tallies enough blocks to span (opening + bearing) horizontally × head
- * height vertically.
+ * Block walls: a lintel is any block in the user's library that the user
+ * has tagged with the `lintel` role. There's no separate concept of a
+ * "lintel block" any more — a 20.13, a 20.18, a bond beam, or even a
+ * regular body block can serve as a lintel just by adding the role.
  *
- * Selection is by head height: pick the tallest lintel whose heightMm ≤
- * the opening's head height. Library can hold any number of lintels so
- * different head heights pick the appropriate block.
+ * Selection is by head height: pick the SMALLEST lintel whose heightMm ≥
+ * the opening's head height (so the head course is fully bridged). If no
+ * single lintel is tall enough, the tallest is returned and the calc
+ * engine stacks it vertically to cover.
  *
- * Reference seed sizes (SEQ QLD):
- *   Head height       Lintel block   Dims (W × H × D)         Modular (W × H)
- *   ≥ 300mm           20.18          190 × 390 × 190 mm        200 × 400
- *   200 – 299mm       20.25          190 × 290 × 190 mm        200 × 300
- *   < 200mm           20.13          190 × 190 × 190 mm        200 × 200
+ * If the library has NO block with the lintel role at all, no lintel
+ * block is added to the tally and the head course is simply left empty.
+ * (The body subtraction below the head still runs, so the wall maths
+ * remains correct.) Users in regions that bridge openings with a separate
+ * structural lintel beam can leave the role off and the schedule won't
+ * include any block-level lintels.
  *
- * Brick walls: steel/concrete lintels calculated by opening width with a bearing rule.
+ * Brick walls: handled separately via per-opening supply items.
  */
 
-import type { BlockCode } from '../types/blocks'
 import {
   pickLintelForHeadHeightIn,
   pickLintelBlockIn,
   BLOCK_LIBRARY,
-  DEFAULT_BLOCK_LIBRARY,
 } from '../data/blockLibrary'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 
 // ---------- Block walls: lintel spec by head height ----------
 
 export interface LintelSpec {
-  /** Block code used for this head range. */
-  code: BlockCode
+  /** Block code used for this head range — references the user's library. */
+  code: string
   /** Modular vertical height per stood-up lintel (block tall dim + 10mm mortar). */
   verticalModuleMm: number
   /** Modular horizontal face per stood-up lintel (190mm face + 10mm mortar = 200). */
@@ -42,61 +40,37 @@ export interface LintelSpec {
 }
 
 /**
- * Choose the appropriate lintel for an opening's head height.
+ * Choose the appropriate lintel for an opening's head height. Returns
+ * `null` when no block in the user's library is tagged with the `lintel`
+ * role — callers treat that as "head course left empty, no lintel
+ * blocks added to tally".
  *
- * Role-based: looks up every block tagged with role `lintel` and picks the
- * SMALLEST one whose heightMm ≥ the head height. The lintel has to bridge
- * the entire head — a 290 mm lintel over a 310 mm head leaves a 20 mm gap,
- * which doesn't work — so a 20.25 wouldn't be valid there; you'd use a
- * 20.18 instead. If no lintel is tall enough on its own, the tallest is
- * returned so the calc engine can stack it vertically to cover.
+ * Role-based: looks up every block tagged with role `lintel` and picks
+ * by head-height bucket if the block carries one, else by the smallest
+ * block whose face height ≥ the head. There's no AU-default fallback —
+ * an empty / non-AU library that never tagged a lintel block produces a
+ * null result, not a phantom 20.18 in the schedule.
  *
- * Modular dims are derived from the block's actual dimensions + mortar
- * joint — since the library stores dimensions in the as-used orientation,
+ * Modular dims come from the block's actual dimensions + mortar joint —
+ * since the library stores dimensions in the as-used orientation,
  * heightMm IS the vertical module driver and widthMm IS the horizontal
  * one. No flipping.
- *
- * Falls back to the SEQ defaults if the user's library has no lintel blocks
- * defined — keeps existing AU projects unchanged.
  */
-export function selectBlockLintel(headHeightMm: number): LintelSpec {
-  // 1) Region-agnostic primary path: pick by lintelMinHeadHeightMm /
-  //    lintelMaxHeadHeightMm bucket metadata, so each region's library
-  //    can carry its own head-height thresholds. AU SEQ 20.13 / 20.25 /
-  //    20.18 are tagged 0–200 / 200–300 / 300+ in the seed library.
-  let block =
+export function selectBlockLintel(headHeightMm: number): LintelSpec | null {
+  // Region-agnostic primary path: pick by lintelMinHeadHeightMm /
+  // lintelMaxHeadHeightMm bucket metadata. Falls through to height-based
+  // selection for lintel blocks without bucket metadata yet.
+  const block =
     pickLintelForHeadHeightIn(BLOCK_LIBRARY, headHeightMm) ??
-    // 2) Older lintels without bucket metadata — fall back to the
-    //    height-based selector (smallest block whose face height ≥ head).
     pickLintelBlockIn(BLOCK_LIBRARY, headHeightMm)
 
-  if (!block) {
-    // 3) Library has no lintel blocks at all — fall back to the SEQ
-    //    default library so older AU projects opened against a stripped
-    //    library still report sensibly.
-    block =
-      pickLintelForHeadHeightIn(DEFAULT_BLOCK_LIBRARY, headHeightMm) ??
-      pickLintelBlockIn(DEFAULT_BLOCK_LIBRARY, headHeightMm)
-  }
+  if (!block) return null
 
-  if (block) {
-    return {
-      code: block.code,
-      verticalModuleMm: block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
-      horizontalModuleMm: block.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
-    }
+  return {
+    code: block.code,
+    verticalModuleMm: block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
+    horizontalModuleMm: block.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
   }
-
-  // 4) Ultimate fallback — even the seed library was empty. Hardcoded
-  //    SEQ values matching the original brief so the engine never
-  //    crashes on a totally-empty library state.
-  if (headHeightMm >= 300) {
-    return { code: '20.18', verticalModuleMm: 400, horizontalModuleMm: 200 }
-  }
-  if (headHeightMm >= 200) {
-    return { code: '20.25', verticalModuleMm: 300, horizontalModuleMm: 200 }
-  }
-  return { code: '20.13', verticalModuleMm: 200, horizontalModuleMm: 200 }
 }
 
 // Brick-lintel bearing rules previously lived here as

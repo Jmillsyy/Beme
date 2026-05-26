@@ -52,7 +52,6 @@ import { findCornerPoints } from './junctions'
 import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 import { getCourseCount, getMakeupHeightMm, resolveCourseBlocks } from './makeups'
-import { getUserSettings } from './userSettings'
 
 /**
  * Geometric derivation: a block of front-face width w_f, rear-face width w_r, depth d
@@ -1218,16 +1217,15 @@ function applyOpeningAdjustments(
   const headHeightMm = wallHeightMm - opening.sillHeightMm - opening.heightMm
   if (headHeightMm <= 0) return
 
-  // Lintel blocks are only added if the user's regional preference is ON.
-  // When OFF (some US / European markets that leave the head open and
-  // bridge with a structural lintel beam handled elsewhere), the head
-  // courses are still subtracted from the body tally so the wall maths
-  // remains correct — there's just no lintel block line in the schedule.
-  // The toggle lives in Settings → Preferences → Regional features and in
-  // the Block library's Lintel blocks section.
-  const useLintels = getUserSettings().preferences.regionalFeatures.lintels
-  if (useLintels) {
-    const lintel = selectBlockLintel(headHeightMm)
+  // Lintel blocks are added only when the user's library has at least
+  // one block tagged with role `lintel`. With no such block, the head
+  // course is left empty in the tally — the user has either opted out
+  // of block-level lintels (e.g. a US / European setup that bridges
+  // openings with a structural steel beam handled separately) or
+  // hasn't tagged a library block as lintel yet. Either way the body
+  // subtraction below still runs so the wall maths remains correct.
+  const lintel = selectBlockLintel(headHeightMm)
+  if (lintel) {
     const bearingMm = 200
     const lintelSpanMm = opening.widthMm + 2 * bearingMm
     const horizontalLintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)

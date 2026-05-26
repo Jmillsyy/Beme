@@ -7,7 +7,6 @@ import {
   upsertBlock,
   useBlockLibrary,
 } from '../data/blockLibrary'
-import { updateUserSettings, useUserSettings } from '../lib/userSettings'
 
 /**
  * The user's editable block library. Add, edit, or delete blocks.
@@ -77,14 +76,9 @@ export default function BlockLibraryPanel({
   // disappear" bug — the BLOCK_LIBRARY had the new value, but the
   // rendered list was reading from a stale memo.
   const { library, version: libraryVersion } = useBlockLibrary()
-  const { settings } = useUserSettings()
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BlockCode | 'new' | null>(null)
   const [filter, setFilter] = useState<'all' | BlockRole>('all')
-  // Pre-seed the editor with role: 'lintel' when the user adds a new lintel
-  // block via the dedicated Lintel section's button. The editor itself reads
-  // this on mount; clears back to null after save / cancel.
-  const [newBlockRoleSeed, setNewBlockRoleSeed] = useState<BlockRole | null>(null)
 
   const blocks = useMemo(() => {
     const all = Object.values(library)
@@ -92,31 +86,6 @@ export default function BlockLibraryPanel({
     return all.filter((b) => b.roles.includes(filter)).sort((a, b) => a.code.localeCompare(b.code))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [library, libraryVersion, filter])
-
-  // Lintel blocks sorted shortest first — matches the selection order
-  // `pickLintelBlockIn` uses at calc time: it walks the list ascending and
-  // picks the first lintel tall enough to cover the head. Users see the
-  // same priority order the engine sees.
-  const lintelBlocks = useMemo(
-    () =>
-      Object.values(library)
-        .filter((b) => b.roles.includes('lintel'))
-        .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [library, libraryVersion]
-  )
-  const useLintels = settings.preferences.regionalFeatures.lintels
-
-  function setUseLintels(next: boolean) {
-    updateUserSettings({
-      preferences: {
-        regionalFeatures: {
-          ...settings.preferences.regionalFeatures,
-          lintels: next,
-        },
-      },
-    })
-  }
 
   const showAddButton = expanded && !readOnly
 
@@ -161,92 +130,16 @@ export default function BlockLibraryPanel({
 
       {(expanded || hideChrome) && (
         <div className="flex flex-col gap-2">
-          {/* Lintel blocks — a dedicated section because "what lintel do I
-              put above an opening" is a how-you-build decision that varies
-              by region and stays put per user. Toggle controls whether
-              Beme supplies any lintel block at all; the list shows the
-              user's lintel blocks (the calc engine picks the tallest one
-              that fits each opening's head). */}
-          {!readOnly && (
-            <div className="rounded-md border border-ink-600/60 bg-ink-900/40 p-2.5 mb-1">
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useLintels}
-                  onChange={(e) => setUseLintels(e.target.checked)}
-                  className="mt-0.5 accent-beme-500"
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium text-ink-100">
-                    Supply lintel blocks above openings
-                  </div>
-                  <div className="text-[11px] text-ink-400 mt-0.5">
-                    When on, Beme picks the tallest lintel that fits each
-                    opening's head and adds it to the schedule. Off → no
-                    lintel blocks are supplied; the head is left open in
-                    the tally and export (use this if your region bridges
-                    openings with a structural lintel beam supplied
-                    separately).
-                  </div>
-                </div>
-              </label>
-              {useLintels && (
-                <div className="mt-2.5 pt-2.5 border-t border-ink-600/60">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-400">
-                      Your lintel blocks
-                    </span>
-                    <button
-                      onClick={() => {
-                        setNewBlockRoleSeed('lintel')
-                        setEditingCode('new')
-                      }}
-                      className="text-xs px-2 py-0.5 rounded border border-ink-600 text-beme-300 hover:border-beme-500/60 hover:bg-ink-700 transition-colors"
-                    >
-                      + Add lintel block
-                    </button>
-                  </div>
-                  {lintelBlocks.length === 0 ? (
-                    <p className="text-xs text-ink-400 italic px-1 py-1">
-                      No lintel blocks yet — add at least one with its
-                      width × height × depth so Beme has something to
-                      supply for openings.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-1">
-                      {lintelBlocks.map((block) => (
-                        <BlockRow
-                          key={block.code}
-                          block={block}
-                          readOnly={readOnly}
-                          onEdit={() => setEditingCode(block.code)}
-                          onDelete={() => {
-                            if (PROTECTED_BLOCK_CODES.has(block.code)) return
-                            if (
-                              window.confirm(
-                                `Delete lintel block "${block.code} — ${block.name}"?`
-                              )
-                            ) {
-                              removeBlock(block.code)
-                            }
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                  <p className="text-[11px] text-ink-500 mt-2 px-1">
-                    For each opening Beme picks the SMALLEST lintel whose
-                    height ≥ the opening's head height — the lintel has to
-                    fully bridge the head, so a 290 mm block can't be used
-                    over a 310 mm head (it'd need the 390 mm instead). If
-                    the head is taller than any lintel you've added, Beme
-                    stacks the tallest one vertically as many times as
-                    needed.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Lintel blocks are now just regular library entries tagged
+              with role 'lintel' via the block editor's role picker — no
+              separate "Supply lintels?" toggle, no dedicated catalogue.
+              When at least one block has the role, the calc engine
+              picks the smallest one whose face height bridges each
+              opening's head. When no block has the role, the head
+              course is left empty in the schedule (useful if the
+              region uses a separate structural lintel beam). A body
+              block can double as a lintel by adding the 'lintel'
+              role alongside 'body'. */}
 
           {/* Filter row */}
           <div className="flex items-center gap-2 text-xs text-ink-300">
@@ -307,23 +200,18 @@ export default function BlockLibraryPanel({
       )}
 
       {/* Editor modal — both for adding new and editing existing. Hidden in
-          read-only mode (the buttons that would open it aren't rendered).
-          `roleSeed` pre-selects the role when the user came in via the
-          dedicated Lintel "+ Add lintel block" button, so they don't have
-          to manually tick the role checkbox after typing dimensions. */}
+          read-only mode (the buttons that would open it aren't rendered). */}
       {!readOnly && editingCode !== null && (
         <BlockEditor
           existing={editingCode === 'new' ? null : library[editingCode] ?? null}
           existingCodes={Object.keys(library)}
-          roleSeed={editingCode === 'new' ? newBlockRoleSeed : null}
+          roleSeed={null}
           onSave={(block) => {
             upsertBlock(block)
             setEditingCode(null)
-            setNewBlockRoleSeed(null)
           }}
           onCancel={() => {
             setEditingCode(null)
-            setNewBlockRoleSeed(null)
           }}
         />
       )}

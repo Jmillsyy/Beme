@@ -5080,7 +5080,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
         const computedOpeningHeightMm = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
         const lintelBlock =
-          openingHeadHeightMm > 0 ? selectBlockLintel(openingHeadHeightMm).code : null
+          openingHeadHeightMm > 0 ? selectBlockLintel(openingHeadHeightMm)?.code ?? null : null
         const tooSmall = computedOpeningHeightMm < 100
         // Common opening presets — each spec'd as (sillMm, openingMm). Head is
         // computed at render time from the actual wall height so the same
@@ -5312,7 +5312,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             (mode === 'brick' ? brickSettings.defaultWallHeightMm : 0)
           const selHead = selWallHeightMm - selectedOpening.sillHeightMm - selectedOpening.heightMm
           const selBlockLintel =
-            mode === 'block' && selHead > 0 ? selectBlockLintel(selHead).code : null
+            mode === 'block' && selHead > 0
+              ? selectBlockLintel(selHead)?.code ?? null
+              : null
           return (
             <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-3">
               <div>
