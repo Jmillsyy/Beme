@@ -995,6 +995,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     brickMakeups: typeof brickMakeups
     supplyItemSelections: typeof supplyItemSelections
     supplyItemRateOverrides: typeof supplyItemRateOverrides
+    // Plan attachments + workspace mode have to live in the snapshot too
+    // — uploading a PDF, switching into the empty-workspace mode, or
+    // attaching a reference PDF all materially change what the project
+    // looks like at next load, so they should flip `hasUnsavedChanges`
+    // and unblock the Save button just like drawing a wall does.
+    pdfFile: typeof pdfFile
+    pagesData: typeof pagesData
+    referencePdfFiles: typeof referencePdfFiles
+    referencePdfPaths: typeof referencePdfPaths
+    isEmptyWorkspace: typeof isEmptyWorkspace
   } | null>(null)
 
   /**
@@ -1022,6 +1032,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       brickMakeups,
       supplyItemSelections,
       supplyItemRateOverrides,
+      pdfFile,
+      pagesData,
+      referencePdfFiles,
+      referencePdfPaths,
+      isEmptyWorkspace,
     }
     if (!savedSnapshotRef.current) {
       // First render — seed the snapshot so the very first effect run doesn't
@@ -1040,7 +1055,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       current.brick !== snap.brick ||
       current.brickMakeups !== snap.brickMakeups ||
       current.supplyItemSelections !== snap.supplyItemSelections ||
-      current.supplyItemRateOverrides !== snap.supplyItemRateOverrides
+      current.supplyItemRateOverrides !== snap.supplyItemRateOverrides ||
+      current.pdfFile !== snap.pdfFile ||
+      current.pagesData !== snap.pagesData ||
+      current.referencePdfFiles !== snap.referencePdfFiles ||
+      current.referencePdfPaths !== snap.referencePdfPaths ||
+      current.isEmptyWorkspace !== snap.isEmptyWorkspace
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
     wallsByPage,
@@ -1053,6 +1073,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     brickMakeups,
     supplyItemSelections,
     supplyItemRateOverrides,
+    pdfFile,
+    pagesData,
+    referencePdfFiles,
+    referencePdfPaths,
+    isEmptyWorkspace,
     hasUnsavedChanges,
   ])
 
@@ -1174,7 +1199,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       }
       setLastSavedAt(now)
       // Refresh the dirty-state baseline so the Save changes button greys
-      // out until the user actually edits something next.
+      // out until the user actually edits something next. Keep this shape
+      // in sync with the dirty-tracker useEffect above — fields missing
+      // here would always read as different from `current` and the project
+      // would stay perpetually 'dirty' after save.
       savedSnapshotRef.current = {
         walls: wallsByPage,
         openings: openingsByPage,
@@ -1185,6 +1213,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         brick: brickSettings,
         brickMakeups,
         supplyItemSelections,
+        supplyItemRateOverrides,
+        pdfFile,
+        pagesData,
+        referencePdfFiles,
+        referencePdfPaths,
+        isEmptyWorkspace,
       }
       setHasUnsavedChanges(false)
       // Update URL with the project id (so refresh keeps you in the saved project)
