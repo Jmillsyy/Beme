@@ -669,19 +669,13 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
         title="Regional features"
         description="Different markets use different masonry conventions. Turn off anything you don't price into your estimates and it'll be hidden from new project tallies and exports."
       >
-        <Toggle
-          label="Lintels"
-          hint="Steel / concrete lintels over brick openings, or stood-up lintel blocks over block openings. US estimators often leave lintels to the structural engineer rather than the masonry takeoff."
-          checked={preferences.regionalFeatures.lintels}
-          onChange={(checked) =>
-            set({
-              regionalFeatures: {
-                ...preferences.regionalFeatures,
-                lintels: checked,
-              },
-            })
-          }
-        />
+        {/* The "Lintels" toggle has been retired. Block lintels are now
+            driven entirely by the library — tag a block with the 'lintel'
+            role to use it; leave the role off and openings get an empty
+            head course. Brick lintels are per-opening supply items in the
+            Material library with their own enable / include flags. The
+            regional setting flag (regionalFeatures.lintels) is preserved
+            on the type so older saved settings still load. */}
         <Toggle
           label="Brick ties"
           hint="Ties between brick veneer and structural backing in cavity walls. Universal in AU/UK/NZ/US but the rate per m² varies by code."

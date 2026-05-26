@@ -429,8 +429,6 @@ function formatDate(iso: string): string {
 function buildAssumptions(
   inclusions: BrickExportInclusions,
   settings: BrickSettings,
-  totalLinealMm: number,
-  plascourseCount: number,
   customNotes: string,
   supplyItemNotes: string[] = [],
   /**
@@ -454,14 +452,12 @@ function buildAssumptions(
     'No waste allowance has been applied. Quantities are net as measured.',
   ]
 
-  // Brick-tie + plascourse assumption notes used to come from
-  // BrickSettings.ties / BrickSettings.plascourse here. Both moved to the
-  // supply-items catalogue, which means `supplyItemNotes` below now carries
-  // the matching rate-and-quantity line ('Brick Ties allowance at 2 per m²
-  // — 25 included.'). Leaving these blocks out so the document doesn't
-  // print the same fact twice.
-  void totalLinealMm
-  void plascourseCount
+  // Brick-tie + plascourse + lintel assumption notes used to be hand-
+  // crafted here from BrickSettings + a hardcoded lintel catalogue. All
+  // three moved to the supply-items catalogue, so the lines now come in
+  // through `supplyItemNotes` below in the same rate-and-quantity style
+  // ('Brick Ties allowance at 2 per m² — 25 included.'). The previous
+  // hand-crafted paths have been deleted; nothing to suppress here.
 
   // Lintel assumption text removed — lintels are now per-opening supply
   // items the user defines themselves (with optional opening-width
@@ -633,8 +629,6 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   const assumptions = buildAssumptions(
     inclusions,
     settings,
-    tally.totalLinealMm,
-    tally.plascourseCount,
     projectDetails.notes,
     supplyItemNotes,
     wallHeightSummary
@@ -811,11 +805,6 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  // Lintels table removed — brick lintels are now per-opening supply
-  // items in the material library, rendered in the Accessories table
-  // below alongside ties / flashings / etc.
-  const lintelsTable = ''
-
   // Accessories table is now driven exclusively by the user's supply-item
   // catalogue (Material library). The legacy BrickSettings.ties +
   // BrickSettings.plascourse rows have been retired — both are now
@@ -844,12 +833,11 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     `
     : ''
 
-  const tablesPage = summaryTable || lintelsTable || accessoriesTable
+  const tablesPage = summaryTable || accessoriesTable
     ? `
       <section class="page">
         ${pageHeader}
         ${summaryTable}
-        ${lintelsTable}
         ${accessoriesTable}
       </section>
     `
@@ -1222,7 +1210,6 @@ export function createDefaultExportInclusions(): BrickExportInclusions {
     // if the user drew them, they likely want them carried through.
     measurements: true,
     brickAreaSummary: true,
-    lintels: regional.lintels,
     brickTies: regional.brickTies,
     plascourse: regional.plascourse,
     disclaimer: true,

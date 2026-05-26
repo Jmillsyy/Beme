@@ -32,10 +32,6 @@ export interface BrickTally {
   totalAreaSqMm: number
   /** Number of face bricks (areaSqM × bricksPerSquareMetre, rounded up). */
   brickCount: number
-  /** Total brick ties (if enabled), else 0. */
-  tiesCount: number
-  /** Total plascourse units (if enabled), else 0. */
-  plascourseCount: number
 }
 
 function wallLengthMm(wall: Wall): number {
@@ -71,15 +67,11 @@ export function calculateBrickTally(
   const areaSqM = totalAreaSqMm / 1_000_000
   const brickCount = Math.ceil(areaSqM * settings.bricksPerSquareMetre)
 
-  const tiesCount = settings.ties.enabled
-    ? Math.ceil(areaSqM * settings.ties.perSquareMetre)
-    : 0
-
-  const totalLengthM = totalLinealMm / 1000
-  const plascourseCount =
-    settings.plascourse.enabled && settings.plascourse.metresPerUnit > 0
-      ? Math.ceil(totalLengthM / settings.plascourse.metresPerUnit)
-      : 0
+  // Tie + plascourse counts used to live on the tally as tiesCount /
+  // plascourseCount, computed from settings.ties / settings.plascourse.
+  // Both quantities are now produced by the supply-items engine
+  // (Material library → "Brick Ties", "Plascourse"), so the tally
+  // doesn't carry duplicate counts any more.
 
   return {
     wallCount: walls.length,
@@ -87,8 +79,6 @@ export function calculateBrickTally(
     totalLinealMm,
     totalAreaSqMm,
     brickCount,
-    tiesCount,
-    plascourseCount,
   }
 }
 

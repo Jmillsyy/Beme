@@ -169,11 +169,10 @@ function BrickExportPanelImpl({
           checked={inclusions.brickAreaSummary}
           onChange={(v) => patch({ brickAreaSummary: v })}
         />
-        <Toggle
-          label="Lintels"
-          checked={inclusions.lintels}
-          onChange={(v) => patch({ lintels: v })}
-        />
+        {/* "Lintels" toggle was a no-op since brick lintels became
+            per-opening supply items. The matching supply rows are
+            governed by the Material library's enable / include flags,
+            so there's no separate per-export switch to render. */}
         <Toggle
           label="Brick ties"
           checked={inclusions.brickTies}

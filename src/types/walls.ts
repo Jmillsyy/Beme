@@ -431,7 +431,6 @@ export interface BrickExportInclusions {
    */
   measurements: boolean
   brickAreaSummary: boolean
-  lintels: boolean
   brickTies: boolean
   plascourse: boolean
   disclaimer: boolean

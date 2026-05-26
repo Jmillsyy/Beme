@@ -77,12 +77,12 @@ export interface UserPreferences {
    */
   regionalFeatures: {
     /**
-     * Lintel calculation + export. AU/UK estimators usually price the lintel
-     * separately (steel for brick, stood-up lintel block for block walls);
-     * US estimators often roll lintels into the structural design rather
-     * than the masonry takeoff. Off → no lintel section in the export.
+     * Lintel calculation + export. Retired in favour of role-driven
+     * library tagging (block lintels via the 'lintel' BlockRole) and
+     * supply-items metadata (brick lintels). Kept on the type so older
+     * saved settings still parse; nothing reads it any more.
      */
-    lintels: boolean
+    lintels?: boolean
     /**
      * Brick ties between veneer and structural backing. Universal in cavity
      * construction (AU/UK/NZ/US) but rate per m² and supplier vary.
@@ -216,7 +216,6 @@ export function createDefaultUserSettings(): UserSettings {
       theme: 'dark',
       defaultProjectType: 'block',
       regionalFeatures: {
-        lintels: true,
         brickTies: true,
         plascourse: true,
       },
