@@ -20,6 +20,7 @@
 import { useEffect, useReducer } from 'react'
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
 import { getOrgState, subscribeToOrgState } from '../lib/organisations'
+import { resolveBlockByRole, type ResolveByRoleOptions } from '../lib/blockRoles'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 
 // ─── Seed library ───────────────────────────────────────────────────────────
@@ -771,16 +772,26 @@ export function getFractionBlocksForLengthMakeup(): Block[] {
 /**
  * The "half block" used at end terminations on alternating courses in
  * stretcher bond. Role `end-termination` with `fraction: 0.5`.
+ *
+ * If the user's DefaultsByRole map names a `half` block, that wins; the
+ * fraction === 0.5 filter is only applied to the library-tag fallback.
  */
 export function pickHalfBlockIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
+  // Step 1: explicit user default for 'half' (mapped from end-termination
+  // → half in the role-default map).
+  const fromDefault = resolveBlockByRole('end-termination', library, opts)
+  // Only accept the default if it actually matches the half-block contract.
+  if (fromDefault && fromDefault.fraction === 0.5) return fromDefault
+  // Step 2: library tag scan with the original 0.5 constraint.
   return Object.values(library).find(
     (b) => b.roles.includes('end-termination') && b.fraction === 0.5
   )
 }
-export function pickHalfBlock(): Block | undefined {
-  return pickHalfBlockIn(BLOCK_LIBRARY)
+export function pickHalfBlock(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickHalfBlockIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -830,12 +841,13 @@ export function pickHeightMakeupBlock(targetHeightMm: number): Block | undefined
  * match expected; returns undefined if none defined.
  */
 export function pickCurveWedgeIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('curve-tight'))
+  return resolveBlockByRole('curve-tight', library, opts) ?? undefined
 }
-export function pickCurveWedge(): Block | undefined {
-  return pickCurveWedgeIn(BLOCK_LIBRARY)
+export function pickCurveWedge(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickCurveWedgeIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -843,12 +855,13 @@ export function pickCurveWedge(): Block | undefined {
  * Single match expected; returns undefined if none defined.
  */
 export function pickPierBlockIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('pier'))
+  return resolveBlockByRole('pier', library, opts) ?? undefined
 }
-export function pickPierBlock(): Block | undefined {
-  return pickPierBlockIn(BLOCK_LIBRARY)
+export function pickPierBlock(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickPierBlockIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -929,12 +942,13 @@ export function pickLintelForHeadHeight(headHeightMm: number): Block | undefined
  * default body picker when the user creates a new wall type.
  */
 export function pickBodyDefaultIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('body'))
+  return resolveBlockByRole('body', library, opts) ?? undefined
 }
-export function pickBodyDefault(): Block | undefined {
-  return pickBodyDefaultIn(BLOCK_LIBRARY)
+export function pickBodyDefault(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickBodyDefaultIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -944,17 +958,18 @@ export function pickBodyDefault(): Block | undefined {
  * if no explicit corner exists.
  */
 export function pickCornerBlockIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
   return (
-    Object.values(library).find((b) => b.roles.includes('corner')) ??
+    resolveBlockByRole('corner', library, opts) ??
     Object.values(library).find(
       (b) => b.roles.includes('end-termination') && b.fraction !== 0.5
     )
   )
 }
-export function pickCornerBlock(): Block | undefined {
-  return pickCornerBlockIn(BLOCK_LIBRARY)
+export function pickCornerBlock(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickCornerBlockIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -962,12 +977,13 @@ export function pickCornerBlock(): Block | undefined {
  * every wall. Picks the first block with the `base-course` role.
  */
 export function pickBaseCourseIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('base-course'))
+  return resolveBlockByRole('base-course', library, opts) ?? undefined
 }
-export function pickBaseCourse(): Block | undefined {
-  return pickBaseCourseIn(BLOCK_LIBRARY)
+export function pickBaseCourse(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickBaseCourseIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -976,12 +992,13 @@ export function pickBaseCourse(): Block | undefined {
  * doesn't ship a base tile (some regions don't use one).
  */
 export function pickBaseTileIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('base-tile'))
+  return resolveBlockByRole('base-tile', library, opts) ?? undefined
 }
-export function pickBaseTile(): Block | undefined {
-  return pickBaseTileIn(BLOCK_LIBRARY)
+export function pickBaseTile(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickBaseTileIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -990,12 +1007,13 @@ export function pickBaseTile(): Block | undefined {
  * top course block (then the makeup's bodyBlockCode is used).
  */
 export function pickTopCourseIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('top-course'))
+  return resolveBlockByRole('top-course', library, opts) ?? undefined
 }
-export function pickTopCourse(): Block | undefined {
-  return pickTopCourseIn(BLOCK_LIBRARY)
+export function pickTopCourse(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickTopCourseIn(BLOCK_LIBRARY, opts)
 }
 
 /**
@@ -1006,12 +1024,13 @@ export function pickTopCourse(): Block | undefined {
  * instance, doesn't need one).
  */
 export function pickCornerLeadInIn(
-  library: Record<BlockCode, Block>
+  library: Record<BlockCode, Block>,
+  opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  return Object.values(library).find((b) => b.roles.includes('corner-lead-in'))
+  return resolveBlockByRole('corner-lead-in', library, opts) ?? undefined
 }
-export function pickCornerLeadIn(): Block | undefined {
-  return pickCornerLeadInIn(BLOCK_LIBRARY)
+export function pickCornerLeadIn(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return pickCornerLeadInIn(BLOCK_LIBRARY, opts)
 }
 
 /**

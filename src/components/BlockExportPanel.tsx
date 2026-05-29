@@ -8,6 +8,7 @@ import type {
   Wall,
   WallMakeup,
 } from '../types/walls'
+import { toast } from '../lib/toast'
 import { exportBlockEstimate, type PageInfo } from '../lib/blockExport'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
@@ -114,6 +115,10 @@ export default function BlockExportPanel({
     if (busy) return
     setBusy(true)
     setError(null)
+    // Sticky info toast that lives for the duration of the export. We
+    // dismiss it explicitly in the finally block once the result toast
+    // (success or error) takes its place.
+    const progressId = toast.info('Generating PDF…', { durationMs: null })
     try {
       await exportBlockEstimate({
         projectDetails,
@@ -149,8 +154,13 @@ export default function BlockExportPanel({
           logoUrl: currentOrg?.logoUrl || userSettings.business.logoUrl,
         },
       })
+      toast.dismiss(progressId)
+      toast.success('Estimate exported')
     } catch (e) {
-      setError((e as Error).message ?? 'Export failed')
+      const msg = (e as Error).message ?? 'Export failed'
+      setError(msg)
+      toast.dismiss(progressId)
+      toast.error('Export failed', { description: msg })
     } finally {
       setBusy(false)
     }

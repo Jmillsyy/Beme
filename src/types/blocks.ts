@@ -133,6 +133,22 @@ export interface Block {
    */
   lintelMinHeadHeightMm?: number
   lintelMaxHeadHeightMm?: number
+  /**
+   * For lintel blocks ONLY: bearing length on each side of the opening,
+   * in mm. The lintel span used for the head-course count is
+   *   openingWidth + 2 × lintelOverhangMm
+   * — a 1500mm opening with a 200mm bearing needs a lintel spanning
+   * 1900mm. Defaults to 200mm at the call site when undefined, matching
+   * standard AU masonry practice; regions / users with different
+   * conventions (150mm, 250mm, …) set this per-block.
+   *
+   * The same field handles both flavours of "lintel" a user might
+   * register: a single precast piece (block registered at the size of
+   * the piece they buy — count usually 1 across) or a masonry lintel
+   * block (narrower block — count > 1 across). One code path, one
+   * tally row format.
+   */
+  lintelOverhangMm?: number
 }
 
 /**

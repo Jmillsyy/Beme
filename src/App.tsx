@@ -13,6 +13,12 @@ import GuidePage from './pages/GuidePage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
 import { useAuth } from './lib/auth'
 import { isSupabaseConfigured } from './lib/supabase'
+import ToastHost from './components/ToastHost'
+import ErrorBoundary from './components/ErrorBoundary'
+import ConfirmHost from './components/ConfirmHost'
+import KeyboardCheatSheet from './components/KeyboardCheatSheet'
+import CommandPalette from './components/CommandPalette'
+import HelpFloatingButton from './components/HelpFloatingButton'
 
 /**
  * Routes that are reachable WITHOUT being signed in. The accept-invite flow
@@ -47,18 +53,33 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/" element={<HomePage />} />
-      <Route path="/project/brick" element={<BrickEstimatePage />} />
-      <Route path="/project/block" element={<BlockEstimatePage />} />
-      <Route path="/library" element={<MaterialLibraryPage />} />
-      <Route path="/guide" element={<GuidePage />} />
-      <Route path="/settings" element={<SettingsPage />} />
-      <Route path="/requests" element={<RequestsPage />} />
-      <Route path="/requests/new" element={<NewRequestPage />} />
-      <Route path="/requests/:id" element={<RequestDetailPage />} />
-      <Route path="/projects" element={<ProjectsPage />} />
-      <Route path="/accept-invite" element={<AcceptInvitePage />} />
-    </Routes>
+    <>
+      <ErrorBoundary>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/project/brick" element={<BrickEstimatePage />} />
+          <Route path="/project/block" element={<BlockEstimatePage />} />
+          <Route path="/library" element={<MaterialLibraryPage />} />
+          <Route path="/guide" element={<GuidePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/requests" element={<RequestsPage />} />
+          <Route path="/requests/new" element={<NewRequestPage />} />
+          <Route path="/requests/:id" element={<RequestDetailPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/accept-invite" element={<AcceptInvitePage />} />
+        </Routes>
+      </ErrorBoundary>
+      {/* Global toast host — single mount, floats over every page. */}
+      <ToastHost />
+      {/* Global confirm dialog — single mount; confirm() opens it. */}
+      <ConfirmHost />
+      {/* Global keyboard cheat-sheet — opens with `?`, closes with Esc. */}
+      <KeyboardCheatSheet />
+      {/* Command palette — Cmd/Ctrl+K to toggle from anywhere. */}
+      <CommandPalette />
+      {/* Persistent ? button bottom-left so users can discover the
+          keyboard shortcuts without hunting for the chord. */}
+      <HelpFloatingButton />
+    </>
   )
 }

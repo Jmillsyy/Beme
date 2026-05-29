@@ -188,10 +188,17 @@ export function calculateBrickTally(
 
   for (const wall of walls) {
     const len = wallLengthMm(wall)
-    const height = wall.heightMmOverride ?? settings.defaultWallHeightMm
+    // Height precedence (mirrors block walls): per-wall override → wall
+    // TYPE's height → project default. Resolve the makeup first so the
+    // middle rung is reachable. Previously this skipped straight from the
+    // override to the project default, which meant editing a brick wall
+    // type's heightMm in BrickTypesPanel had no effect on the tallied
+    // area — only on the preview swatch.
+    const makeup = wall.makeupId ? makeupsById.get(wall.makeupId) : undefined
+    const height =
+      wall.heightMmOverride ?? makeup?.heightMm ?? settings.defaultWallHeightMm
     totalLinealMm += len
 
-    const makeup = wall.makeupId ? makeupsById.get(wall.makeupId) : undefined
     let bands: WallAreaEntry['bands'] = []
     if (makeup) {
       const segments = resolveBrickCourseSegments(makeup, height, BRICK_LIBRARY)

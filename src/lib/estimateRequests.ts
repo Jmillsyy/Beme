@@ -21,6 +21,7 @@ import { createDefaultBlockExportInclusions } from './blockExport'
 import { createDefaultBrickSettings } from './brickCalc'
 import { createDefaultWallMakeup } from './makeups'
 import { isSupabaseConfigured, supabase } from './supabase'
+import { getUserSettings } from './userSettings'
 
 const PLANS_BUCKET = 'estimate-request-plans'
 
@@ -494,7 +495,15 @@ export async function pickUpEstimateRequest(request: EstimateRequest): Promise<s
     currentPage: 1,
     ...(request.type === 'block'
       ? {
-          makeups: [createDefaultWallMakeup({ name: 'External 2400mm stretcher' })],
+          // Thread the picker-upper's DefaultsByRole map through so the
+          // seeded wall type reflects THEIR library, not the AU SEQ
+          // literals baked into the factory's last-resort fallback.
+          makeups: [
+            createDefaultWallMakeup({
+              name: 'Block wall 2400mm',
+              settings: getUserSettings(),
+            }),
+          ],
           blockExportInclusions: createDefaultBlockExportInclusions(),
         }
       : {

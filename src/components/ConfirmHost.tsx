@@ -1,0 +1,123 @@
+/**
+ * ConfirmHost — the visual side of the confirm() API.
+ *
+ * Mounted once near the root of the app. Renders a modal dialog when
+ * the `useConfirm()` store has an active state, otherwise renders
+ * nothing (zero DOM weight when nothing's happening).
+ *
+ * UX:
+ *   - Backdrop click cancels.
+ *   - Esc cancels.
+ *   - Enter confirms (so a keyboard user can rip through dialogs).
+ *   - The confirm button auto-focuses on open so screen readers and
+ *     keyboard users land on the primary action.
+ *   - Destructive variant uses a rose button + a tiny rose accent dot.
+ *
+ * The visual language matches the rest of Beme — dark ink card with a
+ * thin border, beme-orange for non-destructive primary, rose for
+ * destructive primary, ink-700 for the cancel.
+ */
+import { useEffect, useRef } from 'react'
+import { _resolveCurrent, useConfirm } from '../lib/confirm'
+
+export default function ConfirmHost() {
+  const state = useConfirm()
+  const confirmBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // Autofocus the confirm button when a dialog opens.
+  useEffect(() => {
+    if (state) confirmBtnRef.current?.focus()
+  }, [state])
+
+  // Keyboard handlers — Esc cancels, Enter confirms. Attached to window
+  // so they work regardless of focus position. Stopped at the document
+  // level so other Esc handlers (drawing tool cancel, etc.) don't fire
+  // while a dialog is open.
+  useEffect(() => {
+    if (!state) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        _resolveCurrent(false)
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        e.stopPropagation()
+        _resolveCurrent(true)
+      }
+    }
+    // Capture so we beat downstream listeners. The workspace's own Esc
+    // handler is bubble-phase, so this runs first and stops propagation.
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [state])
+
+  if (!state) return null
+
+  const variant = state.variant ?? 'default'
+  const confirmClass =
+    variant === 'destructive'
+      ? 'bg-rose-500 text-ink-50 hover:bg-rose-400'
+      : 'bg-beme-500 text-black hover:bg-beme-400'
+  const accentDotClass =
+    variant === 'destructive' ? 'bg-rose-500' : 'bg-beme-500'
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-host-title"
+      onClick={() => _resolveCurrent(false)}
+    >
+      <div
+        className="max-w-md w-full bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl shadow-black/50 p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 mb-4">
+          <span
+            className={`inline-block w-2 h-2 rounded-full mt-2 flex-shrink-0 ${accentDotClass}`}
+            aria-hidden
+          />
+          <div className="flex-1 min-w-0">
+            <h2 id="confirm-host-title" className="text-base font-semibold text-ink-50">
+              {state.title}
+            </h2>
+            {state.message && (
+              <p className="text-sm text-ink-300 mt-1 leading-snug">
+                {state.message}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button
+            type="button"
+            onClick={() => _resolveCurrent(false)}
+            className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            {state.cancelLabel ?? 'Cancel'}
+          </button>
+          {state.secondaryLabel && (
+            <button
+              type="button"
+              onClick={() => _resolveCurrent('secondary')}
+              className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+            >
+              {state.secondaryLabel}
+            </button>
+          )}
+          <button
+            ref={confirmBtnRef}
+            type="button"
+            onClick={() => _resolveCurrent(true)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-colors ${confirmClass}`}
+          >
+            {state.confirmLabel ?? 'Confirm'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

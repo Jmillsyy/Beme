@@ -47,6 +47,8 @@ interface ProjectBarProps {
    * the pill (pre-save drafts that haven't been allocated a number yet).
    */
   referenceNumber?: number | null
+  /** True while a save is in flight — drives the visible Saving… pill. */
+  isSaving?: boolean
   onSave: () => void
   onToggleStatus: () => void
   onDelete: () => void
@@ -96,6 +98,7 @@ export default function ProjectBar({
   sourceRequest,
   createdByDisplayName,
   referenceNumber,
+  isSaving = false,
   onSave,
   onToggleStatus,
   onDelete,
@@ -229,13 +232,39 @@ export default function ProjectBar({
             </span>
           )}
         </button>
+        {/* Save-status pill — visible at-a-glance feedback so the user
+            doesn't have to hover the Save button or open the menu to see
+            when the project last persisted. "Saving…" wins over a stale
+            "Saved Xm ago" while the in-flight save is happening. */}
+        {(isSaving || lastSavedAt) && (
+          <span
+            className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] ${
+              isSaving
+                ? 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
+                : 'text-ink-400 border border-transparent'
+            }`}
+            aria-live="polite"
+          >
+            {isSaving && (
+              <span
+                className="inline-block w-1.5 h-1.5 rounded-full bg-beme-400 animate-pulse"
+                aria-hidden
+              />
+            )}
+            {isSaving
+              ? 'Saving…'
+              : lastSavedAt
+                ? `Saved · ${formatRelativeTime(lastSavedAt)}`
+                : null}
+          </span>
+        )}
         <button
           onClick={onSave}
-          disabled={!canSave}
+          disabled={!canSave || isSaving}
           title={saveTitle}
           className="px-3.5 py-2 rounded-md bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
         >
-          {isSaved ? 'Save changes' : 'Save'}
+          {isSaving ? 'Saving…' : isSaved ? 'Save changes' : 'Save'}
         </button>
 
         {/* Top-level shortcut to flip the project status. Only shown once the

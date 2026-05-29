@@ -14,6 +14,7 @@ import {
   pickPierBlock,
   pickTopCourse,
 } from '../data/blockLibrary'
+import { resolveBlockByRole, type ResolveByRoleOptions } from './blockRoles'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type {
   BrickMakeup,
@@ -47,6 +48,14 @@ export interface CreateMakeupOptions {
    */
   knockoutCorners?: boolean
   useFractions?: boolean
+  /**
+   * Optional user-settings slice. When supplied, the factory threads it
+   * into the role pickers so the user's DefaultsByRole map (e.g. "my
+   * preferred corner block is 30.01") drives the new makeup. When omitted
+   * the factory falls back to the library's role-tag scan — keeping older
+   * callers + tests working without ceremony.
+   */
+  settings?: ResolveByRoleOptions['settings']
 }
 
 /**
@@ -67,26 +76,36 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
     bondBeamOnTop = false,
     knockoutCorners = false,
     useFractions = true,
+    settings,
   } = options
 
   // Resolve defaults from the live library by role so a US / UK user
   // creating their first wall type gets THEIR library's body / corner /
   // base / tile codes — not the AU SEQ ones.
   //
+  // Resolution order, per picker: user DefaultsByRole map → library
+  // role-tag scan → the hardcoded AU fallback below (last resort only,
+  // used when the library has no tagged candidate at all).
+  //
   // Each chain ends with the body-block as a region-aware fallback so
   // libraries that don't tag (say) a separate base-course or top-course
   // block STILL land on a real code from the same library (the body),
   // instead of falling through to an AU code that doesn't exist there.
-  const bodyDefault = pickBodyDefault()?.code ?? '20.48'
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  const bodyDefault = pickBodyDefault(opts)?.code ?? '20.48'
+  // Knockout-corner is a per-creation toggle (the user's "I want extra
+  // corefill at corners on THIS wall"), not a per-user default — keep it
+  // ignoring the settings-map override. The non-knockout branch still
+  // respects the user's preferred corner.
   const cornerDefault = knockoutCorners
     ? '20.21'
-    : pickCornerBlock()?.code ?? bodyDefault
-  const baseDefault = pickBaseCourse()?.code ?? bodyDefault
+    : pickCornerBlock(opts)?.code ?? bodyDefault
+  const baseDefault = pickBaseCourse(opts)?.code ?? bodyDefault
   // Base tile is genuinely optional — many regions don't pair one. Empty
   // string means 'no tile' and the calc engine handles it gracefully.
-  const tileDefault = pickBaseTile()?.code ?? ''
+  const tileDefault = pickBaseTile(opts)?.code ?? ''
   const topDefault = bondBeamOnTop
-    ? pickTopCourse()?.code ?? bodyDefault
+    ? pickTopCourse(opts)?.code ?? bodyDefault
     : bodyDefault
 
   return {
@@ -110,15 +129,22 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
 // ---------- Pier makeups ----------
 
 /**
- * Default tied-pier makeup — alternating 40.925 (pier block) and 20.01 (full end block).
- * Course 1 = 40.925, course 2 = 20.01, repeating up the wall height.
+ * Default tied-pier makeup — alternating pier block and corner block,
+ * resolved from the user's library (DefaultsByRole.pier / .corner). AU
+ * defaults to the 40.925 / 20.01 pair as the last-resort fallback; US,
+ * UK etc. land on whatever their library tags as pier + corner.
+ *
+ * Name is region-neutral by default — "Tied pier" — so a US user
+ * creating their first project doesn't see "40.925" in the wall type
+ * list. Caller can override the name for region-specific seeds.
  */
-export function createDefaultTiedPierMakeup(name = 'Tied pier (40.925 / 20.01)'): PierMakeup {
-  // Role-driven defaults — pier block from the live library + corner
-  // block as the tie-back partner. Falls back to AU SEQ if the library
-  // doesn't tag a pier or corner.
-  const pierCode = pickPierBlock()?.code ?? '40.925'
-  const cornerCode = pickCornerBlock()?.code ?? '20.01'
+export function createDefaultTiedPierMakeup(
+  name = 'Tied pier',
+  settings?: ResolveByRoleOptions['settings'],
+): PierMakeup {
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  const pierCode = pickPierBlock(opts)?.code ?? '40.925'
+  const cornerCode = pickCornerBlock(opts)?.code ?? '20.01'
   return {
     id: uid(),
     name,
@@ -129,11 +155,15 @@ export function createDefaultTiedPierMakeup(name = 'Tied pier (40.925 / 20.01)')
 
 /**
  * Default freestanding-pier makeup — pier block stacked every course.
+ * Region-neutral name by default; pier block resolves from the user's
+ * library.
  */
 export function createDefaultFreestandingPierMakeup(
-  name = 'Freestanding pier (40.925)'
+  name = 'Freestanding pier',
+  settings?: ResolveByRoleOptions['settings'],
 ): PierMakeup {
-  const pierCode = pickPierBlock()?.code ?? '40.925'
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  const pierCode = pickPierBlock(opts)?.code ?? '40.925'
   return {
     id: uid(),
     name,
@@ -145,9 +175,18 @@ export function createDefaultFreestandingPierMakeup(
 
 /**
  * Build the initial pair of pier makeups for a new project.
+ *
+ * Forwards `settings` so the pair picks up user defaults. Callers that
+ * don't have a settings handle (tests, fixtures) can omit it — the
+ * pickers then fall through to the library role-tag scan as before.
  */
-export function createDefaultPierMakeups(): PierMakeup[] {
-  return [createDefaultTiedPierMakeup(), createDefaultFreestandingPierMakeup()]
+export function createDefaultPierMakeups(
+  settings?: ResolveByRoleOptions['settings'],
+): PierMakeup[] {
+  return [
+    createDefaultTiedPierMakeup(undefined, settings),
+    createDefaultFreestandingPierMakeup(undefined, settings),
+  ]
 }
 
 // ---------- Brick wall makeups ----------
@@ -176,16 +215,19 @@ export function createDefaultBrickMakeup(opts: {
 }
 
 /**
- * The default set of brick wall types for a new brick project. Two
- * sensible categories an estimator will reach for on most jobs:
- * facework (visible exterior) and rendered (interior or render-coated).
- * Users add / rename / remove freely.
+ * The default set of brick wall types for a new brick project. One
+ * neutral seed — "Brickwork 2400mm" — so the project lands with the
+ * minimum viable type list. Adding more (Facework vs Rendered, party
+ * walls, garden walls, etc.) is one click in the panel, and keeping
+ * the seed small avoids the user staring at a starter list they have
+ * to delete from before adding what they actually need.
+ *
+ * Height included in the name so it reads as the wall it represents
+ * at a glance, matching the block-mode seed convention.
  */
 export function createDefaultBrickMakeups(): BrickMakeup[] {
-  return [
-    createDefaultBrickMakeup({ name: 'Facework' }),
-    createDefaultBrickMakeup({ name: 'Rendered' }),
-  ]
+  const heightMm = 2400
+  return [createDefaultBrickMakeup({ name: `Brickwork ${heightMm}mm`, heightMm })]
 }
 
 // ---------- Course series ranges ----------
@@ -358,10 +400,14 @@ export function getCourseCount(makeup: WallMakeup): number {
  * the result as approximate via the returned `lossy` flag so the UI can
  * tell them.
  */
-export function convertMakeupToBands(makeup: WallMakeup): {
+export function convertMakeupToBands(
+  makeup: WallMakeup,
+  settings?: ResolveByRoleOptions['settings'],
+): {
   bands: CourseBand[]
   lossy: boolean
 } {
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
   const totalHeight = makeup.heightMm
   const COURSE = 200
   const HEIGHT_71 = 100
@@ -405,21 +451,25 @@ export function convertMakeupToBands(makeup: WallMakeup): {
   // heal each role through the picker so the synthesised bands point
   // at real codes. Keeps the wall preview legible AND keeps the calc
   // engine tied to library items.
+  // Heal each role through resolveBlockByRole so the user's DefaultsByRole
+  // map takes priority over the library-tag scan. Falls back to body when
+  // the more specific role has nothing — and finally to the makeup's own
+  // (potentially-stale) code as the ultimate safety net.
   const healBase =
     BLOCK_LIBRARY[makeup.baseCourseBlockCode]
       ? makeup.baseCourseBlockCode
-      : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('base-course'))?.code ??
-          Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))?.code ??
+      : (resolveBlockByRole('base-course', BLOCK_LIBRARY, opts)?.code ??
+          resolveBlockByRole('body', BLOCK_LIBRARY, opts)?.code ??
           makeup.baseCourseBlockCode)
   const healBody =
     BLOCK_LIBRARY[makeup.bodyBlockCode]
       ? makeup.bodyBlockCode
-      : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))?.code ??
+      : (resolveBlockByRole('body', BLOCK_LIBRARY, opts)?.code ??
           makeup.bodyBlockCode)
   const healTop =
     BLOCK_LIBRARY[makeup.topCourseBlockCode]
       ? makeup.topCourseBlockCode
-      : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('top-course'))?.code ??
+      : (resolveBlockByRole('top-course', BLOCK_LIBRARY, opts)?.code ??
           healBody)
 
   const courses: BlockCode[] = []

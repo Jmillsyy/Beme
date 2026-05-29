@@ -147,11 +147,45 @@ export interface SupplyItem {
   openingWidthMaxMm?: number
 }
 
+/**
+ * Maps each "the engine needs to pick a block for me" role to a specific
+ * BlockCode from the user's library. Used by auto-create paths (new wall
+ * type defaults, curved-wall makeup auto-pick, pier makeup seed) and by
+ * the engine's "what block fits this role here" lookups (lintels by head
+ * height, height-makeup by remainder).
+ *
+ * Every entry is optional — missing keys fall through to the legacy
+ * library-side role-tag search. The migration plan is to populate this
+ * map for the user's region template at first sign-in and stop relying
+ * on the per-block roles[] array entirely.
+ */
+export interface DefaultsByRole {
+  body?: string
+  corner?: string
+  half?: string
+  base?: string
+  baseTile?: string
+  top?: string
+  pier?: string
+  pierTie?: string
+  lintel?: string
+  curveWedge?: string
+  heightMakeup90?: string
+  heightMakeup140?: string
+  cornerLeadIn?: string
+}
+
 export interface UserSettings {
   profile: UserProfile
   business: BusinessProfile
   preferences: UserPreferences
   defaults: EstimatingDefaults
+  /**
+   * Per-role default block IDs. Optional — present on accounts that have
+   * been migrated to the role-defaults model; absent on legacy / older
+   * accounts (callers fall back to library role-tag lookup).
+   */
+  defaultsByRole?: DefaultsByRole
   /**
    * User's catalogue of additional supply items. Each new project picks up
    * the enabledByDefault items into its supply-list; user can toggle them

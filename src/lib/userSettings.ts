@@ -55,6 +55,14 @@ export function updateUserSettings(partial: DeepPartial<UserSettings>): void {
     business: { ..._settings.business, ...(partial.business ?? {}) },
     preferences: { ..._settings.preferences, ...(partial.preferences ?? {}) },
     defaults: { ..._settings.defaults, ...(partial.defaults ?? {}) },
+    // defaultsByRole is replaced wholesale when present in the partial
+    // (the Settings form sends the merged map, with deleted keys
+    // pruned). When the partial omits the key entirely we leave the
+    // existing map alone — same convention as supplyItems below.
+    defaultsByRole:
+      partial.defaultsByRole !== undefined
+        ? (partial.defaultsByRole as UserSettings['defaultsByRole'])
+        : _settings.defaultsByRole,
     // supplyItems is an array — replace wholesale when provided. Callers
     // pass the full list every time (no partial array merging).
     supplyItems:

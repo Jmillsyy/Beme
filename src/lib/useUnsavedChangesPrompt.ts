@@ -1,0 +1,121 @@
+/**
+ * useUnsavedChangesPrompt — guards against losing unsaved work when the
+ * user navigates away.
+ *
+ * Two guards, one hook:
+ *
+ *   1. **Browser-level** (`window.beforeunload`) — catches tab close,
+ *      back/forward button, refresh, and URL bar typing. Browsers
+ *      generally ignore the custom message and show their own generic
+ *      "Leave site?" dialog, but the prompt itself still fires.
+ *
+ *   2. **In-app** (`useBlocker` from react-router-dom) — catches every
+ *      router-driven navigation: `<Link>` clicks, `navigate()` calls,
+ *      the Back to dashboard pill, sidebar shortcuts, etc. Uses the
+ *      styled three-way confirm() dialog so the user can choose:
+ *
+ *        - **Save & leave**  → runs `opts.onSave()`, then proceeds.
+ *        - **Discard**       → proceeds without saving.
+ *        - **Stay**          → cancels the navigation.
+ *
+ *      When `onSave` isn't provided the dialog falls back to a two-way
+ *      Discard / Stay choice — same UX the workspace had before we
+ *      threaded the save handler through.
+ *
+ * `useBlocker` requires a Data Router. The app's `main.tsx` is wired
+ * with `createBrowserRouter` + `<RouterProvider>`, so this hook works
+ * app-wide.
+ *
+ * Usage:
+ *
+ *   useUnsavedChangesPrompt(hasUnsavedChanges, {
+ *     message: 'Save your changes to this estimate before leaving?',
+ *     onSave: handleSaveProject,
+ *   })
+ */
+import { useEffect } from 'react'
+import { useBlocker } from 'react-router-dom'
+import { confirm } from './confirm'
+
+const DEFAULT_MESSAGE =
+  'You have unsaved changes. Save them before leaving, or discard?'
+
+export interface UseUnsavedChangesPromptOptions {
+  /** Confirmation copy shown in the in-app prompt. Browser ignores it
+   *  for the beforeunload dialog (and uses its own generic copy). */
+  message?: string
+  /**
+   * Optional save handler. When provided, the in-app prompt renders a
+   * three-way choice (Save & leave / Discard / Stay). When omitted the
+   * prompt is two-way (Discard / Stay). The handler is awaited before
+   * navigation proceeds, so a slow save doesn't drop the user on the
+   * destination mid-write.
+   */
+  onSave?: () => Promise<void> | void
+}
+
+export function useUnsavedChangesPrompt(
+  dirty: boolean,
+  opts: UseUnsavedChangesPromptOptions = {}
+) {
+  const message = opts.message ?? DEFAULT_MESSAGE
+  const onSave = opts.onSave
+
+  // ── Browser-level guard ────────────────────────────────────────────
+  useEffect(() => {
+    if (!dirty) return
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault()
+      e.returnValue = message
+      return message
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty, message])
+
+  // ── In-app guard ───────────────────────────────────────────────────
+  // Only block when the destination pathname differs from current. Hash
+  // / search-param changes (filter toggles, scroll-to anchors) don't
+  // typically cost the user work and prompting on them is annoying.
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      dirty && currentLocation.pathname !== nextLocation.pathname
+  )
+
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return
+    // Wrap in an async IIFE so we can await the confirm() promise + the
+    // optional save handler before deciding to proceed or reset.
+    void (async () => {
+      const result = await confirm({
+        title: 'Save changes before leaving?',
+        message,
+        confirmLabel: onSave ? 'Save & leave' : 'Discard',
+        cancelLabel: 'Stay',
+        secondaryLabel: onSave ? 'Discard' : undefined,
+        variant: onSave ? 'default' : 'destructive',
+      })
+      if (result === true) {
+        // Save & leave (or Discard, when no onSave) → proceed.
+        if (onSave) {
+          try {
+            await onSave()
+          } catch {
+            // If saving failed, abort the navigation and let the user
+            // try again. The failed save would already have surfaced
+            // its own toast.
+            blocker.reset()
+            return
+          }
+        }
+        blocker.proceed()
+      } else if (result === 'secondary') {
+        // Discard → proceed without saving.
+        blocker.proceed()
+      } else {
+        // Cancel / Stay → keep them on the current page.
+        blocker.reset()
+      }
+    })()
+  }, [blocker, message, onSave])
+}

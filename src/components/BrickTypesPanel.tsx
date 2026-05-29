@@ -134,6 +134,26 @@ export default function BrickTypesPanel({
                   >
                     Edit
                   </span>
+                  {/* Duplicate — clones the makeup as a starting point for
+                      a variant (e.g. Brickwork 2400mm → Brickwork 2700mm).
+                      Fresh id so it lives independently; name suffixed
+                      with " (copy)" so the user can spot which is new
+                      and rename it. */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onAddMakeup({
+                        ...m,
+                        id: generateMakeupId(),
+                        name: `${m.name} (copy)`,
+                      })
+                    }}
+                    className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
+                  >
+                    Duplicate
+                  </span>
                   {canDelete && (
                     <span
                       role="button"
@@ -268,60 +288,78 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
             preview on the right. Stacks on smaller widths so phones /
             narrow split-screen still work. */}
         <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-auto">
-          <div className="p-5 space-y-4 flex-1 min-w-0">
-          <label className="text-sm block">
-            <span className="block text-ink-300 mb-1">Name</span>
-            <input
-              type="text"
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Facework, Rendered"
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-            />
-          </label>
-          <label className="text-sm block">
-            <span className="block text-ink-300 mb-1">Height (mm)</span>
-            <input
-              type="number"
-              min="200"
-              step="50"
-              value={heightMm}
-              onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-            />
-          </label>
-          <label className="text-sm block">
-            <span className="block text-ink-300 mb-1">Main brick</span>
-            <select
-              value={brickTypeCode}
-              onChange={(e) => setBrickTypeCode(e.target.value)}
-              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-            >
-              <option value="">Use project default</option>
-              {brickTypes.map((t) => (
-                <option key={t.code} value={t.code}>
-                  {t.name} ({t.heightMm}mm tall)
-                </option>
-              ))}
-            </select>
-            <span className="text-[11px] text-ink-400 mt-1 block">
-              The brick used for the whole wall — or for any band you
-              haven't covered with an entry below.
-            </span>
-          </label>
+          <div className="p-5 space-y-5 flex-1 min-w-0">
+          {/* ─── Basics ───
+              Name, default wall height, and the brick this wall type is
+              based on. Same section grouping as the block editor so the
+              two modals read the same way. */}
+          <section className="space-y-3">
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Basics
+            </h4>
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1">Name</span>
+              <input
+                type="text"
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Facework, Rendered"
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              />
+            </label>
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1">Height (mm)</span>
+              <input
+                type="number"
+                min="200"
+                step="50"
+                value={heightMm}
+                onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              />
+            </label>
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1">
+                {courseRanges.length === 0 ? 'Main brick' : 'Default brick'}
+              </span>
+              <select
+                value={brickTypeCode}
+                onChange={(e) => setBrickTypeCode(e.target.value)}
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              >
+                <option value="">Use project default</option>
+                {brickTypes.map((t) => (
+                  <option key={t.code} value={t.code}>
+                    {t.name} ({t.heightMm}mm tall)
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-ink-400 mt-1 block">
+                {courseRanges.length === 0
+                  ? 'The brick used for the whole wall.'
+                  : 'Fallback brick — used for any course not covered by a band below.'}
+              </span>
+            </label>
+          </section>
 
-          {/* Course composition — optional. Each entry: from course X,
-              use brick Y. Last entry runs to the top of the wall. Keep
-              the section visually distinct from the basic fields above
-              so the simpler "just one brick" usage stays obvious. */}
-          <div className="pt-2 border-t border-ink-700">
-            <div className="flex items-center justify-between mb-1.5">
+          {/* ─── Course composition ───
+              Optional. Each entry: from course X, use brick Y. Last
+              entry runs to the top of the wall. Single-brick walls
+              leave this empty and the wall is one layer of "Main
+              brick" above. Section header always renders so the user
+              sees the feature exists; the band list only renders
+              when there's at least one band. */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
               <div>
-                <div className="text-sm font-medium text-ink-200">
+                <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
                   Course composition
-                </div>
-                <div className="text-[11px] text-ink-400 mt-0.5">
+                  <span className="ml-2 text-ink-500 normal-case tracking-normal font-normal">
+                    · optional
+                  </span>
+                </h4>
+                <div className="text-[11px] text-ink-400 mt-1.5 leading-snug">
                   Stack different bricks on different courses (e.g. course
                   1 = single-height, course 2+ = double-height). Leave
                   empty for a single-brick wall.
@@ -349,12 +387,8 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               </button>
             </div>
 
-            {courseRanges.length === 0 ? (
-              <div className="text-[11px] text-ink-500 italic py-2">
-                No bands yet — the wall is a single layer of the main brick.
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2 mt-2">
+            {courseRanges.length > 0 && (
+              <div className="flex flex-col gap-2">
                 {courseRanges.map((range, i) => (
                   <div
                     key={i}
@@ -411,7 +445,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                 </div>
               </div>
             )}
-          </div>
+          </section>
           </div>
 
           {/* Right rail: live wall preview. Stacks bottom-to-top so the

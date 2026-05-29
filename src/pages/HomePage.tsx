@@ -10,11 +10,17 @@ import {
   deleteProject,
   duplicateProject,
   findProjectByReferenceNumber,
+  getProject,
   listProjects,
   saveProject,
 } from '../lib/projectStorage'
 import { accountTypeOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
+import { LIBRARY_TEMPLATES } from '../data/libraryTemplates'
+import { analyseLibraryHealth, useBlockLibrary } from '../data/blockLibrary'
+import { confirm } from '../lib/confirm'
+import { ProjectRowSkeleton } from '../components/Skeleton'
+import { toast } from '../lib/toast'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
 import {
   listEstimateRequests,
@@ -117,7 +123,10 @@ export default function HomePage() {
       <main className="max-w-[1800px] mx-auto px-6 py-12">
         {signedIn && <LocalMigrationBanner />}
         {stillResolving ? (
-          <div className="text-sm text-ink-400 py-16 text-center">Loading…</div>
+          <div className="space-y-3 py-12">
+            <div className="h-8 w-48 bg-ink-700/60 rounded-md animate-pulse mx-auto" />
+            <div className="h-4 w-72 bg-ink-700/40 rounded-md animate-pulse mx-auto" />
+          </div>
         ) : (
           <div className="flex flex-col lg:flex-row gap-8 items-start">
             <div className="flex-1 min-w-0 w-full">
@@ -145,35 +154,121 @@ export default function HomePage() {
  * scrolls. Stacks under the main content on smaller viewports.
  */
 function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
+  // Library health nudge. Mirrors the LibraryHealthBanner that already
+  // surfaces on /library, but as a compact badge on the dashboard sidebar
+  // card so the user is alerted to issues without having to navigate
+  // there. Zero issues → no badge (card looks the same as before).
+  // Errors take colour priority over warnings.
+  const { library, version: libraryVersion } = useBlockLibrary()
+  const healthChecks = useMemo(
+    () => analyseLibraryHealth(library),
+    [library, libraryVersion],
+  )
+  const errorCount = healthChecks.filter((c) => c.severity === 'error').length
+  const warningCount = healthChecks.filter((c) => c.severity === 'warning').length
+  const healthSummary =
+    errorCount > 0
+      ? {
+          tone: 'error' as const,
+          label: `${errorCount} issue${errorCount === 1 ? '' : 's'}`,
+          tooltip: `Your block library has ${errorCount} unresolved issue${errorCount === 1 ? '' : 's'} that will affect the calc engine. Click to review.`,
+        }
+      : warningCount > 0
+        ? {
+            tone: 'warning' as const,
+            label: `${warningCount} to review`,
+            tooltip: `Your block library has ${warningCount} advisor${warningCount === 1 ? 'y' : 'ies'}. Click to review.`,
+          }
+        : null
+
   return (
-    <aside className="w-full lg:w-[300px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-4">
-      {/* Material library — promoted to the rail's top card. Block + brick
-          estimate buttons live in the main dashboard column already, so
-          duplicating them here was visual noise. The Material library is
-          the next-most-frequent destination from the dashboard (users
-          tune blocks, bricks, and supply items between projects), so it
-          gets the same prominent treatment the estimate cards used to.
-          "+ New request" stays under it for org users — the only org-
-          specific creation action that doesn't surface in the main
-          column. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-4">
+    <aside className="w-full lg:w-[260px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
+      {/* Start a new estimate — ORG ONLY. The body of the org dashboard is
+          reserved for team activity (pending requests, In-progress
+          projects, recently completed), so the estimate-start actions
+          go into the rail to keep the team feed clean. Sits ABOVE the
+          Material library so it's the first thing the user's eye lands
+          on. PersonalDashboard already gives these the prominent hero
+          card treatment in its body, so showing the same shortcut in
+          the rail there would just duplicate the affordance. */}
+      {isOrgUser && (
+        <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3 space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-1">
+            Start a new estimate
+          </div>
+          <Link
+            to="/project/brick"
+            className="block px-3 py-2.5 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group"
+            title="Start a new brick estimate"
+          >
+            <div className="font-bold text-sm text-beme-400 group-hover:text-beme-300">
+              + Brick estimate
+            </div>
+            <div className="text-[11px] text-ink-400 group-hover:text-ink-300 mt-0.5">
+              Trace brick walls over a plan
+            </div>
+          </Link>
+          <Link
+            to="/project/block"
+            className="block px-3 py-2.5 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group"
+            title="Start a new block estimate"
+          >
+            <div className="font-bold text-sm text-beme-400 group-hover:text-beme-300">
+              + Block estimate
+            </div>
+            <div className="text-[11px] text-ink-400 group-hover:text-ink-300 mt-0.5">
+              Draw walls, piers, openings
+            </div>
+          </Link>
+        </div>
+      )}
+
+      {/* Material library — the next-most-frequent destination from the
+          dashboard (users tune blocks, bricks, and supply items between
+          projects). On the org dashboard it sits below the estimate-start
+          card so the create actions get the prime spot. On the personal
+          dashboard it's the top-of-rail card since estimate-start is
+          already in the body. "+ New request" stays under it for org
+          users — the only org-specific creation action that doesn't
+          surface elsewhere in the rail. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
         <Link
           to="/library"
-          className="px-4 py-5 rounded-lg bg-ink-900 border-2 border-beme-500 shadow-md shadow-beme-500/20 hover:bg-ink-800 hover:shadow-beme-500/40 transition-all group flex items-center gap-3.5"
+          title={healthSummary?.tooltip}
+          className="px-3 py-3 rounded-lg bg-ink-900 border-2 border-beme-500 shadow-md shadow-beme-500/20 hover:bg-ink-800 hover:shadow-beme-500/40 transition-all group flex items-center gap-3"
         >
           <span
-            className="inline-block w-1.5 h-14 rounded-full bg-beme-500 flex-shrink-0"
+            className="inline-block w-1 h-10 rounded-full bg-beme-500 flex-shrink-0"
             aria-hidden
           />
-          <div className="flex-1 text-left">
-            <div className="font-bold text-base leading-tight text-ink-50">
-              Material library
+          <div className="flex-1 text-left min-w-0">
+            <div className="font-bold text-sm leading-tight text-ink-50 flex items-center gap-2">
+              <span>Material library</span>
+              {/* Health-issue badge — only renders when there's at least
+                  one error or warning. Errors take colour priority. */}
+              {healthSummary && (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                    healthSummary.tone === 'error'
+                      ? 'bg-rose-500/20 text-rose-200 border border-rose-500/40'
+                      : 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+                  }`}
+                  aria-label={healthSummary.tooltip}
+                >
+                  <span
+                    className={`inline-block w-1.5 h-1.5 rounded-full ${
+                      healthSummary.tone === 'error' ? 'bg-rose-400' : 'bg-amber-400'
+                    }`}
+                  />
+                  {healthSummary.label}
+                </span>
+              )}
             </div>
-            <div className="text-xs text-ink-300 group-hover:text-ink-200 mt-1">
+            <div className="text-[11px] text-ink-300 group-hover:text-ink-200 mt-0.5">
               Blocks, bricks, supply items
             </div>
           </div>
-          <span className="text-beme-400 group-hover:text-beme-300 text-lg">→</span>
+          <span className="text-beme-400 group-hover:text-beme-300">→</span>
         </Link>
         {isOrgUser && (
           <Link
@@ -191,6 +286,12 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           Enter, and lands on the project. Lives in the rail next to
           Shortcuts because it's a navigation aid, not a primary action. */}
       <FindByReferenceCard />
+
+      {/* Active region template — surfaces which seed template the user
+          picked at sign-up (or last switched to via Settings). Small,
+          but useful when a teammate is helping over the phone ("which
+          library are you on, UK or AU?"). */}
+      <ActiveTemplateCard />
 
       {/* Shortcuts — secondary nav into the parts of Beme that don't
           have a natural surfacing on the dashboard itself. Below "Start
@@ -210,6 +311,12 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           <SidebarLink to="/settings" title="Settings" desc="Defaults, regional features, theme" />
         </nav>
       </div>
+
+      {/* Tip of the day — a rotating quick-tip / shortcut. Keeps the rail
+          alive without surfacing primary actions, and is the single
+          place users discover keyboard / drawing shortcuts that would
+          otherwise live buried in the guide. */}
+      <TipCard />
 
       {/* Tiny credits / version badge so the rail doesn't end abruptly.
           Updates the user's sense of where they are in the product
@@ -297,6 +404,98 @@ function FindByReferenceCard() {
         </p>
       )}
     </form>
+  )
+}
+
+/**
+ * Active region template — surfaces which library seed the user picked
+ * (AU-SEQ, US-CMU, UK-Block, blank). Click-through opens the library
+ * page where the template controls live. Falls back to "AU-SEQ" for
+ * legacy users who pre-date the libraryTemplateKey field — that matches
+ * the pre-region default.
+ */
+function ActiveTemplateCard() {
+  const { settings } = useUserSettings()
+  const key = settings.preferences.libraryTemplateKey ?? 'au-seq'
+  const template = LIBRARY_TEMPLATES.find((t) => t.key === key)
+  const displayName = template?.displayName ?? 'Australia (SEQ)'
+  const region = template?.region ?? 'AU-SEQ'
+
+  return (
+    <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+          Active template
+        </h3>
+        <Link
+          to="/library"
+          className="text-[11px] text-beme-400 hover:text-beme-300 hover:underline"
+          title="Switch template in the Material library"
+        >
+          Switch
+        </Link>
+      </div>
+      <div className="text-sm font-medium text-ink-100 truncate">
+        {displayName}
+      </div>
+      <div className="text-[11px] text-ink-500 mt-0.5">{region}</div>
+    </div>
+  )
+}
+
+/**
+ * Tip card — a rotating one-liner with a keyboard / drawing shortcut.
+ * Keeps the rail visually balanced and is the natural surface for
+ * discoverability: users learn shortcuts gradually as they see them.
+ * Tips rotate on every component mount (i.e. every dashboard visit)
+ * so a long session doesn't see the same tip ten times.
+ */
+function TipCard() {
+  const tips = [
+    {
+      title: 'Jump anywhere fast',
+      body: 'Press Cmd+K (or Ctrl+K on Windows) to open the command palette — projects, library, settings, all searchable.',
+    },
+    {
+      title: 'See every shortcut',
+      body: 'Press ? anywhere to open the keyboard shortcut reference.',
+    },
+    {
+      title: 'Type a wall length',
+      body: 'While drawing a wall, just type the length in mm and press Enter to drop it.',
+    },
+    {
+      title: 'Esc cancels anything',
+      body: 'Pressing Esc clears the current tool — drawing, ruler, opening, pier, control joint.',
+    },
+    {
+      title: 'Delete to remove',
+      body: 'Select a wall, opening, or pier and press Delete (or Backspace) to remove it.',
+    },
+    {
+      title: 'Snap to wall faces',
+      body: 'New walls snap to the 4 faces of any nearby wall — corners and butt joints just work.',
+    },
+    {
+      title: 'Reference numbers',
+      body: 'Every exported PDF stamps a 6-digit ref. Type it in the rail to jump straight back.',
+    },
+    {
+      title: 'Click a card to activate',
+      body: 'In the workspace, click any wall or pier type card to make it the active type for the next thing you draw.',
+    },
+  ]
+  const tip = useMemo(() => tips[Math.floor(Math.random() * tips.length)], [])
+  return (
+    <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-300">
+          Tip
+        </span>
+        <span className="text-[11px] text-ink-400 truncate">· {tip.title}</span>
+      </div>
+      <p className="text-[11px] text-ink-300 leading-snug">{tip.body}</p>
+    </div>
   )
 }
 
@@ -628,10 +827,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
         <div>
           <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">
-            Dashboard
+            Team dashboard
           </h2>
           <p className="text-ink-300 text-sm mt-1">
-            Estimate requests and recent activity for {org.name}.
+            Requests, in-progress jobs, and recent wins across {org.name}.
           </p>
         </div>
         <WelcomeStrip
@@ -1241,6 +1440,7 @@ function InboxRow({
  * subcontractor quoting their own jobs, so win rate is the headline metric.
  */
 function PersonalDashboard() {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -1299,12 +1499,67 @@ function PersonalDashboard() {
   }, [projects, filter, searchQuery])
 
   async function handleDelete(id: string) {
-    if (!window.confirm('Delete this project? This cannot be undone.')) return
+    const ok = await confirm({
+      title: 'Delete this project?',
+      message: "You can undo within a few seconds from the toast.",
+      confirmLabel: 'Delete project',
+      variant: 'destructive',
+    })
+    if (!ok) return
+    // Fetch the FULL project (with PDF blob + reference PDFs) before
+    // deletion so Undo can resurrect it byte-for-byte. The row in
+    // `projects` state lacks the blob payloads — listProjects() returns
+    // metadata only for performance.
+    let cached: SavedProject | undefined
+    try {
+      cached = await getProject(id)
+    } catch (err) {
+      console.warn('[handleDelete] Could not pre-fetch project for Undo cache', err)
+    }
     try {
       await deleteProject(id)
       setProjects((prev) => prev.filter((p) => p.id !== id))
+      // 8-second sticky toast with an Undo action that recreates the
+      // project from the cached blob. After 8s the cache evicts via
+      // toast auto-dismiss and the deletion becomes permanent.
+      if (cached) {
+        toast.success('Project deleted', {
+          durationMs: 8000,
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              void (async () => {
+                try {
+                  await saveProject(cached)
+                  // Re-insert into the local list so the user sees it
+                  // back immediately. Order by updatedAt desc to match
+                  // the dashboard's default sort.
+                  setProjects((prev) =>
+                    [cached, ...prev.filter((p) => p.id !== cached!.id)]
+                  )
+                  toast.success('Project restored')
+                } catch (err) {
+                  toast.error('Could not restore project', {
+                    description: (err as Error)?.message ?? 'Unknown error',
+                  })
+                }
+              })()
+            },
+          },
+        })
+      } else {
+        // Couldn't snapshot — degraded UX (no Undo) but the delete still
+        // works. Surface the situation in the description so the user
+        // isn't surprised.
+        toast.success('Project deleted', {
+          description: 'Undo not available — the project couldn\'t be snapshotted.',
+        })
+      }
     } catch (err) {
       console.error('Failed to delete', err)
+      toast.error('Delete failed', {
+        description: (err as Error)?.message ?? 'Unknown error',
+      })
     }
   }
 
@@ -1359,7 +1614,7 @@ function PersonalDashboard() {
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
         <div>
-          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Dashboard</h2>
+          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Your dashboard</h2>
           <p className="text-ink-300 text-sm mt-1">
             Your estimates, win rate, and current jobs at a glance.
           </p>
@@ -1375,39 +1630,23 @@ function PersonalDashboard() {
         <StatTile label="Total projects" value={stats.total} />
         <StatTile label="In progress" value={stats.inProgress} accent="beme" />
         <StatTile label="Won" value={stats.won} accent="emerald" />
-        <StatTile
-          label="Win rate"
-          value={stats.winRate === null ? '—' : `${stats.winRate}%`}
-          sub={
-            stats.winRate === null
-              ? 'No outcomes yet'
-              : `${stats.won} won · ${stats.lost} lost`
-          }
+        <WinRateTile
+          winRate={stats.winRate}
+          won={stats.won}
+          lost={stats.lost}
+          pending={stats.pending}
         />
       </section>
 
-      <section className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
-        <div className="lg:col-span-1 border border-ink-600 rounded-xl bg-ink-800 p-5 flex flex-col items-center justify-center gap-3">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 self-start">
-            Outcomes
-          </h3>
-          <DonutChart
-            size={180}
-            thickness={22}
-            centreLabel={stats.winRate === null ? undefined : 'Win rate'}
-            centreValue={stats.winRate === null ? undefined : `${stats.winRate}%`}
-            emptyHint="Mark a project Won or Lost to see your win rate."
-            slices={[
-              { label: 'Won', value: stats.won, color: 'var(--color-beme-500)' },
-              { label: 'Lost', value: stats.lost, color: 'var(--color-ink-500)' },
-              { label: 'Pending', value: stats.pending, color: 'var(--color-ink-600)' },
-            ]}
-          />
-        </div>
-
+      {/* Primary actions: two equal-weight cards. Used to share the row
+          with an Outcomes donut at col-span-1, but the donut was mostly
+          empty for new users and stole real estate from the actions that
+          actually start an estimate. Donut moved into the Win-rate stat
+          tile above so it still tells the story when data exists. */}
+      <section className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
         <Link
           to="/project/brick"
-          className="lg:col-span-1 border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
+          className="border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
         >
           <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
             Start a new estimate
@@ -1426,7 +1665,7 @@ function PersonalDashboard() {
 
         <Link
           to="/project/block"
-          className="lg:col-span-1 border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
+          className="border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
         >
           <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
             Start a new estimate
@@ -1486,7 +1725,13 @@ function PersonalDashboard() {
           </div>
         </div>
 
-        {loading && <div className="text-sm text-ink-400">Loading…</div>}
+        {loading && (
+          <ul className="space-y-2" aria-label="Loading projects">
+            <ProjectRowSkeleton />
+            <ProjectRowSkeleton />
+            <ProjectRowSkeleton />
+          </ul>
+        )}
 
         {!loading && filtered.length === 0 && (
           <div className="border border-dashed border-ink-600 rounded-xl p-12 text-center text-ink-400 bg-ink-800/50">
@@ -1604,6 +1849,62 @@ function InboxTile({ count }: { count: number }) {
           : `${count === 1 ? 'request waiting' : 'requests waiting'} for you`}
       </div>
     </Link>
+  )
+}
+
+/**
+ * Win-rate stat tile with an inline mini-donut sitting next to the
+ * value. Replaces the previous big Outcomes donut card that took a
+ * third of the action row and looked sparse until the user marked
+ * something Won/Lost. Same data, far less real estate.
+ *
+ * Falls back to the standard "—" + sub-line treatment when no outcomes
+ * have been recorded yet, so the empty state is calm rather than a
+ * grey ring.
+ */
+function WinRateTile({
+  winRate,
+  won,
+  lost,
+  pending,
+}: {
+  winRate: number | null
+  won: number
+  lost: number
+  pending: number
+}) {
+  if (winRate === null) {
+    return (
+      <StatTile
+        label="Win rate"
+        value="—"
+        sub="No outcomes yet"
+      />
+    )
+  }
+  return (
+    <div className="border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5 flex items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+          Win rate
+        </div>
+        <div className="text-2xl font-extrabold tracking-tight tabular-nums mt-1 text-ink-50">
+          {winRate}%
+        </div>
+        <div className="text-xs text-ink-400 mt-0.5">
+          {won} won · {lost} lost
+        </div>
+      </div>
+      <DonutChart
+        size={64}
+        thickness={9}
+        slices={[
+          { label: 'Won', value: won, color: 'var(--color-beme-500)' },
+          { label: 'Lost', value: lost, color: 'var(--color-ink-500)' },
+          { label: 'Pending', value: pending, color: 'var(--color-ink-600)' },
+        ]}
+      />
+    </div>
   )
 }
 

@@ -87,6 +87,22 @@ interface WallDrawingLayerProps {
    * than rendering as a thin line. Falls back to 190 mm if not passed.
    */
   activeWallThicknessMm?: number
+  /**
+   * Footprint of a pier in mm — used to render tied / freestanding pier
+   * tiles on the canvas. Defaults to 390 (AU 40.925 block) so projects
+   * predating this prop keep their visual. Parent computes this from
+   * the user's pier-tagged library block so US / UK / etc. piers render
+   * at their actual size instead of the AU square.
+   */
+  pierFootprintMm?: number
+  /**
+   * Colour used for the live wall-draw preview (silhouette fill,
+   * centreline, measurement chip, cursor box). Lets the in-flight
+   * wall match the colour swatch shown next to its wall type in the
+   * right rail. Falls back to the legacy beme orange (#ED7D31) when
+   * not supplied — same colour committed walls use as their default.
+   */
+  activeWallColor?: string
   visualWidth: number
   visualHeight: number
   /** Visual pixels per mm at the current zoom. */
@@ -728,6 +744,8 @@ function WallDrawingLayerInner({
   openings,
   wallThicknessByWallId,
   activeWallThicknessMm = 190,
+  pierFootprintMm = 390,
+  activeWallColor = '#ED7D31',
   visualWidth,
   visualHeight,
   pxPerMmAtCurrentZoom,
@@ -1363,14 +1381,20 @@ function WallDrawingLayerInner({
               // stored centreline is shorter by that amount.
               const startAdjust = cornerLengthAdjustAt(startMm)
               const centreLength = Math.max(0, lengthMm - startAdjust)
-              onWallAdded(
-                startMm,
-                {
-                  x: startMm.x + ux * centreLength,
-                  y: startMm.y + uy * centreLength,
-                },
-              )
-              setStartMm(null)
+              const endMm: Point = {
+                x: startMm.x + ux * centreLength,
+                y: startMm.y + uy * centreLength,
+              }
+              onWallAdded(startMm, endMm)
+              // Continuous draw — chain from the corner-block-centre of
+              // the just-committed wall's free end, same offset as the
+              // click-commit path above. Typed-length commits are always
+              // "free" (no snap target on Enter), so always pull back.
+              const halfT = activeWallThicknessMm / 2
+              setStartMm({
+                x: endMm.x - ux * halfT,
+                y: endMm.y - uy * halfT,
+              })
               setCursorMm(null)
               setSnapTarget(null)
               setTypedLengthMm('')
@@ -1690,7 +1714,7 @@ function WallDrawingLayerInner({
         return
       }
       const startPxAnchor = { x: mmToPx(startMm.x), y: mmToPx(startMm.y) }
-      const { point } = resolveDrawSnap(
+      const { point, snap: clickSnap } = resolveDrawSnap(
         raw,
         startPxAnchor,
         e.evt.shiftKey,
@@ -1717,7 +1741,40 @@ function WallDrawingLayerInner({
         }
       }
       onWallAdded(startMm, posMm)
-      setStartMm(null)
+      // Continuous wall draw: chain the next segment from the just-
+      // committed wall's free end. The user can press Esc to actually
+      // exit drawing mode (handled in the global keydown below — clears
+      // startMm + onCancelDraw). This matches CAD-style polyline tools.
+      //
+      // Where to anchor the next wall depends on what posMm represents:
+      //   - If the click HIT a snap target (another wall's corner /
+      //     T-junction / wall body), posMm is already a snap point and
+      //     the next wall should chain from there as-is.
+      //   - Otherwise the click is a free end. resolveDrawSnap returned
+      //     the data endpoint, but the visual corner / corner-block-
+      //     centre sits halfThickness IN from there along the wall's
+      //     direction (see endpointsPx for the matching snap target on
+      //     existing walls). Pull back by halfThickness so the chained
+      //     anchor lines up with where the user would have clicked if
+      //     they'd manually snapped to the new wall's free corner.
+      let chainAnchor: Point = posMm
+      if (!clickSnap) {
+        const dx = posMm.x - startMm.x
+        const dy = posMm.y - startMm.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist > 0.001) {
+          const ux = dx / dist
+          const uy = dy / dist
+          const halfT = activeWallThicknessMm / 2
+          chainAnchor = {
+            x: posMm.x - ux * halfT,
+            y: posMm.y - uy * halfT,
+          }
+        }
+      }
+      setStartMm(chainAnchor)
+      // Clear the cursor so we don't render a zero-length silhouette at
+      // the moment of commit. Next mousemove repopulates it.
       setCursorMm(null)
       setSnapTarget(null)
       setTypedLengthMm('')
@@ -2665,13 +2722,14 @@ function WallDrawingLayerInner({
           />
         )}
 
-        {/* Piers — rendered above wall polygons. Tied piers as 390×390 squares on the wall;
-            freestanding piers as standalone 390×390 squares at their (x, y). */}
+        {/* Piers — rendered above wall polygons. Footprint comes from the
+            project's pier block (via the `pierFootprintMm` prop) so US /
+            UK / etc. piers don't render at the AU 390mm size — falls
+            back to 390 when the prop isn't supplied. */}
         {piers.map((pier) => {
           const isSelected =
             (selectedPierIds && selectedPierIds.has(pier.id)) || pier.id === selectedPierId
-          // Pier face size: 390mm × 390mm (block 40.925 footprint).
-          const sizeMm = 390
+          const sizeMm = pierFootprintMm
           let cxPx = 0
           let cyPx = 0
           let rotationDeg = 0
@@ -2836,10 +2894,16 @@ function WallDrawingLayerInner({
           )
         })()}
 
+        {/* Pre-anchor cursor box: shown while drawingMode is on but the
+            user hasn't dropped the first click yet. A small square sized
+            to the active wall's real thickness, centred on the cursor, in
+            the active type's colour. Gives the user a tangible sense of
+            how thick the wall they're about to draw will be before they
+            commit to a position. */}
         {/* Wall drawing preview */}
         {drawingMode && startPx && (
           <Group listening={false}>
-            <Circle x={startPx.x} y={startPx.y} radius={5} fill="#ED7D31" stroke="white" strokeWidth={2} />
+            <Circle x={startPx.x} y={startPx.y} radius={5} fill={activeWallColor} stroke="white" strokeWidth={2} />
             {cursorPx && (() => {
               // If the user typed a length, project the preview line along the
               // cursor direction at exactly the typed magnitude — that way the
@@ -2913,8 +2977,8 @@ function WallDrawingLayerInner({
                   <Line
                     points={silhouettePoints}
                     closed
-                    fill="rgba(237, 125, 49, 0.22)"
-                    stroke="#ED7D31"
+                    fill={hexToRgba(activeWallColor, 0.22)}
+                    stroke={activeWallColor}
                     strokeWidth={1.5}
                     dash={[6, 4]}
                   />
@@ -2924,7 +2988,7 @@ function WallDrawingLayerInner({
                       doesn't fight the fill. */}
                   <Line
                     points={[startPx.x, startPx.y, endPx.x, endPx.y]}
-                    stroke="#ED7D31"
+                    stroke={activeWallColor}
                     strokeWidth={1}
                     opacity={0.7}
                     dash={[2, 3]}
@@ -2945,7 +3009,7 @@ function WallDrawingLayerInner({
                           ? `${typedLengthMm} mm …`
                           : formatMm(previewLengthMm)
                     }
-                    bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : 'rgba(237, 125, 49, 0.95)'}
+                    bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : hexToRgba(activeWallColor, 0.95)}
                   />
                 </>
               )

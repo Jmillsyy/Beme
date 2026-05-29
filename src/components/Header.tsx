@@ -4,6 +4,7 @@ import { useTheme } from '../lib/theme'
 import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
+import { useOnlineStatus } from '../lib/useOnlineStatus'
 import type { Organisation } from '../types/organisations'
 
 /**
@@ -77,6 +78,11 @@ export default function Header() {
         </Link>
 
         <div className="flex items-center gap-3">
+          {/* Offline indicator — only renders when navigator.onLine is
+              false. Explains "why is my save failing" before the user has
+              to discover it through a failed toast. */}
+          <OfflinePill />
+
           {/* Org switcher — appears only when the user is signed in and
               belongs to at least one org. Single-org users see a static
               "ORG NAME" pill; multi-org users get a dropdown to switch. */}
@@ -119,6 +125,31 @@ export default function Header() {
         </div>
       </div>
     </header>
+  )
+}
+
+/**
+ * Tiny pill that appears in the header when the device is offline.
+ * Hidden when navigator.onLine is true (zero DOM weight in the common
+ * case). The rose accent matches the toast system's error variant so
+ * the offline / save-failed visual language stays consistent.
+ */
+function OfflinePill() {
+  const online = useOnlineStatus()
+  if (online) return null
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-rose-500/40 bg-rose-500/10 text-[11px] text-rose-300"
+      title="No internet connection — saves will retry once you're back online."
+      role="status"
+      aria-live="polite"
+    >
+      <span
+        className="inline-block w-1.5 h-1.5 rounded-full bg-rose-500"
+        aria-hidden
+      />
+      Offline
+    </span>
   )
 }
 

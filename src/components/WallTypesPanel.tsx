@@ -103,6 +103,12 @@ export default function WallTypesPanel({
   /** Outer-level pier editor state — drives the "+ Add pier" / "Edit pier"
    *  flow from the panel directly so the user path mirrors wall types. */
   const [pierEditingId, setPierEditingId] = useState<string | null>(null)
+  /** When the wall editor's kind picker swaps to a pier kind, this
+   *  remembers which placement (tied / freestanding) the user picked so
+   *  the pier modal opens with the right kind already selected. Cleared
+   *  when the editor closes. */
+  const [pierEditingSeedPlacement, setPierEditingSeedPlacement] =
+    useState<'tied' | 'freestanding' | undefined>(undefined)
   const editingPierMakeup =
     pierEditingId && pierEditingId !== 'new'
       ? pierMakeups.find((m) => m.id === pierEditingId) ?? null
@@ -225,6 +231,26 @@ export default function WallTypesPanel({
                   >
                     Edit
                   </span>
+                  {/* Duplicate — clones the wall type as a starting point
+                      for a variant (e.g. "Block wall 2400mm" →
+                      "Block wall 2700mm"). Fresh id so it lives
+                      independently; name suffixed with " (copy)" so the
+                      user can spot which is new and rename it. */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onAddMakeup({
+                        ...m,
+                        id: generateMakeupId(),
+                        name: `${m.name} (copy)`,
+                      })
+                    }}
+                    className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
+                  >
+                    Duplicate
+                  </span>
                   {canDelete && (
                     <span
                       role="button"
@@ -244,123 +270,116 @@ export default function WallTypesPanel({
               </button>
             )
           })}
-        </div>
-      )}
 
-      {/* Pier types — listed under the wall types in the same panel.
-          Each pier card is click-to-activate (parallel to wall-type
-          activation). "+ Add" opens the pier editor modal (same UX as
-          wall "+ Add"). When a pier is selected on the canvas, an inline
-          inspector renders under its matching card. */}
-      {expanded && (
-        <div className="mt-3 pt-3 border-t border-ink-600/60">
-          <div className="flex items-center justify-between mb-2 gap-2">
-            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-              Pier types
-            </h4>
-            <button
-              onClick={() => setPierEditingId('new')}
-              className="text-xs px-2 py-0.5 rounded-md bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors"
-            >
-              + Add
-            </button>
-          </div>
-          <div className="flex flex-col gap-2 pb-1">
-            {pierMakeups.length === 0 && (
-              <p className="text-xs text-ink-400 italic">
-                No pier types yet. + Add to create one.
-              </p>
-            )}
-            {pierMakeups.map((pm) => {
-              const isActive = pm.id === activePierMakeupId
-              const pierCount = pierCountsByMakeupId[pm.id] ?? 0
-              const canDelete = pierMakeups.length > 1 && pierCount === 0
-              const selectionBelongsHere =
-                !!selectedPier && selectedPier.pierMakeupId === pm.id
-              return (
-                <div key={pm.id} className="flex flex-col">
-                  <button
-                    onClick={() => onSetActivePier(pm.id)}
-                    className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
-                      isActive
-                        ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
-                        : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
-                    } ${selectionBelongsHere ? 'rounded-b-none border-b-0' : ''}`}
-                  >
-                    {isActive && (
-                      <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
-                        Active
-                      </span>
-                    )}
-                    <div className="flex items-start gap-2 mb-1 pr-12">
-                      <span
-                        className={`inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 ${
-                          pm.suggestedPlacement === 'tied'
-                            ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
-                            : 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
-                        }`}
-                      >
-                        {pm.suggestedPlacement === 'tied' ? 'Tied' : 'Free'}
-                      </span>
-                      <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
-                        {pm.name}
-                      </div>
+          {/* Pier types rendered inline with wall types — they're a kind
+              of wall type now, not a separate concept. Each pier card
+              carries a Tied / Free chip so the user can tell it apart
+              from a regular wall at a glance. The activation state and
+              the "X piers using this" counter are per-pier; the unified
+              "+ Add" dropdown at the top of the panel covers all three
+              kinds (wall / tied pier / freestanding pier). */}
+          {pierMakeups.map((pm) => {
+            const isActive = pm.id === activePierMakeupId
+            const pierCount = pierCountsByMakeupId[pm.id] ?? 0
+            const canDelete = pierMakeups.length > 1 && pierCount === 0
+            const selectionBelongsHere =
+              !!selectedPier && selectedPier.pierMakeupId === pm.id
+            return (
+              <div key={pm.id} className="flex flex-col">
+                <button
+                  onClick={() => onSetActivePier(pm.id)}
+                  className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                    isActive
+                      ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                      : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
+                  } ${selectionBelongsHere ? 'rounded-b-none border-b-0' : ''}`}
+                >
+                  {isActive && (
+                    <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                      Active
+                    </span>
+                  )}
+                  <div className="flex items-start gap-2 mb-1 pr-12">
+                    <span
+                      className={`inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 ${
+                        pm.suggestedPlacement === 'tied'
+                          ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                          : 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
+                      }`}
+                    >
+                      {pm.suggestedPlacement === 'tied' ? 'Tied pier' : 'Free pier'}
+                    </span>
+                    <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                      {pm.name}
                     </div>
-                    <div className="text-xs text-ink-400 font-mono break-words">
-                      {pm.coursePattern.join(' · ')}
-                    </div>
-                    <div className="text-xs text-ink-500 mt-2">
-                      {pierCount} pier{pierCount === 1 ? '' : 's'} using this
-                    </div>
-                    <div className="flex gap-3 mt-2">
+                  </div>
+                  <div className="text-xs text-ink-400 font-mono break-words">
+                    {pm.coursePattern.join(' · ')}
+                  </div>
+                  <div className="text-xs text-ink-500 mt-2">
+                    {pierCount} pier{pierCount === 1 ? '' : 's'} using this
+                  </div>
+                  <div className="flex gap-3 mt-2">
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setPierEditingId(pm.id)
+                      }}
+                      className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
+                    >
+                      Edit
+                    </span>
+                    {canDelete && (
                       <span
                         role="button"
                         tabIndex={0}
                         onClick={(e) => {
                           e.stopPropagation()
-                          setPierEditingId(pm.id)
+                          if (window.confirm(`Delete pier type "${pm.name}"?`)) {
+                            onDeletePierMakeup(pm.id)
+                          }
                         }}
-                        className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
+                        className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                       >
-                        Edit
+                        Delete
                       </span>
-                      {canDelete && (
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            if (window.confirm(`Delete pier type "${pm.name}"?`)) {
-                              onDeletePierMakeup(pm.id)
-                            }
-                          }}
-                          className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
-                        >
-                          Delete
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                  {selectionBelongsHere && (
-                    <SelectedPierInspector
-                      selectedPier={selectedPier}
-                      pierMakeups={pierMakeups}
-                      onReassign={onReassignPierMakeup}
-                      onDelete={onDeletePier}
-                      onDeselect={onDeselectPier}
-                    />
-                  )}
-                </div>
-              )
-            })}
-          </div>
+                    )}
+                  </div>
+                </button>
+                {selectionBelongsHere && (
+                  <SelectedPierInspector
+                    selectedPier={selectedPier}
+                    pierMakeups={pierMakeups}
+                    onReassign={onReassignPierMakeup}
+                    onDelete={onDeletePier}
+                    onDeselect={onDeselectPier}
+                  />
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
 
-      {/* Wall-type editor modal */}
+      {/* Wall-type editor modal. When creating new the kind picker at the
+          top lets the user swap into the pier editor via onSwitchToPier
+          (handled below — closes this modal, opens the pier modal with
+          the right seed placement). When editing existing, no swap is
+          possible — the makeup's kind is fixed. */}
       {editingId !== null && (
         <WallTypeEditorModal
           existing={editingId === 'new' ? null : editingMakeup}
+          onSwitchToPier={
+            editingId === 'new'
+              ? (placement) => {
+                  setEditingId(null)
+                  setPierEditingSeedPlacement(placement)
+                  setPierEditingId('new')
+                }
+              : undefined
+          }
           onCancel={() => setEditingId(null)}
           onSave={(m) => {
             if (editingId === 'new') onAddMakeup(m)
@@ -370,11 +389,26 @@ export default function WallTypesPanel({
         />
       )}
 
-      {/* Pier type editor — same flow as wall-type "+ Add" */}
+      {/* Pier type editor — same flow as wall-type "+ Add". onSwitchToWall
+          lets the kind picker swap back to the wall editor without
+          losing the user's place. */}
       {pierEditingId !== null && (
         <PierTypeEditorModal
           existing={pierEditingId === 'new' ? null : editingPierMakeup}
-          onCancel={() => setPierEditingId(null)}
+          seedPlacement={pierEditingSeedPlacement}
+          onSwitchToWall={
+            pierEditingId === 'new'
+              ? () => {
+                  setPierEditingId(null)
+                  setPierEditingSeedPlacement(undefined)
+                  setEditingId('new')
+                }
+              : undefined
+          }
+          onCancel={() => {
+            setPierEditingId(null)
+            setPierEditingSeedPlacement(undefined)
+          }}
           onSave={(pm) => {
             if (pierEditingId === 'new') {
               onAddPierMakeup(pm)
@@ -383,6 +417,7 @@ export default function WallTypesPanel({
               onUpdatePierMakeup(pm)
             }
             setPierEditingId(null)
+            setPierEditingSeedPlacement(undefined)
           }}
         />
       )}
@@ -394,8 +429,76 @@ export default function WallTypesPanel({
 
 type TabKey = 'basics' | 'composition' | 'pattern' | 'advanced'
 
+/**
+ * Three-way segmented picker at the top of the wall / pier editor modals.
+ * Drives the kind being created — Wall / Tied pier / Freestanding pier.
+ * Only rendered when creating a NEW makeup; editing existing skips it
+ * because the kind is fixed by which makeup the user opened.
+ *
+ * In the wall modal: picking a pier kind calls onChange which the parent
+ * intercepts to close this modal and open the pier modal with the right
+ * seed placement.
+ *
+ * In the pier modal: picking the other pier kind just updates placement
+ * in-place; picking Wall closes the pier modal and opens the wall modal.
+ *
+ * Lives at file scope (above the editors that consume it) so both modals
+ * can render the same component.
+ */
+type MakeupKind = 'wall' | 'tied-pier' | 'freestanding-pier'
+function KindPicker({
+  current,
+  onChange,
+}: {
+  current: MakeupKind
+  onChange: (kind: MakeupKind) => void
+}) {
+  const options: { value: MakeupKind; label: string }[] = [
+    { value: 'wall', label: 'Wall' },
+    { value: 'tied-pier', label: 'Tied pier' },
+    { value: 'freestanding-pier', label: 'Freestanding pier' },
+  ]
+  return (
+    <div className="px-5 py-2.5 border-b border-ink-600 bg-ink-900/20">
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+          Type
+        </span>
+        <div className="inline-flex border border-ink-600 rounded-lg overflow-hidden">
+          {options.map((o, i) => {
+            const isActive = o.value === current
+            return (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  if (!isActive) onChange(o.value)
+                }}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  isActive
+                    ? 'bg-beme-500 text-black'
+                    : 'bg-ink-800 text-ink-300 hover:bg-ink-700 hover:text-ink-100'
+                } ${i > 0 ? 'border-l border-ink-600' : ''}`}
+                aria-pressed={isActive}
+              >
+                {o.label}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface WallTypeEditorModalProps {
   existing: WallMakeup | null
+  /** When creating a new makeup (existing === null), the user can switch
+   *  between Wall / Tied pier / Freestanding pier via a picker at the
+   *  top of the modal. Picking a pier kind closes this modal and opens
+   *  the pier editor with the right seed placement — handled in the
+   *  parent via `onSwitchToPier`. Ignored when editing existing. */
+  onSwitchToPier?: (placement: 'tied' | 'freestanding') => void
   onSave: (makeup: WallMakeup) => void
   onCancel: () => void
 }
@@ -419,6 +522,7 @@ interface WallTypeEditorModalProps {
  */
 function WallTypeEditorModal({
   existing,
+  onSwitchToPier,
   onSave,
   onCancel,
 }: WallTypeEditorModalProps) {
@@ -871,17 +975,29 @@ function WallTypeEditorModal({
     return () => document.removeEventListener('keydown', onKey)
   }, [onCancel])
 
-  const tabs: { key: TabKey; label: string; badge?: string; disabled?: boolean }[] = [
+  // Disable the Composition tab when the user has switched to a course
+  // pattern — the bands carry per-course block codes, so the legacy
+  // per-role pickers (body / corner / base / top / half) are no longer
+  // consulted. Showing them as editable would suggest they still matter
+  // and confuse the user about which surface "wins". Same disabled-rail
+  // pattern as wedgeDisablesCourseMix.
+  const compositionDisabledByPattern = hasCoursePattern
+  const tabs: { key: TabKey; label: string; badge?: string; disabled?: boolean; disabledReason?: string }[] = [
     { key: 'basics', label: 'Basics' },
     {
       key: 'composition',
       label: isCurveMakeup ? 'Composition (curve)' : 'Composition',
+      disabled: compositionDisabledByPattern,
+      disabledReason: compositionDisabledByPattern
+        ? 'Replaced by Course pattern — clear the pattern to re-enable.'
+        : undefined,
     },
     {
       key: 'pattern',
       label: 'Course pattern',
       badge: hasCoursePattern ? `${coursePattern.length}` : undefined,
       disabled: wedgeDisablesCourseMix,
+      disabledReason: wedgeDisablesCourseMix ? 'Not applicable for wedge curves' : undefined,
     },
     {
       key: 'advanced',
@@ -891,10 +1007,21 @@ function WallTypeEditorModal({
           ? `${courseOverrides.length + seriesRanges.length}`
           : undefined,
       disabled: wedgeDisablesCourseMix,
+      disabledReason: wedgeDisablesCourseMix ? 'Not applicable for wedge curves' : undefined,
     },
     // Piers used to live as a tab inside this modal. They now have their
     // own "+ Add" / "Edit" buttons in the Pier types section of the panel.
   ]
+
+  // If the user just enabled course pattern (added the first band) while
+  // sitting on the Composition tab, hop them to Course pattern so they
+  // don't stare at a now-disabled tab with no content. One-shot effect
+  // keyed off the disable flag flipping true.
+  useEffect(() => {
+    if (compositionDisabledByPattern && activeTab === 'composition') {
+      setActiveTab('pattern')
+    }
+  }, [compositionDisabledByPattern, activeTab])
 
   return (
     <div
@@ -932,6 +1059,21 @@ function WallTypeEditorModal({
           </button>
         </header>
 
+        {/* Kind picker — only shown when creating a NEW makeup. Lets the
+            user swap into the pier editor without going back to the
+            panel. Hidden when editing existing (the kind is fixed by
+            which makeup you opened — to convert a wall to a pier you'd
+            delete and recreate). */}
+        {!existing && onSwitchToPier && (
+          <KindPicker
+            current="wall"
+            onChange={(kind) => {
+              if (kind === 'tied-pier') onSwitchToPier('tied')
+              else if (kind === 'freestanding-pier') onSwitchToPier('freestanding')
+            }}
+          />
+        )}
+
         {/* Tabs + content */}
         <div className="flex flex-1 min-h-0">
           {/* Left tab rail */}
@@ -950,7 +1092,7 @@ function WallTypeEditorModal({
                       ? 'text-ink-600 cursor-not-allowed'
                       : 'text-ink-300 hover:bg-ink-700/60 border border-transparent'
                   }`}
-                  title={t.disabled ? 'Not applicable for wedge curves' : undefined}
+                  title={t.disabled ? t.disabledReason ?? 'Not applicable here' : undefined}
                 >
                   <span>{t.label}</span>
                   {t.badge && (
@@ -2387,6 +2529,17 @@ function RangeFieldPicker({ label, value, options, onChange }: RangeFieldPickerP
 
 interface PierTypeEditorModalProps {
   existing: PierMakeup | null
+  /** When creating a NEW pier (existing === null), pre-fill the placement
+   *  toggle so the user lands on the right kind without an extra click.
+   *  The kind picker at the top of the wall modal uses this to map
+   *  "Tied pier" vs "Freestanding pier" into the right initial state.
+   *  Ignored when editing an existing pier (its own suggestedPlacement
+   *  wins). */
+  seedPlacement?: 'tied' | 'freestanding'
+  /** When creating a NEW pier (existing === null), lets the user switch
+   *  the kind picker back to "Wall" — closes this modal and opens the
+   *  wall editor. Hidden when editing existing. */
+  onSwitchToWall?: () => void
   onSave: (makeup: PierMakeup) => void
   onCancel: () => void
 }
@@ -2402,7 +2555,7 @@ interface PierTypeEditorModalProps {
  * pattern repeating to fill a representative pier height so the user can
  * see what they'll get.
  */
-function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModalProps) {
+function PierTypeEditorModal({ existing, seedPlacement, onSwitchToWall, onSave, onCancel }: PierTypeEditorModalProps) {
   const { library } = useBlockLibrary()
 
   // Block options for the pier-pattern dropdowns. Pier-tagged blocks
@@ -2430,7 +2583,7 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
 
   const [name, setName] = useState(existing?.name ?? 'New pier type')
   const [placement, setPlacement] = useState<'tied' | 'freestanding'>(
-    existing?.suggestedPlacement ?? 'tied'
+    existing?.suggestedPlacement ?? seedPlacement ?? 'tied'
   )
   // Seed pattern for a new pier: live library's pier block + corner
   // block (or any sensible region defaults). Existing piers keep their
@@ -2552,6 +2705,22 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
           </button>
         </header>
 
+        {/* Kind picker — only shown when creating a NEW pier. Lets the
+            user swap between the three kinds without going back to the
+            panel. Picking "Wall" closes this modal and opens the wall
+            editor; picking the other pier kind just updates the
+            placement state in-place. */}
+        {!existing && onSwitchToWall && (
+          <KindPicker
+            current={placement === 'tied' ? 'tied-pier' : 'freestanding-pier'}
+            onChange={(kind) => {
+              if (kind === 'wall') onSwitchToWall()
+              else if (kind === 'tied-pier') setPlacement('tied')
+              else if (kind === 'freestanding-pier') setPlacement('freestanding')
+            }}
+          />
+        )}
+
         {/* Body: form on the left, preview rail on the right (same shape
             as the wall type modal) */}
         <div className="flex flex-1 min-h-0">
@@ -2620,9 +2789,9 @@ function PierTypeEditorModal({ existing, onSave, onCancel }: PierTypeEditorModal
                 </h3>
               </div>
               <p className="text-[11px] text-ink-500 mb-3 leading-relaxed">
-                The pattern repeats from the base course up. e.g.{' '}
-                <span className="font-mono">40.925 / 20.01</span> alternates the
-                pier block and a tie-back corner block every other course.
+                The pattern repeats from the base course up — e.g. a
+                tied pier typically alternates the pier block with a
+                corner / tie-back block every other course.
               </p>
               <div className="space-y-2">
                 {pattern.map((code, idx) => (

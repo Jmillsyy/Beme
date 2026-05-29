@@ -37,6 +37,15 @@ export interface LintelSpec {
   verticalModuleMm: number
   /** Modular horizontal face per stood-up lintel (190mm face + 10mm mortar = 200). */
   horizontalModuleMm: number
+  /**
+   * Bearing length on each side of the opening, in mm. The calc engine
+   * computes the lintel span as `openingWidth + 2 × overhangMm`. Comes
+   * from the block's `lintelOverhangMm` field; defaults to 200mm when
+   * the block doesn't set it (standard AU masonry practice). Per-block
+   * so different lintels (e.g. a precast piece vs a masonry block) can
+   * carry their own bearing requirements.
+   */
+  overhangMm: number
 }
 
 /**
@@ -70,6 +79,11 @@ export function selectBlockLintel(headHeightMm: number): LintelSpec | null {
     code: block.code,
     verticalModuleMm: block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
     horizontalModuleMm: block.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
+    // Pull the per-block bearing override; default 200mm matches the
+    // historic constant that lived in blockCalc.ts. Users in regions
+    // with different conventions set lintelOverhangMm on their lintel
+    // blocks in the library editor.
+    overhangMm: block.lintelOverhangMm ?? 200,
   }
 }
 

@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
 import { initTheme } from './lib/theme'
@@ -25,10 +25,16 @@ void initUserSettings()
 // onAuthStateChange listener so the org list updates on sign-in / sign-out.
 initOrganisations()
 
+// Wrap the existing <App /> (which still owns the <Routes> tree) in a
+// Data Router. Doing it this way means we get useBlocker / useNavigation
+// / loader hooks without having to flatten every <Route> into a
+// RouteObject. The catch-all path '*' lets App's own <Routes> match.
+const router = createBrowserRouter([
+  { path: '*', element: <App /> },
+])
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <RouterProvider router={router} />
   </StrictMode>,
 )

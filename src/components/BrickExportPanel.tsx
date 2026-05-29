@@ -7,6 +7,7 @@ import type {
   ProjectDetails,
   Wall,
 } from '../types/walls'
+import { toast } from '../lib/toast'
 import { exportBrickEstimate, type PageInfo } from '../lib/brickExport'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
@@ -67,6 +68,9 @@ function BrickExportPanelImpl({
     if (busy) return
     setBusy(true)
     setError(null)
+    // Sticky info toast for the duration of the export; replaced by a
+    // success / error toast in the finally / catch.
+    const progressId = toast.info('Generating PDF…', { durationMs: null })
     try {
       await exportBrickEstimate({
         projectDetails,
@@ -97,8 +101,13 @@ function BrickExportPanelImpl({
           logoUrl: currentOrg?.logoUrl || userSettings.business.logoUrl,
         },
       })
+      toast.dismiss(progressId)
+      toast.success('Estimate exported')
     } catch (e) {
-      setError((e as Error).message ?? 'Export failed')
+      const msg = (e as Error).message ?? 'Export failed'
+      setError(msg)
+      toast.dismiss(progressId)
+      toast.error('Export failed', { description: msg })
     } finally {
       setBusy(false)
     }

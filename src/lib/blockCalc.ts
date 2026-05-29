@@ -52,6 +52,7 @@ import { findCornerPoints } from './junctions'
 import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 import { getCourseCount, getMakeupHeightMm, resolveCourseBlocks } from './makeups'
+import { resolveBlockByRole } from './blockRoles'
 
 /**
  * Geometric derivation: a block of front-face width w_f, rear-face width w_r, depth d
@@ -264,9 +265,13 @@ export function subtractTally(a: BlockTally, b: BlockTally): BlockTally {
  */
 function healCode(code: BlockCode, role: BlockRole): BlockCode {
   if (BLOCK_LIBRARY[code]) return code
-  const byRole = Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes(role))
+  // Route through the central role resolver. The calc engine doesn't
+  // currently thread UserSettings into here — when that arrives, this
+  // call site picks up DefaultsByRole "for free" by passing { settings }.
+  // For now it's an equivalent role-tag scan, just consolidated.
+  const byRole = resolveBlockByRole(role, BLOCK_LIBRARY)
   if (byRole) return byRole.code
-  const byBody = Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))
+  const byBody = resolveBlockByRole('body', BLOCK_LIBRARY)
   return (byBody?.code ?? code) as BlockCode
 }
 
@@ -926,8 +931,7 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
     const healedTop =
       BLOCK_LIBRARY[makeup.topCourseBlockCode]
         ? makeup.topCourseBlockCode
-        : (Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('top-course'))
-            ?.code ??
+        : (resolveBlockByRole('top-course', BLOCK_LIBRARY)?.code ??
             healCode(makeup.topCourseBlockCode, 'body'))
     courses.push({ type: 'top', bodyBlock: healedTop })
   }
@@ -1213,36 +1217,55 @@ function applyOpeningAdjustments(
     subtractCourseBody(courseIdx, bodyToSubtract)
   }
 
-  // ---- Head area: lintels + body subtraction per head course ----
+  // ---- Head area: lintel + body subtraction ----
   const headHeightMm = wallHeightMm - opening.sillHeightMm - opening.heightMm
   if (headHeightMm <= 0) return
 
-  // Lintel blocks are added only when the user's library has at least
-  // one block tagged with role `lintel`. With no such block, the head
-  // course is left empty in the tally — the user has either opted out
-  // of block-level lintels (e.g. a US / European setup that bridges
-  // openings with a structural steel beam handled separately) or
-  // hasn't tagged a library block as lintel yet. Either way the body
-  // subtraction below still runs so the wall maths remains correct.
+  // Pick a lintel from the user's library by head height (bucket
+  // metadata + fallback to smallest-height-≥-head). Returns null when
+  // no block carries the `lintel` role at all — the user has either
+  // opted out of in-tally lintels (e.g. a structural steel beam
+  // handled outside the schedule) or hasn't tagged a library block
+  // yet. When null we skip BOTH the lintel tally line AND the body
+  // subtraction below: with no lintel in the tally, the head courses
+  // above the opening are full-width body, and the count is correct
+  // as-is.
   const lintel = selectBlockLintel(headHeightMm)
-  if (lintel) {
-    const bearingMm = 200
-    const lintelSpanMm = opening.widthMm + 2 * bearingMm
-    const horizontalLintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)
-    const verticalLintelCount = Math.ceil(headHeightMm / lintel.verticalModuleMm)
-    const lintelTotal = horizontalLintelCount * verticalLintelCount
-    addToTally(tally, lintel.code, lintelTotal)
-  }
+  if (!lintel) return
 
-  // Body subtraction in head area — per head course, bodies within the lintel span are replaced
+  // Lintel span = opening width + bearing on each side. Bearing is
+  // per-lintel (block.lintelOverhangMm via LintelSpec.overhangMm,
+  // defaults to 200mm). The bearing is where the lintel sits on the
+  // body courses each side; the lintel itself spans the full bearing-
+  // to-bearing distance as one continuous piece (or multiple block
+  // pieces tiled across — same modular count math either way).
+  const lintelSpanMm = opening.widthMm + 2 * lintel.overhangMm
+
+  // Single row of lintels across the head — no vertical stacking. The
+  // user has registered a lintel block whose own dimensions match how
+  // the lintel is laid; the head-height bucket already picked the
+  // right-sized block. Multiplying by `headHeight / verticalModule`
+  // double-counted by stacking copies of a block that's already meant
+  // to be one course of lintels at the chosen size.
+  const lintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)
+  addToTally(tally, lintel.code, lintelCount)
+
+  // Body subtraction — only for the head courses the lintel actually
+  // occupies. The lintel's vertical footprint in standard courses is
+  // ceil(lintelVerticalModule / COURSE_MODULE_MM): a 200mm lintel
+  // occupies 1 course, a 400mm lintel occupies 2. Courses ABOVE the
+  // lintel (if any — i.e. when the head area is taller than the
+  // lintel) are full-width body and need no subtraction.
   const headStartIdx = sillCoursesFloor + openingCourses
-  const headCoursesNeeded = Math.ceil(headHeightMm / COURSE_MODULE_MM)
-  const headCoursesAvailable = Math.max(0, courses.length - headStartIdx)
-  const headCoursesToUse = Math.min(headCoursesNeeded, headCoursesAvailable)
-  const bodyPerHeadCourse = Math.ceil((opening.widthMm + 400) / BODY_BLOCK_MODULE_MM)
+  const lintelCoursesNeeded = Math.ceil(
+    lintel.verticalModuleMm / COURSE_MODULE_MM,
+  )
+  const lintelCoursesAvailable = Math.max(0, courses.length - headStartIdx)
+  const lintelCoursesToUse = Math.min(lintelCoursesNeeded, lintelCoursesAvailable)
+  const bodyPerLintelCourse = Math.ceil(lintelSpanMm / BODY_BLOCK_MODULE_MM)
 
-  for (let i = 0; i < headCoursesToUse; i++) {
-    subtractCourseBody(headStartIdx + i, bodyPerHeadCourse)
+  for (let i = 0; i < lintelCoursesToUse; i++) {
+    subtractCourseBody(headStartIdx + i, bodyPerLintelCourse)
   }
 }
 

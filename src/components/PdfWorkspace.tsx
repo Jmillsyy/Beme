@@ -45,7 +45,8 @@ import {
 } from '../lib/makeups'
 import { arcFromThreePoints } from '../lib/curveGeom'
 import { curveZoneForRadius } from '../lib/blockCalc'
-import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
+import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
+import { resolveBlockByRole } from '../lib/blockRoles'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
 import { getUserSettings } from '../lib/userSettings'
 
@@ -152,6 +153,15 @@ import {
 } from '../lib/estimateRequests'
 import { getCurrentOrgId, listOrgMembers } from '../lib/organisations'
 import { useAuth } from '../lib/auth'
+import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
+import { toast } from '../lib/toast'
+import { confirm } from '../lib/confirm'
+import {
+  saveDraft,
+  getDraft,
+  clearDraft,
+  formatDraftAge,
+} from '../lib/draftStore'
 import type { EstimateRequest } from '../types/estimateRequests'
 import { Link } from 'react-router-dom'
 
@@ -252,6 +262,42 @@ const RATIO_PRESETS = [
  * Returns null if cancelled or invalid (so the caller can no-op the change).
  * Bounded to a sane range — anything outside it is almost certainly a typo.
  */
+/**
+ * Best-effort resolution of a friendly estimator name from the available
+ * signed-in user data. Tries (in order):
+ *
+ *   1. Settings → Profile → displayName  (the user's chosen name)
+ *   2. Supabase auth user metadata full_name / name  (from OAuth)
+ *   3. The email's local part  (everything before @)
+ *
+ * Returns the empty string when none resolve, so callers can early-return
+ * cleanly. Wrapped in try / catch around getUserSettings so a call before
+ * the settings init resolves doesn't blow up the workspace mount.
+ */
+function resolveEstimatorName(
+  authUser: import('@supabase/supabase-js').User | null | undefined
+): string {
+  try {
+    const us = getUserSettings()
+    const profileName = us.profile?.displayName?.trim() ?? ''
+    if (profileName) return profileName
+  } catch {
+    /* fall through to auth-based fallbacks */
+  }
+  if (authUser) {
+    const meta = authUser.user_metadata as
+      | { full_name?: string; name?: string }
+      | undefined
+    const metaName = meta?.full_name?.trim() || meta?.name?.trim() || ''
+    if (metaName) return metaName
+    if (authUser.email) {
+      const local = authUser.email.split('@')[0]
+      if (local) return local
+    }
+  }
+  return ''
+}
+
 function promptCustomRatio(): number | null {
   if (typeof window === 'undefined') return null
   const raw = window.prompt(
@@ -649,7 +695,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // a state restoration we just performed (skip).
   const lastEditSnapshotRef = useRef<EditSnapshot | null>(null)
   const [makeups, setMakeups] = useState<WallMakeup[]>(() => [
-    createDefaultWallMakeup({ name: 'External 2400mm stretcher' }),
+    // Pull the singleton settings at init so the seed wall type respects
+    // the user's DefaultsByRole map (e.g. their preferred body / corner
+    // block). One-shot read — once the workspace is open, the user owns
+    // the makeup. Same getUserSettings() pattern as brickSettings below.
+    createDefaultWallMakeup({
+      name: 'Block wall 2400mm',
+      settings: getUserSettings(),
+    }),
   ])
   const [activeMakeupId, setActiveMakeupId] = useState<string>(() => makeups[0].id)
 
@@ -686,10 +739,36 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     () => brickMakeups[0]?.id ?? ''
   )
 
-  // Project details + export inclusion tickboxes (brick mode)
-  const [projectDetails, setProjectDetails] = useState<ProjectDetails>(() =>
-    createDefaultProjectDetails()
-  )
+  // Project details + export inclusion tickboxes (brick mode).
+  // Seeds estimatorName with the user's display name (from Settings →
+  // Profile) so the field doesn't start blank for every new estimate.
+  // Falls back to auth metadata's full name, then the email's local part,
+  // then empty. Pulled via getUserSettings() / currentUser at mount only
+  // — once the workspace is open, the user owns the field.
+  const [projectDetails, setProjectDetails] = useState<ProjectDetails>(() => {
+    const base = createDefaultProjectDetails()
+    const resolved = resolveEstimatorName(currentUser)
+    return resolved ? { ...base, estimatorName: resolved } : base
+  })
+
+  // Auth state can resolve a beat after the workspace mounts (Supabase
+  // hydrates the session from localStorage asynchronously). When that
+  // happens we run a one-shot effect to fill estimatorName from the
+  // freshly-arrived user — but only when nothing's been typed yet AND
+  // we're on a fresh workspace (no projectId in the URL), so we never
+  // clobber a name that was loaded from a saved project or typed in.
+  useEffect(() => {
+    if (projectId) return // not a fresh workspace — never touch
+    if (projectDetails.estimatorName.trim().length > 0) return
+    const resolved = resolveEstimatorName(currentUser)
+    if (!resolved) return
+    setProjectDetails((prev) =>
+      prev.estimatorName.trim().length > 0
+        ? prev
+        : { ...prev, estimatorName: resolved }
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser])
   /**
    * Gate: show a startup modal that captures project + customer info BEFORE
    * the workspace becomes interactive. Previously the project-details drawer
@@ -949,6 +1028,85 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
+  // Crash / refresh recovery — if there's a localStorage draft for this
+  // project (or 'new:{mode}' for an unsaved workspace) whose timestamp
+  // is newer than the cloud row's updatedAt, the user had unsaved work
+  // when they last left. Prompt to restore once, after the load settles.
+  // Tracks whether we've already prompted in this session so flipping
+  // projects doesn't re-prompt for the same draft repeatedly.
+  const restorePromptedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!mode) return
+    // Wait for either: a saved project loaded (lastSavedAt set) OR a
+    // fresh workspace past the startup gate (gate closed).
+    if (projectId && !lastSavedAt) return
+    const key = projectId ?? `new:${mode}`
+    if (restorePromptedRef.current === key) return
+    const draft = getDraft(projectId ?? null, mode)
+    if (!draft) return
+    // For saved projects: only restore if the draft is newer than the
+    // last cloud save. For brand-new workspaces: any draft wins.
+    if (projectId && lastSavedAt) {
+      const cloudMs = new Date(lastSavedAt).getTime()
+      if (draft.savedAt <= cloudMs) {
+        // Draft is older than cloud — cloud already has the latest.
+        // Discard the stale draft to avoid prompting again.
+        clearDraft(projectId, mode)
+        restorePromptedRef.current = key
+        return
+      }
+    }
+    restorePromptedRef.current = key
+    void (async () => {
+      const ok = await confirm({
+        title: 'Restore unsaved work?',
+        message: `Beme found a draft from ${formatDraftAge(draft.savedAt)} that wasn't saved. Restore it now, or discard?`,
+        confirmLabel: 'Restore',
+        cancelLabel: 'Discard',
+      })
+      if (!ok) {
+        clearDraft(projectId ?? null, mode)
+        return
+      }
+      // Re-apply the draft's data slices. Cast each to its expected
+      // shape — we trust ourselves to have written valid data.
+      const d = draft.data as Record<string, unknown>
+      if (d.wallsByPage) setWallsByPage(d.wallsByPage as typeof wallsByPage)
+      if (d.openingsByPage) setOpeningsByPage(d.openingsByPage as typeof openingsByPage)
+      if (d.piersByPage) setPiersByPage(d.piersByPage as typeof piersByPage)
+      if (d.makeups) setMakeups(d.makeups as typeof makeups)
+      if (d.pierMakeups) setPierMakeups(d.pierMakeups as typeof pierMakeups)
+      if (typeof d.activeMakeupId === 'string') setActiveMakeupId(d.activeMakeupId)
+      if (d.activePierMakeupId !== undefined)
+        setActivePierMakeupId(d.activePierMakeupId as typeof activePierMakeupId)
+      if (d.brickMakeups) setBrickMakeups(d.brickMakeups as typeof brickMakeups)
+      if (typeof d.activeBrickMakeupId === 'string')
+        setActiveBrickMakeupId(d.activeBrickMakeupId)
+      if (d.brickSettings) setBrickSettings(d.brickSettings as typeof brickSettings)
+      if (d.projectDetails) setProjectDetails(d.projectDetails as typeof projectDetails)
+      if (d.projectStatus) setProjectStatus(d.projectStatus as typeof projectStatus)
+      if (d.projectOutcome !== undefined)
+        setProjectOutcome(d.projectOutcome as typeof projectOutcome)
+      if (d.pagesData) setPagesData(d.pagesData as typeof pagesData)
+      if (d.supplyItemSelections)
+        setSupplyItemSelections(d.supplyItemSelections as typeof supplyItemSelections)
+      if (d.supplyItemRateOverrides)
+        setSupplyItemRateOverrides(d.supplyItemRateOverrides as typeof supplyItemRateOverrides)
+      if (typeof d.isEmptyWorkspace === 'boolean')
+        setIsEmptyWorkspace(d.isEmptyWorkspace)
+      if (typeof d.currentPage === 'number') setCurrentPage(d.currentPage)
+      if (d.measurementsByPage)
+        setMeasurementsByPage(d.measurementsByPage as typeof measurementsByPage)
+      toast.success('Draft restored', {
+        description: 'Unsaved work has been re-applied. Save to commit it to the cloud.',
+      })
+      // Don't clear the draft yet — we want it to survive until the
+      // next successful save in case the restore itself crashes the
+      // workspace and they need it again on the next mount.
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, mode, lastSavedAt])
+
   // Resolve the author's user id to a friendly display name whenever the
   // id (or org context) changes. Three paths:
   //   1. Author is the signed-in user → use their own display name from
@@ -995,6 +1153,43 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // last-loaded) state. Set true by the useEffect below whenever any key
   // state reference changes, set false after a save/load.
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  // Guard tab close / back / in-app navigation when there's unsaved work.
+  // Reuses the workspace's own dirty flag so the prompt fires exactly when
+  // ProjectBar's Save button is highlighted. Project-flavour copy keeps
+  // the message specific so the user knows what's at stake.
+  // Stable wrapper around handleSaveProject for the unsaved-changes
+  // prompt's onSave option. handleSaveProject is defined further down,
+  // so we route the call through a ref the matching effect keeps fresh.
+  // Without this the hook would close over an undefined identifier
+  // (TDZ) and throw on render.
+  const promptSaveHandlerRef = useRef<() => Promise<void> | void>(() => {})
+  const handleSaveFromPrompt = useCallback(async () => {
+    await promptSaveHandlerRef.current()
+  }, [])
+  useUnsavedChangesPrompt(hasUnsavedChanges, {
+    message:
+      'You have unsaved changes to this estimate. Save before leaving, or discard?',
+    onSave: handleSaveFromPrompt,
+  })
+
+  // Cmd+S (Mac) / Ctrl+S (Win / Linux) → save the current project.
+  // Pre-empts the browser's "Save page as…" dialog. Skipped while the
+  // user is typing into a contenteditable so we don't hijack save in
+  // an inline rich-text field (currently none, but safer). Calls
+  // through the same ref the unsaved-changes prompt uses so we always
+  // hit the latest handleSaveProject without re-binding the listener.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const isSaveChord = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's'
+      if (!isSaveChord) return
+      const target = e.target as HTMLElement | null
+      if (target && target.isContentEditable) return
+      e.preventDefault()
+      void promptSaveHandlerRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   /**
    * Snapshot of the key state references at the last load/save. We compare by
    * reference because every state setter we use returns a fresh object/array
@@ -1035,6 +1230,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
    * even before state has committed.
    */
   const savingRef = useRef(false)
+  // Mirror savingRef into React state so the ProjectBar can render a
+  // "Saving…" pill. The ref is the source of truth for concurrency
+  // guarding (synchronous; survives re-renders); this state is purely
+  // for visual feedback.
+  const [isSaving, setIsSaving] = useState(false)
   const inFlightProjectIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -1119,13 +1319,65 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   ])
   const canSave = saveBlockedReason === null
 
-  async function handleSaveProject() {
+  async function handleSaveProject(opts: { silent?: boolean } = {}) {
     if (!mode) return
     // Re-entrance guard: if a previous save is still awaiting, drop this
     // call. Without this, rapid double-clicks on Save (or Save + autosave
     // racing) generate fresh UUIDs each time and insert duplicate rows.
     if (savingRef.current) return
+    // Multi-tab / multi-device conflict guard: if this is a saved project
+    // and the cloud row's updatedAt is newer than what we loaded, another
+    // tab (or teammate) edited the project after us. Refuse to clobber.
+    //
+    //   - Manual save (opts.silent === false): prompt the user to Reload
+    //     or Overwrite. Reload does a hard reload (next mount pulls the
+    //     freshest version + the local draft offers their unsaved work).
+    //     Overwrite proceeds with the save as-is.
+    //   - Autosave (opts.silent === true): skip the save and surface a
+    //     non-blocking toast. The user resolves by clicking Save manually.
+    if (currentProjectId && lastSavedAt) {
+      try {
+        const cloud = await getProject(currentProjectId)
+        const cloudUpdated = cloud?.updatedAt
+        const localUpdated = lastSavedAt
+        if (
+          cloudUpdated &&
+          new Date(cloudUpdated).getTime() > new Date(localUpdated).getTime()
+        ) {
+          if (opts.silent) {
+            toast.info('Project updated elsewhere', {
+              description:
+                'Another window saved this project after you opened it. Click Save to choose how to resolve.',
+            })
+            return
+          }
+          const ok = await confirm({
+            title: 'This project was edited elsewhere',
+            message:
+              'Another window or teammate saved a newer version after you opened this one. Reload to see their changes (your unsaved work stays as a recoverable draft), or overwrite their save with yours.',
+            confirmLabel: 'Overwrite',
+            cancelLabel: 'Reload',
+            variant: 'destructive',
+          })
+          if (!ok) {
+            // User picked Reload — hard refresh so the next mount pulls
+            // the cloud version and the restore prompt surfaces any local
+            // draft they want to merge back in.
+            window.location.reload()
+            return
+          }
+          // Else: user picked Overwrite — fall through to the regular
+          // save path.
+        }
+      } catch (err) {
+        // Conflict-check is best-effort. If we can't reach the server
+        // (offline, RLS), proceed with the save — it'll fail downstream
+        // if there's a real problem, and the user gets the actual error.
+        console.warn('[saveProject] Conflict check failed; proceeding', err)
+      }
+    }
     savingRef.current = true
+    setIsSaving(true)
     const now = new Date().toISOString()
     // Resolve the project id in priority order:
     //   1. The id from React state (committed by a previous save).
@@ -1238,6 +1490,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         isEmptyWorkspace,
       }
       setHasUnsavedChanges(false)
+      // Save persisted to the cloud — discard the local draft so a
+      // future restore prompt doesn't offer to re-apply data that's
+      // already in the saved row.
+      if (mode) clearDraft(id, mode)
+      toast.success('Saved')
       // Update URL with the project id (so refresh keeps you in the saved project)
       if (typeof window !== 'undefined') {
         const url = new URL(window.location.href)
@@ -1248,20 +1505,29 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       }
     } catch (err) {
       console.error('Failed to save project', err)
-      // The previous alert blamed the browser unconditionally, which was
-      // misleading for cloud users — most failures here are server-side
-      // (RLS rejection, storage quota on the bucket, network blip during
-      // PDF upload). Surface the underlying error message so the user
-      // can act on it, and only mention browser storage as a fallback
-      // when the error genuinely looks like a quota issue.
+      // Surface the underlying error in a toast — most failures here are
+      // server-side (RLS rejection, storage quota, network blip during
+      // PDF upload). Recognise common failure flavours and add a hint so
+      // the toast does more than parrot the raw Postgres / Supabase
+      // message back at the user.
       const msg = (err as Error)?.message ?? String(err)
       const looksLikeQuota =
         /quota|QuotaExceeded|storage|exceeded/i.test(msg)
-      alert(
-        looksLikeQuota
-          ? `Failed to save: ${msg}\n\nYour browser or storage bucket may be out of space.`
-          : `Failed to save: ${msg}`
-      )
+      const looksLikeRls =
+        /row.level security|RLS|violates.*policy/i.test(msg)
+      let description: string
+      if (looksLikeQuota) {
+        description = `${msg} — your browser or storage bucket may be out of space.`
+      } else if (looksLikeRls) {
+        description =
+          `${msg}\n\nThis is a database permission rejection. Most common cause: the project row's ` +
+          `owner_user_id column is empty (legacy row predating the share migration) or the org-membership ` +
+          `row for this org is missing. Open Supabase → SQL editor and run the diagnostic block we noted ` +
+          `in SETUP.md (look up the project by reference number and inspect owner_user_id + organisation_id).`
+      } else {
+        description = msg
+      }
+      toast.error('Save failed', { description })
     } finally {
       // Release the guards regardless of outcome — a failed save should
       // still allow the user to retry. The in-flight id ref stays set on
@@ -1269,6 +1535,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       // here only on success to avoid a stale id surviving across failed
       // retries; on success the state version takes over anyway.
       savingRef.current = false
+      setIsSaving(false)
       inFlightProjectIdRef.current = null
     }
   }
@@ -1283,14 +1550,48 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   const autosaveCanSaveRef = useRef(false)
   const autosaveDirtyRef = useRef(false)
   const autosaveGateRef = useRef(false)
+  // Refs the localStorage draft writer reads — current project id, mode,
+  // and the data payload (walls/openings/etc.) frozen as a plain object.
+  // Kept as refs because the autosave interval is set up once and would
+  // otherwise close over stale values.
+  const currentProjectIdRef = useRef<string | null>(currentProjectId)
+  const modeRef = useRef<'block' | 'brick' | undefined>(mode)
+  const draftDataRef = useRef<Record<string, unknown>>({})
   useEffect(() => {
     autosaveHandlerRef.current = handleSaveProject
     autosaveCanSaveRef.current = canSave
     autosaveDirtyRef.current = hasUnsavedChanges
     autosaveGateRef.current = startupGateOpen
+    promptSaveHandlerRef.current = handleSaveProject
+    currentProjectIdRef.current = currentProjectId
+    modeRef.current = mode
+    // Snapshot a plain-JSON view of the dirty workspace. PDF blobs are
+    // intentionally omitted (won't fit localStorage). The restore code
+    // re-applies these state slices; the user re-attaches the PDF.
+    draftDataRef.current = {
+      wallsByPage,
+      openingsByPage,
+      piersByPage,
+      makeups,
+      pierMakeups,
+      activeMakeupId,
+      activePierMakeupId,
+      brickMakeups,
+      activeBrickMakeupId,
+      brickSettings,
+      projectDetails,
+      projectStatus,
+      projectOutcome,
+      pagesData,
+      supplyItemSelections,
+      supplyItemRateOverrides,
+      isEmptyWorkspace,
+      currentPage,
+      measurementsByPage,
+    }
   })
   useEffect(() => {
-    const AUTOSAVE_INTERVAL_MS = 2 * 60 * 1000
+    const AUTOSAVE_INTERVAL_MS = 30 * 1000
     const id = window.setInterval(() => {
       // Belt-and-braces: dirty + canSave guard each tick. If the project
       // has no unsaved changes (idle workspace) we skip, so we don't grind
@@ -1301,9 +1602,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       // workspace proper.
       if (autosaveGateRef.current) return
       if (!autosaveDirtyRef.current) return
+      // Always snapshot a draft when dirty, even if we can't reach the
+      // cloud save. localStorage survives tab close / refresh, so a
+      // crashed save still gives the user a recovery path.
+      if (modeRef.current) {
+        saveDraft(currentProjectIdRef.current, modeRef.current, draftDataRef.current)
+      }
       if (!autosaveCanSaveRef.current) return
       if (savingRef.current) return
-      void autosaveHandlerRef.current()
+      void autosaveHandlerRef.current({ silent: true })
     }, AUTOSAVE_INTERVAL_MS)
     return () => window.clearInterval(id)
   }, [])
@@ -1455,9 +1762,25 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
   async function handleDeleteProject() {
     if (!currentProjectId) return
-    if (!window.confirm('Delete this project? This cannot be undone.')) return
+    const ok = await confirm({
+      title: 'Delete this project?',
+      message: 'You can undo within a few seconds from the toast.',
+      confirmLabel: 'Delete project',
+      variant: 'destructive',
+    })
+    if (!ok) return
+    const deletedId = currentProjectId
+    // Pre-fetch the full project (PDF blob + reference PDFs included) so
+    // Undo can resurrect it byte-for-byte. Best-effort: a fetch failure
+    // means no Undo, but the delete still goes through.
+    let cached: SavedProject | undefined
     try {
-      await deleteProjectFromStore(currentProjectId)
+      cached = await getProject(deletedId)
+    } catch (err) {
+      console.warn('[handleDeleteProject] Pre-fetch for Undo failed', err)
+    }
+    try {
+      await deleteProjectFromStore(deletedId)
       setCurrentProjectId(null)
       setProjectStatus('in-progress')
       setProjectOutcome(undefined)
@@ -1471,8 +1794,44 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         url.searchParams.delete('id')
         window.history.replaceState({}, '', url.toString())
       }
+      if (mode) clearDraft(deletedId, mode)
     } catch (err) {
       console.error('Failed to delete project', err)
+      toast.error('Delete failed', {
+        description: (err as Error)?.message ?? 'Unknown error',
+      })
+      return
+    }
+    if (cached) {
+      // 8-second sticky toast with Undo. The handler re-saves via
+      // saveProjectToStore (which on cloud accounts upserts the row),
+      // then navigates back into the workspace at the same id so the
+      // user lands exactly where they were before the delete.
+      toast.success('Project deleted', {
+        durationMs: 8000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            void (async () => {
+              try {
+                await saveProjectToStore(cached!)
+                const route = cached!.type === 'brick'
+                  ? `/project/brick?id=${cached!.id}`
+                  : `/project/block?id=${cached!.id}`
+                window.location.assign(route)
+              } catch (err) {
+                toast.error('Could not restore project', {
+                  description: (err as Error)?.message ?? 'Unknown error',
+                })
+              }
+            })()
+          },
+        },
+      })
+    } else {
+      toast.success('Project deleted', {
+        description: "Undo not available — the project couldn't be snapshotted.",
+      })
     }
   }
 
@@ -1647,6 +2006,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   // the user edits a block's depth, swaps the active brick type, or changes a
   // brick type's depth in the library panel.
   const { version: blockLibraryVersion } = useBlockLibrary()
+  const { version: brickLibraryVersion } = useBrickLibrary()
 
   /**
    * Headline numbers the SupplyItemsPanel needs to compute live quantities.
@@ -1715,8 +2075,8 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     allPiers,
     pierMakeupsById,
     blockLibraryVersion,
+    brickLibraryVersion,
   ])
-  const { version: brickLibraryVersion } = useBrickLibrary()
   const wallThicknessByWallId = useMemo(
     () =>
       computeWallThicknessByWallId(allWalls, makeupsById, mode, brickSettings.brickTypeCode),
@@ -1787,13 +2147,21 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     const snappedStart = startMm
     const snappedEnd = endMm
 
-    // Resolve the new wall's makeup id + initial height override based on mode.
-    // Brick walls now reference a BrickMakeup the same way block walls reference
-    // a WallMakeup, and inherit the active makeup's height as the wall's initial
-    // override so per-makeup heights actually apply at draw time. Falls back to
-    // brickSettings.defaultWallHeightMm if no active brick makeup exists yet
-    // (eg. older projects that still need to be migrated).
-    const activeBrickMakeup = brickMakeupsById[activeBrickMakeupId]
+    // Resolve the new wall's makeup id. Height is intentionally NOT
+    // stamped here: heightMmOverride is reserved for "the user has
+    // explicitly set a different height on THIS wall, ignore the wall
+    // type's height for it". Draw time has no explicit override yet,
+    // so the calc engine (brickCalc.calculateBrickTally /
+    // blockCalc) falls through `wall.heightMmOverride → makeup.heightMm
+    // → settings.defaultWallHeightMm` — which means editing the wall
+    // type's heightMm in the BrickTypesPanel / WallTypesPanel
+    // afterwards propagates to every wall of that type automatically.
+    //
+    // Previously brick walls stamped the active makeup's heightMm into
+    // heightMmOverride at draw time. That made the override win
+    // forever, so subsequent wall-type height edits looked like they
+    // did nothing on existing brick walls — same bug we already fixed
+    // in calculateBrickTally's precedence chain.
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -1810,9 +2178,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       // placed explicitly via the Control Joint tool.
       startJunction: { type: 'free' },
       endJunction: { type: 'free' },
-      heightMmOverride: isBrick
-        ? activeBrickMakeup?.heightMm ?? brickSettings.defaultWallHeightMm
-        : undefined,
+      heightMmOverride: undefined,
     }
 
     // Junction detection only matters for block walls (corners + T-junctions affect tally).
@@ -1871,12 +2237,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // outside AU, since US / UK don't ship a dedicated wedge — fall
     // back to the body block. The export's curve assumption note
     // already explains that cuts are required at that radius.
+    // Route both picks through resolveBlockByRole so the user's
+    // DefaultsByRole map can override (e.g. they've nominated a non-
+    // standard wedge for their region). Falls through to library tag
+    // scan, then to AU SEQ literal as last resort for the body.
+    const wedgeSettings = getUserSettings()
     const wedgeBlock =
-      Object.values(BLOCK_LIBRARY).find((b) =>
-        b.roles.includes('curve-tight')
-      )?.code
+      resolveBlockByRole('curve-tight', BLOCK_LIBRARY, { settings: wedgeSettings })?.code
     const bodyDefault =
-      Object.values(BLOCK_LIBRARY).find((b) => b.roles.includes('body'))?.code ??
+      resolveBlockByRole('body', BLOCK_LIBRARY, { settings: wedgeSettings })?.code ??
       '20.48'
     const bodyBlock =
       zone === 'wedge' || zone === 'custom'
@@ -1923,6 +2292,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         name: `Curved wall — ${radiusLabel}`,
         heightMm: newCurveHeightMm,
         bondType: isWedgeMakeup ? 'stack' : 'stretcher',
+        // Respect user defaults for body/corner/base/top so curve makeups
+        // pick from the same map as the standard external-wall seed above.
+        settings: getUserSettings(),
       })
       curveMakeup.bodyBlockCode = bodyBlock
       curveMakeup.topCourseBlockCode = bodyBlock
@@ -2164,7 +2536,52 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
   }
 
   function handleUpdateBrickMakeup(updated: BrickMakeup) {
+    // Capture prev BEFORE applying the update so we can detect a height
+    // change and propagate it. Two reasons we need this propagation:
+    //
+    //  1. Legacy projects (and any walls drawn before the draw-time
+    //     stamp was removed) carry heightMmOverride set to whatever
+    //     the makeup height was at draw time. That override wins
+    //     forever in the calc precedence chain, so the user editing
+    //     the wall type's height does nothing for those walls without
+    //     this sweep.
+    //  2. There's no per-wall height-override UI for brick walls right
+    //     now — every heightMmOverride on a brick wall today is a
+    //     stale draw-time stamp, never user-explicit. Safe to clear
+    //     unconditionally when the wall type's height changes. If a
+    //     per-wall override surface ever lands, this sweep needs a
+    //     "user-set" flag to avoid clobbering deliberate overrides.
+    const prevMakeup = brickMakeups.find((m) => m.id === updated.id)
     setBrickMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+
+    const heightChanged =
+      prevMakeup &&
+      typeof prevMakeup.heightMm === 'number' &&
+      typeof updated.heightMm === 'number' &&
+      prevMakeup.heightMm !== updated.heightMm
+
+    if (heightChanged) {
+      setWallsByPage((pages) => {
+        const next: Record<number, Wall[]> = {}
+        let changed = false
+        for (const [pageStr, pageWalls] of Object.entries(pages)) {
+          const pageNum = Number(pageStr)
+          next[pageNum] = pageWalls.map((w) => {
+            if (
+              w.makeupId === updated.id &&
+              w.heightMmOverride !== undefined
+            ) {
+              changed = true
+              const { heightMmOverride: _drop, ...rest } = w
+              void _drop
+              return { ...rest, heightMmOverride: undefined } as Wall
+            }
+            return w
+          })
+        }
+        return changed ? next : pages
+      })
+    }
   }
 
   function handleDeleteBrickMakeup(id: string) {
@@ -2290,7 +2707,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       ? pierMakeups.find((m) => m.id === makeupId)
       : null
     if (!active || active.suggestedPlacement !== 'tied') {
-      const defaultPattern = createDefaultTiedPierMakeup().coursePattern
+      // Both the dedup pattern + the fresh creation use the user's
+      // DefaultsByRole map so the pier block + corner tie-back come from
+      // their library, not the AU SEQ literals.
+      const us = getUserSettings()
+      const defaultPattern = createDefaultTiedPierMakeup(undefined, us).coursePattern
       const dedup = pierMakeups.find(
         (m) =>
           m.suggestedPlacement === 'tied' &&
@@ -2301,7 +2722,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       if (fallback) {
         makeupId = fallback.id
       } else {
-        const fresh = createDefaultTiedPierMakeup('Tied pier 1')
+        const fresh = createDefaultTiedPierMakeup('Tied pier 1', us)
         setPierMakeups((prev) => [...prev, fresh])
         makeupId = fresh.id
       }
@@ -2335,7 +2756,9 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       ? pierMakeups.find((m) => m.id === makeupId) ?? null
       : null
     if (!makeup || makeup.suggestedPlacement !== 'freestanding') {
-      const defaultPattern = createDefaultFreestandingPierMakeup().coursePattern
+      // Same DefaultsByRole pattern as the tied-pier branch above.
+      const us = getUserSettings()
+      const defaultPattern = createDefaultFreestandingPierMakeup(undefined, us).coursePattern
       const dedup = pierMakeups.find(
         (m) =>
           m.suggestedPlacement === 'freestanding' &&
@@ -2347,7 +2770,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         makeupId = fallback.id
         makeup = fallback
       } else {
-        const fresh = createDefaultFreestandingPierMakeup('Freestanding pier 1')
+        const fresh = createDefaultFreestandingPierMakeup('Freestanding pier 1', us)
         setPierMakeups((prev) => [...prev, fresh])
         makeupId = fresh.id
         makeup = fresh
@@ -2431,8 +2854,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // The new merged WallTypesPanel pier modal builds the PierMakeup
     // itself (name, pattern, placement) and passes it through. Older
     // call paths that just want a blank default still work — we fall
-    // back to createDefaultTiedPierMakeup when no makeup is supplied.
-    const next = makeup ?? createDefaultTiedPierMakeup('New pier type')
+    // back to createDefaultTiedPierMakeup when no makeup is supplied,
+    // threading user settings through so the seed uses their preferred
+    // pier + corner blocks (not the AU 40.925 / 20.01 literals).
+    const next = makeup ?? createDefaultTiedPierMakeup('New pier type', getUserSettings())
     setPierMakeups((prev) => [...prev, next])
   }
 
@@ -3865,18 +4290,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                 />
               </label>
-              <label className="text-sm block">
-                <span className="block text-ink-300 mb-1">Estimator</span>
-                <input
-                  type="text"
-                  value={projectDetails.estimatorName}
-                  onChange={(e) =>
-                    setProjectDetails({ ...projectDetails, estimatorName: e.target.value })
-                  }
-                  placeholder="Your name"
-                  className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                />
-              </label>
             </div>
             <div className="px-6 py-4 border-t border-ink-600 flex items-center justify-between gap-2">
               <span className="text-xs text-ink-400">
@@ -3929,6 +4342,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             sourceRequest={sourceRequest ?? null}
             createdByDisplayName={createdByDisplayName}
             referenceNumber={referenceNumber}
+            isSaving={isSaving}
             onSave={handleSaveProject}
             onToggleStatus={handleToggleProjectStatus}
             onDelete={handleDeleteProject}
@@ -4118,6 +4532,7 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           mode={mode}
           sourceRequest={sourceRequest ?? null}
           createdByDisplayName={createdByDisplayName}
+          isSaving={isSaving}
           onSave={handleSaveProject}
           onToggleStatus={handleToggleProjectStatus}
           onDelete={handleDeleteProject}
@@ -5263,8 +5678,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 
       {/* Pending opening form — brick mode (just height) */}
       {pendingOpening && pendingOpeningWall && mode === 'brick' && (() => {
+        // Mirror brickCalc's height precedence: per-wall override → wall
+        // type's heightMm → project default. Keeps this modal's "Opening
+        // on a {N}mm wall" caption in lockstep with the tallied area.
+        const pendingMakeup = pendingOpeningWall.makeupId
+          ? brickMakeups.find((m) => m.id === pendingOpeningWall.makeupId)
+          : undefined
         const wallHeightMm =
-          pendingOpeningWall.heightMmOverride ?? brickSettings.defaultWallHeightMm
+          pendingOpeningWall.heightMmOverride ??
+          pendingMakeup?.heightMm ??
+          brickSettings.defaultWallHeightMm
         const tooSmall = brickOpeningHeightMm < 100
         const tooTall = brickOpeningHeightMm > wallHeightMm
         return (
@@ -5362,7 +5785,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         !drawingMode &&
         (() => {
           const selWall = currentPageWalls.find((w) => w.id === selectedOpening.wallId)
-          const selMakeup = selWall ? makeupsById[selWall.makeupId] : undefined
+          // Brick walls reference brick makeups, not block ones — pick
+          // the right id map based on mode so the per-makeup height
+          // actually gets surfaced (was previously falling through to
+          // the project default in brick mode because brickMakeupsById
+          // wasn't consulted).
+          const selMakeup = selWall
+            ? mode === 'brick'
+              ? brickMakeupsById[selWall.makeupId]
+              : makeupsById[selWall.makeupId]
+            : undefined
           const selWallHeightMm =
             selWall?.heightMmOverride ??
             selMakeup?.heightMm ??
@@ -5417,11 +5849,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const selPierMakeup = selectedPier.pierMakeupId
           ? pierMakeupsById[selectedPier.pierMakeupId]
           : undefined
+        // Pattern string for the selection banner. Resolve from the
+        // pier's makeup when set; otherwise fall back to a generic
+        // description so US / UK projects without a makeup yet don't
+        // see AU codes ("40.925 / 20.01") in their banner.
         const patternStr = selPierMakeup
           ? selPierMakeup.coursePattern.join(' / ')
           : selectedPier.type === 'tied'
-            ? '40.925 / 20.01'
-            : '40.925'
+            ? 'pier / corner alternating'
+            : 'pier stacked'
         return (
           <div className="mb-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-sm text-emerald-200 flex items-center justify-between flex-wrap gap-2">
             <div>
@@ -5719,6 +6155,16 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                       BLOCK_LIBRARY[am.bodyBlockCode]?.dimensions.depthMm
                     return body ?? 190
                   })()}
+                  // Pier footprint for on-canvas pier tiles — read from
+                  // the library's pier-tagged block (or the user's
+                  // DefaultsByRole.pier override). Falls back to the AU
+                  // 40.925 footprint (390mm) when nothing resolves. The
+                  // resolver picks once at render — pier-rendering cost
+                  // is tiny so this is fine without memoisation.
+                  pierFootprintMm={(() => {
+                    const pierBlock = pickPierBlock({ settings: getUserSettings() })
+                    return pierBlock?.dimensions.widthMm ?? 390
+                  })()}
                   visualWidth={renderedPageWidth}
                   visualHeight={renderedPageHeight}
                   pxPerMmAtCurrentZoom={currentScale * renderedZoom}
@@ -5766,6 +6212,13 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   selectedOpeningIds={selectedOpeningIds}
                   selectedPierIds={selectedPierIds}
                   wallColorByWallId={wallColorByWallId}
+                  activeWallColor={
+                    mode === 'block' && activeMakeupId
+                      ? wallTypeColor(activeMakeupId, makeups)
+                      : mode === 'brick' && activeBrickMakeupId
+                        ? wallTypeColor(activeBrickMakeupId, brickMakeups)
+                        : undefined
+                  }
                   activeMakeupIdForHighlight={
                     showActiveMakeupHighlight
                       ? mode === 'brick'
@@ -6194,6 +6647,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
     </div>
   )
 })
+
 
 /**
  * Page heading for the workspace.

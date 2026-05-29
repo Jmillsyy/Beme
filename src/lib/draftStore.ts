@@ -1,0 +1,154 @@
+/**
+ * draftStore.ts — last-resort recovery for unsaved workspace state.
+ *
+ * Writes a JSON snapshot of the dirty workspace to localStorage every
+ * few seconds while `hasUnsavedChanges` is true. If the user closes
+ * the tab, hits refresh, or the browser crashes, the snapshot
+ * survives. On next workspace mount we check for a draft newer than
+ * the cloud row's `updatedAt` and offer the user a Restore prompt.
+ *
+ * Storage budget: localStorage caps at ~5MB per origin in most browsers.
+ * A typical Beme project (walls + openings + types) is 50–200KB of
+ * JSON, so we can hold many drafts comfortably. PDF blobs are NOT
+ * snapshotted (they'd blow the budget; users already have to re-attach
+ * a PDF anyway when restoring across browser restarts).
+ *
+ * Key scheme:
+ *   beme:draft:{projectId}   — drafts for saved projects
+ *   beme:draft:new:{mode}    — draft for an unsaved-yet workspace
+ *
+ * Values are JSON-encoded `ProjectDraft` objects. Anything we can't
+ * JSON-serialize (Blobs, File objects, etc.) is left out of the
+ * snapshot — the draft is purely the data side.
+ */
+
+/**
+ * The fields the draft system actually persists. Mirrors `SavedProject`'s
+ * data side but omits the bits that don't JSON-serialize (PDF blobs,
+ * reference PDF blobs) and the bits the cloud row already tracks (id,
+ * createdAt, ownerUserId, etc.).
+ *
+ * Kept loosely typed (`unknown`) so the workspace can stash any shape
+ * it needs without coupling this module to every domain type. The
+ * workspace knows what it put in; this module just stores and returns
+ * it verbatim.
+ */
+export interface ProjectDraft {
+  /** Project id, or 'new:block' / 'new:brick' for unsaved-yet drafts. */
+  key: string
+  /** Unix ms when this draft was written. */
+  savedAt: number
+  /** Mode the draft belongs to — drives the new-project key when there's
+   *  no project id yet. */
+  mode: 'block' | 'brick'
+  /** The actual data payload — opaque to this module. */
+  data: Record<string, unknown>
+}
+
+const PREFIX = 'beme:draft:'
+
+function isStorageAvailable(): boolean {
+  // Safari private mode + cookie-less iframes throw on access. Cheap probe.
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return false
+    const probe = `${PREFIX}__probe`
+    window.localStorage.setItem(probe, '1')
+    window.localStorage.removeItem(probe)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const storageOk = isStorageAvailable()
+
+/** Build the localStorage key from a project id (or null for fresh). */
+export function draftKeyFor(projectId: string | null, mode: 'block' | 'brick'): string {
+  return projectId ? `${PREFIX}${projectId}` : `${PREFIX}new:${mode}`
+}
+
+/**
+ * Write or overwrite a draft. Safe to call on every keystroke — caller
+ * should debounce. Silently no-ops if storage is unavailable so callers
+ * don't have to guard.
+ */
+export function saveDraft(
+  projectId: string | null,
+  mode: 'block' | 'brick',
+  data: Record<string, unknown>
+): void {
+  if (!storageOk) return
+  const key = draftKeyFor(projectId, mode)
+  const payload: ProjectDraft = {
+    key,
+    savedAt: Date.now(),
+    mode,
+    data,
+  }
+  try {
+    window.localStorage.setItem(key, JSON.stringify(payload))
+  } catch (err) {
+    // Quota exceeded is the most likely failure here. We don't surface
+    // it to the user (the draft is a courtesy, not a contract) but we
+    // do log it so devs can spot a pathological saver.
+    console.warn('[draftStore] Failed to save draft', err)
+  }
+}
+
+/** Read a draft for the given project (or null if none / invalid). */
+export function getDraft(
+  projectId: string | null,
+  mode: 'block' | 'brick'
+): ProjectDraft | null {
+  if (!storageOk) return null
+  const key = draftKeyFor(projectId, mode)
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as ProjectDraft
+    // Defensive: any field missing → treat as no draft. Old / corrupted
+    // entries shouldn't crash the restore prompt.
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      typeof parsed.savedAt !== 'number' ||
+      typeof parsed.data !== 'object' ||
+      parsed.data === null
+    ) {
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Remove a draft. Called after a successful save, an explicit user
+ * "discard draft", or a project delete. Idempotent — safe to call
+ * even if no draft exists.
+ */
+export function clearDraft(projectId: string | null, mode: 'block' | 'brick'): void {
+  if (!storageOk) return
+  const key = draftKeyFor(projectId, mode)
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    // Ignore — same reasoning as save.
+  }
+}
+
+/**
+ * Format the draft's age as a short relative string ("just now",
+ * "4m ago"). Used by the restore prompt copy.
+ */
+export function formatDraftAge(savedAt: number): string {
+  const diffMs = Date.now() - savedAt
+  const diffMin = Math.round(diffMs / 60000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.round(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  const diffDay = Math.round(diffHr / 24)
+  return `${diffDay}d ago`
+}

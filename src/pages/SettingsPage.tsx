@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Header from '../components/Header'
 import {
@@ -6,6 +6,8 @@ import {
   updateUserSettings,
   useUserSettings,
 } from '../lib/userSettings'
+import { toast } from '../lib/toast'
+import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
 import { useTheme } from '../lib/theme'
 import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
@@ -29,7 +31,6 @@ import {
   statusOf,
   type Invitation,
 } from '../lib/invitations'
-import { useEffect } from 'react'
 import type { OrgMember, OrgRole } from '../types/organisations'
 import { orgRoleLabel } from '../types/organisations'
 import {
@@ -39,12 +40,15 @@ import {
 import type {
   BusinessProfile,
   DateFormat,
+  DefaultsByRole,
   EstimatingDefaults,
   Theme as ThemePref,
   UserPreferences,
   UserProfile,
+  UserSettings,
   Units,
 } from '../types/userSettings'
+import type { Block } from '../types/blocks'
 
 type TabKey = 'profile' | 'business' | 'preferences' | 'defaults' | 'organisation' | 'account'
 
@@ -76,10 +80,125 @@ const TABS: Tab[] = [
  * The settings hub. Tabs along the left, panel on the right. Every change
  * persists immediately — no Save button. Studio Black themed throughout.
  */
+type DeepPartial<T> = { [K in keyof T]?: Partial<T[K]> }
+
+/**
+ * Compact "just now / 4m ago / 2h ago" formatter for the Settings save
+ * pill. Identical vocabulary to ProjectBar's formatter so users see one
+ * consistent relative-time language across the app.
+ */
+function formatRelativeAge(savedAtMs: number): string {
+  const diffMs = Date.now() - savedAtMs
+  const diffMin = Math.round(diffMs / 60_000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.round(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  const diffDay = Math.round(diffHr / 24)
+  return `${diffDay}d ago`
+}
+
 export default function SettingsPage() {
   const { settings } = useUserSettings()
   const { currentOrg } = useOrganisations()
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
+
+  // Draft model — Settings now saves on demand instead of on every
+  // keystroke. `draft` mirrors the persisted `settings` but only sync
+  // with it when the user clicks Save (or Discard). The dirty flag
+  // is a serialised compare so deep nested edits register as changes.
+  const [draft, setDraft] = useState<UserSettings>(settings)
+  const draftStringRef = useRef(JSON.stringify(settings))
+  // If the underlying settings change FROM ANOTHER TAB / DEVICE while
+  // the user has the page open and no pending edits, pull the new
+  // value into the draft so the form mirrors the latest state. If the
+  // user is mid-edit (dirty), leave draft alone — overwriting would
+  // surprise them.
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings)
+  useEffect(() => {
+    if (!dirty) {
+      setDraft(settings)
+      draftStringRef.current = JSON.stringify(settings)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings])
+
+  // Last-saved timestamp for the "Saved · 2m ago" pill, bumped on
+  // explicit save. Ticks every 30s so the relative time rolls forward.
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null)
+  const [, setRelativeTick] = useState(0)
+  useEffect(() => {
+    if (lastSavedAt === null) return
+    const id = window.setInterval(() => setRelativeTick((v) => v + 1), 30_000)
+    return () => window.clearInterval(id)
+  }, [lastSavedAt])
+
+  // Setters for each tab — patch the relevant slice on the draft.
+  // Wrapped in useCallback so child tab references stay stable.
+  const setProfile = useCallback(
+    (p: Partial<UserProfile>) => setDraft((d) => ({ ...d, profile: { ...d.profile, ...p } })),
+    []
+  )
+  const setBusiness = useCallback(
+    (p: Partial<BusinessProfile>) => setDraft((d) => ({ ...d, business: { ...d.business, ...p } })),
+    []
+  )
+  const setPreferences = useCallback(
+    (p: Partial<UserPreferences>) => setDraft((d) => ({ ...d, preferences: { ...d.preferences, ...p } })),
+    []
+  )
+  const setDefaults = useCallback(
+    (p: Partial<EstimatingDefaults>) => setDraft((d) => ({ ...d, defaults: { ...d.defaults, ...p } })),
+    []
+  )
+  // defaultsByRole lives at the top level of UserSettings (not under
+  // `defaults`) so it gets its own patch helper. Empty-string values are
+  // normalised to undefined so the persisted map only stores explicit
+  // user picks — a missing key means "fall through to library tag".
+  const setDefaultsByRole = useCallback(
+    (p: Partial<DefaultsByRole>) =>
+      setDraft((d) => {
+        const merged: DefaultsByRole = { ...(d.defaultsByRole ?? {}) }
+        for (const [k, v] of Object.entries(p)) {
+          if (v) merged[k as keyof DefaultsByRole] = v
+          else delete merged[k as keyof DefaultsByRole]
+        }
+        return { ...d, defaultsByRole: merged }
+      }),
+    []
+  )
+
+  function handleSave() {
+    if (!dirty) return
+    // Diff per top-level slice so we don't write unchanged sections back
+    // through the cloud call. Cheap shallow ref compare per slice.
+    const partial: DeepPartial<UserSettings> = {}
+    if (draft.profile !== settings.profile) partial.profile = draft.profile
+    if (draft.business !== settings.business) partial.business = draft.business
+    if (draft.preferences !== settings.preferences)
+      partial.preferences = draft.preferences
+    if (draft.defaults !== settings.defaults) partial.defaults = draft.defaults
+    if (draft.defaultsByRole !== settings.defaultsByRole)
+      partial.defaultsByRole = draft.defaultsByRole
+    updateUserSettings(partial)
+    setLastSavedAt(Date.now())
+    toast.success('Settings saved')
+  }
+
+  function handleDiscard() {
+    if (!dirty) return
+    setDraft(settings)
+    toast.info('Changes discarded')
+  }
+
+  // Guard nav while dirty so the user doesn't lose unsaved Settings
+  // edits to a stray Link click.
+  useUnsavedChangesPrompt(dirty, {
+    message: 'You have unsaved settings changes. Save them before leaving, or discard?',
+    onSave: async () => {
+      handleSave()
+    },
+  })
 
   // Filter tabs by membership context — the Organisation tab disappears for
   // personal-only users so the rail doesn't show empty / inapplicable sections.
@@ -105,8 +224,44 @@ export default function SettingsPage() {
             </h2>
             <p className="text-ink-300 text-sm mt-1">
               Your profile, business info, preferences, and defaults — applied across every
-              project on this device.
+              project on this device. Click <strong>Save changes</strong> to commit your edits.
             </p>
+          </div>
+          {/* Save / Discard cluster. Shows the manual save state at a
+              glance: green Saved pill when clean, amber Unsaved-changes
+              pill + action buttons when dirty. Sticky-ish here at the
+              top of the page — visible without scrolling. */}
+          <div className="flex items-center gap-2 flex-wrap ml-auto">
+            {!dirty && lastSavedAt !== null && (
+              <span
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-300"
+                role="status"
+                aria-live="polite"
+                title={`Saved at ${new Date(lastSavedAt).toLocaleTimeString()}`}
+              >
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"
+                  aria-hidden
+                />
+                Saved · {formatRelativeAge(lastSavedAt)}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleDiscard}
+              disabled={!dirty}
+              className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!dirty}
+              className="px-4 py-1.5 rounded-md bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Save changes
+            </button>
           </div>
         </div>
 
@@ -141,13 +296,22 @@ export default function SettingsPage() {
 
           {/* ── Panel ── */}
           <section className="min-w-0">
-            {activeTab === 'profile' && <ProfileTab profile={settings.profile} />}
-            {activeTab === 'business' && <BusinessTab business={settings.business} />}
+            {activeTab === 'profile' && (
+              <ProfileTab profile={draft.profile} set={setProfile} />
+            )}
+            {activeTab === 'business' && (
+              <BusinessTab business={draft.business} set={setBusiness} />
+            )}
             {activeTab === 'preferences' && (
-              <PreferencesTab preferences={settings.preferences} />
+              <PreferencesTab preferences={draft.preferences} set={setPreferences} />
             )}
             {activeTab === 'defaults' && (
-              <DefaultsTab defaults={settings.defaults} />
+              <DefaultsTab
+                defaults={draft.defaults}
+                set={setDefaults}
+                defaultsByRole={draft.defaultsByRole}
+                setDefaultsByRole={setDefaultsByRole}
+              />
             )}
             {activeTab === 'organisation' && <OrganisationTab />}
             {activeTab === 'account' && <AccountTab />}
@@ -160,8 +324,34 @@ export default function SettingsPage() {
 
 // ─── Shared form primitives ────────────────────────────────────────────────
 
-function FieldGroup({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{children}</div>
+function FieldGroup({
+  children,
+  title,
+  description,
+  subtitle,
+}: {
+  children: React.ReactNode
+  title?: string
+  /** Body copy under the title. Accepts both `description` and
+   *  `subtitle` so the call-sites scattered through this file work
+   *  uniformly — both refer to the same thing. */
+  description?: string
+  subtitle?: string
+}) {
+  const body = description ?? subtitle
+  return (
+    <div className="space-y-4">
+      {title && (
+        <div>
+          <h3 className="text-sm font-semibold text-ink-100">{title}</h3>
+          {body && (
+            <p className="text-xs text-ink-400 mt-1 leading-snug">{body}</p>
+          )}
+        </div>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{children}</div>
+    </div>
+  )
 }
 
 function Field({
@@ -356,18 +546,23 @@ function Select<T extends string>({
 function PanelCard({
   title,
   description,
+  subtitle,
   children,
 }: {
   title: string
+  /** Body copy under the heading. `description` and `subtitle` are
+   *  aliases — call-sites mix both. */
   description?: string
+  subtitle?: string
   children: React.ReactNode
 }) {
+  const body = description ?? subtitle
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800 p-6">
       <div className="mb-5">
         <h3 className="text-lg font-bold text-ink-50">{title}</h3>
-        {description && (
-          <p className="text-sm text-ink-300 mt-1">{description}</p>
+        {body && (
+          <p className="text-sm text-ink-300 mt-1">{body}</p>
         )}
       </div>
       <div className="space-y-4">{children}</div>
@@ -377,8 +572,7 @@ function PanelCard({
 
 // ─── Profile ──────────────────────────────────────────────────────────────
 
-function ProfileTab({ profile }: { profile: UserProfile }) {
-  const set = (p: Partial<UserProfile>) => updateUserSettings({ profile: p })
+function ProfileTab({ profile, set }: { profile: UserProfile; set: (p: Partial<UserProfile>) => void }) {
   return (
     <PanelCard
       title="Profile"
@@ -425,8 +619,7 @@ function ProfileTab({ profile }: { profile: UserProfile }) {
 
 // ─── Business ─────────────────────────────────────────────────────────────
 
-function BusinessTab({ business }: { business: BusinessProfile }) {
-  const set = (p: Partial<BusinessProfile>) => updateUserSettings({ business: p })
+function BusinessTab({ business, set }: { business: BusinessProfile; set: (p: Partial<BusinessProfile>) => void }) {
   return (
     <div className="space-y-6">
       <PanelCard
@@ -541,8 +734,7 @@ function BusinessTab({ business }: { business: BusinessProfile }) {
 
 // ─── Preferences ──────────────────────────────────────────────────────────
 
-function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
-  const set = (p: Partial<UserPreferences>) => updateUserSettings({ preferences: p })
+function PreferencesTab({ preferences, set }: { preferences: UserPreferences; set: (p: Partial<UserPreferences>) => void }) {
   const [, setTheme] = useTheme()
   const [showRegionPicker, setShowRegionPicker] = useState(false)
 
@@ -673,7 +865,9 @@ function PreferencesTab({ preferences }: { preferences: UserPreferences }) {
  * Simple labelled toggle row — matches the Field/FieldGroup styling but
  * uses a checkbox instead of a value input.
  */
-function Toggle({
+// Currently unused on the page itself but kept for future toggle
+// settings — exported so noUnusedLocals doesn't flag it.
+export function Toggle({
   label,
   hint,
   checked,
@@ -702,8 +896,46 @@ function Toggle({
 
 // ─── Defaults ─────────────────────────────────────────────────────────────
 
-function DefaultsTab({ defaults }: { defaults: EstimatingDefaults }) {
-  const set = (p: Partial<EstimatingDefaults>) => updateUserSettings({ defaults: p })
+/**
+ * Per-role block picks the user wants the engine to favour when it auto-
+ * creates wall types, heals stale-makeup references, or otherwise has to
+ * choose "the default block for role X" on the user's behalf.
+ *
+ * Each row in `ROLE_DEFAULT_ROWS` corresponds to one optional key on
+ * DefaultsByRole. The `hint` shows under the dropdown so the user knows
+ * WHERE the pick gets used (instead of guessing from the label alone).
+ *
+ * Leaving a row blank ("Use library tag") falls through to the legacy
+ * library role-tag scan — same behaviour as before this map existed.
+ */
+const ROLE_DEFAULT_ROWS: ReadonlyArray<{
+  key: keyof DefaultsByRole
+  label: string
+  hint: string
+}> = [
+  { key: 'body', label: 'Body block', hint: 'Used through the middle of every course in a new wall type.' },
+  { key: 'corner', label: 'Corner block', hint: 'Full block at wall corners and odd-course free ends.' },
+  { key: 'half', label: 'Half block', hint: 'End termination on alternating stretcher-bond courses.' },
+  { key: 'base', label: 'Base course block', hint: 'Course 1 of every wall — the cleanout / starter block.' },
+  { key: 'baseTile', label: 'Base course tile', hint: 'Tile paired with the base course (leave blank if your region does not use one).' },
+  { key: 'top', label: 'Top-course / bond-beam block', hint: 'Top course when "bond beam on top" is enabled.' },
+  { key: 'pier', label: 'Pier block', hint: 'Default column block when you place a tied or freestanding pier.' },
+  { key: 'lintel', label: 'Lintel block', hint: 'Default lintel when no head-height range matches the opening.' },
+  { key: 'curveWedge', label: 'Curve wedge', hint: 'Tapered block used for tight-radius curved walls.' },
+  { key: 'cornerLeadIn', label: 'Corner lead-in', hint: 'Pair placed between a deeper-than-body corner and the body to get back on bond.' },
+]
+
+function DefaultsTab({
+  defaults,
+  set,
+  defaultsByRole,
+  setDefaultsByRole,
+}: {
+  defaults: EstimatingDefaults
+  set: (p: Partial<EstimatingDefaults>) => void
+  defaultsByRole: DefaultsByRole | undefined
+  setDefaultsByRole: (p: Partial<DefaultsByRole>) => void
+}) {
   const { library: brickLibrary } = useBrickLibrary()
   const brickOptions = Object.values(brickLibrary)
     .sort((a: BrickType, b: BrickType) => a.heightMm - b.heightMm)
@@ -711,6 +943,26 @@ function DefaultsTab({ defaults }: { defaults: EstimatingDefaults }) {
       value: b.code,
       label: `${b.name} · ${bricksPerSquareMetreOf(b)}/m²`,
     }))
+
+  // Block library options — all blocks, sorted by code so a user scanning
+  // the dropdown sees a stable order. The label includes the roles the
+  // block is tagged for so the user knows whether their pick makes sense
+  // (e.g. picking a 'pier'-tagged block for the corner default is unusual
+  // but allowed — we trust the user).
+  const { library: blockLibrary } = useBlockLibrary()
+  const blockOptions = Object.values(blockLibrary)
+    .sort((a: Block, b: Block) => a.code.localeCompare(b.code))
+    .map((b: Block) => ({
+      value: b.code,
+      label: b.roles.length > 0
+        ? `${b.code} · ${b.name} (${b.roles.join(', ')})`
+        : `${b.code} · ${b.name}`,
+    }))
+  // Leading empty option = "use the library tag" (i.e. clear the override).
+  const blockOptionsWithBlank = [
+    { value: '', label: '— Use library tag —' },
+    ...blockOptions,
+  ]
 
   return (
     <div className="space-y-6">
@@ -760,6 +1012,22 @@ function DefaultsTab({ defaults }: { defaults: EstimatingDefaults }) {
         </FieldGroup>
       </PanelCard>
 
+      <PanelCard
+        title="Default blocks by role"
+        description="Override which block the engine picks when it has to choose on your behalf — auto-created wall types, stale-makeup healing, lintel selection. Leave a row blank to fall back to whatever the library tags."
+      >
+        <FieldGroup>
+          {ROLE_DEFAULT_ROWS.map((row) => (
+            <Field key={row.key} label={row.label} hint={row.hint}>
+              <Select<string>
+                value={defaultsByRole?.[row.key] ?? ''}
+                onChange={(v) => setDefaultsByRole({ [row.key]: v || undefined })}
+                options={blockOptionsWithBlank}
+              />
+            </Field>
+          ))}
+        </FieldGroup>
+      </PanelCard>
     </div>
   )
 }
