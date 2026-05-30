@@ -68,15 +68,6 @@ export function circleThroughThreePoints(
   return { centerX: ux, centerY: uy, radiusMm: r }
 }
 
-/**
- * Normalise an angle into the range (−π, π].
- */
-function normaliseAngle(a: number): number {
-  let x = a
-  while (x > Math.PI) x -= 2 * Math.PI
-  while (x <= -Math.PI) x += 2 * Math.PI
-  return x
-}
 
 /**
  * Given a circle centre and a point, return the angle from centre to point.

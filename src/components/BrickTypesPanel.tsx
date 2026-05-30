@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactElement } from 'react'
 import type { BrickCourseRange, BrickMakeup } from '../types/walls'
 import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
@@ -181,7 +181,7 @@ export default function BrickTypesPanel({
           workspace's edit affordance feels the same as the block one. */}
       {editingId !== null && (
         <BrickTypeEditorModal
-          existing={editingId === 'new' ? null : editingMakeup}
+          existing={editingId === 'new' ? null : editingMakeup ?? null}
           onCancel={() => setEditingId(null)}
           onSave={(m) => {
             if (editingId === 'new') onAddMakeup(m)
@@ -670,7 +670,7 @@ function BrickWallPreview({
             const faceMm =
               band.brick.widthMm + (band.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
             const bandBottomY = band.topY + band.height
-            const lines: JSX.Element[] = []
+            const lines: ReactElement[] = []
             // Horizontal mortar lines: one at the TOP of each course,
             // starting from the band's bottom-most course and walking
             // up. The very bottom of the wall doesn't get a top line

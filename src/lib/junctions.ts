@@ -8,7 +8,7 @@
  * with full 20.01 blocks every course).
  */
 
-import type { JunctionType, Wall, WallJunction } from '../types/walls'
+import type { Wall, WallJunction } from '../types/walls'
 import { isCurvedWall } from './curveGeom'
 
 interface Point {

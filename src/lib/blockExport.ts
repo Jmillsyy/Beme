@@ -1434,9 +1434,6 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
       combinedPerCode[code] = (combinedPerCode[code] ?? 0) + count
     }
   }
-  const combinedEntries = tallyEntries(combinedPerCode)
-  const breakdownGrandTotal = combinedEntries.reduce((s, [, c]) => s + c, 0)
-
   // Each wall-type breakdown gets its own .page section so every page reliably
   // carries the full pageHeader (ABC Building Products / Block Takeoff —
   // Material Schedule) and the "Breakdown by Wall Type" subtitle. Trying to

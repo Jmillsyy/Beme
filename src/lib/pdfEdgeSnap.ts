@@ -1,0 +1,5 @@
+// Retired. The PDF edge-snap experiment was rolled back — it never
+// landed cleanly enough to ship. Kept as an empty module so any stale
+// import resolves to a no-op instead of breaking the build. Safe to
+// delete the file entirely once you've confirmed no imports remain.
+export {}

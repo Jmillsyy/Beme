@@ -281,7 +281,7 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
 
       {editingId !== null && !readOnly && (
         <SupplyItemForm
-          existing={editing}
+          existing={editing ?? null}
           onSave={saveItem}
           onCancel={() => setEditingId(null)}
         />
@@ -363,7 +363,7 @@ function SupplyItemForm({
   const [appliesToBrick, setAppliesToBrick] = useState(
     existing ? existing.appliesTo.includes('brick') : true
   )
-  const [enabledByDefault, setEnabledByDefault] = useState(
+  const [enabledByDefault] = useState(
     existing?.enabledByDefault ?? true
   )
   // Opening-width range — only meaningful for unit: 'per-opening'.

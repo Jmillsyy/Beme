@@ -32,7 +32,6 @@ import {
   pickFractionBlocks,
   pickHalfBlock,
   pickHeightMakeupBlock,
-  pickLintelBlock,
   pickPierBlock,
 } from '../data/blockLibrary'
 import type { BlockCode, BlockDimensions, BlockRole } from '../types/blocks'
@@ -166,10 +165,6 @@ const BODY_BLOCK_MODULE_MM = 400
 const FULL_END_MODULE_MM = 400
 /** Modular length of a half end block 20.03 (190 + 10). */
 const HALF_END_MODULE_MM = 200
-/** Modular length of a 3/4 fraction 20.02 (290 + 10). */
-const FRAC_75_MODULE_MM = 300
-/** Modular length of a 7/8 fraction 20.22 (340 + 10). */
-const FRAC_875_MODULE_MM = 350
 /** Modular height of a 20.71 height-makeup course (90 block + 10 mortar
  *  joint = 100mm). The makeup block sits in a course with its own mortar
  *  bed, same as a standard. */
@@ -555,7 +550,7 @@ function fitSingleBlockWall(wallLengthMm: number): CourseLengthFit {
     // Library has no end / corner / fraction blocks at all — fall back to a
     // safe zero so the caller doesn't crash. The user will see no blocks
     // counted for this stub, which is the visible signal to add a block.
-    return { bodyCount: 0, fractions: [], actualLengthMm: 0, overshootMm: 0 } as CourseLengthFit
+    return { bodyCount: 0, fractions: [], cutBlocks: 0, actualLengthMm: 0 }
   }
   let best = options[0]
   let bestDiff = Math.abs(best.faceWidthMm - wallLengthMm)

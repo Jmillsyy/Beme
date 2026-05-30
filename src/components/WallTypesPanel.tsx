@@ -2736,27 +2736,34 @@ function PierTypeEditorModal({ existing, seedPlacement, onSwitchToWall, onSave, 
               />
             </label>
 
-            <fieldset className="text-sm">
-              <legend className="text-ink-300 mb-1.5">Default placement</legend>
-              <div className="flex flex-col gap-1.5">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    checked={placement === 'tied'}
-                    onChange={() => setPlacement('tied')}
-                  />
-                  <span>Tied (built into a wall)</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    checked={placement === 'freestanding'}
-                    onChange={() => setPlacement('freestanding')}
-                  />
-                  <span>Freestanding</span>
-                </label>
-              </div>
-            </fieldset>
+            {/* Default placement radio — only shown when EDITING an
+                existing pier. When creating new, the kind picker at the
+                top of the modal already drives this choice (Tied pier
+                vs Freestanding pier), so showing the radio too would
+                be a redundant second surface for the same property. */}
+            {existing && (
+              <fieldset className="text-sm">
+                <legend className="text-ink-300 mb-1.5">Default placement</legend>
+                <div className="flex flex-col gap-1.5">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={placement === 'tied'}
+                      onChange={() => setPlacement('tied')}
+                    />
+                    <span>Tied (built into a wall)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={placement === 'freestanding'}
+                      onChange={() => setPlacement('freestanding')}
+                    />
+                    <span>Freestanding</span>
+                  </label>
+                </div>
+              </fieldset>
+            )}
 
             {placement === 'freestanding' && (
               <label className="text-sm block">

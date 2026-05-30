@@ -158,7 +158,13 @@ export async function refreshOrganisations(): Promise<void> {
       | null
   }
   const orgs: Organisation[] = []
-  for (const row of (data ?? []) as Row[]) {
+  // Supabase types the join return as an array because it can't
+  // statically prove the cardinality of the foreign-key relationship.
+  // At runtime this is a single object (or null) for our org_members →
+  // organisations join, so we cast through unknown to bypass tsc's
+  // wider Row[]-with-array-organisations shape. If/when supabase types
+  // gain cardinality inference we can drop the unknown step.
+  for (const row of (data ?? []) as unknown as Row[]) {
     if (!row.organisations) continue
     orgs.push({
       id: row.organisations.id,

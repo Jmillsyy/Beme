@@ -163,7 +163,6 @@ import {
   formatDraftAge,
 } from '../lib/draftStore'
 import type { EstimateRequest } from '../types/estimateRequests'
-import { Link } from 'react-router-dom'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
@@ -641,12 +640,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     () => Object.fromEntries(pierMakeups.map((m) => [m.id, m])),
     [pierMakeups]
   )
-
-  /** First pier makeup whose suggestedPlacement matches, or the first overall. */
-  function defaultPierMakeupId(placement: 'tied' | 'freestanding'): string | undefined {
-    const match = pierMakeups.find((m) => m.suggestedPlacement === placement)
-    return (match ?? pierMakeups[0])?.id
-  }
 
   // ---------- Opening state (block mode) ----------
   const [openingsByPage, setOpeningsByPage] = useState<Record<number, Opening[]>>({})
@@ -1686,11 +1679,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       // request stuck at 'in_progress' forever.
       if (sourceRequest) {
         try {
+          // updateEstimateRequest derives completed_at from status
+          // automatically — sending the field here would just be a
+          // type-mismatch on the patch object. Keep this call status-only.
+          void now
           await updateEstimateRequest(
             sourceRequest.id,
             nextStatus === 'completed'
-              ? { status: 'completed', completedAt: now }
-              : { status: 'in_progress', completedAt: null }
+              ? { status: 'completed' }
+              : { status: 'in_progress' }
           )
         } catch (err) {
           // Surfaced via console; not load-blocking — the project status
@@ -1752,6 +1749,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     setPlacingFreestandingPier(false)
     setPlacingRuler(false)
     setRulerAnchorMm(null)
+    // Also clear any pending-opening modal so Esc dismisses it the same
+    // way it dismisses every other placement mode. Without this, a
+    // pending opening modal would have no keyboard escape — the user
+    // would have to find the Cancel button or click the backdrop.
+    setPendingOpening(null)
     // Esc with nothing to cancel funnels through here too (see
     // WallDrawingLayer's keydown). Use that as the signal to dismiss the
     // active-makeup highlight — the user is saying "I'm not focused on
@@ -2109,11 +2111,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     return map
   }, [allWalls, makeups, brickMakeups, mode])
 
-  const selectedWall = useMemo(
-    () => (selectedWallId ? currentPageWalls.find((w) => w.id === selectedWallId) : null),
-    [selectedWallId, currentPageWalls]
-  )
-
   // useCallback wrappers around the wall-layer event handlers. During a zoom
   // gesture none of the dependency values change, so the callback references
   // stay stable and the memoised WallDrawingLayer can skip re-renders. Without
@@ -2453,16 +2450,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // Exit the placement mode after a successful split — match how + Add opening works.
     setPlacingControlJoint(false)
   }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, selectedWallId, setSelectedWallId])
-
-  function handleWallHeightChange(wallId: string, heightMm: number) {
-    setWallsByPage((prev) => {
-      const pageWalls = prev[currentPage] ?? []
-      const updated = pageWalls.map((w) =>
-        w.id === wallId ? { ...w, heightMmOverride: heightMm } : w
-      )
-      return { ...prev, [currentPage]: updated }
-    })
-  }
 
   function handleAddMakeup(makeup: WallMakeup) {
     setMakeups((prev) => [...prev, makeup])
@@ -3869,7 +3856,15 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       const copied = await dst.copyPages(src, keepZeroIndexed)
       copied.forEach((p) => dst.addPage(p))
       const outBytes = await dst.save()
-      const newFile = new File([outBytes], pagePicker.file.name, {
+      // Copy through a freshly-constructed ArrayBuffer so BlobPart's
+      // strict ArrayBuffer type accepts it. outBytes is typed as
+      // Uint8Array<ArrayBufferLike> in TS 5.x (which includes
+      // SharedArrayBuffer), but File/Blob constructors want a strict
+      // ArrayBuffer. Building a fresh one + copying the bytes is the
+      // cleanest way through that without an `as` cast.
+      const safeBuffer = new ArrayBuffer(outBytes.byteLength)
+      new Uint8Array(safeBuffer).set(outBytes)
+      const newFile = new File([safeBuffer], pagePicker.file.name, {
         type: 'application/pdf',
       })
       applyPdfFile(newFile)
@@ -5551,8 +5546,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const wallHeightMm =
           pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
         const computedOpeningHeightMm = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
-        const lintelBlock =
-          openingHeadHeightMm > 0 ? selectBlockLintel(openingHeadHeightMm)?.code ?? null : null
         const tooSmall = computedOpeningHeightMm < 100
         // Common opening presets — each spec'd as (sillMm, openingMm). Head is
         // computed at render time from the actual wall height so the same
@@ -5566,112 +5559,129 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           { label: 'Window 1800 (sill 600)', sillMm: 600, openingMm: 1800 },
         ]
         return (
-          <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
-            <div className="font-medium mb-3">
-              Opening on a {Math.round(wallHeightMm)}mm wall · {Math.round(pendingOpening.widthMm)}mm wide
-            </div>
-            {/* Quick-pick presets — one click sets sill + head to a common
-                door/window pattern. Disabled when the preset can't fit (head
-                would be negative or under 100 mm). */}
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              <span className="text-[11px] text-amber-300 self-center mr-1">Presets:</span>
-              {blockOpeningPresets.map((p) => {
-                const computedHead = wallHeightMm - p.sillMm - p.openingMm
-                const fits = computedHead >= 0
-                return (
-                  <button
-                    key={p.label}
-                    onClick={() => {
-                      setOpeningSillHeightMm(p.sillMm)
-                      setOpeningHeadHeightMm(Math.max(0, computedHead))
-                    }}
-                    disabled={!fits}
-                    title={
-                      fits
-                        ? `Sill ${p.sillMm} · Head ${computedHead} · Opening ${p.openingMm}`
-                        : `Doesn't fit on a ${Math.round(wallHeightMm)}mm wall`
-                    }
-                    className="px-2 py-0.5 rounded border border-amber-500/40 text-xs hover:bg-amber-500/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {p.label}
-                  </button>
-                )
-              })}
-            </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="text-sm">
-                <span className="block text-amber-200 mb-1">Sill height (mm)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="50"
-                  value={openingSillHeightMm}
-                  onChange={(e) => setOpeningSillHeightMm(parseInt(e.target.value || '0', 10))}
-                  className="px-3 py-1.5 border border-amber-500/40 rounded-lg text-sm bg-ink-900 text-ink-50 w-28 focus:outline-none focus:border-amber-400"
-                />
-              </label>
-              <label className="text-sm">
-                <span className="block text-amber-200 mb-1">Head height (mm)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="50"
-                  value={openingHeadHeightMm}
-                  onChange={(e) => setOpeningHeadHeightMm(parseInt(e.target.value || '0', 10))}
-                  className="px-3 py-1.5 border border-amber-500/40 rounded-lg text-sm bg-ink-900 text-ink-50 w-28 focus:outline-none focus:border-amber-400"
-                />
-              </label>
-              <button
-                onClick={handleSavePendingOpening}
-                disabled={tooSmall}
-                className="px-4 py-1.5 rounded-lg bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
-              >
-                Save opening
-              </button>
-              <button
-                onClick={handleCancelPendingOpening}
-                className="px-4 py-1.5 rounded-lg border border-amber-500/40 text-sm text-amber-100 hover:bg-amber-500/15 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            onClick={handleCancelPendingOpening}
+            role="dialog"
+            aria-modal="true"
+            aria-label="New opening"
+          >
+            <div
+              className="w-full max-w-2xl bg-ink-800 border border-ink-600 rounded-xl shadow-xl shadow-black/40 overflow-hidden flex flex-col max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header — matches the wall type / block editor modal pattern:
+                  title + subtitle on the left, close button on the right. */}
+              <header className="px-6 py-3.5 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-ink-50">New opening</h3>
+                  <p className="text-[11px] text-ink-500 mt-0.5">
+                    On a {Math.round(wallHeightMm)} mm wall · {Math.round(pendingOpening.widthMm)} mm wide
+                  </p>
+                </div>
+                <button
+                  onClick={handleCancelPendingOpening}
+                  className="text-ink-400 hover:text-ink-100 text-xl leading-none"
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </header>
 
-            <div className="mt-3 px-3 py-2 bg-ink-900/70 border border-amber-500/30 rounded-lg text-xs">
-              <div className="font-mono text-amber-100 leading-relaxed">
-                <div>
-                  <span className="text-amber-500">└─</span> Head (above opening):{' '}
-                  <span className="font-semibold">{Math.round(openingHeadHeightMm)}mm</span>{' '}
-                  {lintelBlock ? (
-                    <span className="text-amber-300">→ Lintel {lintelBlock}</span>
-                  ) : (
-                    <span className="text-rose-400">→ no lintel</span>
-                  )}
-                </div>
-                <div>
-                  <span className="text-amber-500">│</span> Opening (computed):{' '}
-                  <span className={tooSmall ? 'text-rose-400 font-semibold' : 'font-semibold'}>
-                    {Math.round(pendingOpening.widthMm)} × {Math.round(computedOpeningHeightMm)}mm
-                  </span>
-                </div>
-                <div>
-                  <span className="text-amber-500">└─</span> Sill (wall below):{' '}
-                  <span className="font-semibold">{Math.round(openingSillHeightMm)}mm</span>{' '}
-                  <span className="text-amber-300">— from floor</span>
-                </div>
+              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
+                {/* Presets — same blockOpeningPresets list as before, one
+                    click sets both sill + head. Disabled when the preset
+                    can't fit on this wall. */}
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                    Presets
+                  </h4>
+                  <div className="flex flex-wrap gap-1.5">
+                    {blockOpeningPresets.map((p) => {
+                      const computedHead = wallHeightMm - p.sillMm - p.openingMm
+                      const fits = computedHead >= 0
+                      return (
+                        <button
+                          key={p.label}
+                          onClick={() => {
+                            setOpeningSillHeightMm(p.sillMm)
+                            setOpeningHeadHeightMm(Math.max(0, computedHead))
+                          }}
+                          disabled={!fits}
+                          title={
+                            fits
+                              ? `Sill ${p.sillMm} · Head ${computedHead} · Opening ${p.openingMm}`
+                              : `Doesn't fit on a ${Math.round(wallHeightMm)}mm wall`
+                          }
+                          className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {p.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </section>
+
+                {/* Sill + Head inputs — manual override on top of (or
+                    instead of) a preset. */}
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                    Dimensions
+                  </h4>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="block text-ink-300 text-xs mb-1">Sill height (mm)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        value={openingSillHeightMm}
+                        onChange={(e) => setOpeningSillHeightMm(parseInt(e.target.value || '0', 10))}
+                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="block text-ink-300 text-xs mb-1">Head height (mm)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        value={openingHeadHeightMm}
+                        onChange={(e) => setOpeningHeadHeightMm(parseInt(e.target.value || '0', 10))}
+                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                {/* Inline error when the sill + head leave too little room
+                    for the opening — same signal that disables the Save
+                    button, surfaced here so the user knows why. */}
+                {tooSmall && (
+                  <p className="text-[11px] text-rose-400 leading-relaxed">
+                    Sill + Head leave less than 100mm for the opening on a {Math.round(wallHeightMm)}mm wall.
+                    Reduce one of them.
+                  </p>
+                )}
               </div>
-              {tooSmall && (
-                <div className="mt-1 text-rose-400">
-                  Sill + Head leave less than 100mm for the opening on a {Math.round(wallHeightMm)}mm wall.
-                  Reduce one of them.
-                </div>
-              )}
-            </div>
 
-            <p className="text-xs text-amber-200 mt-2">
-              Typical door: sill <strong>0</strong>, head <strong>300</strong> (gives a 2100mm opening on a 2400mm
-              wall). Typical window: sill <strong>900</strong>, head <strong>300</strong> (gives a 1200mm opening
-              on a 2400mm wall).
-            </p>
+              {/* Footer — Cancel / Save matches the wall type modal. */}
+              <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex justify-end gap-2">
+                <button
+                  onClick={handleCancelPendingOpening}
+                  className="px-4 py-1.5 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSavePendingOpening}
+                  disabled={tooSmall}
+                  className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+                >
+                  Save opening
+                </button>
+              </footer>
+            </div>
           </div>
         )
       })()}
@@ -5691,89 +5701,107 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         const tooSmall = brickOpeningHeightMm < 100
         const tooTall = brickOpeningHeightMm > wallHeightMm
         return (
-          <div className="mb-3 px-4 py-3 bg-amber-500/10 border border-amber-500/40 rounded-lg text-sm text-amber-200">
-            <div className="font-medium mb-3">
-              Opening on a {Math.round(wallHeightMm)}mm wall ·{' '}
-              {Math.round(pendingOpening.widthMm)}mm wide
-            </div>
-            {/* Quick-pick height presets — one click instead of typing the
-                same numbers for every door / window. Disabled if the preset
-                doesn't fit the wall. */}
-            <div className="flex flex-wrap gap-1.5 mb-3">
-              <span className="text-[11px] text-amber-300 self-center mr-1">Presets:</span>
-              {[
-                { label: 'Door 2100', h: 2100 },
-                { label: 'Door 2040', h: 2040 },
-                { label: 'Window 1500', h: 1500 },
-                { label: 'Window 1200', h: 1200 },
-                { label: 'Window 1800', h: 1800 },
-              ].map((p) => (
-                <button
-                  key={p.label}
-                  onClick={() => setBrickOpeningHeightMm(p.h)}
-                  disabled={p.h > wallHeightMm}
-                  title={`${p.h}mm tall`}
-                  className="px-2 py-0.5 rounded border border-amber-500/40 text-xs hover:bg-amber-500/15 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="text-sm">
-                <span className="block text-amber-200 mb-1">Opening height (mm)</span>
-                <input
-                  type="number"
-                  min="100"
-                  step="50"
-                  value={brickOpeningHeightMm}
-                  onChange={(e) =>
-                    setBrickOpeningHeightMm(parseInt(e.target.value || '0', 10))
-                  }
-                  className="px-3 py-1.5 border border-amber-300 rounded-lg text-sm bg-ink-900 text-ink-50 w-32 focus:outline-none focus:border-amber-400"
-                  autoFocus
-                />
-              </label>
-              <button
-                onClick={handleSavePendingOpening}
-                disabled={tooSmall || tooTall}
-                className="px-4 py-1.5 rounded-lg bg-amber-600 text-white text-sm hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
-              >
-                Save opening
-              </button>
-              <button
-                onClick={handleCancelPendingOpening}
-                className="px-4 py-1.5 rounded-lg border border-amber-500/40 text-sm text-amber-100 hover:bg-amber-500/15 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-
-            <div className="mt-3 px-3 py-2 bg-ink-900/70 border border-amber-500/30 rounded-lg text-xs text-amber-100">
-              <div>
-                Opening{' '}
-                <span className="font-semibold">
-                  {Math.round(pendingOpening.widthMm)} × {Math.round(brickOpeningHeightMm)}mm
-                </span>
-              </div>
-              <div className="mt-1 text-amber-300">
-                Lintels for this opening come from your per-opening supply items
-                in the material library (Galintel, steel angle, etc.) — tagged
-                with an opening-width range.
-              </div>
-              {tooSmall && (
-                <div className="mt-1 text-rose-400">Opening height must be at least 100mm.</div>
-              )}
-              {tooTall && (
-                <div className="mt-1 text-rose-400">
-                  Opening height ({brickOpeningHeightMm}mm) exceeds the wall height ({Math.round(wallHeightMm)}mm).
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            onClick={handleCancelPendingOpening}
+            role="dialog"
+            aria-modal="true"
+            aria-label="New opening"
+          >
+            <div
+              className="w-full max-w-xl bg-ink-800 border border-ink-600 rounded-xl shadow-xl shadow-black/40 overflow-hidden flex flex-col max-h-[90vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="px-6 py-3.5 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-ink-50">New opening</h3>
+                  <p className="text-[11px] text-ink-500 mt-0.5">
+                    On a {Math.round(wallHeightMm)} mm wall · {Math.round(pendingOpening.widthMm)} mm wide
+                  </p>
                 </div>
-              )}
-            </div>
+                <button
+                  onClick={handleCancelPendingOpening}
+                  className="text-ink-400 hover:text-ink-100 text-xl leading-none"
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </header>
 
-            <p className="text-xs text-amber-200 mt-2">
-              Typical door <strong>2100mm</strong>, typical window <strong>1200mm</strong>.
-            </p>
+              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                    Presets
+                  </h4>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { label: 'Door 2100', h: 2100 },
+                      { label: 'Door 2040', h: 2040 },
+                      { label: 'Window 1500', h: 1500 },
+                      { label: 'Window 1200', h: 1200 },
+                      { label: 'Window 1800', h: 1800 },
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        onClick={() => setBrickOpeningHeightMm(p.h)}
+                        disabled={p.h > wallHeightMm}
+                        title={`${p.h}mm tall`}
+                        className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                    Dimensions
+                  </h4>
+                  <label className="block">
+                    <span className="block text-ink-300 text-xs mb-1">Opening height (mm)</span>
+                    <input
+                      type="number"
+                      min="100"
+                      step="50"
+                      value={brickOpeningHeightMm}
+                      onChange={(e) =>
+                        setBrickOpeningHeightMm(parseInt(e.target.value || '0', 10))
+                      }
+                      className="w-40 px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      autoFocus
+                    />
+                  </label>
+                </section>
+
+                {tooSmall && (
+                  <p className="text-[11px] text-rose-400 leading-relaxed">
+                    Opening height must be at least 100mm.
+                  </p>
+                )}
+                {tooTall && (
+                  <p className="text-[11px] text-rose-400 leading-relaxed">
+                    Opening height ({brickOpeningHeightMm}mm) exceeds the wall height ({Math.round(wallHeightMm)}mm).
+                  </p>
+                )}
+              </div>
+
+              <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex justify-end gap-2">
+                <button
+                  onClick={handleCancelPendingOpening}
+                  className="px-4 py-1.5 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSavePendingOpening}
+                  disabled={tooSmall || tooTall}
+                  className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+                >
+                  Save opening
+                </button>
+              </footer>
+            </div>
           </div>
         )
       })()}
@@ -6144,8 +6172,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
                   // back to 190 mm if neither resolves.
                   activeWallThicknessMm={(() => {
                     if (mode === 'brick') {
+                      // brickTypeCode can be empty / undefined for fresh
+                      // brick projects until the user picks a type — guard
+                      // the library index so tsc's strict undefined check
+                      // is satisfied. Empty code falls through to the
+                      // project default thickness.
+                      const code = brickSettings.brickTypeCode
                       return (
-                        BRICK_LIBRARY[brickSettings.brickTypeCode]?.depthMm ??
+                        (code ? BRICK_LIBRARY[code]?.depthMm : undefined) ??
                         DEFAULT_BRICK_WALL_THICKNESS_MM
                       )
                     }
@@ -6511,33 +6545,6 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
 }
 
 /**
- * Slim breadcrumb shown above the ProjectBar when the current project was
- * created from an estimate request. Lets the estimator pop back to the
- * request page to re-read the sales spec or check the customer's notes
- * without losing their place in the workspace (the router-link preserves
- * the project in the back history).
- */
-function RequestBreadcrumb({ request }: { request: EstimateRequest }) {
-  return (
-    <div className="px-6 pt-4 pb-3">
-      <Link
-        to={`/requests/${request.id}`}
-        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
-      >
-        <span className="text-base leading-none">←</span>
-        <span>
-          Request from{' '}
-          <span className="font-medium text-ink-50">{request.customerName}</span>
-          {request.customerCompany && (
-            <span className="text-ink-400"> · {request.customerCompany}</span>
-          )}
-        </span>
-      </Link>
-    </div>
-  )
-}
-
-/**
  * Multi-page PDF thumbnail rail. Extracted from PdfWorkspace and memoised
  * because the per-page <Page> rendering is the most expensive part of the
  * workspace render.
@@ -6649,29 +6656,3 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
 })
 
 
-/**
- * Page heading for the workspace.
- */
-function WorkspacePageHeading({ mode }: { mode: 'block' | 'brick' | undefined }) {
-  if (mode === 'brick') {
-    return (
-      <div className="mb-6">
-        <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Brick estimate</h2>
-        <p className="text-ink-300 text-sm mt-1">
-          Trace brick walls over a plan — area × bricks/m² plus ties, plascourse, and lintels.
-        </p>
-      </div>
-    )
-  }
-  if (mode === 'block') {
-    return (
-      <div className="mb-6">
-        <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Block estimate</h2>
-        <p className="text-ink-300 text-sm mt-1">
-          Walls, piers, openings — auto-tallied to a printable schedule.
-        </p>
-      </div>
-    )
-  }
-  return null
-}

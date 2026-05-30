@@ -22,12 +22,8 @@ import { confirm } from '../lib/confirm'
 import { ProjectRowSkeleton } from '../components/Skeleton'
 import { toast } from '../lib/toast'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
-import {
-  listEstimateRequests,
-  pickUpEstimateRequest,
-} from '../lib/estimateRequests'
+import { listEstimateRequests } from '../lib/estimateRequests'
 import type { EstimateRequest } from '../types/estimateRequests'
-import { estimateRequestStatusLabel } from '../types/estimateRequests'
 import type { OrgMember, Organisation } from '../types/organisations'
 
 type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
@@ -586,7 +582,6 @@ function NoOrgEmptyState() {
  *     a link through to the linked project.
  */
 function OrgDashboard({ org, userId }: { org: Organisation; userId: string | null }) {
-  const navigate = useNavigate()
   const [requests, setRequests] = useState<EstimateRequest[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
   // All projects visible to the user — both org-scoped (everyone on the team
@@ -594,12 +589,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   // projects on the dashboard, since direct '+ Brick / + Block' creates
   // don't go through the estimate-request inbox.
   const [projects, setProjects] = useState<SavedProject[]>([])
-  const [loading, setLoading] = useState(true)
-  // Which request the user is currently picking up (drives the row's
-  // disabled state + button label). One at a time — the user can't sensibly
-  // claim two requests in parallel and the request-side update isn't
-  // batched.
-  const [pickingUpId, setPickingUpId] = useState<string | null>(null)
+  const [, setLoading] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -626,28 +616,6 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       cancelled = true
     }
   }, [org.id])
-
-  // Inline pickup straight from a dashboard row: creates the linked project,
-  // flips the request to in_progress, then navigates the user into the
-  // workspace. Used by the Pick up button on pending rows in 'Action needed'.
-  const handlePickUp = useCallback(
-    async (request: EstimateRequest) => {
-      if (pickingUpId) return
-      setPickingUpId(request.id)
-      try {
-        const newProjectId = await pickUpEstimateRequest(request)
-        const path =
-          request.type === 'brick'
-            ? `/project/brick?id=${newProjectId}`
-            : `/project/block?id=${newProjectId}`
-        navigate(path)
-      } catch (err) {
-        window.alert(`Couldn't pick up: ${(err as Error).message ?? 'unknown error'}`)
-        setPickingUpId(null)
-      }
-    },
-    [pickingUpId, navigate]
-  )
 
   // Member lookup for assignee / creator name display on request rows.
   const memberById = useMemo(() => {
@@ -1025,48 +993,6 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   )
 }
 
-/**
- * Single column inside the 'Your inbox' two-up grid. The header carries a
- * small coloured dot matching the section's status (amber = pending, blue
- * = in-progress) so the columns read distinctly even when the user's eyes
- * blur past the heading text. Empty columns show a dashed placeholder so
- * the side-by-side proportions stay visually balanced when one side has
- * nothing in it.
- */
-function InboxColumn({
-  title,
-  accent,
-  count,
-  empty,
-  children,
-}: {
-  title: string
-  accent: 'amber' | 'blue'
-  count: number
-  empty: string
-  children: React.ReactNode
-}) {
-  const dotClass = accent === 'amber' ? 'bg-amber-400' : 'bg-blue-400'
-  const hasContent = Array.isArray(children) ? children.length > 0 : !!children
-  return (
-    <div className="flex flex-col">
-      <div className="flex items-center gap-2 mb-2 px-1">
-        <span className={`w-2 h-2 rounded-full ${dotClass}`} />
-        <span className="text-sm font-semibold text-ink-100">{title}</span>
-        <span className="text-xs text-ink-400 ml-auto tabular-nums">{count}</span>
-      </div>
-      {hasContent ? (
-        <ul className="space-y-2 flex-1">{children}</ul>
-      ) : (
-        // Compact one-line empty state — keeps the column slim so it doesn't
-        // look "tall and lonely" when only one side has items.
-        <div className="border border-dashed border-ink-600 rounded-lg px-3 py-2 bg-ink-800/30">
-          <p className="text-ink-500 text-xs italic">{empty}</p>
-        </div>
-      )}
-    </div>
-  )
-}
 
 /**
  * Compact card for the Recently Completed 3-up grid. Surfaces the three
@@ -1315,120 +1241,6 @@ function formatTurnaround(days: number): string {
   return `${Math.round(days)}d`
 }
 
-/**
- * Compact request row tuned for the dashboard. Smaller than the full row on
- * /requests so a list of 5–10 fits comfortably on the home page. Same data
- * — customer name, status, assignee, last update — different density.
- *
- * Optional `onPickUp` adds a 'Pick up' button to the right of the row that
- * stops the surrounding Link from navigating to the detail page; instead it
- * creates the project + flips the request straight from the dashboard. Used
- * on pending rows in 'Needs you to pick up' so the user can claim a request
- * in one click.
- */
-function InboxRow({
-  request,
-  assignee,
-  creator,
-  muted,
-  onPickUp,
-  pickingUp,
-  disablePickUp,
-}: {
-  request: EstimateRequest
-  assignee: OrgMember | undefined
-  creator: OrgMember | undefined
-  muted?: boolean
-  onPickUp?: () => void
-  pickingUp?: boolean
-  disablePickUp?: boolean
-}) {
-  const statusBadgeClass =
-    request.status === 'pending'
-      ? 'bg-amber-500/15 text-amber-200 border border-amber-500/40'
-      : request.status === 'in_progress'
-        ? 'bg-blue-500/15 text-blue-200 border border-blue-500/40'
-        : request.status === 'completed'
-          ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/40'
-          : 'bg-ink-700 text-ink-300 border border-ink-600'
-
-  // Wrap the Pick up handler so a click on it never navigates the Link.
-  function handlePickUpClick(e: React.MouseEvent) {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!onPickUp || pickingUp || disablePickUp) return
-    onPickUp()
-  }
-
-  return (
-    <li>
-      <Link
-        to={`/requests/${request.id}`}
-        className={`block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors ${
-          muted ? 'opacity-90' : ''
-        }`}
-      >
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-ink-50 truncate">
-                {request.customerName}
-                {request.customerCompany && (
-                  <span className="text-ink-400 font-normal ml-1.5 text-sm">
-                    — {request.customerCompany}
-                  </span>
-                )}
-              </span>
-              <span
-                className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium ${statusBadgeClass}`}
-              >
-                {estimateRequestStatusLabel(request.status)}
-              </span>
-              <span className="text-[10px] uppercase tracking-wider text-ink-400">
-                {request.type === 'brick' ? 'Brick' : 'Block'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 text-xs text-ink-400 mt-1 flex-wrap">
-              {creator && (
-                <span>
-                  From <span className="text-ink-200">{creator.displayName || creator.email || 'team'}</span>
-                </span>
-              )}
-              {assignee ? (
-                <>
-                  <span>·</span>
-                  <span>
-                    To <span className="text-ink-200">{assignee.displayName || assignee.email || 'a teammate'}</span>
-                  </span>
-                </>
-              ) : (
-                request.assignedToUserId === null && (
-                  <>
-                    <span>·</span>
-                    <span className="text-ink-300">Unassigned</span>
-                  </>
-                )
-              )}
-              <span>·</span>
-              <span>{formatRelative(request.updatedAt)}</span>
-            </div>
-          </div>
-          {onPickUp && (
-            <button
-              type="button"
-              onClick={handlePickUpClick}
-              disabled={pickingUp || disablePickUp}
-              className="shrink-0 px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              {pickingUp ? 'Picking up…' : 'Pick up'}
-            </button>
-          )}
-        </div>
-      </Link>
-    </li>
-  )
-}
-
 // ============================================================================
 // Personal dashboard — what a supply-and-lay bricklayer sees
 // ============================================================================
@@ -1446,8 +1258,6 @@ function PersonalDashboard() {
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const { signedIn, user } = useAuth()
-  const { settings } = useUserSettings()
-  const primaryProjectType = settings.preferences.defaultProjectType
 
   const refreshProjects = useCallback(() => {
     setLoading(true)
@@ -2029,6 +1839,20 @@ function ProjectRow({
             <span className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
               {name}
             </span>
+            {/* Reference number pill — same affordance the OrgDashboard
+                rows and ProjectBar show. Personal projects DO get
+                reference numbers allocated by the Postgres trigger on
+                insert; this was simply missing from the personal list
+                view. Quote-by-phone / cross-look-up by 6-digit number
+                works the same way for personal and team projects. */}
+            {typeof project.referenceNumber === 'number' && (
+              <span
+                className="text-[11px] tabular-nums font-semibold text-beme-400/80"
+                title="Reference number — quote this when looking the project up."
+              >
+                #{formatRef(project.referenceNumber)}
+              </span>
+            )}
             {statusBadge(project.status)}
             <OutcomePill outcome={project.outcome} onClick={onCycleOutcome} />
             <span className="text-[11px] px-2 py-0.5 rounded-full bg-ink-700 text-ink-200 border border-ink-600">

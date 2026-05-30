@@ -408,29 +408,6 @@ function wallLengthMmOf(wall: Wall) {
  * the segment, centred on the centreline. Returns a flat `[x1, y1, x2, y2, x3, y3, x4, y4]`
  * array for a closed Konva Line.
  */
-function rectanglePxForSegment(
-  startMm: Point,
-  endMm: Point,
-  thicknessMm: number,
-  mmToPx: (mm: number) => number
-): number[] {
-  const dx = endMm.x - startMm.x
-  const dy = endMm.y - startMm.y
-  const len = Math.sqrt(dx * dx + dy * dy)
-  if (len === 0) return []
-  const ux = dx / len
-  const uy = dy / len
-  // Perpendicular (rotated 90° CCW): (-uy, ux)
-  const nx = -uy
-  const ny = ux
-  const half = thicknessMm / 2
-  return [
-    mmToPx(startMm.x + nx * half), mmToPx(startMm.y + ny * half),
-    mmToPx(endMm.x + nx * half), mmToPx(endMm.y + ny * half),
-    mmToPx(endMm.x - nx * half), mmToPx(endMm.y - ny * half),
-    mmToPx(startMm.x - nx * half), mmToPx(startMm.y - ny * half),
-  ]
-}
 
 /** A 2D line in point-and-direction form. */
 interface LineMm {
@@ -1617,11 +1594,6 @@ function WallDrawingLayerInner({
   }
 
 
-  function resolveSnap(pos: Point, excludeWallId?: string, excludeEnd?: 'start' | 'end'): Point {
-    const snap = findSnap(pos, excludeWallId, excludeEnd)
-    return snap ? { x: snap.x, y: snap.y } : pos
-  }
-
   /**
    * Wall-snap first, axis-snap second. If the cursor is in range of an
    * existing wall's endpoint or face, snapping to that wins outright —
@@ -1659,6 +1631,7 @@ function WallDrawingLayerInner({
       // no special-case adjustment.
       return { point: { x: snap.x, y: snap.y }, snap }
     }
+
     if (!anchor) return { point: pos, snap: null }
 
     // Axis snap first — pulls a near-orthogonal segment cleanly onto h/v.
@@ -2334,8 +2307,6 @@ function WallDrawingLayerInner({
           const midX = geom?.labelPx.x ?? (start.x + end.x) / 2
           const midY = geom?.labelPx.y ?? (start.y + end.y) / 2
 
-          const isCurved = isCurvedWall(wall)
-
           // `isSelected` covers BOTH a real selection (the user explicitly
           // clicked/shift-clicked the wall) AND the "highlighted because its
           // makeup is the currently-active one" state. Visually identical —
@@ -2372,7 +2343,6 @@ function WallDrawingLayerInner({
           const strokeColor = isCurveAnchor
             ? '#8b5cf6'
             : wallTypeStroke
-          const strokeWidth = isSelected || isCurveAnchor ? 5 : isHovered ? 5 : 4
           const startIsCorner = wall.startJunction.type === 'corner'
           const endIsCorner = wall.endJunction.type === 'corner'
           const startIsTjunction = wall.startJunction.type === 't-junction'

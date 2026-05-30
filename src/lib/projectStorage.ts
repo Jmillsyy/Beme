@@ -490,7 +490,7 @@ function rowToProjectMeta(row: CloudProjectRow): SavedProject {
   }
 }
 
-async function cloudSaveProject(p: SavedProject, userId: string): Promise<void> {
+async function cloudSaveProject(p: SavedProject, userId: string): Promise<SavedProject> {
   const client = supabase()
   let pdfPath: string | null = null
 
