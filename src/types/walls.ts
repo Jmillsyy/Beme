@@ -212,9 +212,26 @@ export interface WallMakeup {
 
   // ---- Length-makeup behaviour ----
   /**
-   * When true, beme uses fraction blocks (20.02 and 20.22) to absorb leftover length,
-   * picking the combination that minimises leftover with no cuts where possible.
-   * When false, the wall is built from full 20.48 blocks rounded up, with the last cut.
+   * Whether to match the wall's actual length exactly when the length
+   * doesn't divide cleanly into body blocks. Two paths are used to
+   * match:
+   *
+   *   1. The library has `fraction`-tagged blocks (e.g. AU 20.02 = 3/4
+   *      body, 20.22 = 7/8) — the packer picks the combination that
+   *      absorbs the leftover length with no cuts. This is the AU SEQ
+   *      pattern.
+   *   2. The library has no fraction-tagged blocks (typical US CMU
+   *      and UK practice) — the packer emits "cut block" line items
+   *      in the tally instead. The mason cuts a body block on site to
+   *      fill the leftover.
+   *
+   * When false, the wall is built from full body blocks rounded up
+   * and the leftover is ignored (no cut-block line). Useful for
+   * civil / commercial work where exact length isn't critical.
+   *
+   * Field name `useFractions` retained for save-file compatibility —
+   * renaming it would force a migration on every saved project. UI
+   * copy in WallTypesPanel uses region-neutral language.
    */
   useFractions: boolean
 
@@ -267,10 +284,45 @@ export interface WallJunction {
  * unique circle, and the wall renders/tallies as the arc through those three
  * points. Existing saved walls without `kind` are treated as straight.
  */
+/**
+ * Trade a wall belongs to in a multi-trade project.
+ *
+ * Block walls reference a {@link WallMakeup} (block composition); brick
+ * walls reference a {@link BrickMakeup} (brick type + height). Both
+ * pools live on the same SavedProject — the trade field tells the
+ * workspace which pool to look `makeupId` up in.
+ *
+ * Optional + defaults to 'block' for backward compatibility with walls
+ * saved before multi-trade unification. The project-storage migration
+ * stamps `trade` onto every wall on first load: walls in a `type='block'`
+ * project get `trade='block'`, walls in a `type='brick'` project get
+ * `trade='brick'`.
+ */
+export type WallTrade = 'block' | 'brick'
+
 export interface Wall {
   id: string
-  /** References a WallMakeup in the project. */
+  /** References a WallMakeup (block) or BrickMakeup (brick) in the project. */
   makeupId: string
+  /**
+   * Which trade pool to look `makeupId` up in. Optional for backward
+   * compatibility — undefined means "block" (the original single-trade default).
+   */
+  trade?: WallTrade
+  /**
+   * Which project Area this wall belongs to (e.g. "Balcony", "Staircase",
+   * "Level 1"). References a {@link ProjectArea} id on the SavedProject.
+   *
+   * Optional + missing means "unassigned" — wall renders in the All view
+   * but not in any specific area filter. Stamped at draw time from the
+   * workspace's current `activeAreaId`; if no area is active, the wall
+   * stays unassigned (visible in All but not in a specific tab).
+   *
+   * Openings + piers on the wall don't carry their own areaId — they
+   * inherit by virtue of being attached to a wall in that area, so when
+   * the area filter hides the wall, its openings disappear with it.
+   */
+  areaId?: string
   /** Start point in mm (real world). */
   startX: number
   startY: number

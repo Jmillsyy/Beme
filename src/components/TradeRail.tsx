@@ -1,0 +1,136 @@
+import type { ProjectType } from '../lib/projectStorage'
+
+/**
+ * Trade switcher — the "active trade" UI control for the unified
+ * workspace.
+ *
+ * Renders one chip per trade currently in the project. The active
+ * trade is highlighted; clicking another trade swaps the workspace
+ * over (toolbar, panels, hit-testing).
+ *
+ * Renders horizontally by default — sits at the top of the right rail
+ * just above the wall-types panel, sized to match the drawing toolbar
+ * on the canvas side so the two land on the same horizontal line.
+ * Pass `orientation="vertical"` for a left-side column if needed.
+ */
+export default function TradeRail({
+  trades,
+  activeTrade,
+  onChangeTrade,
+  onAddTrade,
+  orientation = 'horizontal',
+}: {
+  trades: ProjectType[]
+  activeTrade: ProjectType
+  onChangeTrade: (trade: ProjectType) => void
+  /** Called when the user clicks + and picks a trade to add. Pass undefined
+   *  to hide the + entirely (no further trades available). */
+  onAddTrade?: (trade: ProjectType) => void
+  orientation?: 'horizontal' | 'vertical'
+}) {
+  const ALL_TRADES: ProjectType[] = ['block', 'brick']
+  const addable = ALL_TRADES.filter((t) => !trades.includes(t))
+
+  const containerClass =
+    orientation === 'vertical'
+      ? 'flex flex-col items-center gap-1 px-1.5 py-3 bg-ink-900 border-r border-ink-800 select-none'
+      : // Chrome + padding match the drawing toolbar on the canvas side
+        // exactly: px-3 py-1.5 bg-ink-800 border-ink-600 rounded-lg.
+        // Container heights line up so the two sit on the same horizontal
+        // line of the workspace.
+        'flex items-center justify-between gap-2 w-full px-3 py-1.5 bg-ink-800 border border-ink-600 rounded-lg flex-wrap select-none'
+
+  return (
+    <div className={containerClass}>
+      {orientation === 'horizontal' && (
+        <span className="text-xs font-medium text-ink-400 mr-auto">
+          Trade
+        </span>
+      )}
+      <div className="flex items-center gap-1.5">
+        {trades.map((trade) => (
+          <TradeButton
+            key={trade}
+            trade={trade}
+            active={trade === activeTrade}
+            onClick={() => onChangeTrade(trade)}
+          />
+        ))}
+
+        {addable.length > 0 && onAddTrade && addable.map((trade) => (
+          <AddTradeButton
+            key={trade}
+            trade={trade}
+            onClick={() => onAddTrade(trade)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Trade-switcher button — one per trade currently in the project. Sized
+ * to match the canvas-side toolbar buttons (px-3 py-1.5 text-sm) so the
+ * two rows line up on the same horizontal centerline.
+ */
+function TradeButton({
+  trade,
+  active,
+  onClick,
+}: {
+  trade: ProjectType
+  active: boolean
+  onClick: () => void
+}) {
+  const meta = TRADE_META[trade]
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      title={`${meta.name} · click to make this the active trade`}
+      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+        active
+          ? 'bg-beme-500 text-black hover:bg-beme-400'
+          : 'border border-ink-600 text-ink-200 hover:bg-ink-700 hover:text-ink-50'
+      }`}
+    >
+      {meta.name}
+    </button>
+  )
+}
+
+/**
+ * "+ this trade" button — for adding the trade to the project. Same
+ * height as TradeButton so the row stays aligned.
+ */
+function AddTradeButton({
+  trade,
+  onClick,
+}: {
+  trade: ProjectType
+  onClick: () => void
+}) {
+  const meta = TRADE_META[trade]
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Add ${meta.name.toLowerCase()} to this estimate`}
+      className="px-3 py-1.5 rounded-lg border border-dashed border-ink-600 text-sm text-ink-400 hover:text-beme-300 hover:border-beme-400 transition-colors"
+    >
+      + {meta.name}
+    </button>
+  )
+}
+
+/**
+ * Visual metadata per trade. Centralised so adding a new trade later
+ * (concrete, paving) is a one-line addition rather than scattered
+ * literals through the rail.
+ */
+const TRADE_META: Record<ProjectType, { name: string }> = {
+  block: { name: 'Block' },
+  brick: { name: 'Brick' },
+}

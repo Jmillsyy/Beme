@@ -1373,13 +1373,24 @@ function BasicsTab({
         disabled={wedgeDisablesCourseMix}
       >
         <legend className="text-ink-300 mb-1.5">Options</legend>
-        <label className="flex items-center gap-2 cursor-pointer">
+        <label className="flex items-start gap-2 cursor-pointer">
           <input
             type="checkbox"
             checked={useFractions}
             onChange={(e) => setUseFractions(e.target.checked)}
+            className="mt-0.5"
           />
-          <span>Use fractions (20.02 / 20.22)</span>
+          <span className="leading-snug">
+            <span>Match exact wall length</span>
+            <span className="block text-[11px] text-ink-400 mt-0.5">
+              When on, the calc absorbs leftover length using
+              fraction-tagged blocks from your library (AU 20.02 / 20.22,
+              or whichever you've tagged). If your library has no
+              fraction blocks, leftover length is tallied as cut blocks
+              to be trimmed on site. When off, walls round up to whole
+              body blocks and the gap is ignored.
+            </span>
+          </span>
         </label>
       </fieldset>
 

@@ -565,6 +565,10 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
         // lintels / sills / heads), only count openings whose width
         // falls within that range. No range = applies to every opening
         // (the pre-existing behaviour for ties / flashings / etc.).
+        //
+        // Both bounds INCLUSIVE — matches the block-lintel bucket
+        // convention. A "Galintel 100×100" with range 1200–1800
+        // covers both a 1200mm and a 1800mm opening.
         const min = item.openingWidthMinMm
         const max = item.openingWidthMaxMm
         const inScope =
@@ -573,7 +577,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
             : openings.filter(
                 (o) =>
                   (min === undefined || o.widthMm >= min) &&
-                  (max === undefined || o.widthMm < max)
+                  (max === undefined || o.widthMm <= max)
               ).length
         qty = rate * inScope
         const rangeLabel =

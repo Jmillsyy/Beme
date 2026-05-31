@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Beme guide — screenshot checklist</title>
+<style>
+  :root {
+    --bg: #0d0d10;
+    --surface: #181820;
+    --surface-2: #1f1f29;
+    --border: #2a2a36;
+    --text: #ececf1;
+    --text-dim: #9a9aa6;
+    --text-muted: #61616e;
+    --accent: #f4894e;
+    --accent-dim: #f4894e44;
+    --green: #5ec787;
+    --amber: #d4a35f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 40px 24px;
+  }
+  .container { max-width: 880px; margin: 0 auto; }
+  header { margin-bottom: 32px; }
+  h1 {
+    font-size: 32px; font-weight: 800; margin: 0 0 8px;
+    letter-spacing: -0.02em;
+  }
+  header p { color: var(--text-dim); font-size: 14px; margin: 0; max-width: 640px; }
+  .summary {
+    display: flex; gap: 24px; margin: 24px 0 32px;
+    padding: 16px 20px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; font-size: 13px;
+  }
+  .summary > div { display: flex; flex-direction: column; gap: 2px; }
+  .summary strong { font-size: 20px; font-weight: 700; }
+  .summary .label { color: var(--text-muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; }
+  section.group {
+    margin-bottom: 28px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  section.group h2 {
+    margin: 0; padding: 14px 20px;
+    font-size: 14px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--accent);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .item {
+    display: grid;
+    grid-template-columns: 28px 240px 1fr;
+    gap: 16px; padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    transition: background 80ms;
+  }
+  .item:last-child { border-bottom: none; }
+  .item:hover { background: var(--surface-2); }
+  .item input[type="checkbox"] {
+    margin: 2px 0 0; width: 16px; height: 16px;
+    accent-color: var(--accent); cursor: pointer;
+  }
+  .item input[type="checkbox"]:checked + label .filename {
+    text-decoration: line-through; opacity: 0.5;
+  }
+  .item input[type="checkbox"]:checked + label .desc {
+    opacity: 0.4;
+  }
+  .item label { display: contents; cursor: pointer; }
+  .filename {
+    font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    font-size: 12px; color: var(--text);
+    background: var(--bg); padding: 2px 7px; border-radius: 4px;
+    border: 1px solid var(--border);
+    align-self: start;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .desc { color: var(--text-dim); }
+  .pending { color: var(--amber); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; margin-left: 6px; }
+  .video { color: var(--accent); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; margin-left: 6px; }
+  footer {
+    margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-muted);
+  }
+  .actions { display: flex; gap: 12px; margin-top: 16px; }
+  button {
+    background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 16px; border-radius: 6px;
+    font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #0d0d10;
+    border-color: var(--accent); font-weight: 600; }
+  @media print {
+    body { background: white; color: black; padding: 20px; }
+    section.group, .summary { background: white; border: 1px solid #ddd; }
+    section.group h2 { background: #f5f5f5; color: #555; }
+    .filename { background: #f5f5f5; border: 1px solid #ddd; color: #333; }
+    .desc { color: #555; }
+    .actions { display: none; }
+    .item:hover { background: white; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Guide screenshot checklist</h1>
+  <p>One row per file the guide references. Tick as you save each into
+    <code>public/guide/</code>. Filenames are exact — match them and the
+    guide page will render the screenshot in place of the placeholder.</p>
+</header>
+
+<div class="summary">
+  <div><span class="label">Total</span><strong id="total">0</strong></div>
+  <div><span class="label">Done</span><strong id="done" style="color:var(--green);">0</strong></div>
+  <div><span class="label">Pending</span><strong id="pending" style="color:var(--amber);">0</strong></div>
+  <div style="margin-left:auto; align-self:center;" class="actions">
+    <button onclick="resetAll()">Reset</button>
+    <button class="primary" onclick="window.print()">Print</button>
+  </div>
+</div>
+
+<section class="group">
+  <h2>Getting started</h2>
+  <div class="item"><input type="checkbox" id="c1"><label for="c1"><div class="filename">01-dashboard.png</div><div class="desc">Your dashboard with one or two projects in the list, library card on the right, find-by-reference + shortcuts visible.</div></label></div>
+  <div class="item"><input type="checkbox" id="c2"><label for="c2"><div class="filename">02-settings-profile.png</div><div class="desc">Settings → Profile tab — display name, email, phone, role.</div></label></div>
+  <div class="item"><input type="checkbox" id="c3"><label for="c3"><div class="filename">03-settings-business.png</div><div class="desc">Settings → Business tab — full view including identity, address, branding & tax.</div></label></div>
+  <div class="item"><input type="checkbox" id="c4"><label for="c4"><div class="filename">04-settings-preferences.png</div><div class="desc">Settings → Preferences tab — units, date format, theme, default project type, library template.</div></label></div>
+  <div class="item"><input type="checkbox" id="c5"><label for="c5"><div class="filename">05-settings-defaults.png</div><div class="desc">Settings → Defaults tab — wall defaults + default blocks by role grid.</div></label></div>
+  <div class="item"><input type="checkbox" id="c6"><label for="c6"><div class="filename">06-command-palette.png</div><div class="desc">Cmd+K command palette open showing Navigation / Action / Projects sections.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Material library</h2>
+  <div class="item"><input type="checkbox" id="c10"><label for="c10"><div class="filename">10-library-page.png</div><div class="desc">Material library page scrolled to top — Library template card, Pick preset / Reset buttons, blocks list visible.</div></label></div>
+  <div class="item"><input type="checkbox" id="c11"><label for="c11"><div class="filename">11-pick-region.png</div><div class="desc">Pick-your-region modal showing Australia (SEQ), USA, UK, Start blank options.</div></label></div>
+  <div class="item"><input type="checkbox" id="c12"><label for="c12"><div class="filename">12-block-editor-add.png</div><div class="desc">"Add a block" modal — code, name, description, dimensions, roles grid, pairing.</div></label></div>
+  <div class="item"><input type="checkbox" id="c13"><label for="c13"><div class="filename">13-block-editor-edit.png</div><div class="desc">"Edit 20.01" modal — built-in block detail with description filled in.</div></label></div>
+  <div class="item"><input type="checkbox" id="c14"><label for="c14"><div class="filename">14-block-editor-lintel.png</div><div class="desc">Block editor with the Lintel role ticked — lintel rules section visible with min/max head height fields.<span class="pending">pending</span></div></label></div>
+  <div class="item"><input type="checkbox" id="c15"><label for="c15"><div class="filename">15-brick-editor.png</div><div class="desc">Edit brick modal — click Edit on a brick row in the library.<span class="pending">pending</span></div></label></div>
+  <div class="item"><input type="checkbox" id="c16"><label for="c16"><div class="filename">16-supply-item-form.png</div><div class="desc">New supply item form at the bottom of the library page — name, rate, unit, applies-to.</div></label></div>
+  <div class="item"><input type="checkbox" id="c17"><label for="c17"><div class="filename">17-supply-item-width-range.png</div><div class="desc">Supply item editor with per-opening width range visible — unit = per-opening + brick ticked.<span class="pending">pending</span></div></label></div>
+</section>
+
+<section class="group">
+  <h2>Starting an estimate</h2>
+  <div class="item"><input type="checkbox" id="c20"><label for="c20"><div class="filename">20-new-estimate-modal.png</div><div class="desc">"Start a new block estimate" modal — project name, site address, client name.</div></label></div>
+  <div class="item"><input type="checkbox" id="c21"><label for="c21"><div class="filename">21-empty-workspace.png</div><div class="desc">Empty block workspace with "Drop your building plan PDF here" drop zone.</div></label></div>
+  <div class="item"><input type="checkbox" id="c22"><label for="c22"><div class="filename">22-pdf-page-picker.png</div><div class="desc">"Choose pages to import" modal — page checkboxes, some selected.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Setting the scale</h2>
+  <div class="item"><input type="checkbox" id="c30"><label for="c30"><div class="filename">30-ruler-drawn.png</div><div class="desc">Ruler line drawn on plan with px length showing + mm input field at top with Save scale button.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Wall types</h2>
+  <div class="item"><input type="checkbox" id="c40"><label for="c40"><div class="filename">40-wall-type-kind-picker.png</div><div class="desc">New wall type modal with Wall / Tied pier / Freestanding pier tabs visible at the top.</div></label></div>
+  <div class="item"><input type="checkbox" id="c41"><label for="c41"><div class="filename">41-wall-type-basics.png</div><div class="desc">Wall type editor — Basics tab. Name, height, bond, match-exact-length toggle.</div></label></div>
+  <div class="item"><input type="checkbox" id="c42"><label for="c42"><div class="filename">42-wall-type-composition.png</div><div class="desc">Wall type editor — Composition tab. Base / body / top / full-end / half-end pickers.</div></label></div>
+  <div class="item"><input type="checkbox" id="c43"><label for="c43"><div class="filename">43-wall-type-pattern-empty.png</div><div class="desc">Course pattern tab — empty state with "Build the wall as a stack of bands" copy.</div></label></div>
+  <div class="item"><input type="checkbox" id="c44"><label for="c44"><div class="filename">44-wall-type-pattern-bands.png</div><div class="desc">Course pattern tab with multiple bands defined — populated state with preview.</div></label></div>
+  <div class="item"><input type="checkbox" id="c45"><label for="c45"><div class="filename">45-wall-type-advanced.png</div><div class="desc">Advanced tab — Per-course overrides + course-series ranges sections.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Drawing</h2>
+  <div class="item"><input type="checkbox" id="c50"><label for="c50"><div class="filename">50-drawing-typed-length.png</div><div class="desc">Wall being drawn with a typed length (e.g. "5200 mm" or "6720") floating mid-draw.</div></label></div>
+  <div class="item"><input type="checkbox" id="c51"><label for="c51"><div class="filename">51-wall-in-progress.png</div><div class="desc">Drawing mid-flow with the "Click two points… Press Esc" banner and a hatched wall segment.</div></label></div>
+  <div class="item"><input type="checkbox" id="c52"><label for="c52"><div class="filename">52-corner.png</div><div class="desc">Two walls meeting at a corner — clean close-up showing how the corner forms.</div></label></div>
+  <div class="item"><input type="checkbox" id="c53"><label for="c53"><div class="filename">53-curved-wall.png</div><div class="desc">Curved wall placed with course numbering visible — R900 corner or similar arc.</div></label></div>
+  <div class="item"><input type="checkbox" id="c54"><label for="c54"><div class="filename">54-multi-page-walls.png</div><div class="desc">Plan with multiple walls drawn across — full block tally panel populated.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Openings</h2>
+  <div class="item"><input type="checkbox" id="c60"><label for="c60"><div class="filename">60-opening-modal.png</div><div class="desc">"New opening" modal — preset chips (Door 2100, Window 1500…), sill + head fields.</div></label></div>
+  <div class="item"><input type="checkbox" id="c61"><label for="c61"><div class="filename">61-opening-placed.png</div><div class="desc">Opening rendered as a gap in the wall — e.g. 1800 × 2100 on the alfresco wall.</div></label></div>
+  <div class="item"><input type="checkbox" id="c62"><label for="c62"><div class="filename">62-opening-selected.png</div><div class="desc">Selected opening with banner: "Opening: ... Sill 0mm · Head 300mm · Lintel 20.25" + Delete/Deselect buttons.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Piers</h2>
+  <div class="item"><input type="checkbox" id="c70"><label for="c70"><div class="filename">70-pier-placement.png</div><div class="desc">Pier placement banner: "Click on a wall for a tied pier or anywhere else for freestanding".</div></label></div>
+  <div class="item"><input type="checkbox" id="c71"><label for="c71"><div class="filename">71-pier-types.png</div><div class="desc">Wall types panel showing wall + tied pier + freestanding pier as one unified list with pier blocks visible on the plan.</div></label></div>
+  <div class="item"><input type="checkbox" id="c72"><label for="c72"><div class="filename">72-pier-editor.png</div><div class="desc">Pier editor modal — name, placement radio, height, course pattern, pier preview.</div></label></div>
+</section>
+
+<section class="group">
+  <h2>Tally + export</h2>
+  <div class="item"><input type="checkbox" id="c80"><label for="c80"><div class="filename">80-block-tally.png</div><div class="desc">Block tally panel close-up — total blocks, run length, per-code breakdown.</div></label></div>
+  <div class="item"><input type="checkbox" id="c81"><label for="c81"><div class="filename">81-export-panel.png</div><div class="desc">Export estimate panel close-up — all section checkboxes ticked, Save as PDF button.</div></label></div>
+  <div class="item"><input type="checkbox" id="c82"><label for="c82"><div class="filename">82-export-pdf-assumptions.png</div><div class="desc">Exported PDF in browser print preview — Assumptions page visible with full content.</div></label></div>
+  <div class="item"><input type="checkbox" id="c83"><label for="c83"><div class="filename">83-export-pdf-schedule.png</div><div class="desc">Block schedule page in the exported PDF — full page view.<span class="pending">pending</span></div></label></div>
+  <div class="item"><input type="checkbox" id="c84"><label for="c84"><div class="filename">84-export-pdf-wall-specs.png</div><div class="desc">Wall specifications page in the exported PDF — full page view.<span class="pending">pending</span></div></label></div>
+</section>
+
+<section class="group">
+  <h2>Reference</h2>
+  <div class="item"><input type="checkbox" id="c90"><label for="c90"><div class="filename">90-keyboard-shortcuts.png</div><div class="desc">Keyboard shortcuts modal — Global / Drawing / Selection / Project sections all visible.</div></label></div>
+</section>
+
+<footer>
+  Save each file to <code>C:\Users\Joshua\Beme\public\guide\</code>. Tick
+  here as you go — your progress saves to this page's localStorage so a
+  refresh won't lose it. <em>pending</em> items are the screenshots not
+  yet captured during our session; placeholders will show in the guide
+  until you drop them in.
+</footer>
+
+</div>
+
+<script>
+  const KEY = 'beme-guide-checklist-v1';
+  const boxes = document.querySelectorAll('input[type="checkbox"]');
+
+  function save() {
+    const state = {};
+    boxes.forEach(b => state[b.id] = b.checked);
+    localStorage.setItem(KEY, JSON.stringify(state));
+    refreshCounts();
+  }
+  function load() {
+    try {
+      const state = JSON.parse(localStorage.getItem(KEY) || '{}');
+      boxes.forEach(b => { if (state[b.id]) b.checked = true; });
+    } catch {}
+    refreshCounts();
+  }
+  function refreshCounts() {
+    const total = boxes.length;
+    const done = Array.from(boxes).filter(b => b.checked).length;
+    document.getElementById('total').textContent = total;
+    document.getElementById('done').textContent = done;
+    document.getElementById('pending').textContent = total - done;
+  }
+  function resetAll() {
+    if (!confirm('Clear all ticks?')) return;
+    boxes.forEach(b => b.checked = false);
+    save();
+  }
+
+  boxes.forEach(b => b.addEventListener('change', save));
+  load();
+</script>
+
+</body>
+</html>

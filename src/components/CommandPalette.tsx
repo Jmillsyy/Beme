@@ -173,39 +173,41 @@ export default function CommandPalette() {
     ]
     const actions: PaletteItem[] = [
       {
-        id: 'action-block',
-        label: 'New block estimate',
-        hint: 'Open the block workspace',
-        keywords: ['create', 'block', 'estimate'],
+        // One unified entry — the workspace handles both trades and the
+        // user switches inside via the trade chip group. Old "new block
+        // estimate" / "new brick estimate" search queries both still
+        // match thanks to the keywords list.
+        id: 'action-new-estimate',
+        label: 'New estimate',
+        hint: 'Open the workspace — block, brick, or both',
+        keywords: ['create', 'new', 'block', 'brick', 'estimate'],
         group: 'Action',
         onSelect: () => navigate('/project/block'),
       },
-      {
-        id: 'action-brick',
-        label: 'New brick estimate',
-        hint: 'Open the brick workspace',
-        keywords: ['create', 'brick', 'estimate'],
-        group: 'Action',
-        onSelect: () => navigate('/project/brick'),
-      },
     ]
     // Project items — limit to 8 most-recent so the palette stays scannable.
-    const projectItems: PaletteItem[] = projects.slice(0, 8).map((p) => ({
-      id: `project-${p.id}`,
-      label: p.projectDetails.projectName || '(Untitled project)',
-      hint: `${p.type === 'brick' ? 'Brick' : 'Block'} · ${
-        p.projectDetails.clientName || 'No client'
-      }`,
-      keywords: [
-        p.projectDetails.siteAddress,
-        p.projectDetails.estimatorName,
-        p.type,
-        p.referenceNumber ? `#${p.referenceNumber}` : '',
-      ].filter(Boolean),
-      group: 'Projects',
-      onSelect: () =>
-        navigate(p.type === 'brick' ? `/project/brick?id=${p.id}` : `/project/block?id=${p.id}`),
-    }))
+    const projectItems: PaletteItem[] = projects.slice(0, 8).map((p) => {
+      // After multi-trade unification, a project can be 'block', 'brick',
+      // or both. Hint shows the trade(s) — single label when one, "Block ·
+      // Brick" when both. Route picks the first trade as the initial.
+      const tradeList = p.trades && p.trades.length > 0 ? p.trades : p.type ? [p.type] : ['block']
+      const tradeLabel = tradeList
+        .map((t) => (t === 'brick' ? 'Brick' : 'Block'))
+        .join(' · ')
+      return {
+        id: `project-${p.id}`,
+        label: p.projectDetails.projectName || '(Untitled project)',
+        hint: `${tradeLabel} · ${p.projectDetails.clientName || 'No client'}`,
+        keywords: [
+          p.projectDetails.siteAddress,
+          p.projectDetails.estimatorName,
+          ...tradeList,
+          p.referenceNumber ? `#${p.referenceNumber}` : '',
+        ].filter(Boolean) as string[],
+        group: 'Projects',
+        onSelect: () => navigate(`/project/${tradeList[0]}?id=${p.id}`),
+      }
+    })
     return [...nav, ...actions, ...projectItems]
   }, [navigate, projects])
 

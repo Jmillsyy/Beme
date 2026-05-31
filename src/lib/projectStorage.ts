@@ -36,7 +36,45 @@ import type {
 import { isSupabaseConfigured, supabase } from './supabase'
 import { getOrgState } from './organisations'
 
+/**
+ * Per-project trade discriminator.
+ *
+ * Historically, every project was ONE trade — block OR brick — and this
+ * type was the discriminator on {@link SavedProject.type}. With
+ * multi-trade unification, a project can carry both block and brick
+ * content in parallel via `trades` (an array). `ProjectType` is
+ * retained as the type of each individual trade slot and as a back-
+ * compat alias for the deprecated `SavedProject.type` field.
+ */
 export type ProjectType = 'block' | 'brick'
+
+/**
+ * A named subdivision of a project — "Balcony", "Staircase", "Level 1",
+ * "Tower A", etc. Areas are an orthogonal organising dimension on top of
+ * pages (PDF pages from the architectural set) and trades (block / brick):
+ *
+ *   - **Page** — physical PDF page (Level 1 plan, Level 2 plan, ...)
+ *   - **Trade** — block walls vs brick walls
+ *   - **Area** — a logical work bucket the estimator defines themselves
+ *
+ * The workspace's active area filters the canvas + tally to walls
+ * assigned to that area; new walls drawn while an area is active get
+ * stamped with that area's id. Walls with no area (`Wall.areaId`
+ * undefined) only show in the "All" view — never under a specific
+ * area tab.
+ */
+export interface ProjectArea {
+  /** Unique id within the project. */
+  id: string
+  /** Display name — what the user typed when creating it. */
+  name: string
+  /**
+   * Optional accent colour hex (e.g. "#f4894e"). Used for the bullet dot
+   * in the area's tab and any per-area visual highlighting on the
+   * canvas. v1 leaves this undefined — the v2 colour-picker fills it in.
+   */
+  colorHex?: string
+}
 export type ProjectStatus = 'in-progress' | 'completed'
 /**
  * Sales outcome for the project's quote.
@@ -89,7 +127,43 @@ export interface SavedPageData {
  */
 export interface SavedProject {
   id: string
-  type: ProjectType
+  /**
+   * Legacy single-trade discriminator. Historically the source of truth
+   * for "is this a block project or a brick project". With multi-trade
+   * unification {@link SavedProject.trades} is the new source of truth;
+   * `type` is preserved on saves for forward-compat with older clients
+   * (set to the FIRST trade in `trades`) but new code should read
+   * `trades`.
+   *
+   * Optional + tolerated forever on reads so projects saved by any
+   * version of Beme keep loading.
+   */
+  type?: ProjectType
+  /**
+   * Which trades have content in this project. A project can carry
+   * block walls, brick walls, both, or neither. Drives the trade rail
+   * in the workspace (which icons appear), the dashboard project row
+   * (badges), and the export (which schedule sections render).
+   *
+   * Migrated from `type` on first load of pre-unification projects:
+   * `type='block'` → `['block']`, `type='brick'` → `['brick']`.
+   *
+   * Empty array is legal (project exists but no trade has content yet).
+   * Order in the array is the order trades render in the rail — the
+   * first one is the default active trade on open.
+   */
+  trades?: ProjectType[]
+  /**
+   * Named subdivisions of this project — "Balcony", "Staircase",
+   * "Level 1", etc. See {@link ProjectArea}. The estimator creates these
+   * inside the workspace via the area tab bar above the wall-types
+   * panel. Walls reference an area by id via {@link Wall.areaId}.
+   *
+   * Optional + missing means "no areas defined yet" — the workspace
+   * shows only the "All" tab and any walls drawn are unassigned. Safe
+   * default; pre-Areas projects all read back this way.
+   */
+  areas?: ProjectArea[]
   status: ProjectStatus
   /**
    * Six-digit human-readable reference number, allocated by Postgres at
@@ -229,6 +303,68 @@ export interface SavedProject {
 
 export type SavedProjectSummary = Omit<SavedProject, 'pdfBlob'>
 
+// ---------- Multi-trade migration ------------------------------------
+
+/**
+ * Bring a SavedProject up to the current shape. Today this means:
+ *
+ *   1. If `trades` is missing, derive it from `type` (the pre-unification
+ *      discriminator). `type='block'` → `trades=['block']`, brick → ['brick'],
+ *      missing both → empty array.
+ *   2. If any wall is missing the `trade` field, stamp it from the
+ *      project's trade — block-project walls become `trade='block'`,
+ *      brick-project walls become `trade='brick'`. This is what lets the
+ *      workspace look `wall.makeupId` up in the right pool when a single
+ *      project carries both kinds of wall.
+ *
+ * Pure function — returns a new object with the migrated fields applied;
+ * caller decides whether to persist. Called from every load path
+ * ({@link getProject}, {@link listProjects}) so any place that reads a
+ * project gets the migrated shape.
+ *
+ * Idempotent — running it on an already-migrated project is a no-op.
+ */
+export function migrateSavedProject(project: SavedProject): SavedProject {
+  // 1. Derive `trades` from `type` if missing.
+  let trades = project.trades
+  if (!trades) {
+    if (project.type === 'block') trades = ['block']
+    else if (project.type === 'brick') trades = ['brick']
+    else trades = []
+  }
+
+  // 2. Stamp `wall.trade` on any wall missing it. Pre-unification walls
+  //    had no notion of trade; we infer from the project's type — every
+  //    wall in a block project is a block wall, etc. Projects with NO
+  //    type set (legacy edge case) default missing wall.trade to 'block'.
+  const inferredTrade: ProjectType =
+    project.type ?? (trades.length > 0 ? trades[0] : 'block')
+
+  let wallsByPage = project.wallsByPage
+  let anyMutated = false
+  if (wallsByPage) {
+    const out: typeof wallsByPage = {}
+    for (const [pageStr, walls] of Object.entries(wallsByPage)) {
+      const page = Number(pageStr)
+      let mutated = false
+      const next = walls.map((w) => {
+        if (w.trade) return w
+        mutated = true
+        return { ...w, trade: inferredTrade }
+      })
+      out[page] = mutated ? next : walls
+      if (mutated) anyMutated = true
+    }
+    if (anyMutated) wallsByPage = out
+  }
+
+  // Bail early if nothing changed — preserves referential identity for
+  // already-migrated reads (no cascading re-renders downstream).
+  if (project.trades === trades && !anyMutated) return project
+
+  return { ...project, trades, wallsByPage }
+}
+
 // ---------- Public API — dispatches between cloud and local ----------
 
 export function generateProjectId(): string {
@@ -242,25 +378,45 @@ export function generateProjectId(): string {
  * Insert or update a saved project. Returns the persisted SavedProject so
  * callers can pick up server-assigned fields — chiefly `referenceNumber`,
  * which Postgres allocates on first INSERT via a sequence + trigger.
+ *
+ * Forward-compat: always writes the legacy `type` field alongside the new
+ * `trades` array, so older clients still in production can read newly-
+ * saved projects without breaking. `type` is set to the FIRST entry in
+ * `trades` (the primary trade), preserving today's "every project has a
+ * type" assumption from the old client's perspective.
  */
 export async function saveProject(project: SavedProject): Promise<SavedProject> {
   const uid = await currentUserId()
-  if (uid) return cloudSaveProject(project, uid)
-  return localSaveProject(project)
+  const normalised = ensureLegacyTypeField(project)
+  if (uid) return cloudSaveProject(normalised, uid)
+  return localSaveProject(normalised)
+}
+
+/**
+ * Stamp the legacy `type` field from `trades` if absent. Projects created
+ * by the unified workspace might have `trades=['brick']` but no `type` —
+ * older clients in the wild still rely on `type` to route to the right
+ * workspace, so we always write it out alongside.
+ */
+function ensureLegacyTypeField(project: SavedProject): SavedProject {
+  if (project.type) return project
+  const trades = project.trades ?? []
+  if (trades.length === 0) return project // nothing to infer from
+  return { ...project, type: trades[0] }
 }
 
 /** Load a single project by id. Returns undefined if not found. */
 export async function getProject(id: string): Promise<SavedProject | undefined> {
   const uid = await currentUserId()
-  if (uid) return cloudGetProject(id, uid)
-  return localGetProject(id)
+  const loaded = uid ? await cloudGetProject(id, uid) : await localGetProject(id)
+  return loaded ? migrateSavedProject(loaded) : loaded
 }
 
 /** List every saved project. Sorted by `updatedAt` descending. */
 export async function listProjects(): Promise<SavedProject[]> {
   const uid = await currentUserId()
-  if (uid) return cloudListProjects(uid)
-  return localListProjects()
+  const all = uid ? await cloudListProjects(uid) : await localListProjects()
+  return all.map(migrateSavedProject)
 }
 
 /**
@@ -321,6 +477,14 @@ export async function duplicateProject(sourceId: string): Promise<string | null>
   const copy: SavedProject = {
     id: newId,
     type: source.type,
+    /** Carry over the source's trade set — duplicating a "Block + Brick"
+     *  project should give you a fresh "Block + Brick" project too. */
+    trades: source.trades,
+    /** Carry over the area list — duplicating a project that's organised
+     *  into Balcony / Staircase / etc. should give you a fresh project
+     *  with the same area structure ready to populate. Walls aren't
+     *  copied (per the rule below), so the areas are empty but defined. */
+    areas: source.areas,
     status: 'in-progress',
     organisationId: source.organisationId,
     createdAt: now,

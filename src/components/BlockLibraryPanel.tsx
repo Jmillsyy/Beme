@@ -583,7 +583,9 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
                     <legend className="px-1 text-ink-300 text-xs">Lintel rules</legend>
                     <p className="text-[11px] text-ink-400 mb-3 leading-relaxed">
                       How this block is selected and sized when used as a lintel.
-                      All optional — leave blank for sensible defaults.
+                      All optional — leave blank for sensible defaults. Min and
+                      Max head height are both <em>inclusive</em>: a range of
+                      200–300 covers heads from 200mm to 300mm.
                     </p>
                     <div className="grid grid-cols-3 gap-3">
                       <label className="block">

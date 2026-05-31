@@ -899,11 +899,19 @@ export function pickLintelBlock(openingHeightMm: number): Block | undefined {
 
 /**
  * Lintel selected by HEAD-HEIGHT BUCKET. Walks every lintel-tagged block
- * and picks the one whose [lintelMinHeadHeightMm, lintelMaxHeadHeightMm)
- * range contains the given head height. Each region's library can define
- * its own bucket boundaries — AU SEQ uses 0–200 / 200–300 / 300+ via the
- * 20.13 / 20.25 / 20.18 triple; US / UK regions will set different bands
- * on their own lintel blocks.
+ * and picks the one whose [lintelMinHeadHeightMm, lintelMaxHeadHeightMm]
+ * range contains the given head height. Each region's library can
+ * define its own bucket boundaries — AU SEQ uses 0–200 / 200–300 / 300+
+ * via the 20.13 / 20.25 / 20.18 triple; US / UK regions will set
+ * different bands on their own lintel blocks.
+ *
+ * Bucket convention is INCLUSIVE on both ends — a 300mm head matches a
+ * `min=200, max=300` bucket. This matches how masonry catalogues are
+ * typically written ("300mm Lintel Block" covers 300mm heads, full
+ * stop). When more than one bucket matches the head (e.g. AU SEQ's
+ * 20.25 [200,300] and 20.18 [300,∞) both cover head=300), prefer the
+ * one with the smaller / more specific max — that's the block whose
+ * name and range were chosen to cover that exact head.
  *
  * Falls back to `pickLintelBlockIn` (height-based selection) for any
  * lintel block that doesn't carry the head-height-range metadata yet —
@@ -917,14 +925,26 @@ export function pickLintelForHeadHeightIn(
 ): Block | undefined {
   const lintels = Object.values(library).filter((b) => b.roles.includes('lintel'))
   if (lintels.length === 0) return undefined
-  // Prefer blocks with explicit range metadata.
-  const byRange = lintels.find((b) => {
+  // Collect every bucket that contains this head height (inclusive max),
+  // then pick the tightest. Unbounded buckets (max === undefined) sort
+  // last so a bounded match always wins over an open-ended one.
+  const matches = lintels.filter((b) => {
     if (b.lintelMinHeadHeightMm === undefined) return false
     const min = b.lintelMinHeadHeightMm
     const max = b.lintelMaxHeadHeightMm
-    return headHeightMm >= min && (max === undefined || headHeightMm < max)
+    return headHeightMm >= min && (max === undefined || headHeightMm <= max)
   })
-  if (byRange) return byRange
+  if (matches.length > 0) {
+    // Tie-break: prefer the smaller max. Undefined max = Infinity, so
+    // it always loses to a bounded bucket. When two bounded buckets
+    // share the same max, fall through to library iteration order.
+    matches.sort((a, b) => {
+      const aMax = a.lintelMaxHeadHeightMm ?? Number.POSITIVE_INFINITY
+      const bMax = b.lintelMaxHeadHeightMm ?? Number.POSITIVE_INFINITY
+      return aMax - bMax
+    })
+    return matches[0]
+  }
   // Fallback: height-based selection for libraries without range metadata.
   return pickLintelBlockIn(library, headHeightMm)
 }

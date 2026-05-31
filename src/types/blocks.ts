@@ -125,11 +125,14 @@ export interface Block {
    * Lets each region's library carry its own lintel rules instead of the
    * AU 200 / 300mm thresholds being hard-coded in the calc engine.
    *
-   * Convention: `lintelMinHeadHeightMm` is inclusive (a 200mm lintel with
-   * min=200 covers a 200mm head), `lintelMaxHeadHeightMm` is exclusive
-   * (max=300 covers up to but not including 300mm — anything ≥ 300 picks
-   * the next size up). Leave `lintelMaxHeadHeightMm` undefined for the
-   * largest lintel in the set (it's the upper-open bucket).
+   * Convention: BOTH bounds inclusive. A bucket of min=200, max=300
+   * covers heads 200mm AND 300mm. Picks the natural reading of a
+   * masonry catalogue ("300mm Lintel Block" covers 300mm heads).
+   * When two buckets both contain a head height (e.g. AU SEQ's
+   * 20.25 [200,300] and 20.18 [300,∞) both cover head=300), the
+   * selector prefers the smaller max — the more specific bucket
+   * wins. Leave `lintelMaxHeadHeightMm` undefined for the largest
+   * lintel in the set (it's the upper-open bucket).
    */
   lintelMinHeadHeightMm?: number
   lintelMaxHeadHeightMm?: number

@@ -2,6 +2,9 @@ import { memo, useMemo, useState } from 'react'
 import type { BrickMakeup, BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
+import { useUserSettings } from '../lib/userSettings'
+import { brickLintelWarnings } from '../lib/lintelCoverage'
+import LintelCoverageBand from './LintelCoverageBand'
 
 interface BrickTallyPanelProps {
   walls: Wall[]
@@ -31,11 +34,20 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   // brick re-tallies immediately (the per-band counts read the rate
   // off each band's brick type at calc time).
   const { version: brickLibraryVersion } = useBrickLibrary()
+  const { settings: userSettings } = useUserSettings()
 
   const tally = useMemo(() => {
     void brickLibraryVersion
     return calculateBrickTally(walls, openings, settings, makeups)
   }, [walls, openings, settings, makeups, brickLibraryVersion])
+
+  // Lintel coverage warnings — surfaces openings whose width doesn't
+  // match any per-opening lintel supply item with a width range, and
+  // overlapping ranges that would double-count. See lib/lintelCoverage.
+  const lintelWarnings = useMemo(
+    () => brickLintelWarnings(openings, userSettings.supplyItems),
+    [openings, userSettings.supplyItems],
+  )
 
   if (walls.length === 0) {
     return (
@@ -69,6 +81,12 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
           {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
         </span>
       </button>
+
+      {expanded && lintelWarnings.length > 0 && (
+        <div className="px-3 pt-3">
+          <LintelCoverageBand warnings={lintelWarnings} />
+        </div>
+      )}
 
       {expanded && (
         <table className="w-full text-sm">

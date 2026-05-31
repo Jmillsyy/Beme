@@ -5,6 +5,8 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import SupplyItemsPanel from './SupplyItemsPanel'
+import TradeRail from './TradeRail'
+import AreaTabs from './AreaTabs'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
@@ -17,6 +19,7 @@ import ProjectDetailsDrawer from './ProjectDetailsDrawer'
 import BrickExportPanel from './BrickExportPanel'
 import BlockExportPanel from './BlockExportPanel'
 import {
+  type ProjectArea,
   type ProjectStatus,
   type SavedProject,
   deleteProject as deleteProjectFromStore,
@@ -324,8 +327,14 @@ function clamp(v: number, min: number, max: number) {
 
 interface PdfWorkspaceProps {
   /**
-   * Estimate mode. When 'block', enables wall drawing tools and a live block tally panel
-   * below the PDF view. 'brick' enables the brick workflow.
+   * Estimate mode. The PROP is the INITIAL trade the workspace opens in;
+   * once mounted the user can swap between block and brick via the trade
+   * rail on the left without unmounting the workspace. Walls drawn while
+   * a given trade is active get that trade stamped on their `trade`
+   * field, so switching back and forth preserves work on both sides.
+   *
+   * Old block/brick routes still pass this prop the way they always
+   * have — it just stops being the *only* source of truth.
    */
   mode?: 'block' | 'brick'
   /** When set, loads the matching saved project from IndexedDB on mount. */
@@ -343,7 +352,22 @@ const EMPTY_WORKSPACE_PAGE_WIDTH_MM = 841
 const EMPTY_WORKSPACE_PAGE_HEIGHT_MM = 594
 const EMPTY_WORKSPACE_DEFAULT_RATIO = 100
 
-export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}) {
+export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorkspaceProps = {}) {
+  // Mode is local state initialised from the prop. The TradeRail on the
+  // left changes it without unmounting the workspace — all existing
+  // `mode === 'block'` / `'brick'` branches keep working unchanged.
+  // We deliberately don't sync to `initialMode` after mount: the user's
+  // active-trade choice should survive across re-renders of the parent
+  // route. If the route changes project id entirely, React unmounts and
+  // remounts so the new initialMode wins automatically.
+  const [mode, setMode] = useState<'block' | 'brick' | undefined>(initialMode)
+  // Project Areas — user-defined buckets ("Balcony", "Staircase", etc.)
+  // that subdivide a single project's work. `areas` is the canonical
+  // list (persisted on save); `activeAreaId` is per-session UI state
+  // (null = "All" tab). Hydrated from the loaded project below; new
+  // walls drawn while an area is active get its id stamped on them.
+  const [areas, setAreas] = useState<ProjectArea[]>([])
+  const [activeAreaId, setActiveAreaId] = useState<string | null>(null)
   const { user: currentUser } = useAuth()
   // Resolve the author's user id to a friendly display name. For org-scoped
   // projects we ask the org-members RPC (which returns full names + emails
@@ -961,6 +985,11 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
             : savedPiers[0]?.id ?? null
         setActivePierMakeupId(resolvedActive)
         setCurrentPage(proj.currentPage || 1)
+        // Hydrate project Areas. activeAreaId stays as its default (null
+        // → "All" tab) on load — landing in a specific area on every
+        // reopen would be surprising. User picks the area to focus on
+        // from the tab bar after the project loads.
+        if (proj.areas && proj.areas.length > 0) setAreas(proj.areas)
         if (proj.makeups && proj.makeups.length > 0) {
           setMakeups(proj.makeups)
           if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
@@ -1394,9 +1423,23 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     // save by reading the in-state value first. Even when another org
     // member edits this project, the original author stays.
     const authorUserId = createdByUserId ?? currentUser?.id
+    // Derive `trades` from "which trades have walls in this project".
+    // This reflects what the user has actually drawn; a fresh project
+    // that's only been opened in block mode but hasn't been drawn on
+    // gets `trades=['block']` (from the initial mode) so the rail still
+    // shows the right starter trade.
+    const tradesWithWalls = new Set<'block' | 'brick'>()
+    for (const walls of Object.values(wallsByPage)) {
+      for (const w of walls) {
+        tradesWithWalls.add(w.trade ?? 'block')
+      }
+    }
+    if (tradesWithWalls.size === 0 && mode) tradesWithWalls.add(mode)
+    const trades = Array.from(tradesWithWalls)
     const project: SavedProject = {
       id,
       type: mode,
+      trades,
       status: projectStatus,
       organisationId,
       createdAt: projectCreatedAt ?? now,
@@ -1429,23 +1472,24 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
       currentPage,
       supplyItemSelections,
       supplyItemRateOverrides,
-      ...(mode === 'block'
-        ? {
-            makeups,
-            activeMakeupId,
-            blockExportInclusions,
-            pierMakeups,
-            activePierMakeupId: activePierMakeupId ?? undefined,
-          }
-        : {}),
-      ...(mode === 'brick'
-        ? {
-            brickSettings,
-            brickMakeups,
-            activeBrickMakeupId,
-            exportInclusions,
-          }
-        : {}),
+      // Persist project Areas (Balcony / Staircase / etc.). Stored on
+      // every save so a project's organisational structure round-trips
+      // even when no walls were touched in the session.
+      ...(areas.length > 0 ? { areas } : {}),
+      // ALWAYS persist both trades' setup so a multi-trade project doesn't
+      // lose the work on the inactive trade when saved from the active
+      // trade's perspective. Pre-unification this was conditional on `mode`
+      // because a project could only be one trade — now both pools can
+      // legitimately have content.
+      makeups,
+      activeMakeupId,
+      blockExportInclusions,
+      pierMakeups,
+      activePierMakeupId: activePierMakeupId ?? undefined,
+      brickSettings,
+      brickMakeups,
+      activeBrickMakeupId,
+      exportInclusions,
     }
     try {
       const persisted = await saveProjectToStore(project)
@@ -1651,17 +1695,18 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
         openingsByPage,
         piersByPage,
         currentPage,
-        ...(mode === 'block'
-          ? {
-              makeups,
-              activeMakeupId,
-              pierMakeups,
-              activePierMakeupId: activePierMakeupId ?? undefined,
-            }
-          : {}),
-        ...(mode === 'brick'
-          ? { brickSettings, brickMakeups, activeBrickMakeupId, exportInclusions }
-          : {}),
+        ...(areas.length > 0 ? { areas } : {}),
+        // Always persist both trades' setup — see handleSaveProject for
+        // why. Multi-trade projects need both pools on every save or
+        // the inactive trade's work gets wiped on the next round-trip.
+        makeups,
+        activeMakeupId,
+        pierMakeups,
+        activePierMakeupId: activePierMakeupId ?? undefined,
+        brickSettings,
+        brickMakeups,
+        activeBrickMakeupId,
+        exportInclusions,
       }
       try {
         const persisted = await saveProjectToStore(project)
@@ -1862,8 +1907,37 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
     placingControlJointRef.current = placingControlJoint
   }, [placingControlJoint])
 
-  const allWalls = useMemo(() => Object.values(wallsByPage).flat(), [wallsByPage])
-  const currentPageWalls = wallsByPage[currentPage] ?? []
+  // Walls visible to the workspace right now — filtered by BOTH the
+  // active trade AND the active area. With multi-trade + multi-area
+  // unification, `wallsByPage` can hold walls from multiple trades AND
+  // multiple areas in parallel. The workspace only ever shows walls
+  // matching the current view: active trade + active area (or any area
+  // when `activeAreaId` is null = the "All" tab).
+  //
+  // Legacy walls (saved before unification) have no `trade` field —
+  // treated as 'block'. Walls drawn before Areas existed have no
+  // `areaId` — they only show in the All view, never under a specific
+  // area tab.
+  //
+  // Note: write sites (handleWallPlaced, handleControlJoint, etc.) still
+  // read from `wallsByPage[currentPage]` directly so they see ALL walls
+  // — never use these filtered views to compute writes or other-trade /
+  // other-area walls would get wiped.
+  const matchesActiveView = (w: Wall): boolean => {
+    if (mode && (w.trade ?? 'block') !== mode) return false
+    if (activeAreaId !== null && w.areaId !== activeAreaId) return false
+    return true
+  }
+  const allWalls = useMemo(
+    () => Object.values(wallsByPage).flat().filter(matchesActiveView),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [wallsByPage, mode, activeAreaId]
+  )
+  const currentPageWalls = useMemo(
+    () => (wallsByPage[currentPage] ?? []).filter(matchesActiveView),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [wallsByPage, currentPage, mode, activeAreaId]
+  )
   const allOpenings = useMemo(() => Object.values(openingsByPage).flat(), [openingsByPage])
   const currentPageOpenings = openingsByPage[currentPage] ?? []
   const allPiers = useMemo(() => Object.values(piersByPage).flat(), [piersByPage])
@@ -2165,6 +2239,14 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           ? crypto.randomUUID()
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       makeupId: isBrick ? activeBrickMakeupId : activeMakeupId,
+      // Stamp the trade so the unified workspace knows which makeup pool
+      // to look the id up in, and so switching trades doesn't make this
+      // wall disappear into the wrong filter.
+      trade: isBrick ? 'brick' : 'block',
+      // Stamp the active area (if any) so the wall lives in that bucket.
+      // Drawn while the "All" tab is active → no area → only visible
+      // under All going forward. User can bulk-reassign later (v2 work).
+      ...(activeAreaId ? { areaId: activeAreaId } : {}),
       startX: snappedStart.x,
       startY: snappedStart.y,
       endX: snappedEnd.x,
@@ -2327,6 +2409,12 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           ? crypto.randomUUID()
           : `w-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       makeupId,
+      // Curved walls are block-only today (the brick toolbar doesn't
+      // expose the curve tool), but stamp the trade defensively so a
+      // future brick curve doesn't accidentally render as a block wall.
+      trade: mode === 'brick' ? 'brick' : 'block',
+      // Stamp the active area, same as straight walls.
+      ...(activeAreaId ? { areaId: activeAreaId } : {}),
       startX: startMm.x,
       startY: startMm.y,
       endX: endMm.x,
@@ -4920,7 +5008,10 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           flex-1 + min-h-0 throughout lets the canvas pan container fill
           to the bottom of its fixed-height parent. No page-level scroll —
           all PDF panning happens inside the canvas's own scrollable area,
-          which keeps dragging the plan to any edge reliable. */}
+          which keeps dragging the plan to any edge reliable.
+
+          The horizontal Trade switcher sits at the top of the right
+          rail (just above WallTypesPanel) — see below. */}
       <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
       {/* ───── Canvas area ─────
@@ -6377,6 +6468,71 @@ export default function PdfWorkspace({ mode, projectId }: PdfWorkspaceProps = {}
           so a tall panel stack doesn't shrink the canvas. Stacks below the
           canvas on smaller screens. */}
       <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
+
+        {/* Trade switcher — sits above the wall-types panel on the same
+            horizontal line as the drawing toolbar to its left. Active
+            trade dictates which panels render below, which makeup pool
+            walls reference, and which walls the canvas filters in.
+
+            Wrapped with pt-1 + mb-1.5 to mirror the canvas-side toolbar's
+            sticky wrapper (pt-1 pb-1 mb-1.5), so the chip group and the
+            "Draw wall / Ruler / etc." toolbar end up on the exact same
+            horizontal Y — same top edge, same height, same bottom edge. */}
+        {(mode === 'block' || mode === 'brick') && (
+          <div className="pt-1 pb-1 mb-1.5">
+            <TradeRail
+              trades={['block', 'brick']}
+              activeTrade={mode}
+              onChangeTrade={(t) => setMode(t)}
+            />
+          </div>
+        )}
+
+        {/* Area tabs — named subdivisions of the project ("Balcony",
+            "Staircase", "Level 1", etc.). The active area filters the
+            canvas + tally; new walls drawn while an area is active get
+            its id stamped on them. "All" tab (activeAreaId=null) shows
+            everything regardless. Only shown in block/brick workspace
+            views, not on the empty-state / upload-zone gate. */}
+        {(mode === 'block' || mode === 'brick') && (
+          <AreaTabs
+            areas={areas}
+            activeAreaId={activeAreaId}
+            onSelect={setActiveAreaId}
+            onCreate={(name) => {
+              // Generate the id client-side — uses the same UUID helper
+              // as project ids so it's stable across saves and unique
+              // across users in the cloud.
+              const id =
+                typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                  ? crypto.randomUUID()
+                  : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+              const newArea: ProjectArea = { id, name }
+              setAreas((prev) => [...prev, newArea])
+              // Activate the freshly-created area so new walls flow into
+              // it. Most common workflow: "+ New area", type name, start
+              // drawing — without the activation step the user would
+              // have to click the tab manually.
+              setActiveAreaId(id)
+            }}
+            onRename={(areaId, newName) => {
+              setAreas((prev) =>
+                prev.map((a) => (a.id === areaId ? { ...a, name: newName } : a))
+              )
+            }}
+            onDelete={(areaId) => {
+              setAreas((prev) => prev.filter((a) => a.id !== areaId))
+              // If the deleted area was active, fall back to All so the
+              // user doesn't land on a now-empty filter that hides
+              // everything. The deleted area's walls keep their old
+              // areaId — they become "orphaned" but still visible in
+              // All. Could prune them too but that's destructive on a
+              // simple delete click; user can re-create an area and
+              // bulk-assign in v2.
+              if (activeAreaId === areaId) setActiveAreaId(null)
+            }}
+          />
+        )}
 
         {/* Wall types management panel (block mode) — pier types live
             inside this panel too, listed below the wall types. */}

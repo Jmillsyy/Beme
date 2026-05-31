@@ -467,8 +467,9 @@ function SupplyItemForm({
             <p className="text-[11px] text-ink-500 mb-3 leading-snug">
               Limit this supply to openings whose width sits within the
               range. Use it for lintels (e.g. one Galintel 100×100 per
-              opening between 1200mm and 1800mm wide). Leave both blank
-              to apply to every opening.
+              opening between 1200mm and 1800mm wide). Min and Max are
+              both <em>inclusive</em>. Leave both blank to apply to
+              every opening.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs">

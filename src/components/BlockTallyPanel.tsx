@@ -5,6 +5,8 @@ import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { formatLengthMm } from '../lib/units'
 import { useUserSettings } from '../lib/userSettings'
+import { blockLintelWarnings } from '../lib/lintelCoverage'
+import LintelCoverageBand from './LintelCoverageBand'
 
 interface BlockTallyPanelProps {
   walls: Wall[]
@@ -31,6 +33,16 @@ export default function BlockTallyPanel({
     // libVersion is the trigger — calc reaches into the live BLOCK_LIBRARY singleton
     [walls, makeupsById, openings, piers, pierMakeupsById, libVersion]
   )
+
+  // Lintel coverage warnings — currently just overlapping bucket
+  // ranges in the library (block lintels gracefully fall back to "fill
+  // remaining head with body blocks" when none is tall enough, so
+  // there's no uncovered-opening warning to flag). The library is
+  // read via the BLOCK_LIBRARY singleton; libVersion drives the memo.
+  const lintelWarnings = useMemo(() => {
+    void libVersion
+    return blockLintelWarnings(BLOCK_LIBRARY)
+  }, [libVersion])
 
   const entries = useMemo(
     () =>
@@ -79,6 +91,12 @@ export default function BlockTallyPanel({
           {walls.length} wall{walls.length === 1 ? '' : 's'}
         </span>
       </button>
+
+      {expanded && lintelWarnings.length > 0 && (
+        <div className="px-3 pt-3">
+          <LintelCoverageBand warnings={lintelWarnings} />
+        </div>
+      )}
 
       {expanded && (
         <>

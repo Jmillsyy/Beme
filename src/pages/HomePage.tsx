@@ -29,6 +29,56 @@ import type { OrgMember, Organisation } from '../types/organisations'
 type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
 
 /**
+ * Which trades have content in this project. Wraps the post-migration
+ * `trades` field with a fallback to the legacy `type` for any project
+ * the migration somehow missed (defensive — shouldn't happen). If
+ * neither is set the project is treated as block (the historical
+ * default).
+ */
+function tradesOf(project: { type?: 'block' | 'brick'; trades?: ('block' | 'brick')[] }): ('block' | 'brick')[] {
+  if (project.trades && project.trades.length > 0) return project.trades
+  if (project.type) return [project.type]
+  return ['block']
+}
+
+/**
+ * Resolve the workspace URL for a project. With the unified workspace,
+ * both block and brick projects open the same `PdfWorkspace` — the
+ * route just picks the INITIAL trade. Users can switch trades inside the
+ * workspace via the trade chip group. We pick the first trade in the
+ * project's `trades` array as the initial.
+ */
+function projectUrl(project: { id: string; type?: 'block' | 'brick'; trades?: ('block' | 'brick')[] }): string {
+  const trade = tradesOf(project)[0]
+  return `/project/${trade}?id=${project.id}`
+}
+
+/**
+ * Render the trade pills for a project row. Unified projects (both
+ * block and brick) get two pills side-by-side; single-trade projects
+ * get one. Subtle spacing so they sit neatly with the project name +
+ * reference number.
+ */
+function TradeBadges({ trades }: { trades: ('block' | 'brick')[] }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      {trades.map((t) => (
+        <span
+          key={t}
+          className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
+            t === 'brick'
+              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+              : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
+          }`}
+        >
+          {t === 'brick' ? 'Brick' : 'Block'}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/**
  * Format a project's reference number as a 6-digit zero-padded string.
  * Values that overflow 6 digits (won't happen for a long time) just print
  * as-is rather than silently truncating. Mirrors the helper in ProjectBar
@@ -192,28 +242,19 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-1">
             Start a new estimate
           </div>
-          <Link
-            to="/project/brick"
-            className="block px-3 py-2.5 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group"
-            title="Start a new brick estimate"
-          >
-            <div className="font-bold text-sm text-beme-400 group-hover:text-beme-300">
-              + Brick estimate
-            </div>
-            <div className="text-[11px] text-ink-400 group-hover:text-ink-300 mt-0.5">
-              Trace brick walls over a plan
-            </div>
-          </Link>
+          {/* One unified entry point — opens the workspace in block mode by
+              default, user can switch to brick (or work on both) via the
+              trade chip group at the top of the right rail. */}
           <Link
             to="/project/block"
             className="block px-3 py-2.5 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group"
-            title="Start a new block estimate"
+            title="Start a new masonry estimate — block, brick, or both"
           >
             <div className="font-bold text-sm text-beme-400 group-hover:text-beme-300">
-              + Block estimate
+              + New estimate
             </div>
             <div className="text-[11px] text-ink-400 group-hover:text-ink-300 mt-0.5">
-              Draw walls, piers, openings
+              Block, brick, or both — switch trades inside
             </div>
           </Link>
         </div>
@@ -353,10 +394,7 @@ function FindByReferenceCard() {
         setError(`No project found with reference #${cleaned}.`)
         return
       }
-      const url =
-        hit.type === 'brick'
-          ? `/project/brick?id=${hit.id}`
-          : `/project/block?id=${hit.id}`
+      const url = projectUrl(hit)
       navigate(url)
     } catch (err) {
       setError((err as Error).message ?? 'Lookup failed')
@@ -1025,10 +1063,7 @@ function ProjectInProgressRow({
     project.projectDetails.siteAddress.trim()
       ? project.projectDetails.siteAddress
       : ''
-  const href =
-    project.type === 'brick'
-      ? `/project/brick?id=${project.id}`
-      : `/project/block?id=${project.id}`
+  const href = projectUrl(project)
 
   // Resolve the owner's display name. Fallback chain: ownerUserId →
   // createdByUserId → null. Suppresses the label when the project is the
@@ -1062,15 +1097,7 @@ function ProjectInProgressRow({
                   #{formatRef(project.referenceNumber)}
                 </span>
               )}
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
-                  project.type === 'brick'
-                    ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                    : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
-                }`}
-              >
-                {project.type === 'brick' ? 'Brick' : 'Block'}
-              </span>
+              <TradeBadges trades={tradesOf(project)} />
               {ownerName && !isMyProject && (
                 <span className="text-[11px] text-ink-400">
                   by <span className="text-ink-300">{ownerName}</span>
@@ -1176,10 +1203,7 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
     project.projectDetails.siteAddress.trim() ||
     'Untitled project'
   const sub = project.projectDetails.siteAddress.trim()
-  const href =
-    project.type === 'brick'
-      ? `/project/brick?id=${project.id}`
-      : `/project/block?id=${project.id}`
+  const href = projectUrl(project)
 
   return (
     <Link
@@ -1202,14 +1226,8 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
             <div className="text-xs text-ink-400 truncate">{sub}</div>
           )}
         </div>
-        <span
-          className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
-            project.type === 'brick'
-              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-              : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
-          }`}
-        >
-          {project.type === 'brick' ? 'Brick' : 'Block'}
+        <span className="shrink-0">
+          <TradeBadges trades={tradesOf(project)} />
         </span>
       </div>
       <div className="flex items-center justify-between text-xs text-ink-400 gap-2 flex-wrap">
@@ -1390,8 +1408,7 @@ function PersonalDashboard() {
       // confirming entry before the route change kicks in. Then navigate.
       const refreshed = await listProjects()
       setProjects(refreshed)
-      const route = project.type === 'brick' ? `/project/brick?id=${newId}` : `/project/block?id=${newId}`
-      navigate(route)
+      navigate(projectUrl({ ...project, id: newId }))
     } catch (err) {
       console.error('Failed to duplicate', err)
       window.alert('Could not duplicate that project. See the console for details.')
@@ -1448,47 +1465,44 @@ function PersonalDashboard() {
         />
       </section>
 
-      {/* Primary actions: two equal-weight cards. Used to share the row
-          with an Outcomes donut at col-span-1, but the donut was mostly
-          empty for new users and stole real estate from the actions that
-          actually start an estimate. Donut moved into the Win-rate stat
-          tile above so it still tells the story when data exists. */}
-      <section className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
-        <Link
-          to="/project/brick"
-          className="border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
-        >
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Start a new estimate
-          </div>
-          <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
-            Brick estimate
-          </h4>
-          <p className="text-sm text-ink-300">
-            Trace brick walls over a plan. Calculates area × bricks/m², plus ties, plascourse,
-            and lintels.
-          </p>
-          <div className="mt-auto pt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
-            Open the brick workspace →
-          </div>
-        </Link>
-
+      {/* Primary action — one card. With the unified workspace, an estimate
+          can hold block, brick, or both. The user picks the starting trade
+          inside the workspace (via the trade chip group at the top of the
+          right rail) and can add the other later — so the dashboard surfaces
+          a single "+ New estimate" entry instead of forcing a trade choice
+          upfront. */}
+      <section className="mt-6">
         <Link
           to="/project/block"
-          className="border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 flex flex-col group"
+          className="block border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 group"
         >
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Start a new estimate
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+                Start a new estimate
+              </div>
+              <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
+                + New estimate
+              </h4>
+              <p className="text-sm text-ink-300 max-w-2xl">
+                Upload a plan, trace walls, openings, and piers. Block, brick,
+                or both — switch trades inside the workspace via the chip
+                group at the top of the right rail.
+              </p>
+            </div>
+            {/* Visual hint that both trades are available inside — sits in
+                the top-right of the card so it doesn't dominate. */}
+            <div className="flex items-center gap-1.5 flex-shrink-0 mt-1">
+              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-beme-500/15 text-beme-300 border border-beme-500/30">
+                Block
+              </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                Brick
+              </span>
+            </div>
           </div>
-          <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
-            Block estimate
-          </h4>
-          <p className="text-sm text-ink-300">
-            Define wall and pier types, draw walls over a plan, auto-tally blocks by code
-            with corners and openings.
-          </p>
-          <div className="mt-auto pt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
-            Open the block workspace →
+          <div className="mt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
+            Open the workspace →
           </div>
         </Link>
       </section>
@@ -1510,9 +1524,20 @@ function PersonalDashboard() {
                 placeholder="Search projects…"
                 className="pl-8 pr-3 py-1.5 w-56 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
               />
-              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-500 text-xs">
-                🔍
-              </span>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-500 pointer-events-none"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}
@@ -1547,8 +1572,8 @@ function PersonalDashboard() {
           <div className="border border-dashed border-ink-600 rounded-xl p-12 text-center text-ink-400 bg-ink-800/50">
             {projects.length === 0 ? (
               <span>
-                No saved projects yet. Click <strong>+ Block estimate</strong> or{' '}
-                <strong>+ Brick estimate</strong> above to start one.
+                No saved projects yet. Click <strong>+ New estimate</strong>{' '}
+                above to start one.
               </span>
             ) : searchQuery ? (
               <span>
