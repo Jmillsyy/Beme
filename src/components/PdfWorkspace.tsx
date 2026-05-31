@@ -6137,16 +6137,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-      {/* 3D viewport — replaces the PDF + Konva surface when the user has
-          flipped the workspace into 3D mode. Lazy-loaded and read-only:
-          orbit camera, no wall editing. The 2D container below stays
-          unmounted while 3D is active, which means flipping back to 2D
-          re-rasterises the PDF — acceptable for spike scope. */}
-      {viewMode === '3d' ? (
-        <div className="flex-1 min-h-0 border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
+      {/* 3D viewport — lazy-mounted alongside the 2D container when the
+          user flips to 3D mode. The 2D container below stays MOUNTED at
+          all times (just CSS-hidden in 3D mode) so containerRef and its
+          wheel/pan event listeners stay valid — without this, the wheel
+          listener was bound to a now-dead DOM node after toggling back
+          to 2D, and wheel events fell through to native page scroll. */}
+      {viewMode === '3d' && (
+        <div className="flex-1 min-h-0 relative border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
           <Suspense
             fallback={
-              <div className="w-full h-full flex items-center justify-center text-ink-400 text-sm">
+              <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
                 Loading 3D view…
               </div>
             }
@@ -6162,8 +6163,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             />
           </Suspense>
         </div>
-      ) : (
-      <>
+      )}
+
+      <div className={viewMode === '3d' ? 'hidden' : 'flex-1 min-h-0 flex flex-col'}>
       {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan) */}
       <div
         ref={containerRef}
@@ -6531,9 +6533,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           </div>
         </div>
       </div>
-      </>
-      )}
-      </div>
+      </div>{/* End viewMode hidden wrapper for 2D container */}
+      </div>{/* End thumbnails + view wrapper */}
 
       </div>
       {/* ───── End of left column ───── */}

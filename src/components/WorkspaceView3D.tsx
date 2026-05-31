@@ -571,14 +571,19 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
 
   if (walls.length === 0) {
     return (
-      <div className="w-full h-full flex items-center justify-center text-ink-400 text-sm">
+      <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
         Draw a wall on the 2D view to see it here.
       </div>
     )
   }
 
   return (
-    <div className="w-full h-full">
+    // Absolute-positioned so we fill the relatively-positioned parent
+    // exactly. h-full / w-full on a flex-1 child sometimes fails to
+    // resolve (parent's height comes from flex layout, not an explicit
+    // value — child `height: 100%` has nothing to compute against), so
+    // we sidestep that with absolute inset:0.
+    <div className="absolute inset-0">
       <Canvas
         frameloop="demand"
         dpr={[1, 1.5]}
