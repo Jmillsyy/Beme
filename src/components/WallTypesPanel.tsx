@@ -644,7 +644,14 @@ function WallTypeEditorModal({
       useFractions,
       courseOverrides,
     }
-    const { bands, lossy } = convertMakeupToBands(draft)
+    // skipHeightMakeup: true keeps the preview faithful to the user's
+    // configured composition. The calc engine still emits height-makeup
+    // courses (20.71 / 20.140) in its tally where the wall height
+    // calls for them — this just stops the preview surprising users
+    // with blocks they didn't pick.
+    const { bands, lossy } = convertMakeupToBands(draft, undefined, {
+      skipHeightMakeup: true,
+    })
     if (bands.length === 0) {
       window.alert('Wall is too short to convert (less than one course).')
       return
@@ -763,7 +770,7 @@ function WallTypeEditorModal({
       halfBlockCode,
       useFractions,
     }
-    return convertMakeupToBands(draft).bands
+    return convertMakeupToBands(draft, undefined, { skipHeightMakeup: true }).bands
   }, [
     coursePattern,
     existing?.id,

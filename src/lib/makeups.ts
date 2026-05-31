@@ -403,6 +403,22 @@ export function getCourseCount(makeup: WallMakeup): number {
 export function convertMakeupToBands(
   makeup: WallMakeup,
   settings?: ResolveByRoleOptions['settings'],
+  options?: {
+    /**
+     * When true, never auto-insert height-makeup courses (20.71 /
+     * 20.140) pulled from the library's role-tagged blocks. Used by
+     * the wall-types preview to avoid surprising users with blocks
+     * their composition doesn't list — the preview becomes a faithful
+     * visualisation of the user-configured roles only. Body count
+     * rounds up to fit so the preview visually matches wall height
+     * even when the height isn't a clean 200 mm multiple.
+     *
+     * The calc engine path passes the default (undefined / false) so
+     * its tally still emits the AU height-makeup courses the brief
+     * calls for.
+     */
+    skipHeightMakeup?: boolean
+  },
 ): {
   bands: CourseBand[]
   lossy: boolean
@@ -412,19 +428,22 @@ export function convertMakeupToBands(
   const COURSE = 200
   const HEIGHT_71 = 100
   const HEIGHT_140 = 150
+  const skipHeightMakeup = options?.skipHeightMakeup ?? false
   // Mirror calculateCourseStack's logic without importing it (avoid the
   // makeups → blockCalc dependency that doesn't exist today).
   const stdCount = Math.floor(totalHeight / COURSE)
   let remainder = totalHeight - stdCount * COURSE
   let has140 = false
   let has71 = false
-  if (remainder >= HEIGHT_140) {
-    has140 = true
-    remainder -= HEIGHT_140
-  }
-  if (remainder >= HEIGHT_71) {
-    has71 = true
-    remainder -= HEIGHT_71
+  if (!skipHeightMakeup) {
+    if (remainder >= HEIGHT_140) {
+      has140 = true
+      remainder -= HEIGHT_140
+    }
+    if (remainder >= HEIGHT_71) {
+      has71 = true
+      remainder -= HEIGHT_71
+    }
   }
   // Resolve height-makeup blocks up-front so we know whether the active
   // library actually carries them. US / UK libraries typically DON'T
@@ -432,12 +451,21 @@ export function convertMakeupToBands(
   // of the world bedts in extra mortar to make up oddments). If a
   // height-makeup band isn't available, skip the corresponding course
   // entirely rather than emit a code that doesn't exist in the library.
-  const heightMakeup150 = has140 ? pickHeightMakeupBlock(HEIGHT_140) : undefined
-  const heightMakeup100 = has71 ? pickHeightMakeupBlock(HEIGHT_71) : undefined
+  // skipHeightMakeup short-circuits these picks entirely.
+  const heightMakeup150 =
+    !skipHeightMakeup && has140 ? pickHeightMakeupBlock(HEIGHT_140) : undefined
+  const heightMakeup100 =
+    !skipHeightMakeup && has71 ? pickHeightMakeupBlock(HEIGHT_71) : undefined
   const effectiveHas140 = has140 && !!heightMakeup150
   const effectiveHas71 = has71 && !!heightMakeup100
+  // In preview-only mode, if there's leftover height after the std-count
+  // courses but we're not adding height-makeup, push the remainder back
+  // into the body count by rounding up. Keeps the preview ~visually
+  // matched to the wall height instead of running short by 50-150 mm.
+  const effectiveStdCount =
+    skipHeightMakeup && remainder > 0 ? stdCount + 1 : stdCount
   const totalCourses =
-    stdCount + (effectiveHas140 ? 1 : 0) + (effectiveHas71 ? 1 : 0)
+    effectiveStdCount + (effectiveHas140 ? 1 : 0) + (effectiveHas71 ? 1 : 0)
   const bands: CourseBand[] = []
   if (totalCourses === 0) {
     return { bands, lossy: false }
@@ -474,7 +502,12 @@ export function convertMakeupToBands(
 
   const courses: BlockCode[] = []
   courses.push(healBase)
-  const bodyCount = Math.max(0, stdCount - 2)
+  // Body count subtracts 2 to leave room for the base and top courses
+  // we push separately. effectiveStdCount may include the rounded-up
+  // remainder when skipHeightMakeup is on so the preview's body
+  // courses fill out the wall height without a phantom height-makeup
+  // band.
+  const bodyCount = Math.max(0, effectiveStdCount - 2)
   for (let i = 0; i < bodyCount; i++) courses.push(healBody)
   if (effectiveHas140 && heightMakeup150) {
     courses.push(heightMakeup150.code as BlockCode)
