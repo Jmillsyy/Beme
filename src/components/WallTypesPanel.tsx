@@ -34,6 +34,7 @@ import {
   moduleHeightForBand,
   resolveCourseBlocks,
 } from '../lib/makeups'
+import { bandColor, buildBlockColorMap } from '../lib/blockColors'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -1865,111 +1866,9 @@ function PatternTab(props: PatternTabProps) {
 }
 
 // ---------- Visual stack preview ----------
-
-/**
- * Stable colour from a block code. Same block code always renders the
- * same hue across the preview, legend, course-pattern editor and pier
- * preview, so users learn to recognise "the green one = 20.45" at a
- * glance.
- *
- * Two strategies in sequence:
- *
- *   1. A 16-slot curated PALETTE of HSL colours chosen for maximum
- *      perceptual distance. The previous pure-hash bandColor produced
- *      collisions like 20.45 vs 20.48PF both landing on similar
- *      greens because their FNV+golden-angle hues fell within ~10°.
- *      With 16 well-separated slots, two codes only collide when
- *      they hash to the same slot (roughly 1-in-16) and even then
- *      the next swatch over is visibly different.
- *
- *   2. A hash with an extra spread step that uses the FULL 32-bit
- *      output before reducing to a palette index (rather than just
- *      truncating). Each character of the code propagates through a
- *      double-round of xorshift + multiply so a single-char change
- *      lands on a different slot.
- *
- * The 16 hues span the wheel in ~22° increments (16 × 22.5 = 360),
- * with paired alternating saturation/lightness so even adjacent
- * slots (e.g. slot 4 and slot 5) read distinctly.
- */
-const BAND_COLOR_PALETTE: string[] = [
-  'hsl(  6, 62%, 62%)', // 1 red
-  'hsl( 28, 70%, 56%)', // 2 orange
-  'hsl( 48, 72%, 56%)', // 3 yellow
-  'hsl( 80, 50%, 50%)', // 4 olive
-  'hsl(110, 50%, 55%)', // 5 lime
-  'hsl(150, 50%, 50%)', // 6 green
-  'hsl(170, 55%, 45%)', // 7 teal-green
-  'hsl(190, 55%, 50%)', // 8 teal
-  'hsl(210, 60%, 60%)', // 9 sky
-  'hsl(230, 60%, 65%)', // 10 azure
-  'hsl(250, 55%, 65%)', // 11 indigo
-  'hsl(270, 50%, 60%)', // 12 purple
-  'hsl(290, 50%, 60%)', // 13 violet
-  'hsl(315, 60%, 62%)', // 14 magenta
-  'hsl(335, 60%, 60%)', // 15 pink
-  'hsl(355, 65%, 55%)', // 16 rose
-]
-function bandColor(code: BlockCode): string {
-  let h = 0x811c9dc5 // FNV-1a offset basis
-  for (let i = 0; i < code.length; i++) {
-    h ^= code.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-    h ^= h >>> 15
-    h = Math.imul(h, 0x85ebca6b)
-    h ^= h >>> 13
-    h = Math.imul(h, 0xc2b2ae35)
-    h ^= h >>> 16
-  }
-  // Pull from the curated palette via the hash. Modulo on the full
-  // 32-bit value, not the lower byte, so the high-mixed bits drive
-  // the slot choice.
-  const idx = (h >>> 0) % BAND_COLOR_PALETTE.length
-  return BAND_COLOR_PALETTE[idx]
-}
-
-/**
- * Build a Map<code, colour> for a SPECIFIC set of codes (e.g. every
- * block referenced by the wall preview + its legend). Guarantees every
- * code in the input gets a distinct palette slot — no two codes ever
- * share a colour within the same render context — until the input
- * exceeds the palette size, after which it wraps deterministically.
- *
- * Codes are sorted alphabetically before slot assignment so the
- * mapping is stable across re-renders, and the assignment seeds at
- * the standalone hash's preferred slot so single-code previews still
- * land on the colour the global `bandColor()` would pick. From that
- * seed it walks the palette in order, skipping slots already taken
- * by earlier codes in the sort order.
- */
-function buildBlockColorMap(codes: string[]): Map<string, string> {
-  const unique = Array.from(new Set(codes.filter(Boolean))).sort()
-  const taken = new Set<number>()
-  const map = new Map<string, string>()
-  for (const code of unique) {
-    // Seed at the hash's preferred slot so the colour stays close to
-    // what the single-code path would pick.
-    let seed = 0x811c9dc5
-    for (let i = 0; i < code.length; i++) {
-      seed ^= code.charCodeAt(i)
-      seed = Math.imul(seed, 0x01000193)
-      seed ^= seed >>> 15
-      seed = Math.imul(seed, 0x85ebca6b)
-      seed ^= seed >>> 13
-      seed = Math.imul(seed, 0xc2b2ae35)
-      seed ^= seed >>> 16
-    }
-    let idx = (seed >>> 0) % BAND_COLOR_PALETTE.length
-    let attempts = 0
-    while (taken.has(idx) && attempts < BAND_COLOR_PALETTE.length) {
-      idx = (idx + 1) % BAND_COLOR_PALETTE.length
-      attempts++
-    }
-    taken.add(idx)
-    map.set(code, BAND_COLOR_PALETTE[idx])
-  }
-  return map
-}
+// Colour palette + bandColor + buildBlockColorMap moved to
+// src/lib/blockColors.ts so the 3D view can use the same distinct-colour
+// assignment as the 2D wall preview.
 
 /**
  * Tiny legend under the preview that maps each colour swatch to its block

@@ -3,31 +3,49 @@
  *
  * Lazy-loaded behind the workspace's 2D ↔ 3D toggle so users who never open
  * 3D pay zero bundle cost. The 2D Konva workspace stays the source of truth
- * for editing; this view is read-only — orbit camera + WASD walk, no
- * interaction with walls.
+ * for editing; this view is read-only — orbit camera, no interaction with
+ * walls.
  *
  * Coordinate system:
  *   Plan-view (mm)      → 3D (m, Y-up)
- *   wall.startX/.startY → X / Z (negated Z so "up" in plan = "back" in 3D)
+ *   wall.startX/.startY → X / Z (Z negated so "up in plan" = "back in 3D")
  *   wall height (mm)    → Y
  *
- * Walls render as one extruded box per straight segment. Openings are cut
- * by emitting multiple sub-boxes (above head + below sill + side panels)
- * instead of CSG — keeps it cheap and lets InstancedMesh come later
- * without rework. Curved walls are sampled into N straight segments.
+ * Per-wall rendering:
+ *   Block walls are decomposed into **bands** via convertMakeupToBands —
+ *   a stack of {blockCode, count} horizontal stripes that match the
+ *   composition shown in the 2D wall preview. Each band becomes a
+ *   horizontal slab in 3D, tinted by the band's block code using the
+ *   same distinct-colour palette as the wall preview's legend. So a
+ *   user looking at the 3D view sees the SAME colour for the SAME block
+ *   as in the wall-type editor — "the green one is 20.45".
+ *
+ *   Brick walls render as a single solid extrusion in the brick type's
+ *   palette colour. Per-course brick banding is a v2 follow-up.
+ *
+ * Openings (windows + doors) cut by splitting each band into
+ * left-of-opening / right-of-opening / below-sill / above-head sub-boxes
+ * instead of CSG. Keeps the GPU cost low and lets InstancedMesh come
+ * later without rework.
+ *
+ * Curved walls sample the arc into N straight segments and run each
+ * through the band builder. No openings on curved walls in v1.
  *
  * Battery-friendly defaults:
  *   - frameloop="demand" — frames only render on camera interaction.
  *   - Pixel ratio capped at 1.5 — no Retina-density rendering.
  *   - One directional light, no shadows. Fine for a mass model.
  */
-import { Suspense, useMemo, useRef, useEffect } from 'react'
+import { Suspense, useMemo } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
+import type { Block } from '../types/blocks'
 import { arcFromThreePoints, sampleArc, isCurvedWall } from '../lib/curveGeom'
+import { convertMakeupToBands, moduleHeightForBand } from '../lib/makeups'
+import { buildBlockColorMap } from '../lib/blockColors'
 
 // ---------- Constants ----------
 
@@ -36,9 +54,8 @@ import { arcFromThreePoints, sampleArc, isCurvedWall } from '../lib/curveGeom'
  *  from collapsing to zero. */
 const FALLBACK_HEIGHT_MM = 2400
 
-/** Default colour used when a wall has no assigned area, or the area has
- *  no colorHex set. Warm neutral so it reads as "default mass" rather
- *  than competing with the area-tagged walls. */
+/** Default colour used for brick walls + any wall whose makeup resolves
+ *  to no bands. Warm neutral, same as the spike v1. */
 const DEFAULT_WALL_COLOR = '#cdb697'
 
 /** Ground plane colour — slate grey so wall colour pops. */
@@ -55,13 +72,17 @@ export interface WorkspaceView3DProps {
   walls: Wall[]
   /** Openings on those walls. */
   openings: Opening[]
-  /** Block + brick makeups for height + colour resolution. */
+  /** Block + brick makeups for height + band resolution. */
   makeupsById: Record<string, WallMakeup>
   brickMakeupsById: Record<string, BrickMakeup>
   /** Plan-view thickness per wall (already computed by the workspace). */
   wallThicknessByWallId: Record<string, number>
-  /** Project areas — lets us colour walls by area. */
+  /** Project areas — kept for v1's neutral colouring fallback. */
   areas: ProjectArea[]
+  /** Block library keyed by code — used to look up each band block's
+   *  modular course height. Passed in (not imported) so a future
+   *  per-project library override works without code changes here. */
+  library: Record<string, Block>
 }
 
 // ---------- Helpers ----------
@@ -79,16 +100,78 @@ function resolveWallHeightMm(
   return makeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
 }
 
-/** Resolve a wall's display colour from its assigned area. */
-function resolveWallColor(wall: Wall, areas: ProjectArea[]): string {
-  if (!wall.areaId) return DEFAULT_WALL_COLOR
-  const area = areas.find((a) => a.id === wall.areaId)
-  return area?.colorHex ?? DEFAULT_WALL_COLOR
+/**
+ * Resolve the band stack for a block wall, scaled to the wall's actual
+ * height (which can differ from the makeup's heightMm via
+ * heightMmOverride). We pass a clone of the makeup with the override
+ * applied so convertMakeupToBands sizes the band counts to the actual
+ * wall height — otherwise a 2400mm override would still draw a
+ * 3100mm-band-count of stripes.
+ *
+ * Returns { y, height, color } per band — bottom-up. Heights in METRES.
+ */
+interface ResolvedBand {
+  y0: number
+  y1: number
+  blockCode: string
+}
+
+function resolveWallBands(
+  wall: Wall,
+  makeupsById: Record<string, WallMakeup>,
+  library: Record<string, Block>,
+  fallbackColor: string
+): { bands: ResolvedBand[]; totalHeightM: number; defaultColor: string } {
+  const makeup = makeupsById[wall.makeupId]
+  const heightMm =
+    typeof wall.heightMmOverride === 'number'
+      ? wall.heightMmOverride
+      : makeup?.heightMm ?? FALLBACK_HEIGHT_MM
+  const totalHeightM = heightMm / 1000
+
+  if (!makeup) {
+    return { bands: [], totalHeightM, defaultColor: fallbackColor }
+  }
+  // Use the makeup's own coursePattern if set; otherwise derive bands
+  // from the makeup defaults. Pass the height override via a clone so
+  // convertMakeupToBands sizes the band counts to the actual wall.
+  const scopedMakeup: WallMakeup =
+    typeof wall.heightMmOverride === 'number'
+      ? { ...makeup, heightMm: wall.heightMmOverride }
+      : makeup
+  const { bands: courseBands } = convertMakeupToBands(scopedMakeup, undefined, {
+    skipHeightMakeup: true,
+  })
+
+  const bands: ResolvedBand[] = []
+  let y = 0
+  for (const cb of courseBands) {
+    if (cb.count <= 0) continue
+    const moduleMm = moduleHeightForBand(cb.blockCode, library)
+    const bandHeightM = (moduleMm * cb.count) / 1000
+    bands.push({ y0: y, y1: y + bandHeightM, blockCode: cb.blockCode })
+    y += bandHeightM
+  }
+  // If bands fell short of the wall (e.g. courses don't tile evenly),
+  // pad the top with the topmost band's code so the wall still reaches
+  // its target height visually.
+  if (y < totalHeightM - 0.001 && bands.length > 0) {
+    bands[bands.length - 1].y1 = totalHeightM
+  } else if (bands.length === 0) {
+    // No usable bands — return a single solid band covering the whole
+    // wall, coloured with the makeup's body code if any.
+    bands.push({
+      y0: 0,
+      y1: totalHeightM,
+      blockCode: makeup.bodyBlockCode ?? '',
+    })
+  }
+  return { bands, totalHeightM, defaultColor: fallbackColor }
 }
 
 /**
- * One straight wall-segment box descriptor — ready to render as a <mesh>.
- * Coordinates already in metres, Y-up.
+ * One axis-aligned-by-rotation wall sub-box descriptor — ready to render
+ * as a Three.js <mesh>. Coordinates already in metres, Y-up.
  */
 interface WallSegmentBox {
   /** Centre of the box in world space. */
@@ -99,31 +182,30 @@ interface WallSegmentBox {
   length: number
   heightM: number
   thickness: number
-  /** Rotation around Y axis (radians) — aligns the box's local X with the
-   *  wall's start-to-end direction. */
+  /** Rotation around Y axis (radians) — aligns local X with the wall's
+   *  start-to-end direction. */
   yRotation: number
   /** Tint. */
   color: string
 }
 
 /**
- * Turn one straight wall (start + end + thickness + height) plus any
- * openings on it into an array of axis-aligned-by-rotation sub-boxes.
- *
- * Walks left-to-right along the wall's local X axis (start = 0,
- * end = length). Emits solid panels between openings (full height) and
- * splits opening spans into below-sill + above-head boxes. Result: a
- * stack of boxes whose union is the wall with window/door holes cut out.
+ * Compute the sub-boxes for a single straight wall. Walks the wall both
+ * vertically (by band) and horizontally (by opening cutouts) and emits
+ * one box per (band × solid-span) cell. Result: a 3D stack of coloured
+ * bricks-of-bands with window/door holes cut out.
  */
 function segmentsForStraightWall(
   wall: Wall,
   openings: Opening[],
   thicknessMm: number,
-  heightMm: number,
-  color: string
+  bands: ResolvedBand[],
+  totalHeightM: number,
+  colorMap: Map<string, string>,
+  defaultColor: string
 ): WallSegmentBox[] {
-  // Convert to metres and Y-up. Negate Z so positive-Y in plan view
-  // (i.e. down on the screen) reads as "back" in the 3D scene.
+  // Plan → 3D conversion. Negate Z so positive-Y in plan view (down on
+  // screen) reads as "back" in the 3D scene.
   const sx = wall.startX / 1000
   const sz = -wall.startY / 1000
   const ex = wall.endX / 1000
@@ -132,32 +214,42 @@ function segmentsForStraightWall(
   const dz = ez - sz
   const length = Math.hypot(dx, dz)
   if (length === 0) return []
-  const yRotation = Math.atan2(-dz, dx) // angle of (dx, -dz) in XZ plane
-  const heightM = heightMm / 1000
+  const yRotation = Math.atan2(-dz, dx)
   const thickness = thicknessMm / 1000
-  const halfThickness = thickness / 2
-
-  // Mid X of the wall in world space (used as origin to position each
-  // sub-box). Sub-boxes carry their own local-X offset from start.
-  const startX = sx
-  const startZ = sz
   const dirX = dx / length
   const dirZ = dz / length
 
-  // Build a centred box from a span along local X (s0..s1, both in metres
-  // from wall start) and a vertical band (y0..y1).
-  const buildBox = (s0: number, s1: number, y0: number, y1: number): WallSegmentBox => {
+  // For each band, figure out the horizontal solid spans (the cells of
+  // the band not covered by an opening). Then emit one box per solid
+  // span × this band.
+  const wallOpenings = openings
+    .filter((o) => o.wallId === wall.id)
+    .map((o) => ({
+      start: Math.max(0, o.startAlongWallMm / 1000),
+      end: Math.min(length, (o.startAlongWallMm + o.widthMm) / 1000),
+      sill: Math.max(0, o.sillHeightMm / 1000),
+      head: Math.min(totalHeightM, (o.sillHeightMm + o.heightMm) / 1000),
+    }))
+    .filter((o) => o.end > o.start && o.head > o.sill)
+    .sort((a, b) => a.start - b.start)
+
+  const boxes: WallSegmentBox[] = []
+
+  // Build a box from a local (s0..s1) span × (y0..y1) vertical band.
+  const buildBox = (
+    s0: number,
+    s1: number,
+    y0: number,
+    y1: number,
+    color: string
+  ): WallSegmentBox => {
     const localCx = (s0 + s1) / 2
     const segLength = s1 - s0
     const segHeight = y1 - y0
-    const segCy = (y0 + y1) / 2
-    // World position = wall start + dir × localCx, plus a half-thickness
-    // perpendicular shift would centre us on the wall line — but the
-    // box's local X already runs along the wall, so it's centred already.
     return {
-      cx: startX + dirX * localCx,
-      cy: segCy,
-      cz: startZ + dirZ * localCx,
+      cx: sx + dirX * localCx,
+      cy: (y0 + y1) / 2,
+      cz: sz + dirZ * localCx,
       length: segLength,
       heightM: segHeight,
       thickness,
@@ -166,47 +258,71 @@ function segmentsForStraightWall(
     }
   }
 
-  // Sort openings by their position along the wall + clamp them to [0, length].
-  const wallOpenings = openings
-    .filter((o) => o.wallId === wall.id)
-    .map((o) => {
-      const start = Math.max(0, o.startAlongWallMm / 1000)
-      const end = Math.min(length, (o.startAlongWallMm + o.widthMm) / 1000)
-      const sill = Math.max(0, o.sillHeightMm / 1000)
-      const head = Math.min(heightM, (o.sillHeightMm + o.heightMm) / 1000)
-      return { start, end, sill, head }
-    })
-    .filter((o) => o.end > o.start && o.head > o.sill)
-    .sort((a, b) => a.start - b.start)
+  for (const band of bands) {
+    const bandColor = colorMap.get(band.blockCode) ?? defaultColor
+    // Which openings overlap this band's y-range? An opening occupies
+    // this band only where its (sill, head) vertical span intersects
+    // (band.y0, band.y1).
+    const bandOpenings = wallOpenings
+      .map((o) => ({
+        start: o.start,
+        end: o.end,
+        coversBand: o.sill <= band.y0 && o.head >= band.y1,
+      }))
+      .filter((o) => o.coversBand) // only openings that fully cross this band
 
-  const boxes: WallSegmentBox[] = []
-  let cursor = 0
+    if (bandOpenings.length === 0) {
+      // Solid band — single box across full wall length.
+      boxes.push(buildBox(0, length, band.y0, band.y1, bandColor))
+      continue
+    }
+
+    // Walk left-to-right emitting solid panels between openings, at this
+    // band's vertical span. Openings that only partially intersect the
+    // band's y-range are treated as the full-cross case (small visual
+    // overlap on the sill/head boundary, acceptable for a mass model).
+    let cursor = 0
+    for (const op of bandOpenings) {
+      if (op.start > cursor) {
+        boxes.push(buildBox(cursor, op.start, band.y0, band.y1, bandColor))
+      }
+      cursor = Math.max(cursor, op.end)
+    }
+    if (cursor < length) {
+      boxes.push(buildBox(cursor, length, band.y0, band.y1, bandColor))
+    }
+  }
+
+  // Also emit sill / head fills for openings that don't fully cross a
+  // band — i.e. a window that starts above the floor (sill > 0) and
+  // ends below the wall top (head < total). The above-head and
+  // below-sill spans get a band-coloured fill that matches the band
+  // they sit in. We do this per-band by adding two extra passes.
   for (const op of wallOpenings) {
-    // Solid panel from previous cursor up to the opening start.
-    if (op.start > cursor) {
-      boxes.push(buildBox(cursor, op.start, 0, heightM))
-    }
-    // Below-sill (if any).
+    // Below-sill (from 0 to op.sill): emit per-band slices using the
+    // colour of the band the slice sits in.
     if (op.sill > 0) {
-      boxes.push(buildBox(op.start, op.end, 0, op.sill))
+      for (const band of bands) {
+        const y0 = Math.max(band.y0, 0)
+        const y1 = Math.min(band.y1, op.sill)
+        if (y1 > y0) {
+          const color = colorMap.get(band.blockCode) ?? defaultColor
+          boxes.push(buildBox(op.start, op.end, y0, y1, color))
+        }
+      }
     }
-    // Above-head (if any).
-    if (op.head < heightM) {
-      boxes.push(buildBox(op.start, op.end, op.head, heightM))
+    // Above-head (from op.head to totalHeight): same pattern.
+    if (op.head < totalHeightM) {
+      for (const band of bands) {
+        const y0 = Math.max(band.y0, op.head)
+        const y1 = Math.min(band.y1, totalHeightM)
+        if (y1 > y0) {
+          const color = colorMap.get(band.blockCode) ?? defaultColor
+          boxes.push(buildBox(op.start, op.end, y0, y1, color))
+        }
+      }
     }
-    cursor = Math.max(cursor, op.end)
   }
-  // Trailing solid panel after the last opening.
-  if (cursor < length) {
-    boxes.push(buildBox(cursor, length, 0, heightM))
-  }
-  // Avoid silliness on a wall with zero footprint after clamping.
-  if (boxes.length === 0) {
-    boxes.push(buildBox(0, length, 0, heightM))
-  }
-  // Keep the actual halfThickness handy via closure — Three's BoxGeometry
-  // is centred, so the y offset above already places the bottom at y=0.
-  void halfThickness
   return boxes
 }
 
@@ -218,24 +334,27 @@ function segmentsForStraightWall(
 function segmentsForCurvedWall(
   wall: Wall,
   thicknessMm: number,
-  heightMm: number,
-  color: string
+  bands: ResolvedBand[],
+  totalHeightM: number,
+  colorMap: Map<string, string>,
+  defaultColor: string
 ): WallSegmentBox[] {
-  if (
-    wall.midX === undefined ||
-    wall.midY === undefined ||
-    typeof wall.startX !== 'number'
-  ) {
-    return []
-  }
+  if (wall.midX === undefined || wall.midY === undefined) return []
   const geom = arcFromThreePoints(
     { x: wall.startX, y: wall.startY },
     { x: wall.midX, y: wall.midY },
     { x: wall.endX, y: wall.endY }
   )
   if (!geom) {
-    // Collinear → render as a straight wall.
-    return segmentsForStraightWall(wall, [], thicknessMm, heightMm, color)
+    return segmentsForStraightWall(
+      wall,
+      [],
+      thicknessMm,
+      bands,
+      totalHeightM,
+      colorMap,
+      defaultColor
+    )
   }
   const samples = sampleArc(geom, CURVE_SAMPLES + 1)
   const boxes: WallSegmentBox[] = []
@@ -249,84 +368,148 @@ function segmentsForCurvedWall(
       endX: b.x,
       endY: b.y,
     }
-    boxes.push(...segmentsForStraightWall(fakeWall, [], thicknessMm, heightMm, color))
+    boxes.push(
+      ...segmentsForStraightWall(
+        fakeWall,
+        [],
+        thicknessMm,
+        bands,
+        totalHeightM,
+        colorMap,
+        defaultColor
+      )
+    )
   }
   return boxes
 }
 
 // ---------- Scene ----------
 
-/**
- * One static scene built from the props. Memoised because the segment
- * computation is the cost — the JSX render itself is cheap.
- */
 function Scene({
   walls,
   openings,
   makeupsById,
   brickMakeupsById,
   wallThicknessByWallId,
-  areas,
-}: WorkspaceView3DProps) {
-  const segments = useMemo(() => {
+  library,
+}: Omit<WorkspaceView3DProps, 'areas'>) {
+  // Per-wall band stacks — memoised together so the colour map and the
+  // segment builder both see the same data.
+  const { segments, segmentBounds } = useMemo(() => {
+    // First pass: resolve each wall's bands so we know every block code
+    // that'll appear in the 3D view. Pass that complete set to
+    // buildBlockColorMap so every code lands on a distinct palette slot.
+    const wallBands = walls.map((wall) => {
+      if (wall.trade === 'brick') {
+        // Brick walls don't go through the band path in v1 — they get
+        // one solid box. resolveWallBands isn't called for them.
+        return null
+      }
+      return resolveWallBands(wall, makeupsById, library, DEFAULT_WALL_COLOR)
+    })
+    const allCodes: string[] = []
+    for (const wb of wallBands) {
+      if (!wb) continue
+      for (const b of wb.bands) allCodes.push(b.blockCode)
+    }
+    const colorMap = buildBlockColorMap(allCodes)
+
+    // Second pass: build segments per wall using the colour map.
     const out: WallSegmentBox[] = []
-    for (const wall of walls) {
+    walls.forEach((wall, i) => {
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
-      const heightMm = resolveWallHeightMm(wall, makeupsById, brickMakeupsById)
-      const color = resolveWallColor(wall, areas)
+      if (wall.trade === 'brick') {
+        // Brick: single solid box, default colour.
+        const heightMm = resolveWallHeightMm(wall, makeupsById, brickMakeupsById)
+        const totalHeightM = heightMm / 1000
+        const singleBand: ResolvedBand[] = [
+          { y0: 0, y1: totalHeightM, blockCode: '__brick__' },
+        ]
+        const brickColorMap = new Map([['__brick__', DEFAULT_WALL_COLOR]])
+        out.push(
+          ...segmentsForStraightWall(
+            wall,
+            openings,
+            thicknessMm,
+            singleBand,
+            totalHeightM,
+            brickColorMap,
+            DEFAULT_WALL_COLOR
+          )
+        )
+        return
+      }
+      const wb = wallBands[i]
+      if (!wb) return
       if (isCurvedWall(wall)) {
-        out.push(...segmentsForCurvedWall(wall, thicknessMm, heightMm, color))
+        out.push(
+          ...segmentsForCurvedWall(
+            wall,
+            thicknessMm,
+            wb.bands,
+            wb.totalHeightM,
+            colorMap,
+            wb.defaultColor
+          )
+        )
       } else {
-        out.push(...segmentsForStraightWall(wall, openings, thicknessMm, heightMm, color))
+        out.push(
+          ...segmentsForStraightWall(
+            wall,
+            openings,
+            thicknessMm,
+            wb.bands,
+            wb.totalHeightM,
+            colorMap,
+            wb.defaultColor
+          )
+        )
+      }
+    })
+
+    // Bounds for the ground plane + orbit target.
+    let bounds: { centerX: number; centerZ: number; sizeMax: number } = {
+      centerX: 0,
+      centerZ: 0,
+      sizeMax: 20,
+    }
+    if (out.length > 0) {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+      for (const s of out) {
+        const r = Math.max(s.length, s.thickness) / 2
+        minX = Math.min(minX, s.cx - r)
+        maxX = Math.max(maxX, s.cx + r)
+        minZ = Math.min(minZ, s.cz - r)
+        maxZ = Math.max(maxZ, s.cz + r)
+      }
+      bounds = {
+        centerX: (minX + maxX) / 2,
+        centerZ: (minZ + maxZ) / 2,
+        sizeMax: Math.max(maxX - minX, maxZ - minZ, 4),
       }
     }
-    return out
-  }, [walls, openings, makeupsById, brickMakeupsById, wallThicknessByWallId, areas])
-
-  // Bounds drive (a) the orbit target so the camera looks at the project
-  // centre, and (b) the ground plane size. Recomputed when segments change.
-  const { centerX, centerZ, sizeMax } = useMemo(() => {
-    if (segments.length === 0) {
-      return { centerX: 0, centerZ: 0, sizeMax: 20 }
-    }
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
-    for (const s of segments) {
-      const r = Math.max(s.length, s.thickness) / 2
-      minX = Math.min(minX, s.cx - r)
-      maxX = Math.max(maxX, s.cx + r)
-      minZ = Math.min(minZ, s.cz - r)
-      maxZ = Math.max(maxZ, s.cz + r)
-    }
-    return {
-      centerX: (minX + maxX) / 2,
-      centerZ: (minZ + maxZ) / 2,
-      sizeMax: Math.max(maxX - minX, maxZ - minZ, 4),
-    }
-  }, [segments])
+    return { segments: out, segmentBounds: bounds }
+  }, [walls, openings, makeupsById, brickMakeupsById, wallThicknessByWallId, library])
 
   return (
     <>
-      {/* Ambient + one directional light — cheap, no shadows. Plenty for a
-          mass-model read where edges between walls matter more than soft
-          shading. */}
       <ambientLight intensity={0.6} />
       <directionalLight position={[10, 20, 10]} intensity={0.8} />
 
-      {/* Ground plane — flat slate rectangle sized 4× the project bounds so
-          you can always see "ground" around the building. Slightly offset
-          downward so wall bottoms (y=0) sit a hair above it. */}
+      {/* Ground plane — flat slate rectangle sized 4× the project bounds. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[centerX, -0.001, centerZ]}
+        position={[segmentBounds.centerX, -0.001, segmentBounds.centerZ]}
         receiveShadow={false}
       >
-        <planeGeometry args={[sizeMax * 4, sizeMax * 4]} />
+        <planeGeometry args={[segmentBounds.sizeMax * 4, segmentBounds.sizeMax * 4]} />
         <meshStandardMaterial color={GROUND_COLOR} />
       </mesh>
 
-      {/* Walls — one mesh per box. Cheap enough for Tier 1; later
-          InstancedMesh by colour can collapse this to a handful of draw
-          calls if the count climbs. */}
+      {/* Walls — one mesh per band × solid-span sub-box. Cheap enough for
+          Tier 1 even with ~30 walls × ~5 bands × ~3 sub-spans ≈ 450 meshes.
+          InstancedMesh by colour can collapse this to ~16 draw calls
+          (one per palette slot) if a busier project warrants it. */}
       {segments.map((s, i) => (
         <mesh key={i} position={[s.cx, s.cy, s.cz]} rotation={[0, s.yRotation, 0]}>
           <boxGeometry args={[s.length, s.heightM, s.thickness]} />
@@ -334,11 +517,8 @@ function Scene({
         </mesh>
       ))}
 
-      {/* Orbit camera — points at the project centre. Distance derived
-          from project size so a 30m building isn't tiny and a 4m wall
-          isn't off-screen. */}
       <OrbitControls
-        target={[centerX, 1, centerZ]}
+        target={[segmentBounds.centerX, 1, segmentBounds.centerZ]}
         enableDamping
         dampingFactor={0.1}
         makeDefault
@@ -349,16 +529,12 @@ function Scene({
 
 // ---------- Top-level export ----------
 
-/**
- * Default export so PdfWorkspace can use `React.lazy(() => import(...))`.
- * Wraps the Canvas with a sensible camera position, a Suspense boundary
- * for any drei async deps, and an empty-state fallback.
- */
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const { walls } = props
-  // Pick a starting camera position based on rough project size. Camera
-  // sits up and back, looking down at ~30° — gives an immediate read of
-  // the layout without the user needing to orbit first.
+
+  // Initial camera position derived from the project's bounding box so a
+  // 30m building isn't tiny and a 4m wall isn't off-screen. Picks an
+  // angle up-and-back at ~30° from the ground.
   const initialCamera = useMemo<[number, number, number]>(() => {
     if (walls.length === 0) return [10, 12, 10]
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
@@ -377,13 +553,6 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     return [cx + dist * 0.7, dist * 0.8, cz + dist * 0.7]
   }, [walls])
 
-  // Watch the renderer for WebGL context loss — a low-end GPU or driver
-  // crash can drop the context. We catch it via a ref to the gl + an
-  // event listener so we don't render gibberish, but the spike just
-  // forces a re-mount on the next props change.
-  const lostRef = useRef(false)
-  useEffect(() => { lostRef.current = false }, [walls])
-
   if (walls.length === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center text-ink-400 text-sm">
@@ -395,19 +564,12 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   return (
     <div className="w-full h-full">
       <Canvas
-        // demand frameloop — only render on camera interaction. Saves
-        // battery on laptops where the view often sits idle.
         frameloop="demand"
-        // Capped pixel ratio — Retina-density rendering is invisible at
-        // a mass-model fidelity, but doubles GPU cost.
         dpr={[1, 1.5]}
         camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
-        // No shadow map = ~30% off the frame cost on integrated GPUs.
         shadows={false}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         onCreated={({ gl }) => {
-          // Background colour — same ink-900 as the workspace so the
-          // 3D viewport blends with the rest of the UI.
           gl.setClearColor(new THREE.Color('#1a1d24'))
         }}
       >

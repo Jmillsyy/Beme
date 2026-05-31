@@ -6158,6 +6158,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               brickMakeupsById={brickMakeupsById}
               wallThicknessByWallId={wallThicknessByWallId}
               areas={areas}
+              library={BLOCK_LIBRARY}
             />
           </Suspense>
         </div>
@@ -6541,7 +6542,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           Fixed-width column sitting beside the canvas, not over it — the
           plan and the panels each get their own space. Scrolls independently
           so a tall panel stack doesn't shrink the canvas. Stacks below the
-          canvas on smaller screens. */}
+          canvas on smaller screens.
+
+          Hidden in 3D mode so the 3D viewport gets the full workspace
+          width. The 2D toggle is still in the toolbar above — flipping
+          back brings the rail right back. The rail is purely an
+          *editing* surface (wall types, areas, trade picker, export);
+          in 3D you're in view-only mode and don't need any of it. */}
+      {viewMode === '3d' ? null : (
       <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
         {/* Area tabs — named subdivisions of the project ("Balcony",
@@ -6731,6 +6739,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             }))}
         />
       </aside>
+      )}
 
       </div>
       {/* ─────────────────── End of two-column body ─────────────────── */}
