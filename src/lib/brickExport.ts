@@ -486,7 +486,15 @@ function buildAssumptions(
 // range). The user defines their own lintels in the material library
 // and they render in the Accessories section like every other supply.
 
-export async function exportBrickEstimate(params: ExportParams): Promise<void> {
+/**
+ * Build the assembled brick-export HTML without downloading it. Mirrors
+ * `buildBlockEstimateHtml` so the combined exporter can extract this
+ * function's `bodyContent` + `styles` and stitch them into a single
+ * document alongside the block side.
+ */
+export async function buildBrickEstimateHtml(
+  params: ExportParams
+): Promise<{ html: string; filename: string; bodyContent: string; styles: string }> {
   const {
     projectDetails,
     inclusions,
@@ -886,6 +894,17 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
     : ''
 
   // ---------- Assembled HTML ----------
+  //
+  // Body content captured separately so the combined exporter can splice
+  // brick pages into a document alongside the block side. Single-trade
+  // callers get the full assembled doc just like before.
+
+  const bodyContent = `
+  ${assumptionsPage}
+  ${planOverviewPages}
+  ${tablesPage}
+  ${disclaimerPage}
+`
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1188,12 +1207,7 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
   }
 </style>
 </head>
-<body>
-  ${assumptionsPage}
-  ${planOverviewPages}
-  ${tablesPage}
-  ${disclaimerPage}
-</body>
+<body>${bodyContent}</body>
 </html>`
 
   // "Built with Beme" credit on every page — injected before each section's
@@ -1205,11 +1219,34 @@ export async function exportBrickEstimate(params: ExportParams): Promise<void> {
       <span>Built with <strong>Beme</strong> · building estimates made easy</span>
     </footer>`
   const htmlWithFooter = html.replace(/<\/section>/g, `${bemeFooter}</section>`)
+  // Same footer injection applied to the standalone bodyContent so the
+  // combined exporter (which uses bodyContent directly) keeps the credit.
+  const bodyContentWithFooter = bodyContent.replace(
+    /<\/section>/g,
+    `${bemeFooter}</section>`
+  )
 
-  // Hand the styled HTML to the print-to-PDF helper, which opens the export in
-  // a fresh tab and auto-triggers the browser's print dialog. The user picks
-  // "Save as PDF" and the tab closes itself afterwards.
-  await downloadPdfFromHtml({ html: htmlWithFooter, filename: docTitle })
+  // Extract the style block so the combined exporter can merge brick
+  // styles with block styles into one document.
+  const styleMatch = htmlWithFooter.match(/<style>([\s\S]*?)<\/style>/)
+  const styles = styleMatch ? styleMatch[1] : ''
+
+  return {
+    html: htmlWithFooter,
+    filename: docTitle,
+    bodyContent: bodyContentWithFooter,
+    styles,
+  }
+}
+
+/**
+ * Single-trade entry point — kept as a thin wrapper over
+ * `buildBrickEstimateHtml` so the existing BrickExportPanel call site
+ * doesn't need to change.
+ */
+export async function exportBrickEstimate(params: ExportParams): Promise<void> {
+  const built = await buildBrickEstimateHtml(params)
+  await downloadPdfFromHtml({ html: built.html, filename: built.filename })
 }
 
 export function createDefaultProjectDetails(): ProjectDetails {

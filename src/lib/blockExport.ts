@@ -938,7 +938,18 @@ function buildAssumptions(
 
 // ---------- Main entry point ----------
 
-export async function exportBlockEstimate(params: ExportParams): Promise<void> {
+/**
+ * Build the assembled block-export HTML without downloading it. Returned
+ * pieces feed both the single-trade `exportBlockEstimate` wrapper (which
+ * just downloads `html`) and `exportCombinedEstimate` (which extracts
+ * `body` + `styles` and stitches them alongside the brick export's
+ * matching pieces in one PDF). Pulling the assembly out of the side-
+ * effecting wrapper means the combined exporter doesn't have to duplicate
+ * any page-building logic.
+ */
+export async function buildBlockEstimateHtml(
+  params: ExportParams
+): Promise<{ html: string; filename: string; bodyContent: string; styles: string }> {
   const {
     projectDetails,
     inclusions,
@@ -1500,6 +1511,25 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
     : ''
 
   // ---------- Assembled HTML ----------
+  //
+  // Body content is captured into its own template literal so the combined
+  // exporter can splice block pages alongside brick pages in a single
+  // document. Styles are captured in their own variable for the same
+  // reason. Single-trade callers (the existing `exportBlockEstimate`
+  // wrapper) get the full assembled doc just like before.
+
+  const bodyContent = `
+  ${assumptionsPage}
+  ${wallSpecsPage}
+  ${planOverviewPage}
+  ${breakdownPages}
+  ${/* Grand Total sits just before the disclaimer so the customer's
+       last data-bearing page is the actual order quantities — the page
+       they'll quote and order from. Disclaimer wraps the document so
+       the legal copy is the final read. */ ''}
+  ${schedulePage}
+  ${disclaimerPage}
+`
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -1985,18 +2015,7 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
   }
 </style>
 </head>
-<body>
-  ${assumptionsPage}
-  ${wallSpecsPage}
-  ${planOverviewPage}
-  ${breakdownPages}
-  ${/* Grand Total sits just before the disclaimer so the customer's
-       last data-bearing page is the actual order quantities — the page
-       they'll quote and order from. Disclaimer wraps the document so
-       the legal copy is the final read. */ ''}
-  ${schedulePage}
-  ${disclaimerPage}
-</body>
+<body>${bodyContent}</body>
 </html>`
 
   // Inject the "Built with Beme" credit before each page's closing tag.
@@ -2009,11 +2028,36 @@ export async function exportBlockEstimate(params: ExportParams): Promise<void> {
       <span>Built with <strong>Beme</strong> · building estimates made easy</span>
     </footer>`
   const htmlWithFooter = html.replace(/<\/section>/g, `${bemeFooter}</section>`)
+  // Same footer injection applied to the standalone bodyContent so the
+  // combined exporter (which uses bodyContent directly without going
+  // through `html`) inherits the credit on every page too.
+  const bodyContentWithFooter = bodyContent.replace(
+    /<\/section>/g,
+    `${bemeFooter}</section>`
+  )
 
-  // Hand the styled HTML to the print-to-PDF helper, which opens the export in
-  // a fresh tab and auto-triggers the browser's print dialog. The user picks
-  // "Save as PDF" and the tab closes itself afterwards.
-  await downloadPdfFromHtml({ html: htmlWithFooter, filename: docTitle })
+  // Extract the <style>...</style> contents so the combined exporter can
+  // merge block styles with brick styles into one document. Regex is fine
+  // here — the only `<style>` tag in the doc is the one we just built.
+  const styleMatch = htmlWithFooter.match(/<style>([\s\S]*?)<\/style>/)
+  const styles = styleMatch ? styleMatch[1] : ''
+
+  return {
+    html: htmlWithFooter,
+    filename: docTitle,
+    bodyContent: bodyContentWithFooter,
+    styles,
+  }
+}
+
+/**
+ * Single-trade entry point — kept as a thin wrapper over
+ * `buildBlockEstimateHtml` so existing call sites (BlockExportPanel)
+ * don't need to change.
+ */
+export async function exportBlockEstimate(params: ExportParams): Promise<void> {
+  const built = await buildBlockEstimateHtml(params)
+  await downloadPdfFromHtml({ html: built.html, filename: built.filename })
 }
 
 export function createDefaultBlockExportInclusions(): BlockExportInclusions {

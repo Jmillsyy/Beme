@@ -18,6 +18,7 @@ import ProjectBar from './ProjectBar'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
 import BrickExportPanel from './BrickExportPanel'
 import BlockExportPanel from './BlockExportPanel'
+import CombinedExportCard from './CombinedExportCard'
 import {
   type ProjectArea,
   type ProjectStatus,
@@ -1932,6 +1933,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     () => Object.values(wallsByPage).flat().filter(matchesActiveView),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [wallsByPage, mode, activeAreaId]
+  )
+  // Raw walls across every trade — for the combined export card which
+  // needs to see both trades regardless of the active view filter.
+  const allWallsRaw = useMemo(
+    () => Object.values(wallsByPage).flat(),
+    [wallsByPage]
   )
   const currentPageWalls = useMemo(
     () => (wallsByPage[currentPage] ?? []).filter(matchesActiveView),
@@ -6619,6 +6626,40 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             makeups={brickMakeups}
           />
         )}
+
+        {/* Combined block + brick export — only renders for projects
+            that carry walls of both trades. Self-hidden when only one
+            trade is in play, so single-trade projects see no change. */}
+        <CombinedExportCard
+          projectDetails={projectDetails}
+          referenceNumber={referenceNumber}
+          supplyItemSelections={supplyItemSelections}
+          supplyItemRateOverrides={supplyItemRateOverrides}
+          pdfFile={pdfFile}
+          allWalls={allWallsRaw}
+          allOpenings={Object.values(openingsByPage).flat()}
+          allPiers={Object.values(piersByPage).flat()}
+          blockMakeups={makeups}
+          pierMakeups={pierMakeups}
+          blockInclusions={blockExportInclusions}
+          brickMakeups={brickMakeups}
+          brickSettings={brickSettings}
+          brickInclusions={exportInclusions}
+          rawPagesInfo={Object.keys(wallsByPage)
+            .map((n) => parseInt(n, 10))
+            .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)
+            .sort((a, b) => a - b)
+            .map((n) => ({
+              pageNumber: n,
+              pageWidthMm: pagesData[n]?.pageWidthMm,
+              pageHeightMm: pagesData[n]?.pageHeightMm,
+              pageScaleRatio: pagesData[n]?.pageScaleRatio,
+              walls: wallsByPage[n] ?? [],
+              openings: openingsByPage[n] ?? [],
+              piers: piersByPage[n] ?? [],
+              measurements: measurementsByPage[n] ?? [],
+            }))}
+        />
 
         {/* Block export panel (block mode) */}
         {mode === 'block' && (
