@@ -11,25 +11,30 @@
  *   wall.startX/.startY → X / Z (Z negated so "up in plan" = "back in 3D")
  *   wall height (mm)    → Y
  *
- * Per-wall rendering:
- *   Block walls are decomposed into **bands** via convertMakeupToBands —
- *   a stack of {blockCode, count} horizontal stripes that match the
- *   composition shown in the 2D wall preview. Each band becomes a
- *   horizontal slab in 3D, tinted by the band's block code using the
- *   same distinct-colour palette as the wall preview's legend. So a
- *   user looking at the 3D view sees the SAME colour for the SAME block
- *   as in the wall-type editor — "the green one is 20.45".
+ * Per-wall rendering (block walls):
+ *   Each wall is decomposed into bands (convertMakeupToBands) and each
+ *   band is rendered course-by-course. For every course we emit three
+ *   regions: a left end-cap, a body slab in the middle, and a right
+ *   end-cap. The end-cap code alternates per course in stretcher bond
+ *   (corner block on odd courses, half block on even) and is uniform in
+ *   stack bond (corner block every course). All three regions are tinted
+ *   by their own block code's colour using the same distinct-colour
+ *   palette as the 2D wall-type preview — so "the green one is 20.45"
+ *   in the legend maps to the same green stripes in 3D, and corner
+ *   blocks (e.g. 20.01) read as a different colour at the ends.
  *
- *   Brick walls render as a single solid extrusion in the brick type's
- *   palette colour. Per-course brick banding is a v2 follow-up.
+ *   Brick walls render as a single solid extrusion — per-course brick
+ *   banding is a v2 follow-up.
  *
- * Openings (windows + doors) cut by splitting each band into
- * left-of-opening / right-of-opening / below-sill / above-head sub-boxes
- * instead of CSG. Keeps the GPU cost low and lets InstancedMesh come
- * later without rework.
+ * Openings (windows + doors) cut by splitting each course's BODY slab
+ * into left-of-opening / right-of-opening sub-spans. End-caps are not
+ * cut — openings within a corner-block-width of a wall end are rare
+ * (typical layouts leave structural space at corners). Sill / head
+ * fills behind partially-crossing openings use the body colour at the
+ * course's y-position.
  *
  * Curved walls sample the arc into N straight segments and run each
- * through the band builder. No openings on curved walls in v1.
+ * through the per-course renderer. No openings on curved walls in v1.
  *
  * Battery-friendly defaults:
  *   - frameloop="demand" — frames only render on camera interaction.
@@ -42,52 +47,41 @@ import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
-import type { Block } from '../types/blocks'
+import type { Block, BlockCode } from '../types/blocks'
 import { arcFromThreePoints, sampleArc, isCurvedWall } from '../lib/curveGeom'
-import { convertMakeupToBands, moduleHeightForBand } from '../lib/makeups'
+import {
+  convertMakeupToBands,
+  moduleHeightForBand,
+  resolveCourseBlocks,
+} from '../lib/makeups'
 import { buildBlockColorMap } from '../lib/blockColors'
 
 // ---------- Constants ----------
 
-/** Default wall height (mm) when neither the wall override nor the makeup
- *  resolves a height — should basically never trigger but keeps the box
- *  from collapsing to zero. */
 const FALLBACK_HEIGHT_MM = 2400
-
-/** Default colour used for brick walls + any wall whose makeup resolves
- *  to no bands. Warm neutral, same as the spike v1. */
 const DEFAULT_WALL_COLOR = '#cdb697'
-
-/** Ground plane colour — slate grey so wall colour pops. */
 const GROUND_COLOR = '#3a3f48'
-
-/** How many straight segments to sample a curved wall into. 24 reads as a
- *  smooth curve at typical project radii without exploding triangle count. */
 const CURVE_SAMPLES = 24
+
+/** Fallback widths (mm) when the library doesn't carry the block. AU
+ *  defaults — full end 20.01 ≈ 390mm, half end 20.03 ≈ 190mm. */
+const FALLBACK_CORNER_WIDTH_MM = 390
+const FALLBACK_HALF_WIDTH_MM = 190
 
 // ---------- Props ----------
 
 export interface WorkspaceView3DProps {
-  /** Walls visible on the current page (already area-filtered by the parent). */
   walls: Wall[]
-  /** Openings on those walls. */
   openings: Opening[]
-  /** Block + brick makeups for height + band resolution. */
   makeupsById: Record<string, WallMakeup>
   brickMakeupsById: Record<string, BrickMakeup>
-  /** Plan-view thickness per wall (already computed by the workspace). */
   wallThicknessByWallId: Record<string, number>
-  /** Project areas — kept for v1's neutral colouring fallback. */
   areas: ProjectArea[]
-  /** Block library keyed by code — used to look up each band block's
-   *  modular course height. Passed in (not imported) so a future
-   *  per-project library override works without code changes here. */
   library: Record<string, Block>
 }
 
 // ---------- Helpers ----------
 
-/** Resolve a wall's actual height in mm: per-wall override > makeup height. */
 function resolveWallHeightMm(
   wall: Wall,
   makeupsById: Record<string, WallMakeup>,
@@ -100,28 +94,42 @@ function resolveWallHeightMm(
   return makeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
 }
 
-/**
- * Resolve the band stack for a block wall, scaled to the wall's actual
- * height (which can differ from the makeup's heightMm via
- * heightMmOverride). We pass a clone of the makeup with the override
- * applied so convertMakeupToBands sizes the band counts to the actual
- * wall height — otherwise a 2400mm override would still draw a
- * 3100mm-band-count of stripes.
- *
- * Returns { y, height, color } per band — bottom-up. Heights in METRES.
- */
-interface ResolvedBand {
-  y0: number
-  y1: number
-  blockCode: string
+/** Look up a block's face width (mm), falling back to the AU default. */
+function widthOf(code: BlockCode | undefined, library: Record<string, Block>, fallback: number): number {
+  if (!code) return fallback
+  return library[code]?.dimensions.widthMm ?? fallback
 }
 
-function resolveWallBands(
+/**
+ * One course of the wall — body + corner + half codes already resolved
+ * against the makeup's series ranges. y0/y1 are the course's world-space
+ * vertical band (in metres).
+ */
+interface ResolvedCourse {
+  /** 1-indexed from the base of the wall. */
+  courseNumber: number
+  /** World-space y range in metres. */
+  y0: number
+  y1: number
+  /** Resolved per-course codes (body, corner, half). */
+  bodyCode: BlockCode
+  cornerCode: BlockCode
+  halfCode: BlockCode
+}
+
+/**
+ * Resolve a wall's course-by-course composition.
+ *
+ * Walks the makeup's band stack (via convertMakeupToBands) bottom-up and
+ * expands each band into its individual courses, then runs each course
+ * through resolveCourseBlocks so series-range overrides take effect
+ * (e.g. courses 1-5 use 300-series corners). Heights in metres.
+ */
+function resolveWallCourses(
   wall: Wall,
   makeupsById: Record<string, WallMakeup>,
-  library: Record<string, Block>,
-  fallbackColor: string
-): { bands: ResolvedBand[]; totalHeightM: number; defaultColor: string } {
+  library: Record<string, Block>
+): { courses: ResolvedCourse[]; totalHeightM: number; makeup: WallMakeup | undefined } {
   const makeup = makeupsById[wall.makeupId]
   const heightMm =
     typeof wall.heightMmOverride === 'number'
@@ -130,82 +138,95 @@ function resolveWallBands(
   const totalHeightM = heightMm / 1000
 
   if (!makeup) {
-    return { bands: [], totalHeightM, defaultColor: fallbackColor }
+    return { courses: [], totalHeightM, makeup: undefined }
   }
-  // Use the makeup's own coursePattern if set; otherwise derive bands
-  // from the makeup defaults. Pass the height override via a clone so
-  // convertMakeupToBands sizes the band counts to the actual wall.
+  // Clone with override so band counts size to the wall's actual height.
   const scopedMakeup: WallMakeup =
     typeof wall.heightMmOverride === 'number'
       ? { ...makeup, heightMm: wall.heightMmOverride }
       : makeup
-  const { bands: courseBands } = convertMakeupToBands(scopedMakeup, undefined, {
+  const { bands } = convertMakeupToBands(scopedMakeup, undefined, {
     skipHeightMakeup: true,
   })
 
-  const bands: ResolvedBand[] = []
+  const courses: ResolvedCourse[] = []
   let y = 0
-  for (const cb of courseBands) {
-    if (cb.count <= 0) continue
-    const moduleMm = moduleHeightForBand(cb.blockCode, library)
-    const bandHeightM = (moduleMm * cb.count) / 1000
-    bands.push({ y0: y, y1: y + bandHeightM, blockCode: cb.blockCode })
-    y += bandHeightM
+  let courseNum = 1
+  for (const band of bands) {
+    if (band.count <= 0) continue
+    const courseHeightM = moduleHeightForBand(band.blockCode, library) / 1000
+    for (let i = 0; i < band.count; i++) {
+      const resolved = resolveCourseBlocks(scopedMakeup, courseNum)
+      courses.push({
+        courseNumber: courseNum,
+        y0: y,
+        y1: y + courseHeightM,
+        // Series-range body overlays the band's body code. Bands come
+        // from the makeup's coursePattern (or defaults), but series
+        // ranges can replace it for specific course ranges.
+        bodyCode: resolved.bodyBlockCode || band.blockCode,
+        cornerCode: resolved.cornerBlockCode,
+        halfCode: resolved.halfBlockCode,
+      })
+      y += courseHeightM
+      courseNum++
+    }
   }
-  // If bands fell short of the wall (e.g. courses don't tile evenly),
-  // pad the top with the topmost band's code so the wall still reaches
-  // its target height visually.
-  if (y < totalHeightM - 0.001 && bands.length > 0) {
-    bands[bands.length - 1].y1 = totalHeightM
-  } else if (bands.length === 0) {
-    // No usable bands — return a single solid band covering the whole
-    // wall, coloured with the makeup's body code if any.
-    bands.push({
+  // Pad shortfall (rare — happens when course heights don't tile evenly
+  // to the wall height) so the wall still reaches its target height.
+  if (y < totalHeightM - 0.001 && courses.length > 0) {
+    courses[courses.length - 1].y1 = totalHeightM
+  } else if (courses.length === 0) {
+    courses.push({
+      courseNumber: 1,
       y0: 0,
       y1: totalHeightM,
-      blockCode: makeup.bodyBlockCode ?? '',
+      bodyCode: makeup.bodyBlockCode,
+      cornerCode: makeup.cornerBlockCode,
+      halfCode: makeup.halfBlockCode ?? '20.03',
     })
   }
-  return { bands, totalHeightM, defaultColor: fallbackColor }
+  return { courses, totalHeightM, makeup }
 }
 
-/**
- * One axis-aligned-by-rotation wall sub-box descriptor — ready to render
- * as a Three.js <mesh>. Coordinates already in metres, Y-up.
- */
+/** One Three.js-ready sub-box descriptor. Coordinates in metres, Y-up. */
 interface WallSegmentBox {
-  /** Centre of the box in world space. */
   cx: number
   cy: number
   cz: number
-  /** Size along local X / Y / Z (length × height × thickness). */
   length: number
   heightM: number
   thickness: number
-  /** Rotation around Y axis (radians) — aligns local X with the wall's
-   *  start-to-end direction. */
   yRotation: number
-  /** Tint. */
   color: string
 }
 
 /**
- * Compute the sub-boxes for a single straight wall. Walks the wall both
- * vertically (by band) and horizontally (by opening cutouts) and emits
- * one box per (band × solid-span) cell. Result: a 3D stack of coloured
- * bricks-of-bands with window/door holes cut out.
+ * Emit sub-boxes for a single straight wall.
+ *
+ * Per course:
+ *   1. Decide which block ends each course (corner on odd / stretcher
+ *      stack-bond, half on even / stretcher) and pick its colour + width.
+ *   2. Emit left end-cap.
+ *   3. Emit the body in the middle (inset by end-cap width from each
+ *      end), split by any openings that overlap this course's y-range.
+ *      Body uses the course's resolved body code colour.
+ *   4. Emit right end-cap.
+ *
+ * Opening sill / head bands are filled with the body code colour at the
+ * relevant course — so the visual reads as "the wall behind the
+ * window is still that course's body block".
  */
 function segmentsForStraightWall(
   wall: Wall,
   openings: Opening[],
   thicknessMm: number,
-  bands: ResolvedBand[],
+  courses: ResolvedCourse[],
   totalHeightM: number,
+  bondType: 'stretcher' | 'stack',
   colorMap: Map<string, string>,
-  defaultColor: string
+  library: Record<string, Block>
 ): WallSegmentBox[] {
-  // Plan → 3D conversion. Negate Z so positive-Y in plan view (down on
-  // screen) reads as "back" in the 3D scene.
   const sx = wall.startX / 1000
   const sz = -wall.startY / 1000
   const ex = wall.endX / 1000
@@ -213,15 +234,13 @@ function segmentsForStraightWall(
   const dx = ex - sx
   const dz = ez - sz
   const length = Math.hypot(dx, dz)
-  if (length === 0) return []
+  if (length === 0 || courses.length === 0) return []
   const yRotation = Math.atan2(-dz, dx)
   const thickness = thicknessMm / 1000
   const dirX = dx / length
   const dirZ = dz / length
 
-  // For each band, figure out the horizontal solid spans (the cells of
-  // the band not covered by an opening). Then emit one box per solid
-  // span × this band.
+  // Pre-process openings on this wall — local s0..s1 in metres + sill/head.
   const wallOpenings = openings
     .filter((o) => o.wallId === wall.id)
     .map((o) => ({
@@ -233,9 +252,11 @@ function segmentsForStraightWall(
     .filter((o) => o.end > o.start && o.head > o.sill)
     .sort((a, b) => a.start - b.start)
 
+  const colorOf = (code: BlockCode) => colorMap.get(code) ?? DEFAULT_WALL_COLOR
   const boxes: WallSegmentBox[] = []
 
-  // Build a box from a local (s0..s1) span × (y0..y1) vertical band.
+  /** Build a centred box from a span along local X (s0..s1, metres from
+   *  wall start) and a vertical band (y0..y1, metres from base). */
   const buildBox = (
     s0: number,
     s1: number,
@@ -244,100 +265,118 @@ function segmentsForStraightWall(
     color: string
   ): WallSegmentBox => {
     const localCx = (s0 + s1) / 2
-    const segLength = s1 - s0
-    const segHeight = y1 - y0
     return {
       cx: sx + dirX * localCx,
       cy: (y0 + y1) / 2,
       cz: sz + dirZ * localCx,
-      length: segLength,
-      heightM: segHeight,
+      length: s1 - s0,
+      heightM: y1 - y0,
       thickness,
       yRotation,
       color,
     }
   }
 
-  for (const band of bands) {
-    const bandColor = colorMap.get(band.blockCode) ?? defaultColor
-    // Which openings overlap this band's y-range? An opening occupies
-    // this band only where its (sill, head) vertical span intersects
-    // (band.y0, band.y1).
-    const bandOpenings = wallOpenings
-      .map((o) => ({
-        start: o.start,
-        end: o.end,
-        coversBand: o.sill <= band.y0 && o.head >= band.y1,
-      }))
-      .filter((o) => o.coversBand) // only openings that fully cross this band
+  for (const course of courses) {
+    const { y0, y1, bodyCode, cornerCode, halfCode } = course
+    // End-cap pattern: stack bond = corner every course; stretcher =
+    // corner on odd courses, half on even. Matches what the 2D preview
+    // renders, so the colour distribution reads the same in 3D.
+    const useHalf = bondType === 'stretcher' && course.courseNumber % 2 === 0
+    const endCode = useHalf ? halfCode : cornerCode
+    const endColor = colorOf(endCode)
+    const bodyColor = colorOf(bodyCode)
+    const endWidthMm = useHalf
+      ? widthOf(halfCode, library, FALLBACK_HALF_WIDTH_MM)
+      : widthOf(cornerCode, library, FALLBACK_CORNER_WIDTH_MM)
+    const endWidth = endWidthMm / 1000
 
-    if (bandOpenings.length === 0) {
-      // Solid band — single box across full wall length.
-      boxes.push(buildBox(0, length, band.y0, band.y1, bandColor))
+    // Tiny wall (≤ 2 end-caps wide): render the whole course as a
+    // single end-coloured box. Avoids negative-width body slabs.
+    if (length <= endWidth * 2) {
+      boxes.push(buildBox(0, length, y0, y1, endColor))
       continue
     }
 
-    // Walk left-to-right emitting solid panels between openings, at this
-    // band's vertical span. Openings that only partially intersect the
-    // band's y-range are treated as the full-cross case (small visual
-    // overlap on the sill/head boundary, acceptable for a mass model).
-    let cursor = 0
-    for (const op of bandOpenings) {
-      if (op.start > cursor) {
-        boxes.push(buildBox(cursor, op.start, band.y0, band.y1, bandColor))
+    // Left end-cap.
+    boxes.push(buildBox(0, endWidth, y0, y1, endColor))
+    // Right end-cap.
+    boxes.push(buildBox(length - endWidth, length, y0, y1, endColor))
+
+    // Body region: bound by [endWidth, length - endWidth], cut by any
+    // openings whose y-range fully covers this course's y-range.
+    const bodyStart = endWidth
+    const bodyEnd = length - endWidth
+    const courseOpenings = wallOpenings
+      .filter((o) => o.sill <= y0 && o.head >= y1) // opening covers this course
+      .map((o) => ({
+        s0: Math.max(bodyStart, o.start),
+        s1: Math.min(bodyEnd, o.end),
+      }))
+      .filter((o) => o.s1 > o.s0)
+      .sort((a, b) => a.s0 - b.s0)
+
+    if (courseOpenings.length === 0) {
+      boxes.push(buildBox(bodyStart, bodyEnd, y0, y1, bodyColor))
+    } else {
+      let cursor = bodyStart
+      for (const op of courseOpenings) {
+        if (op.s0 > cursor) {
+          boxes.push(buildBox(cursor, op.s0, y0, y1, bodyColor))
+        }
+        cursor = Math.max(cursor, op.s1)
       }
-      cursor = Math.max(cursor, op.end)
+      if (cursor < bodyEnd) {
+        boxes.push(buildBox(cursor, bodyEnd, y0, y1, bodyColor))
+      }
     }
-    if (cursor < length) {
-      boxes.push(buildBox(cursor, length, band.y0, band.y1, bandColor))
+
+    // Sill + head fills for partially-crossing openings at this course.
+    // Body colour fills the portion of the opening's span that falls
+    // ABOVE the opening's head OR BELOW its sill, at this course's
+    // y-range. So a 1200mm-high window leaves the courses below the
+    // sill + above the head solid behind it.
+    for (const op of wallOpenings) {
+      // Slice of this course that lies BELOW op.sill: course is below
+      // the opening.
+      if (op.sill > y0 && op.sill < y1) {
+        // Course straddles the sill — render solid up to the sill line.
+        const fillTop = Math.min(y1, op.sill)
+        if (fillTop > y0) {
+          boxes.push(buildBox(op.start, op.end, y0, fillTop, bodyColor))
+        }
+      } else if (op.sill >= y1) {
+        // Course is fully below the sill — fill the opening span solid.
+        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor))
+      }
+      // Slice of this course that lies ABOVE op.head.
+      if (op.head > y0 && op.head < y1) {
+        const fillBottom = Math.max(y0, op.head)
+        if (fillBottom < y1) {
+          boxes.push(buildBox(op.start, op.end, fillBottom, y1, bodyColor))
+        }
+      } else if (op.head <= y0) {
+        // Course is fully above the head — fill the opening span solid.
+        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor))
+      }
     }
   }
 
-  // Also emit sill / head fills for openings that don't fully cross a
-  // band — i.e. a window that starts above the floor (sill > 0) and
-  // ends below the wall top (head < total). The above-head and
-  // below-sill spans get a band-coloured fill that matches the band
-  // they sit in. We do this per-band by adding two extra passes.
-  for (const op of wallOpenings) {
-    // Below-sill (from 0 to op.sill): emit per-band slices using the
-    // colour of the band the slice sits in.
-    if (op.sill > 0) {
-      for (const band of bands) {
-        const y0 = Math.max(band.y0, 0)
-        const y1 = Math.min(band.y1, op.sill)
-        if (y1 > y0) {
-          const color = colorMap.get(band.blockCode) ?? defaultColor
-          boxes.push(buildBox(op.start, op.end, y0, y1, color))
-        }
-      }
-    }
-    // Above-head (from op.head to totalHeight): same pattern.
-    if (op.head < totalHeightM) {
-      for (const band of bands) {
-        const y0 = Math.max(band.y0, op.head)
-        const y1 = Math.min(band.y1, totalHeightM)
-        if (y1 > y0) {
-          const color = colorMap.get(band.blockCode) ?? defaultColor
-          boxes.push(buildBox(op.start, op.end, y0, y1, color))
-        }
-      }
-    }
-  }
   return boxes
 }
 
 /**
  * Curved-wall variant. Samples the arc into N straight segments and
- * runs each through the straight-wall builder with no openings (v1
- * doesn't render openings on curved walls).
+ * runs each through the straight-wall builder with no openings.
  */
 function segmentsForCurvedWall(
   wall: Wall,
   thicknessMm: number,
-  bands: ResolvedBand[],
+  courses: ResolvedCourse[],
   totalHeightM: number,
+  bondType: 'stretcher' | 'stack',
   colorMap: Map<string, string>,
-  defaultColor: string
+  library: Record<string, Block>
 ): WallSegmentBox[] {
   if (wall.midX === undefined || wall.midY === undefined) return []
   const geom = arcFromThreePoints(
@@ -347,13 +386,7 @@ function segmentsForCurvedWall(
   )
   if (!geom) {
     return segmentsForStraightWall(
-      wall,
-      [],
-      thicknessMm,
-      bands,
-      totalHeightM,
-      colorMap,
-      defaultColor
+      wall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library
     )
   }
   const samples = sampleArc(geom, CURVE_SAMPLES + 1)
@@ -370,13 +403,7 @@ function segmentsForCurvedWall(
     }
     boxes.push(
       ...segmentsForStraightWall(
-        fakeWall,
-        [],
-        thicknessMm,
-        bands,
-        totalHeightM,
-        colorMap,
-        defaultColor
+        fakeWall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library
       )
     )
   }
@@ -393,81 +420,74 @@ function Scene({
   wallThicknessByWallId,
   library,
 }: Omit<WorkspaceView3DProps, 'areas'>) {
-  // Per-wall band stacks — memoised together so the colour map and the
-  // segment builder both see the same data.
   const { segments, segmentBounds } = useMemo(() => {
-    // First pass: resolve each wall's bands so we know every block code
-    // that'll appear in the 3D view. Pass that complete set to
-    // buildBlockColorMap so every code lands on a distinct palette slot.
-    const wallBands = walls.map((wall) => {
-      if (wall.trade === 'brick') {
-        // Brick walls don't go through the band path in v1 — they get
-        // one solid box. resolveWallBands isn't called for them.
-        return null
-      }
-      return resolveWallBands(wall, makeupsById, library, DEFAULT_WALL_COLOR)
+    // First pass: resolve each wall's per-course composition so we know
+    // every block code (body + corner + half) that'll appear in the 3D
+    // view. Pass the complete set to buildBlockColorMap so every code
+    // lands on a distinct palette slot — same logic as the 2D preview.
+    const wallResolutions = walls.map((wall) => {
+      if (wall.trade === 'brick') return null
+      return resolveWallCourses(wall, makeupsById, library)
     })
     const allCodes: string[] = []
-    for (const wb of wallBands) {
-      if (!wb) continue
-      for (const b of wb.bands) allCodes.push(b.blockCode)
+    for (const wr of wallResolutions) {
+      if (!wr) continue
+      for (const c of wr.courses) {
+        allCodes.push(c.bodyCode, c.cornerCode, c.halfCode)
+      }
     }
     const colorMap = buildBlockColorMap(allCodes)
 
-    // Second pass: build segments per wall using the colour map.
     const out: WallSegmentBox[] = []
     walls.forEach((wall, i) => {
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+
       if (wall.trade === 'brick') {
-        // Brick: single solid box, default colour.
+        // Brick walls render as one solid extrusion for v1. Per-course
+        // banding (BrickMakeup.courseRanges) is a follow-up.
         const heightMm = resolveWallHeightMm(wall, makeupsById, brickMakeupsById)
         const totalHeightM = heightMm / 1000
-        const singleBand: ResolvedBand[] = [
-          { y0: 0, y1: totalHeightM, blockCode: '__brick__' },
+        const solidCourse: ResolvedCourse[] = [
+          {
+            courseNumber: 1,
+            y0: 0,
+            y1: totalHeightM,
+            bodyCode: '__brick__',
+            cornerCode: '__brick__',
+            halfCode: '__brick__',
+          },
         ]
         const brickColorMap = new Map([['__brick__', DEFAULT_WALL_COLOR]])
         out.push(
           ...segmentsForStraightWall(
-            wall,
-            openings,
-            thicknessMm,
-            singleBand,
-            totalHeightM,
-            brickColorMap,
-            DEFAULT_WALL_COLOR
+            wall, openings, thicknessMm, solidCourse, totalHeightM,
+            'stack', brickColorMap, library
           )
         )
         return
       }
-      const wb = wallBands[i]
-      if (!wb) return
+
+      const wr = wallResolutions[i]
+      if (!wr || !wr.makeup) return
+      const bondType = wr.makeup.bondType
       if (isCurvedWall(wall)) {
         out.push(
           ...segmentsForCurvedWall(
-            wall,
-            thicknessMm,
-            wb.bands,
-            wb.totalHeightM,
-            colorMap,
-            wb.defaultColor
+            wall, thicknessMm, wr.courses, wr.totalHeightM,
+            bondType, colorMap, library
           )
         )
       } else {
         out.push(
           ...segmentsForStraightWall(
-            wall,
-            openings,
-            thicknessMm,
-            wb.bands,
-            wb.totalHeightM,
-            colorMap,
-            wb.defaultColor
+            wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
+            bondType, colorMap, library
           )
         )
       }
     })
 
-    // Bounds for the ground plane + orbit target.
+    // Bounds for ground plane + orbit target.
     let bounds: { centerX: number; centerZ: number; sizeMax: number } = {
       centerX: 0,
       centerZ: 0,
@@ -496,20 +516,19 @@ function Scene({
       <ambientLight intensity={0.6} />
       <directionalLight position={[10, 20, 10]} intensity={0.8} />
 
-      {/* Ground plane — flat slate rectangle sized 4× the project bounds. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[segmentBounds.centerX, -0.001, segmentBounds.centerZ]}
-        receiveShadow={false}
       >
         <planeGeometry args={[segmentBounds.sizeMax * 4, segmentBounds.sizeMax * 4]} />
         <meshStandardMaterial color={GROUND_COLOR} />
       </mesh>
 
-      {/* Walls — one mesh per band × solid-span sub-box. Cheap enough for
-          Tier 1 even with ~30 walls × ~5 bands × ~3 sub-spans ≈ 450 meshes.
-          InstancedMesh by colour can collapse this to ~16 draw calls
-          (one per palette slot) if a busier project warrants it. */}
+      {/* One mesh per wall sub-box. Per-course rendering means ~5x more
+          meshes than band rendering, but with ~30 walls × 13 courses ×
+          ~3 cells = ~1200 meshes the cost is still fine on integrated
+          GPUs. InstancedMesh by colour collapses this to ~16 draw calls
+          if a busier project warrants. */}
       {segments.map((s, i) => (
         <mesh key={i} position={[s.cx, s.cy, s.cz]} rotation={[0, s.yRotation, 0]}>
           <boxGeometry args={[s.length, s.heightM, s.thickness]} />
@@ -532,9 +551,6 @@ function Scene({
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const { walls } = props
 
-  // Initial camera position derived from the project's bounding box so a
-  // 30m building isn't tiny and a 4m wall isn't off-screen. Picks an
-  // angle up-and-back at ~30° from the ground.
   const initialCamera = useMemo<[number, number, number]>(() => {
     if (walls.length === 0) return [10, 12, 10]
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
