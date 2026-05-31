@@ -5069,7 +5069,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
       {/* Sticky action bar — keeps drawing controls + banners glued to the top of the
           viewport while the user scrolls, so they don't need to scroll up to start a new
-          wall/opening. Wraps the wall-drawing toolbar and all contextual banners/forms. */}
+          wall/opening. Wraps the wall-drawing toolbar and all contextual banners/forms.
+
+          Hidden in 3D mode. The toolbar contains drawing tools (Draw wall,
+          Add opening, Pier, Ruler, etc.) that are inert in the read-only
+          3D viewer, AND it eats ~100px of vertical space above the canvas
+          area — leaving the 3D viewport short by exactly that amount vs.
+          the right rail aside (which has no equivalent toolbar above it).
+          Hiding the toolbar in 3D lets thumbnails+view (and therefore the
+          3D wrapper) claim the full canvas-area height so the 3D viewport
+          matches the rail's height. User flips back to 2D to draw. */}
+      {viewMode !== '3d' && (
       <div className="sticky top-0 z-20 bg-ink-900 pt-1 pb-1 -mx-1 px-1 mb-1.5 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
 
       {/* Keyboard shortcut help — pinned in the corner of the toolbar area.
@@ -6099,6 +6109,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           panel handles reassignment; multi-select handles batch ops. */}
 
       </div>
+      )}
       {/* End of sticky action bar */}
 
       {/* Calibration prompts + distance input moved INTO the wall-drawing

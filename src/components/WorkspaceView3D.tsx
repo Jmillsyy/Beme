@@ -571,33 +571,35 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
 
   if (walls.length === 0) {
     return (
-      <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
+      <div className="w-full h-full flex items-center justify-center text-ink-400 text-sm">
         Draw a wall on the 2D view to see it here.
       </div>
     )
   }
 
   return (
-    // Absolute-positioned so we fill the relatively-positioned parent
-    // exactly. h-full / w-full on a flex-1 child sometimes fails to
-    // resolve (parent's height comes from flex layout, not an explicit
-    // value — child `height: 100%` has nothing to compute against), so
-    // we sidestep that with absolute inset:0.
-    <div className="absolute inset-0">
-      <Canvas
-        frameloop="demand"
-        dpr={[1, 1.5]}
-        camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
-        shadows={false}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
-        onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color('#1a1d24'))
-        }}
-      >
-        <Suspense fallback={null}>
-          <Scene {...props} />
-        </Suspense>
-      </Canvas>
-    </div>
+    // r3f's <Canvas> creates an internal div with width:100% height:100%
+    // that auto-sizes to whichever parent contains it. Render directly
+    // with no wrapper div so the Canvas's internal container becomes
+    // the size of the 3D wrapper in PdfWorkspace.
+    //
+    // The previous wrapper used `absolute inset-0` which removed the
+    // Canvas from the parent's content flow — the flex parent then saw
+    // zero content height and didn't grow vertically, leaving the
+    // wrapper bounded shorter than its allotted flex space.
+    <Canvas
+      frameloop="demand"
+      dpr={[1, 1.5]}
+      camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
+      shadows={false}
+      gl={{ antialias: true, powerPreference: 'high-performance' }}
+      onCreated={({ gl }) => {
+        gl.setClearColor(new THREE.Color('#1a1d24'))
+      }}
+    >
+      <Suspense fallback={null}>
+        <Scene {...props} />
+      </Suspense>
+    </Canvas>
   )
 }
