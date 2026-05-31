@@ -2053,12 +2053,16 @@ function CoursePatternPreview({
   }
 
   return (
-    // h-full + min-h-[280px] sets the slot we can scale within; items-start
-    // so the wall sits at the top of the rail and shorter walls don't
-    // float visually centred. justify-start keeps the wall + labels
-    // grouped on the left so the legend below them aligns to the same
-    // gutter.
-    <div className="flex h-full min-h-[280px] items-start justify-start">
+    // h-full + min-h-[280px] sets the slot we can scale within;
+    // items-center vertically centres the wall element so when its
+    // aspect-ratio + maxWidth combo make it shorter than the slot
+    // (common for curve walls with thin courses, or any wall with a
+    // very tall slot), the empty space splits evenly above + below
+    // rather than dumping the wall against the top edge and leaving
+    // a phantom empty grid below it. justify-start keeps the wall +
+    // labels grouped on the left so the legend below them aligns to
+    // the same gutter.
+    <div className="flex h-full min-h-[280px] items-center justify-start">
       {/* Wall section + absolute-positioned ruler labels.
 
           aspectRatio = REPRESENTATIVE_WIDTH_MM / totalHeight so the wall
