@@ -41,7 +41,7 @@
  *   - Pixel ratio capped at 1.5 — no Retina-density rendering.
  *   - One directional light, no shadows. Fine for a mass model.
  */
-import { Suspense, useMemo } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
@@ -578,28 +578,78 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   }
 
   return (
-    // Wrap in absolute inset-0 to pin Canvas to the relatively-positioned
-    // parent's exact bounds. Without this, the Canvas's internal
-    // ResizeObserver-driven sizing can disagree with a flex-1 parent's
-    // computed height (the parent has no in-flow content to size against
-    // when Canvas is its only child, leading to mismatches at the
-    // margins). Absolute positioning gives Canvas a definite-size box
-    // anchored to the parent's actual rendered bounds.
-    <div className="absolute inset-0">
-      <Canvas
-        frameloop="demand"
-        dpr={[1, 1.5]}
-        camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
-        shadows={false}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
-        onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color('#1a1d24'))
-        }}
-      >
-        <Suspense fallback={null}>
-          <Scene {...props} />
-        </Suspense>
-      </Canvas>
+    // Explicit pixel sizing via ResizeObserver — r3f's Canvas auto-sizing
+    // was leaving the rendered surface smaller than its container under
+    // certain initial-layout conditions (visible as wrapper bg showing
+    // around a too-small Canvas). We measure the wrapper div ourselves
+    // and pass explicit width/height pixels to Canvas's `style`, which
+    // it then uses to size the WebGL canvas exactly to our measured
+    // dimensions. ResizeObserver keeps it in sync on viewport resize.
+    <SizedCanvasShell>
+      {(width, height) => (
+        <Canvas
+          frameloop="demand"
+          dpr={[1, 1.5]}
+          camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
+          shadows={false}
+          gl={{ antialias: true, powerPreference: 'high-performance' }}
+          onCreated={({ gl }) => {
+            gl.setClearColor(new THREE.Color('#1a1d24'))
+          }}
+          style={{ width, height, display: 'block' }}
+        >
+          <Suspense fallback={null}>
+            <Scene {...props} />
+          </Suspense>
+        </Canvas>
+      )}
+    </SizedCanvasShell>
+  )
+}
+
+/**
+ * Measures its own rendered size via ResizeObserver and passes pixel
+ * width + height as render-prop arguments. Used to give the r3f Canvas
+ * inside an explicit pixel size — without this, Canvas was occasionally
+ * rendering at the parent's INITIAL measured size (which could be a
+ * fraction of the final flex-resolved size if the observer fires
+ * before layout settles), leaving the wrapper's bg visible around it.
+ *
+ * Renders nothing until the first measurement comes back (avoids a
+ * 0×0 Canvas mount that then has to resize on next frame).
+ */
+function SizedCanvasShell({
+  children,
+}: {
+  children: (width: number, height: number) => React.ReactNode
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0].contentRect
+      // Round to integer pixels — sub-pixel widths/heights can confuse
+      // WebGL's framebuffer sizing.
+      const w = Math.floor(rect.width)
+      const h = Math.floor(rect.height)
+      if (w > 0 && h > 0) setSize({ w, h })
+    })
+    observer.observe(el)
+    // Initial measurement before observer fires (some browsers wait for
+    // the first layout pass).
+    const rect = el.getBoundingClientRect()
+    if (rect.width > 0 && rect.height > 0) {
+      setSize({ w: Math.floor(rect.width), h: Math.floor(rect.height) })
+    }
+    return () => observer.disconnect()
+  }, [])
+
+  return (
+    <div ref={ref} className="absolute inset-0">
+      {size ? children(size.w, size.h) : null}
     </div>
   )
 }
