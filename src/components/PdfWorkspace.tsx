@@ -6165,12 +6165,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         </div>
       )}
 
-      <div className={viewMode === '3d' ? 'hidden' : 'flex-1 min-h-0 flex flex-col'}>
-      {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan) */}
+      {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan).
+
+          Stays mounted at all times — when in 3D mode we just toggle
+          `hidden` (display: none) on this same div so containerRef +
+          its wheel/pan event listeners stay valid. Adding a wrapper
+          here instead would break the flex-row sizing of the
+          thumbnails+view parent because a wrapper without min-w-0
+          expands to fit the PDF's intrinsic pixel width (3000+px at
+          high zoom) and pushes the right rail off-screen. Toggling
+          `hidden` on the same div sidesteps that entirely. */}
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className="flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800"
+        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800 ${viewMode === '3d' ? 'hidden' : ''}`}
         style={{
           cursor:
             calibrating ||
@@ -6533,8 +6541,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           </div>
         </div>
       </div>
-      </div>{/* End viewMode hidden wrapper for 2D container */}
-      </div>{/* End thumbnails + view wrapper */}
+      </div>
 
       </div>
       {/* ───── End of left column ───── */}
