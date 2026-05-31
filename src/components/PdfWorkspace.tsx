@@ -1,4 +1,9 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
+
+// 3D view is lazy-loaded so users who never open it pay zero bundle cost
+// (Three.js + r3f + drei add ~150 KB gzipped on top of the main bundle).
+// Only resolves on the first toggle to '3d'.
+const WorkspaceView3D = lazy(() => import('./WorkspaceView3D'))
 import { PDFDocument } from 'pdf-lib'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
@@ -367,6 +372,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // walls drawn while an area is active get its id stamped on them.
   const [areas, setAreas] = useState<ProjectArea[]>([])
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null)
+  // Workspace view mode — '2d' is the Konva canvas (editing surface); '3d'
+  // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
+  // state, never persisted. Toggle button in the unified toolbar flips it.
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
   const { user: currentUser } = useAuth()
   // Resolve the author's user id to a friendly display name. For org-scoped
   // projects we ask the org-members RPC (which returns full names + emails
@@ -4857,6 +4866,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
         <div className="h-5 w-px bg-ink-600" />
 
+        {/* 2D / 3D view toggle — flips the workspace between the Konva
+            editing canvas and the mass-model 3D viewer. 3D is read-only
+            (orbit camera, no editing) and lazy-loaded on first toggle so
+            users who never open it pay zero bundle cost. */}
+        <div className="inline-flex rounded-md border border-ink-600 overflow-hidden text-sm">
+          <button
+            onClick={() => setViewMode('2d')}
+            className={`px-2.5 py-1 transition-colors ${
+              viewMode === '2d'
+                ? 'bg-beme-500/20 text-beme-300 font-medium'
+                : 'text-ink-300 hover:bg-ink-700'
+            }`}
+            title="Edit walls on the 2D plan"
+            aria-pressed={viewMode === '2d'}
+          >
+            2D
+          </button>
+          <button
+            onClick={() => setViewMode('3d')}
+            className={`px-2.5 py-1 border-l border-ink-600 transition-colors ${
+              viewMode === '3d'
+                ? 'bg-beme-500/20 text-beme-300 font-medium'
+                : 'text-ink-300 hover:bg-ink-700'
+            }`}
+            title="Mass-model 3D view (read-only)"
+            aria-pressed={viewMode === '3d'}
+          >
+            3D
+          </button>
+        </div>
+
+        <div className="h-5 w-px bg-ink-600" />
+
         {/* Scale — collapsed inline when set, expanded controls when not OR
             when the user has hit Recalibrate. Showing the ratio dropdown
             *and* the two-click button during recalibration is important:
@@ -6095,6 +6137,32 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
+      {/* 3D viewport — replaces the PDF + Konva surface when the user has
+          flipped the workspace into 3D mode. Lazy-loaded and read-only:
+          orbit camera, no wall editing. The 2D container below stays
+          unmounted while 3D is active, which means flipping back to 2D
+          re-rasterises the PDF — acceptable for spike scope. */}
+      {viewMode === '3d' ? (
+        <div className="flex-1 min-h-0 border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
+          <Suspense
+            fallback={
+              <div className="w-full h-full flex items-center justify-center text-ink-400 text-sm">
+                Loading 3D view…
+              </div>
+            }
+          >
+            <WorkspaceView3D
+              walls={currentPageWalls}
+              openings={currentPageOpenings}
+              makeupsById={makeupsById}
+              brickMakeupsById={brickMakeupsById}
+              wallThicknessByWallId={wallThicknessByWallId}
+              areas={areas}
+            />
+          </Suspense>
+        </div>
+      ) : (
+      <>
       {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan) */}
       <div
         ref={containerRef}
@@ -6462,6 +6530,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           </div>
         </div>
       </div>
+      </>
+      )}
       </div>
 
       </div>
