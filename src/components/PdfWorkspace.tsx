@@ -6180,18 +6180,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
       {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan).
 
-          Stays mounted at all times — when in 3D mode we just toggle
-          `hidden` (display: none) on this same div so containerRef +
-          its wheel/pan event listeners stay valid. Adding a wrapper
-          here instead would break the flex-row sizing of the
-          thumbnails+view parent because a wrapper without min-w-0
-          expands to fit the PDF's intrinsic pixel width (3000+px at
-          high zoom) and pushes the right rail off-screen. Toggling
-          `hidden` on the same div sidesteps that entirely. */}
+          Stays mounted at all times AND in flow — when in 3D mode we
+          use `invisible` (visibility: hidden) rather than `hidden`
+          (display: none). Two reasons:
+          1. The element keeps participating in flex layout, which is
+             what gives the thumbnails+view parent its computed height.
+             Without an in-flow child, the parent collapses and the
+             absolute-positioned 3D overlay above has nothing to size
+             against — it would render as a too-small rectangle.
+          2. containerRef + its wheel/pan event listeners stay valid
+             across mode toggles (display: none would have the same
+             effect, but the layout collapse was the bigger issue). */}
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800 ${viewMode === '3d' ? 'hidden' : ''}`}
+        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800 ${viewMode === '3d' ? 'invisible' : ''}`}
         style={{
           cursor:
             calibrating ||
