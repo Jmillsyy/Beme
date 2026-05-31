@@ -578,28 +578,28 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   }
 
   return (
-    // r3f's <Canvas> creates an internal div with width:100% height:100%
-    // that auto-sizes to whichever parent contains it. Render directly
-    // with no wrapper div so the Canvas's internal container becomes
-    // the size of the 3D wrapper in PdfWorkspace.
-    //
-    // The previous wrapper used `absolute inset-0` which removed the
-    // Canvas from the parent's content flow — the flex parent then saw
-    // zero content height and didn't grow vertically, leaving the
-    // wrapper bounded shorter than its allotted flex space.
-    <Canvas
-      frameloop="demand"
-      dpr={[1, 1.5]}
-      camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
-      shadows={false}
-      gl={{ antialias: true, powerPreference: 'high-performance' }}
-      onCreated={({ gl }) => {
-        gl.setClearColor(new THREE.Color('#1a1d24'))
-      }}
-    >
-      <Suspense fallback={null}>
-        <Scene {...props} />
-      </Suspense>
-    </Canvas>
+    // Wrap in absolute inset-0 to pin Canvas to the relatively-positioned
+    // parent's exact bounds. Without this, the Canvas's internal
+    // ResizeObserver-driven sizing can disagree with a flex-1 parent's
+    // computed height (the parent has no in-flow content to size against
+    // when Canvas is its only child, leading to mismatches at the
+    // margins). Absolute positioning gives Canvas a definite-size box
+    // anchored to the parent's actual rendered bounds.
+    <div className="absolute inset-0">
+      <Canvas
+        frameloop="demand"
+        dpr={[1, 1.5]}
+        camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
+        shadows={false}
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        onCreated={({ gl }) => {
+          gl.setClearColor(new THREE.Color('#1a1d24'))
+        }}
+      >
+        <Suspense fallback={null}>
+          <Scene {...props} />
+        </Suspense>
+      </Canvas>
+    </div>
   )
 }

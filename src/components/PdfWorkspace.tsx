@@ -6167,7 +6167,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           (the only remaining flex child besides the optional thumbnail
           sidebar) gets all the available row width via flex-1. */}
       {viewMode === '3d' && (
-        <div className="flex-1 min-w-0 min-h-0 relative border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
+        // bg color matches the Canvas's clearColor (#1a1d24) so any
+        // sub-pixel mismatch between the wrapper and the WebGL canvas
+        // surface reads as dark not white. bg-ink-800 was previously
+        // used here, but in LIGHT MODE that variable resolves to
+        // #ffffff — which was the white the user kept seeing around
+        // the 3D viewport.
+        <div className="flex-1 min-w-0 min-h-0 relative border border-ink-600 rounded-xl overflow-hidden bg-[#1a1d24]">
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
