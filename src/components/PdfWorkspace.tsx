@@ -6474,68 +6474,70 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           canvas on smaller screens. */}
       <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
-        {/* Trade switcher — sits above the wall-types panel on the same
-            horizontal line as the drawing toolbar to its left. Active
-            trade dictates which panels render below, which makeup pool
-            walls reference, and which walls the canvas filters in.
+        {/* Area tabs — named subdivisions of the project ("Balcony",
+            "Staircase", "Level 1", etc.). Sits at the TOP of the right
+            rail so the rail reads top-down as "where (area) → what
+            (trade) → how (wall types)". The active area filters the
+            canvas + tally; new walls drawn while an area is active get
+            its id stamped on them. "All" tab (activeAreaId=null) shows
+            everything regardless. Only shown in block/brick workspace
+            views, not on the empty-state / upload-zone gate.
 
             Wrapped with pt-1 + mb-1.5 to mirror the canvas-side toolbar's
-            sticky wrapper (pt-1 pb-1 mb-1.5), so the chip group and the
-            "Draw wall / Ruler / etc." toolbar end up on the exact same
-            horizontal Y — same top edge, same height, same bottom edge. */}
+            sticky wrapper (pt-1 pb-1 mb-1.5) so the chip group lines up
+            on the same horizontal Y as the "Draw wall / Ruler / etc."
+            toolbar to its left. */}
         {(mode === 'block' || mode === 'brick') && (
           <div className="pt-1 pb-1 mb-1.5">
-            <TradeRail
-              trades={['block', 'brick']}
-              activeTrade={mode}
-              onChangeTrade={(t) => setMode(t)}
+            <AreaTabs
+              areas={areas}
+              activeAreaId={activeAreaId}
+              onSelect={setActiveAreaId}
+              onCreate={(name) => {
+                // Generate the id client-side — uses the same UUID helper
+                // as project ids so it's stable across saves and unique
+                // across users in the cloud.
+                const id =
+                  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                    ? crypto.randomUUID()
+                    : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+                const newArea: ProjectArea = { id, name }
+                setAreas((prev) => [...prev, newArea])
+                // Activate the freshly-created area so new walls flow into
+                // it. Most common workflow: "+ New area", type name, start
+                // drawing — without the activation step the user would
+                // have to click the tab manually.
+                setActiveAreaId(id)
+              }}
+              onRename={(areaId, newName) => {
+                setAreas((prev) =>
+                  prev.map((a) => (a.id === areaId ? { ...a, name: newName } : a))
+                )
+              }}
+              onDelete={(areaId) => {
+                setAreas((prev) => prev.filter((a) => a.id !== areaId))
+                // If the deleted area was active, fall back to All so the
+                // user doesn't land on a now-empty filter that hides
+                // everything. The deleted area's walls keep their old
+                // areaId — they become "orphaned" but still visible in
+                // All. Could prune them too but that's destructive on a
+                // simple delete click; user can re-create an area and
+                // bulk-assign in v2.
+                if (activeAreaId === areaId) setActiveAreaId(null)
+              }}
             />
           </div>
         )}
 
-        {/* Area tabs — named subdivisions of the project ("Balcony",
-            "Staircase", "Level 1", etc.). The active area filters the
-            canvas + tally; new walls drawn while an area is active get
-            its id stamped on them. "All" tab (activeAreaId=null) shows
-            everything regardless. Only shown in block/brick workspace
-            views, not on the empty-state / upload-zone gate. */}
+        {/* Trade switcher — sits right above the wall-types panel it
+            drives. Active trade dictates which panels render below,
+            which makeup pool walls reference, and which walls the
+            canvas filters in. */}
         {(mode === 'block' || mode === 'brick') && (
-          <AreaTabs
-            areas={areas}
-            activeAreaId={activeAreaId}
-            onSelect={setActiveAreaId}
-            onCreate={(name) => {
-              // Generate the id client-side — uses the same UUID helper
-              // as project ids so it's stable across saves and unique
-              // across users in the cloud.
-              const id =
-                typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-                  ? crypto.randomUUID()
-                  : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-              const newArea: ProjectArea = { id, name }
-              setAreas((prev) => [...prev, newArea])
-              // Activate the freshly-created area so new walls flow into
-              // it. Most common workflow: "+ New area", type name, start
-              // drawing — without the activation step the user would
-              // have to click the tab manually.
-              setActiveAreaId(id)
-            }}
-            onRename={(areaId, newName) => {
-              setAreas((prev) =>
-                prev.map((a) => (a.id === areaId ? { ...a, name: newName } : a))
-              )
-            }}
-            onDelete={(areaId) => {
-              setAreas((prev) => prev.filter((a) => a.id !== areaId))
-              // If the deleted area was active, fall back to All so the
-              // user doesn't land on a now-empty filter that hides
-              // everything. The deleted area's walls keep their old
-              // areaId — they become "orphaned" but still visible in
-              // All. Could prune them too but that's destructive on a
-              // simple delete click; user can re-create an area and
-              // bulk-assign in v2.
-              if (activeAreaId === areaId) setActiveAreaId(null)
-            }}
+          <TradeRail
+            trades={['block', 'brick']}
+            activeTrade={mode}
+            onChangeTrade={(t) => setMode(t)}
           />
         )}
 
