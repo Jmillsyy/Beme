@@ -921,6 +921,38 @@ function WallTypeEditorModal({
     }
   }, [previewMakeup, previewBands, courseOverrides, library])
 
+  // ---- Distinct colour map for the preview + legend ----
+  // Collects every block code that'll appear in the preview's cells +
+  // legend rows, then assigns each one a distinct slot from the curated
+  // BAND_COLOR_PALETTE. Guarantees no two codes share a colour in the
+  // same render, so the user never sees two near-identical greens.
+  //
+  // The standalone `bandColor(code)` is still used elsewhere (pier
+  // preview, makeup list) — those scopes don't share this map, but
+  // their code domains are smaller so collisions are less likely.
+  const previewColorMap = useMemo<Map<string, string>>(() => {
+    const codes: string[] = []
+    // Every band's block code (drives the wall preview's primary fill
+    // colour per course).
+    for (const band of previewBands) {
+      if (band.blockCode) codes.push(band.blockCode)
+    }
+    // Every per-course resolved body/corner/half — picks up courses
+    // where a series-range override swaps the body / corner / half for
+    // a different code than the band carries.
+    const totalCourses = previewBands.reduce(
+      (s, b) => s + Math.max(0, b.count),
+      0
+    )
+    for (let c = 1; c <= totalCourses; c++) {
+      const r = resolveForCourse(c)
+      if (r.body) codes.push(r.body)
+      if (r.corner) codes.push(r.corner)
+      if (r.half) codes.push(r.half)
+    }
+    return buildBlockColorMap(codes)
+  }, [previewBands, resolveForCourse])
+
   function handleSave() {
     const cleanedRanges = seriesRanges.filter((r) => {
       if (r.toCourse < r.fromCourse) return false
@@ -1221,6 +1253,7 @@ function WallTypeEditorModal({
                 library={library}
                 bondType={bondType}
                 resolveForCourse={resolveForCourse}
+                colorMap={previewColorMap}
               />
             </div>
             {/* Tiny legend so the user can map cell colour → block code at
@@ -1231,6 +1264,7 @@ function WallTypeEditorModal({
               bands={previewBands}
               resolveForCourse={resolveForCourse}
               bondType={bondType}
+              colorMap={previewColorMap}
             />
           </aside>
         </div>
@@ -1834,29 +1868,52 @@ function PatternTab(props: PatternTabProps) {
 
 /**
  * Stable colour from a block code. Same block code always renders the
- * same hue, but visually-similar codes (e.g. 20.45 vs 20.48) get
- * well-separated hues — the old *31 polynomial hash gave them adjacent
- * values because only the last char changes by 3.
+ * same hue across the preview, legend, course-pattern editor and pier
+ * preview, so users learn to recognise "the green one = 20.45" at a
+ * glance.
  *
- * Mixing strategy:
- *   - FNV-1a base (XOR the byte before multiplying) so a small change
- *     in any char propagates across all 32 bits.
- *   - Per-char xxhash-32 finalisation rounds (xorshift + multiply with
- *     two big primes) so even a 3-bit difference in the input avalanches
- *     into the high bits before the next char folds in.
- *   - Golden-angle (~137.508°) hue distribution so consecutive hashes
- *     land on opposite sides of the colour wheel — maximises perceptual
- *     separation when several codes happen to hash close together.
+ * Two strategies in sequence:
  *
- * For the typical SEQ block set (20.48 / 20.01 / 20.03 / 20.71 / 20.45
- * etc.) this gives 100°+ of hue separation between every commonly-paired
- * code. Some pairs (e.g. 20.18 / 20.20) can still land within 10–20°
- * — the legend under the preview disambiguates those.
+ *   1. A 16-slot curated PALETTE of HSL colours chosen for maximum
+ *      perceptual distance. The previous pure-hash bandColor produced
+ *      collisions like 20.45 vs 20.48PF both landing on similar
+ *      greens because their FNV+golden-angle hues fell within ~10°.
+ *      With 16 well-separated slots, two codes only collide when
+ *      they hash to the same slot (roughly 1-in-16) and even then
+ *      the next swatch over is visibly different.
+ *
+ *   2. A hash with an extra spread step that uses the FULL 32-bit
+ *      output before reducing to a palette index (rather than just
+ *      truncating). Each character of the code propagates through a
+ *      double-round of xorshift + multiply so a single-char change
+ *      lands on a different slot.
+ *
+ * The 16 hues span the wheel in ~22° increments (16 × 22.5 = 360),
+ * with paired alternating saturation/lightness so even adjacent
+ * slots (e.g. slot 4 and slot 5) read distinctly.
  */
+const BAND_COLOR_PALETTE: string[] = [
+  'hsl(  6, 62%, 62%)', // 1 red
+  'hsl( 28, 70%, 56%)', // 2 orange
+  'hsl( 48, 72%, 56%)', // 3 yellow
+  'hsl( 80, 50%, 50%)', // 4 olive
+  'hsl(110, 50%, 55%)', // 5 lime
+  'hsl(150, 50%, 50%)', // 6 green
+  'hsl(170, 55%, 45%)', // 7 teal-green
+  'hsl(190, 55%, 50%)', // 8 teal
+  'hsl(210, 60%, 60%)', // 9 sky
+  'hsl(230, 60%, 65%)', // 10 azure
+  'hsl(250, 55%, 65%)', // 11 indigo
+  'hsl(270, 50%, 60%)', // 12 purple
+  'hsl(290, 50%, 60%)', // 13 violet
+  'hsl(315, 60%, 62%)', // 14 magenta
+  'hsl(335, 60%, 60%)', // 15 pink
+  'hsl(355, 65%, 55%)', // 16 rose
+]
 function bandColor(code: BlockCode): string {
   let h = 0x811c9dc5 // FNV-1a offset basis
   for (let i = 0; i < code.length; i++) {
-    h += code.charCodeAt(i)
+    h ^= code.charCodeAt(i)
     h = Math.imul(h, 0x01000193)
     h ^= h >>> 15
     h = Math.imul(h, 0x85ebca6b)
@@ -1864,12 +1921,54 @@ function bandColor(code: BlockCode): string {
     h = Math.imul(h, 0xc2b2ae35)
     h ^= h >>> 16
   }
-  const hue = ((h >>> 0) * 137.508) % 360
-  // Soft, light tones matching the wall-makeup palette (Tailwind-500-ish
-  // mid-saturation, mid-light) rather than the saturated dark hues the
-  // first pass used. Reads as a soft elevation drawing instead of
-  // hi-vis stage markings.
-  return `hsl(${hue}, 55%, 62%)`
+  // Pull from the curated palette via the hash. Modulo on the full
+  // 32-bit value, not the lower byte, so the high-mixed bits drive
+  // the slot choice.
+  const idx = (h >>> 0) % BAND_COLOR_PALETTE.length
+  return BAND_COLOR_PALETTE[idx]
+}
+
+/**
+ * Build a Map<code, colour> for a SPECIFIC set of codes (e.g. every
+ * block referenced by the wall preview + its legend). Guarantees every
+ * code in the input gets a distinct palette slot — no two codes ever
+ * share a colour within the same render context — until the input
+ * exceeds the palette size, after which it wraps deterministically.
+ *
+ * Codes are sorted alphabetically before slot assignment so the
+ * mapping is stable across re-renders, and the assignment seeds at
+ * the standalone hash's preferred slot so single-code previews still
+ * land on the colour the global `bandColor()` would pick. From that
+ * seed it walks the palette in order, skipping slots already taken
+ * by earlier codes in the sort order.
+ */
+function buildBlockColorMap(codes: string[]): Map<string, string> {
+  const unique = Array.from(new Set(codes.filter(Boolean))).sort()
+  const taken = new Set<number>()
+  const map = new Map<string, string>()
+  for (const code of unique) {
+    // Seed at the hash's preferred slot so the colour stays close to
+    // what the single-code path would pick.
+    let seed = 0x811c9dc5
+    for (let i = 0; i < code.length; i++) {
+      seed ^= code.charCodeAt(i)
+      seed = Math.imul(seed, 0x01000193)
+      seed ^= seed >>> 15
+      seed = Math.imul(seed, 0x85ebca6b)
+      seed ^= seed >>> 13
+      seed = Math.imul(seed, 0xc2b2ae35)
+      seed ^= seed >>> 16
+    }
+    let idx = (seed >>> 0) % BAND_COLOR_PALETTE.length
+    let attempts = 0
+    while (taken.has(idx) && attempts < BAND_COLOR_PALETTE.length) {
+      idx = (idx + 1) % BAND_COLOR_PALETTE.length
+      attempts++
+    }
+    taken.add(idx)
+    map.set(code, BAND_COLOR_PALETTE[idx])
+  }
+  return map
 }
 
 /**
@@ -1882,6 +1981,7 @@ function PreviewLegend({
   bands,
   resolveForCourse,
   bondType,
+  colorMap,
 }: {
   bands: CourseBand[]
   resolveForCourse: (courseNumber: number) => {
@@ -1890,6 +1990,12 @@ function PreviewLegend({
     half: BlockCode
   }
   bondType: BondType
+  /** Distinct-colour-per-code map. When provided, codes get unique
+   *  palette slots so the legend can't show two near-identical hues.
+   *  Falls back to the standalone `bandColor()` if a code isn't in
+   *  the map (shouldn't happen for the wall preview which collects
+   *  the same codes the legend lists). */
+  colorMap?: Map<string, string>
 }) {
   // Walk every course in the preview, collect distinct body / corner /
   // half codes via the resolver. Role labels reflect the first time a
@@ -1931,7 +2037,7 @@ function PreviewLegend({
           >
             <span
               className="inline-block w-3.5 h-3.5 rounded-sm flex-shrink-0 ring-1 ring-black/40"
-              style={{ backgroundColor: bandColor(it.code) }}
+              style={{ backgroundColor: colorMap?.get(it.code) ?? bandColor(it.code) }}
               aria-hidden
             />
             <span className="text-ink-200 font-mono truncate">{it.code}</span>
@@ -1956,6 +2062,10 @@ interface CoursePatternPreviewProps {
     corner: BlockCode
     half: BlockCode
   }
+  /** Distinct-colour-per-code map shared with the legend so cells and
+   *  swatches match. Falls back to the standalone `bandColor()` if a
+   *  code is missing from the map. */
+  colorMap?: Map<string, string>
 }
 
 /**
@@ -1974,7 +2084,16 @@ function CoursePatternPreview({
   library,
   bondType,
   resolveForCourse,
+  colorMap,
 }: CoursePatternPreviewProps) {
+  // Per-render distinct-colour resolver. colorMap is built once by the
+  // parent across all codes that could appear in this preview (bands +
+  // per-course resolved body/corner/half), guaranteeing each unique code
+  // gets a different palette slot so two visually similar codes (e.g.
+  // 20.45 and 20.48PF) never collide in the legend or wall section.
+  // Falls back to the per-code hash if no map is supplied or a stray code
+  // sneaks in that wasn't in the input set.
+  const colorFor = (code: BlockCode) => colorMap?.get(code) ?? bandColor(code)
   const visible = bands.filter((b) => b.count > 0)
   // Expand the band list into a flat per-course block-code array so we
   // can lay out each course independently — needed because course N+1
@@ -2123,9 +2242,9 @@ function CoursePatternPreview({
           //     corner / half codes — so series-range overrides (e.g.
           //     30.01 corners on the base 5 courses) show up. [from the
           //     series-range / per-course-override resolver]
-          const bodyFill = bandColor(bodyCode)
-          const cornerFill = bandColor(cornerCode)
-          const halfFill = bandColor(halfCode)
+          const bodyFill = colorFor(bodyCode)
+          const cornerFill = colorFor(cornerCode)
+          const halfFill = colorFor(halfCode)
           const bodyW = bodyWidthOf(bodyCode)
           const cornerW = widthOf(cornerCode)
           const halfW = widthOf(halfCode)
