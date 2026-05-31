@@ -96,18 +96,30 @@ export default function AreaTabs({
       )}
 
       {creating ? (
-        <InlineNameInput
+        /* Create-mode input — taller + wider than the inline rename input
+           because it sits where the "+ New area" CTA was, not in place
+           of an existing pill. */
+        <input
           ref={newInputRef}
-          initial=""
+          type="text"
+          autoFocus
           placeholder="Area name…"
-          onCommit={handleCreate}
-          onCancel={() => setCreating(false)}
+          onBlur={(e) => handleCreate(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleCreate(e.currentTarget.value)
+            else if (e.key === 'Escape') setCreating(false)
+          }}
+          className="flex-shrink-0 ml-auto h-7 px-3 rounded-lg text-xs bg-ink-900 border border-beme-400 text-ink-50 focus:outline-none w-40"
         />
       ) : (
+        /* Primary action — promoted to brand orange + bumped size so it
+           reads as a real call-to-action rather than a tertiary
+           dashed-outline link. Matches the "+ Add" button styling
+           used in WallTypesPanel / BrickTypesPanel. */
         <button
           type="button"
           onClick={() => setCreating(true)}
-          className="flex-shrink-0 h-6 px-2 rounded-md text-xs text-ink-400 hover:text-beme-300 hover:bg-ink-700 transition-colors border border-dashed border-ink-600 hover:border-beme-400"
+          className="flex-shrink-0 ml-auto h-7 px-3 rounded-lg text-xs font-medium bg-beme-500 text-black hover:bg-beme-400 transition-colors"
           title="Create a new area (e.g. Balcony, Staircase, Level 1)"
         >
           + New area
