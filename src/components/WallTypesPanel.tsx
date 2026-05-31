@@ -2143,7 +2143,13 @@ function CoursePatternPreview({
             <div
               key={courseIdx}
               style={{ flexBasis: `${pct}%`, minHeight: 0 }}
-              className="flex w-full border-b border-black/40 last:border-b-0"
+              // Center the cells so a course whose total modular width is
+              // less than REPRESENTATIVE_WIDTH_MM (e.g. a row using 200mm
+              // corners while the widest course uses 400mm bodies) sits
+              // symmetrically in the wall section rather than dangling
+              // off to the right. Matches real masonry where a step-in
+              // happens at both ends, not just one.
+              className="flex w-full border-b border-black/40 last:border-b-0 justify-center"
               title={`Course ${courseNum}: ${bodyCode} body (${h}mm modular)${useHalves ? ` · ${halfCode} halves at ends` : ` · ${cornerCode} at ends`}`}
             >
               {cells.map((c, i) => (
