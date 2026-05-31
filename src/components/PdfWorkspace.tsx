@@ -16,9 +16,7 @@ import BrickTypesPanel from './BrickTypesPanel'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
-import BrickExportPanel from './BrickExportPanel'
-import BlockExportPanel from './BlockExportPanel'
-import CombinedExportCard from './CombinedExportCard'
+import UnifiedExportPanel from './UnifiedExportPanel'
 import {
   type ProjectArea,
   type ProjectStatus,
@@ -6627,10 +6625,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-        {/* Combined block + brick export — only renders for projects
-            that carry walls of both trades. Self-hidden when only one
-            trade is in play, so single-trade projects see no change. */}
-        <CombinedExportCard
+        {/* Unified export panel. Auto-routes to combined / block-only /
+            brick-only based on which trades have walls after the area
+            filter. Replaces the legacy BlockExportPanel / BrickExportPanel
+            / CombinedExportCard combo. */}
+        <UnifiedExportPanel
           projectDetails={projectDetails}
           referenceNumber={referenceNumber}
           supplyItemSelections={supplyItemSelections}
@@ -6641,10 +6640,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           allPiers={Object.values(piersByPage).flat()}
           blockMakeups={makeups}
           pierMakeups={pierMakeups}
-          blockInclusions={blockExportInclusions}
           brickMakeups={brickMakeups}
           brickSettings={brickSettings}
-          brickInclusions={exportInclusions}
+          areas={areas}
           rawPagesInfo={Object.keys(wallsByPage)
             .map((n) => parseInt(n, 10))
             .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)
@@ -6660,77 +6658,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               measurements: measurementsByPage[n] ?? [],
             }))}
         />
-
-        {/* Block export panel (block mode) */}
-        {mode === 'block' && (
-          <BlockExportPanel
-            projectDetails={projectDetails}
-            referenceNumber={referenceNumber}
-            supplyItemSelections={supplyItemSelections}
-            supplyItemRateOverrides={supplyItemRateOverrides}
-            inclusions={blockExportInclusions}
-            onChangeInclusions={setBlockExportInclusions}
-            walls={allWalls}
-            makeups={makeups}
-            openings={allOpenings}
-            piers={allPiers}
-            pierMakeups={pierMakeups}
-            pdfFile={pdfFile}
-            // One PageInfo per PDF page that actually has walls — the export
-            // builds a separate Wall Layout overview page for each, so
-            // multi-floor projects get one labelled diagram per floor instead
-            // of trying to cram every floor onto one overview. Page order
-            // follows numeric order so the export reads bottom-up the way the
-            // building is built.
-            pagesInfo={Object.keys(wallsByPage)
-              .map((n) => parseInt(n, 10))
-              .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)
-              .sort((a, b) => a - b)
-              .map((n) => ({
-                pageNumber: n,
-                pageWidthMm: pagesData[n]?.pageWidthMm,
-                pageHeightMm: pagesData[n]?.pageHeightMm,
-                pageScaleRatio: pagesData[n]?.pageScaleRatio,
-                walls: wallsByPage[n] ?? [],
-                openings: openingsByPage[n] ?? [],
-                piers: piersByPage[n] ?? [],
-                measurements: measurementsByPage[n] ?? [],
-              }))}
-          />
-        )}
-
-        {/* Brick export panel (brick mode) */}
-        {mode === 'brick' && (
-          <BrickExportPanel
-            projectDetails={projectDetails}
-            referenceNumber={referenceNumber}
-            supplyItemSelections={supplyItemSelections}
-            supplyItemRateOverrides={supplyItemRateOverrides}
-            inclusions={exportInclusions}
-            onChangeInclusions={setExportInclusions}
-            settings={brickSettings}
-            walls={allWalls}
-            openings={allOpenings}
-            makeups={brickMakeups}
-            pdfFile={pdfFile}
-            // Same pagesInfo shape as the block export so each Wall Layout
-            // section maps to one PDF page that has walls drawn on it. Page
-            // order follows the numeric sort so the export reads bottom-up.
-            pagesInfo={Object.keys(wallsByPage)
-              .map((n) => parseInt(n, 10))
-              .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)
-              .sort((a, b) => a - b)
-              .map((n) => ({
-                pageNumber: n,
-                pageWidthMm: pagesData[n]?.pageWidthMm,
-                pageHeightMm: pagesData[n]?.pageHeightMm,
-                pageScaleRatio: pagesData[n]?.pageScaleRatio,
-                walls: wallsByPage[n] ?? [],
-                openings: openingsByPage[n] ?? [],
-                measurements: measurementsByPage[n] ?? [],
-              }))}
-          />
-        )}
       </aside>
 
       </div>
