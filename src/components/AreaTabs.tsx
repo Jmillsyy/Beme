@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ProjectArea } from '../lib/projectStorage'
 
 /**
@@ -11,14 +11,17 @@ import type { ProjectArea } from '../lib/projectStorage'
  *     the project regardless of `areaId`. The active state when
  *     `activeAreaId` is null.
  *   - One tab per area in `areas`
- *   - **+ New area** at the end — opens an inline name input
+ *   - **+ New area** at the end — opens a small focused modal
  *
  * Pure presentation — owns no persistent state. The workspace controls
  * `activeAreaId` (transient UI state) and `areas` (saved on the
  * project). This component just renders + dispatches.
  *
- * Inline name editing: double-click an area tab to rename in place,
- * Enter to commit, Esc to cancel.
+ * Rename + delete affordances surface on hover of each area pill:
+ *   - ✎ → opens an "Edit area" modal pre-filled with the name
+ *   - × → confirmation prompt then delete
+ * Double-click an area pill is a power-user shortcut to the same
+ * rename modal.
  */
 export default function AreaTabs({
   areas,
@@ -39,14 +42,34 @@ export default function AreaTabs({
   /** Optional — when omitted, the per-tab × close button is hidden. */
   onDelete?: (areaId: string) => void
 }) {
+  // Modal targets:
+  //   creating = true → New area modal
+  //   editingId = areaId → Edit area modal pre-filled with that area's name
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const editingArea = editingId ? areas.find((a) => a.id === editingId) ?? null : null
 
   const handleCreate = (name: string) => {
     const trimmed = name.trim()
     if (trimmed) onCreate(trimmed)
     setCreating(false)
   }
+
+  const handleRename = (id: string, name: string) => {
+    const trimmed = name.trim()
+    const existing = areas.find((a) => a.id === id)
+    if (trimmed && existing && trimmed !== existing.name) {
+      onRename(id, trimmed)
+    }
+    setEditingId(null)
+  }
+
+  // Existing names excluding the area being renamed (so renaming an
+  // area to its own current name isn't flagged as a duplicate).
+  const existingNamesFor = (excludeId: string | null) =>
+    areas
+      .filter((a) => a.id !== excludeId)
+      .map((a) => a.name.toLowerCase())
 
   return (
     <div
@@ -64,37 +87,21 @@ export default function AreaTabs({
         onClick={() => onSelect(null)}
       />
 
-      {areas.map((area) =>
-        editingId === area.id ? (
-          <InlineNameInput
-            key={area.id}
-            initial={area.name}
-            onCommit={(name) => {
-              const t = name.trim()
-              if (t && t !== area.name) onRename(area.id, t)
-              setEditingId(null)
-            }}
-            onCancel={() => setEditingId(null)}
-          />
-        ) : (
-          <AreaButton
-            key={area.id}
-            label={area.name}
-            colorHex={area.colorHex}
-            active={activeAreaId === area.id}
-            onClick={() => onSelect(area.id)}
-            onDoubleClick={() => setEditingId(area.id)}
-            onDelete={onDelete ? () => onDelete(area.id) : undefined}
-          />
-        )
-      )}
+      {areas.map((area) => (
+        <AreaButton
+          key={area.id}
+          label={area.name}
+          colorHex={area.colorHex}
+          active={activeAreaId === area.id}
+          onClick={() => onSelect(area.id)}
+          onRename={() => setEditingId(area.id)}
+          onDelete={onDelete ? () => onDelete(area.id) : undefined}
+        />
+      ))}
 
-      {/* Primary action — promoted to brand orange + bumped size so it
-         reads as a real call-to-action rather than a tertiary
-         dashed-outline link. Matches the "+ Add" button styling
-         used in WallTypesPanel / BrickTypesPanel. Clicking pops a
-         focused modal instead of an inline input so the user isn't
-         crammed into a 40px-wide field next to existing pills. */}
+      {/* Primary action — brand orange CTA matching the + Add buttons
+         elsewhere. Pops a focused modal so the user isn't crammed into
+         a 40-px-wide field next to existing pills. */}
       <button
         type="button"
         onClick={() => setCreating(true)}
@@ -105,36 +112,55 @@ export default function AreaTabs({
       </button>
 
       {creating && (
-        <NewAreaModal
-          existingNames={areas.map((a) => a.name.toLowerCase())}
-          onCreate={handleCreate}
+        <AreaNameModal
+          mode="create"
+          initialName=""
+          existingNames={existingNamesFor(null)}
+          onSubmit={handleCreate}
           onCancel={() => setCreating(false)}
+        />
+      )}
+      {editingArea && (
+        <AreaNameModal
+          mode="edit"
+          initialName={editingArea.name}
+          existingNames={existingNamesFor(editingArea.id)}
+          onSubmit={(name) => handleRename(editingArea.id, name)}
+          onCancel={() => setEditingId(null)}
         />
       )}
     </div>
   )
 }
 
-// ---------- Internal: NewAreaModal ----------
+// ---------- Internal: AreaNameModal (create + edit) ----------
 
-interface NewAreaModalProps {
+interface AreaNameModalProps {
+  mode: 'create' | 'edit'
+  initialName: string
   existingNames: string[]
-  onCreate: (name: string) => void
+  onSubmit: (name: string) => void
   onCancel: () => void
 }
 
 /**
- * Small focused modal for creating a new area. Mirrors the
- * BrickTypeEditorModal pattern (fixed inset overlay, backdrop dismiss,
- * Esc to close) so creation flows across the workspace feel uniform.
+ * Small focused modal used for both creating and renaming an area.
+ * Mirrors the WallTypeEditorModal / BrickTypeEditorModal pattern
+ * (fixed inset overlay, backdrop dismiss, Esc to close) so naming
+ * flows across the workspace feel uniform.
  *
- * Auto-focuses the input. Enter submits, Esc cancels, backdrop click
- * cancels. Duplicate-name guard is case-insensitive — areas with the
- * same display name as an existing one are blocked because the tabs
- * would be indistinguishable in the row.
+ * Duplicate-name guard is case-insensitive. In edit mode the area's
+ * OWN current name is excluded from the duplicate check so saving an
+ * unchanged name isn't blocked.
  */
-function NewAreaModal({ existingNames, onCreate, onCancel }: NewAreaModalProps) {
-  const [name, setName] = useState('')
+function AreaNameModal({
+  mode,
+  initialName,
+  existingNames,
+  onSubmit,
+  onCancel,
+}: AreaNameModalProps) {
+  const [name, setName] = useState(initialName)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -150,12 +176,20 @@ function NewAreaModal({ existingNames, onCreate, onCancel }: NewAreaModalProps) 
   const trimmed = name.trim()
   const isDuplicate =
     trimmed.length > 0 && existingNames.includes(trimmed.toLowerCase())
-  const canCreate = trimmed.length > 0 && !isDuplicate
+  const isUnchanged = mode === 'edit' && trimmed === initialName.trim()
+  const canSubmit = trimmed.length > 0 && !isDuplicate && !isUnchanged
 
   function handleSubmit() {
-    if (!canCreate) return
-    onCreate(trimmed)
+    if (!canSubmit) return
+    onSubmit(trimmed)
   }
+
+  const title = mode === 'create' ? 'New area' : 'Edit area'
+  const explainer =
+    mode === 'create'
+      ? 'Group walls into named buckets — Balcony, Staircase, Level 1, Front facade. Walls drawn while an area is active get stamped with it.'
+      : 'Rename this area. Walls assigned to it stay assigned — only the label changes.'
+  const submitLabel = mode === 'create' ? 'Create area' : 'Save changes'
 
   return (
     <div
@@ -163,7 +197,7 @@ function NewAreaModal({ existingNames, onCreate, onCancel }: NewAreaModalProps) 
       onClick={onCancel}
       role="dialog"
       aria-modal="true"
-      aria-label="Create new area"
+      aria-label={title}
     >
       <div
         className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden"
@@ -171,14 +205,8 @@ function NewAreaModal({ existingNames, onCreate, onCancel }: NewAreaModalProps) 
       >
         <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink-100">
-              New area
-            </h2>
-            <p className="text-[11px] text-ink-500 mt-0.5">
-              Group walls into named buckets — Balcony, Staircase, Level 1,
-              Front facade. Walls drawn while an area is active get
-              stamped with it.
-            </p>
+            <h2 className="text-base font-semibold text-ink-100">{title}</h2>
+            <p className="text-[11px] text-ink-500 mt-0.5">{explainer}</p>
           </div>
           <button
             onClick={onCancel}
@@ -224,10 +252,10 @@ function NewAreaModal({ existingNames, onCreate, onCancel }: NewAreaModalProps) 
           </button>
           <button
             onClick={handleSubmit}
-            disabled={!canCreate}
+            disabled={!canSubmit}
             className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Create area
+            {submitLabel}
           </button>
         </footer>
       </div>
@@ -237,35 +265,39 @@ function NewAreaModal({ existingNames, onCreate, onCancel }: NewAreaModalProps) 
 
 /**
  * Single area chip. Active state mirrors the trade-rail chip styling so
- * the two control bars sit visually together. A small × button appears
- * when hovered (when delete handler provided) for non-All tabs.
+ * the two control bars sit visually together. On hover (when handlers
+ * provided), a ✎ rename button and a × delete button surface on the
+ * right of the pill. Double-click on the pill body opens the rename
+ * modal as a quick shortcut.
+ *
+ * The "All" tab is rendered without onRename / onDelete so its hover
+ * surface stays bare (no rename — it has no id; no delete — it's
+ * permanent).
  */
 function AreaButton({
   label,
   colorHex,
   active,
   onClick,
-  onDoubleClick,
+  onRename,
   onDelete,
 }: {
   label: string
   colorHex?: string
   active: boolean
   onClick: () => void
-  onDoubleClick?: () => void
+  onRename?: () => void
   onDelete?: () => void
 }) {
   return (
-    <span
-      className="relative inline-flex items-center group flex-shrink-0"
-    >
+    <span className="relative inline-flex items-center group flex-shrink-0">
       <button
         type="button"
         role="tab"
         aria-selected={active}
         onClick={onClick}
-        onDoubleClick={onDoubleClick}
-        title={onDoubleClick ? `${label} · double-click to rename` : label}
+        onDoubleClick={onRename}
+        title={onRename ? `${label} · double-click to rename` : label}
         className={`flex items-center gap-1.5 h-6 px-2 rounded-md text-xs font-medium transition-colors ${
           active
             ? 'bg-beme-500/20 text-beme-300 ring-1 ring-beme-400'
@@ -281,6 +313,20 @@ function AreaButton({
         )}
         <span className="truncate max-w-[120px]">{label}</span>
       </button>
+      {onRename && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRename()
+          }}
+          title={`Rename ${label}`}
+          aria-label={`Rename area ${label}`}
+          className="ml-0.5 w-4 h-4 rounded text-ink-500 hover:bg-ink-700 hover:text-beme-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
+        >
+          ✎
+        </button>
+      )}
       {onDelete && (
         <button
           type="button"
@@ -300,37 +346,3 @@ function AreaButton({
     </span>
   )
 }
-
-/**
- * Inline-rename / inline-create input. Enter commits, Esc cancels,
- * blur commits. Re-uses the chip-sized footprint so the row height
- * doesn't jump when entering edit mode. forwardRef so the parent can
- * focus the create input the moment it appears.
- */
-const InlineNameInput = forwardRef<
-  HTMLInputElement,
-  {
-    initial: string
-    placeholder?: string
-    onCommit: (name: string) => void
-    onCancel: () => void
-  }
->(function InlineNameInput({ initial, placeholder, onCommit, onCancel }, ref) {
-  const [value, setValue] = useState(initial)
-  return (
-    <input
-      ref={ref}
-      type="text"
-      value={value}
-      autoFocus
-      placeholder={placeholder}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={() => onCommit(value)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') onCommit(value)
-        else if (e.key === 'Escape') onCancel()
-      }}
-      className="h-6 px-2 rounded-md text-xs bg-ink-900 border border-beme-400 text-ink-50 focus:outline-none w-32 flex-shrink-0"
-    />
-  )
-})
