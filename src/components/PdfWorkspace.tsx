@@ -6107,15 +6107,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
       {/* Page thumbnails + main PDF view — sits at the top of the canvas
           area's flex column and flex-fills the remaining height. Thumbnails
-          on the left, pan container on the right, each a clean column.
-
-          `relative` here so the 3D viewport (when active) can absolute-
-          position to fill this exact area without depending on the flex
-          chain. Flex cross-axis stretching can fail to propagate height
-          through nested flex containers when one of the children has no
-          intrinsic content height (the r3f Canvas) — absolute inset:0
-          on a relative parent bypasses that entirely. */}
-      <div className="flex gap-3 flex-1 min-h-0 relative">
+          on the left, pan container on the right, each a clean column. */}
+      <div className="flex gap-3 flex-1 min-h-0">
         {/* Thumbnail sidebar (multi-page only). Extracted into a memoised
             component so zoom-driven re-renders of PdfWorkspace don't ripple
             through the per-page <Page> rendering — without this, each zoom
@@ -6144,20 +6137,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-      {/* 3D viewport — overlays the (hidden) 2D container when the user
-          flips to 3D mode. Absolute inset:0 on the relative thumbnails+
-          view wrapper above means it fills the same area the 2D content
-          normally occupies (including the would-be thumbnail sidebar
-          on multi-page projects — acceptable for spike scope; the user
-          flips back to 2D to navigate pages).
+      {/* 3D viewport — renders as a flex-1 sibling of the 2D container
+          (replacing it when active). min-w-0 + min-h-0 critical: without
+          them the wrapper would expand to fit any intrinsic content
+          size, pushing the right rail off the right edge. flex-1 +
+          relative gives it a definite-size positioned parent for the
+          Canvas inside to anchor against.
 
           Lazy-loaded so users who never open 3D pay zero bundle cost.
-          The 2D containerRef below stays MOUNTED at all times (just
-          CSS-hidden in 3D mode) so its wheel + pan event listeners
-          stay valid — without that, wheel events fell through to
-          native page scroll after toggling back to 2D. */}
+          The 2D containerRef below switches to display:none in 3D
+          mode — that removes it from layout entirely so the 3D wrapper
+          (the only remaining flex child besides the optional thumbnail
+          sidebar) gets all the available row width via flex-1. */}
       {viewMode === '3d' && (
-        <div className="absolute inset-0 z-10 border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
+        <div className="flex-1 min-w-0 min-h-0 relative border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
@@ -6180,21 +6173,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
       {/* PDF + overlay (scrollable container with wheel-zoom and click-drag pan).
 
-          Stays mounted at all times AND in flow — when in 3D mode we
-          use `invisible` (visibility: hidden) rather than `hidden`
-          (display: none). Two reasons:
-          1. The element keeps participating in flex layout, which is
-             what gives the thumbnails+view parent its computed height.
-             Without an in-flow child, the parent collapses and the
-             absolute-positioned 3D overlay above has nothing to size
-             against — it would render as a too-small rectangle.
-          2. containerRef + its wheel/pan event listeners stay valid
-             across mode toggles (display: none would have the same
-             effect, but the layout collapse was the bigger issue). */}
+          Stays mounted at all times — when in 3D mode it gets
+          `display: none` (the 'hidden' class). The 3D wrapper is now
+          a true flex sibling, so removing this from layout doesn't
+          break the parent's sizing (the 3D wrapper takes over the
+          flex-1 allocation instead). containerRef + its wheel/pan
+          listeners stay valid across mode toggles because the React
+          node is the same. */}
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800 ${viewMode === '3d' ? 'invisible' : ''}`}
+        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800 ${viewMode === '3d' ? 'hidden' : ''}`}
         style={{
           cursor:
             calibrating ||
