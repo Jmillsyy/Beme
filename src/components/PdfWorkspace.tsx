@@ -6107,8 +6107,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
       {/* Page thumbnails + main PDF view — sits at the top of the canvas
           area's flex column and flex-fills the remaining height. Thumbnails
-          on the left, pan container on the right, each a clean column. */}
-      <div className="flex gap-3 flex-1 min-h-0">
+          on the left, pan container on the right, each a clean column.
+
+          `relative` here so the 3D viewport (when active) can absolute-
+          position to fill this exact area without depending on the flex
+          chain. Flex cross-axis stretching can fail to propagate height
+          through nested flex containers when one of the children has no
+          intrinsic content height (the r3f Canvas) — absolute inset:0
+          on a relative parent bypasses that entirely. */}
+      <div className="flex gap-3 flex-1 min-h-0 relative">
         {/* Thumbnail sidebar (multi-page only). Extracted into a memoised
             component so zoom-driven re-renders of PdfWorkspace don't ripple
             through the per-page <Page> rendering — without this, each zoom
@@ -6137,14 +6144,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-      {/* 3D viewport — lazy-mounted alongside the 2D container when the
-          user flips to 3D mode. The 2D container below stays MOUNTED at
-          all times (just CSS-hidden in 3D mode) so containerRef and its
-          wheel/pan event listeners stay valid — without this, the wheel
-          listener was bound to a now-dead DOM node after toggling back
-          to 2D, and wheel events fell through to native page scroll. */}
+      {/* 3D viewport — overlays the (hidden) 2D container when the user
+          flips to 3D mode. Absolute inset:0 on the relative thumbnails+
+          view wrapper above means it fills the same area the 2D content
+          normally occupies (including the would-be thumbnail sidebar
+          on multi-page projects — acceptable for spike scope; the user
+          flips back to 2D to navigate pages).
+
+          Lazy-loaded so users who never open 3D pay zero bundle cost.
+          The 2D containerRef below stays MOUNTED at all times (just
+          CSS-hidden in 3D mode) so its wheel + pan event listeners
+          stay valid — without that, wheel events fell through to
+          native page scroll after toggling back to 2D. */}
       {viewMode === '3d' && (
-        <div className="flex-1 min-h-0 relative border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
+        <div className="absolute inset-0 z-10 border border-ink-600 rounded-xl overflow-hidden bg-ink-800">
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
