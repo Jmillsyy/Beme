@@ -4613,7 +4613,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // sticks to the top of the viewport so it stays visible while the
     // Beme header + ProjectBar scroll OFF the top when the user scrolls
     // down. No flex chain needed at this level.
-    <div className="w-full">
+    //
+    // bg-ink-900 here so the page-bg white never bleeds through ANY gap
+    // around the sticky workspace area (whose 113.6vh height can differ
+    // from the viewport at various scroll positions). Also belt-and-
+    // braces in case the canvas-area or 3D wrapper ever has unfilled
+    // space — the parent dark bg masks it instead of showing white.
+    <div className="w-full bg-ink-900">
       {pagePickerModal}
       {/* Slim project bar — sits in normal flow above the workspace so it
           scrolls away on page-scroll-down, freeing more visual height for
