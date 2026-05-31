@@ -6587,7 +6587,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             sticky wrapper (pt-1 pb-1 mb-1.5) so the chip group lines up
             on the same horizontal Y as the "Draw wall / Ruler / etc."
             toolbar to its left. */}
-        {(mode === 'block' || mode === 'brick') && (
+        {(mode === 'block' || mode === 'brick') && viewMode !== '3d' && (
           <div className="pt-1 pb-1 mb-1.5">
             <AreaTabs
               areas={areas}
