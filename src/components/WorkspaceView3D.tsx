@@ -708,6 +708,35 @@ function segmentsForStraightWall(
     })
   }
 
+  // ── Phase 4.5: merge narrow adjacent body cells ─────────────────
+  // After all stamps, a narrow pier (e.g. 400mm wall between two
+  // openings) may end up with two clipped body cells side-by-side
+  // where the original body grid had a boundary in the middle (e.g.
+  // [200, 400] + [400, 600]). In real masonry the bricklayer would
+  // use ONE block (or use proper half blocks) rather than two thin
+  // cuts. Merge any two adjacent body cells where BOTH are narrow
+  // (< 0.9 × bodyW) into a single cell — gives a cleaner pier look
+  // for narrow sections without affecting wide-wall layouts where
+  // every body block is its full width.
+  for (const entry of grid) {
+    const { cells, bodyW } = entry
+    cells.sort((a, b) => a.s0 - b.s0)
+    for (let i = cells.length - 2; i >= 0; i--) {
+      const cur = cells[i]
+      const next = cells[i + 1]
+      if (
+        cur.role === 'BODY' &&
+        next.role === 'BODY' &&
+        Math.abs(cur.s1 - next.s0) < 0.001 &&
+        cur.s1 - cur.s0 < bodyW * 0.9 &&
+        next.s1 - next.s0 < bodyW * 0.9
+      ) {
+        cur.s1 = next.s1
+        cells.splice(i + 1, 1)
+      }
+    }
+  }
+
   // ── Phase 5: emit cells ──────────────────────────────────────────
   for (const { course, cells } of grid) {
     for (const cell of cells) {
