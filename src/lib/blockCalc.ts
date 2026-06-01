@@ -1171,6 +1171,15 @@ export interface PositionedBlock {
   widthMm: number
   /** 0-based course index this block belongs to. */
   courseIdx: number
+  /** When true, the block is included for visual rendering but
+   *  EXCLUDED from tally aggregation. Used for cube fillers at
+   *  shared corners on non-owning courses — the corner block is
+   *  physically owned (and counted) by the OTHER wall this course,
+   *  but visually the cube exterior on this wall would otherwise
+   *  read as empty space because the perpendicular block's faces
+   *  don't lie on this wall's exterior plane. The filler fills that
+   *  visual hole without inflating any tally. */
+  renderOnly?: boolean
 }
 
 export interface CourseLayoutEntry {
@@ -1527,6 +1536,22 @@ export function planWallLayout(
       s += startEndWidth + MORTAR_MM
     } else {
       // Skipped — body grid starts at the cube boundary, not cornerW.
+      // We still emit a render-only "cube filler" at s∈[0, cubeDepth]
+      // so this wall's exterior shows continuous corner colour across
+      // the cube area on every course. The perpendicular wall's
+      // owning corner block fills the cube physically but its faces
+      // don't lie on THIS wall's exterior plane, so without the
+      // filler the camera sees a recessed gap. renderOnly=true keeps
+      // this out of the tally — the perpendicular wall's block is
+      // already counted.
+      layout.blocks.push({
+        code: startBlock,
+        role: 'corner',
+        s0Mm: 0,
+        widthMm: startCubeDepth,
+        courseIdx: i,
+        renderOnly: true,
+      })
       s += startCubeDepth + MORTAR_MM
     }
 
@@ -1617,11 +1642,18 @@ export function planWallLayout(
         courseIdx: i,
       })
     } else {
-      // Non-owning end: no corner block emitted. The bodies already
-      // emitted above can run up to (length - cubeDepth). If the
-      // last body falls short of the cube boundary, we leave the
-      // small remaining gap — it absorbs into the mortar bed.
-      void endCubeDepth
+      // Non-owning end: emit a render-only cube filler at
+      // s∈[length - cubeDepth, length] so the cube exterior is
+      // visually continuous on every course (same reasoning as the
+      // start cube filler above).
+      layout.blocks.push({
+        code: endBlock,
+        role: 'corner',
+        s0Mm: lengthMm - endCubeDepth,
+        widthMm: endCubeDepth,
+        courseIdx: i,
+        renderOnly: true,
+      })
     }
 
     // Paired-tile (cleanouts): the tally adds ceil(bodyCount /
@@ -1676,6 +1708,7 @@ export function planWallLayout(
 export function tallyFromLayout(layout: WallLayout): BlockTally {
   const tally: BlockTally = {}
   for (const b of layout.blocks) {
+    if (b.renderOnly) continue
     addToTally(tally, b.code, 1)
   }
   return tally
