@@ -43,7 +43,7 @@
  */
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
+import { PointerLockControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
@@ -1009,6 +1009,38 @@ function segmentsForCurvedWall(
   return boxes
 }
 
+// ---------- Camera helpers ----------
+
+/**
+ * Aims the camera at the given world point ONCE on mount. Used so the
+ * FPS camera starts looking at the building (its `initialCamera`
+ * position is offset from the building, and without an explicit
+ * lookAt the camera would face world origin instead).
+ *
+ * Only runs on mount — we deliberately don't depend on the target
+ * coords because re-aiming as walls change would snap the camera
+ * direction out from under the user mid-flythrough.
+ */
+function InitialCameraAim({
+  targetX,
+  targetZ,
+}: {
+  targetX: number
+  targetZ: number
+}) {
+  const camera = useThree((s) => s.camera)
+  const invalidate = useThree((s) => s.invalidate)
+  const aimedRef = useRef(false)
+  useEffect(() => {
+    if (aimedRef.current) return
+    aimedRef.current = true
+    camera.lookAt(targetX, 1, targetZ)
+    invalidate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return null
+}
+
 // ---------- Keyboard movement ----------
 
 /**
@@ -1286,12 +1318,19 @@ function Scene({
         </mesh>
       ))}
 
-      <OrbitControls
-        target={[segmentBounds.centerX, 1, segmentBounds.centerZ]}
-        enableDamping
-        dampingFactor={0.1}
-        makeDefault
+      {/* Pointer-lock FPS controls. Click in the viewport to engage
+          (browser locks the cursor and feeds raw mouse deltas to the
+          camera as yaw/pitch); ESC releases. WASD/QE keyboard
+          movement keeps working whether locked or not.
+
+          We render PointerLockControls AFTER the initial camera
+          lookAt below has run on mount, so the user enters lock with
+          the camera already aimed at the building center. */}
+      <InitialCameraAim
+        targetX={segmentBounds.centerX}
+        targetZ={segmentBounds.centerZ}
       />
+      <PointerLockControls makeDefault />
       <KeyboardMover />
     </>
   )
@@ -1409,7 +1448,7 @@ function SizedCanvasShell({
           Canvas. Faded text, non-interactive (pointer-events-none) so
           it doesn't block orbit drags. */}
       <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
-        <div>drag = orbit · scroll = zoom · right-drag = pan</div>
+        <div>click to look around · ESC to release</div>
         <div>W/A/S/D = move · Q/E = down/up · shift = faster</div>
       </div>
     </div>
