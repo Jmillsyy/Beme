@@ -1630,6 +1630,37 @@ export function planWallLayout(
       endNeighborId !== undefined
         ? (thicknessByWallId?.[endNeighborId] ?? wallThickness)
         : wallThickness
+
+    // Gap-filler: fitCourseLength computed bodyCount for the
+    // owning-both case (body region = lengthMm - 2·cornerW). When a
+    // corner end is non-owning, the body region is actually wider
+    // by (cornerW - cubeDepth) ≈ 100-200mm because cube filler
+    // takes only cubeDepth instead of cornerW. The same bodyCount
+    // underfills the wider region, leaving a visible gap between
+    // the last body block and the cube filler.
+    //
+    // Insert a render-only body block in that gap so the visual
+    // reads as a continuous body row, with the cube filler at the
+    // wall end. renderOnly keeps the tally count unchanged — the
+    // calc engine already decided how many bodies this course gets,
+    // and the gap was a side-effect of the ownership-based
+    // ownership math.
+    const endRegionStart = ownsEndCorner
+      ? lengthMm - endEndWidth
+      : lengthMm - endCubeDepth
+    const fillerSlotEnd = endRegionStart - MORTAR_MM
+    const fillerWidth = fillerSlotEnd - s
+    if (fillerWidth > 30) {
+      layout.blocks.push({
+        code: courseSpec.bodyBlock,
+        role: 'body',
+        s0Mm: s,
+        widthMm: fillerWidth,
+        courseIdx: i,
+        renderOnly: true,
+      })
+    }
+
     if (ownsEndCorner) {
       layout.blocks.push({
         code: endBlock,
