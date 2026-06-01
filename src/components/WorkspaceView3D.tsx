@@ -42,8 +42,8 @@
  *   - One directional light, no shadows. Fine for a mass model.
  */
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { PointerLockControls } from '@react-three/drei'
+import { Canvas } from '@react-three/fiber'
+import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
@@ -1009,159 +1009,6 @@ function segmentsForCurvedWall(
   return boxes
 }
 
-// ---------- Camera helpers ----------
-
-/**
- * Aims the camera at the given world point ONCE on mount. Used so the
- * FPS camera starts looking at the building (its `initialCamera`
- * position is offset from the building, and without an explicit
- * lookAt the camera would face world origin instead).
- *
- * Only runs on mount — we deliberately don't depend on the target
- * coords because re-aiming as walls change would snap the camera
- * direction out from under the user mid-flythrough.
- */
-function InitialCameraAim({
-  targetX,
-  targetZ,
-}: {
-  targetX: number
-  targetZ: number
-}) {
-  const camera = useThree((s) => s.camera)
-  const invalidate = useThree((s) => s.invalidate)
-  const aimedRef = useRef(false)
-  useEffect(() => {
-    if (aimedRef.current) return
-    aimedRef.current = true
-    camera.lookAt(targetX, 1, targetZ)
-    invalidate()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-  return null
-}
-
-// ---------- Keyboard movement ----------
-
-/**
- * WASD + QE camera-flythrough. Translates BOTH the camera position and
- * the OrbitControls target by the same vector each frame, so the orbit
- * pivot moves with the camera (mouse-drag still works after WASD — you
- * orbit around your new location, not the original target).
- *
- * Controls:
- *   W / S — forward / back along camera look direction (projected onto
- *           the horizontal plane so you don't fly into the ground when
- *           the camera is angled down).
- *   A / D — strafe left / right.
- *   Q / E — descend / ascend (world-Y).
- *   Shift — 2.4× speed multiplier.
- *
- * Input is read from window-level listeners but the handler bails out
- * if the focused element is an INPUT / TEXTAREA / contenteditable, so
- * typing "wall" in a side-panel input doesn't fly the camera around.
- *
- * Because the Canvas runs with frameloop="demand", we have to manually
- * invalidate() to keep frames rendering while any key is held — the
- * useFrame callback itself doesn't tick unless someone requests a
- * frame. We invalidate at the end of every move, and once on keydown,
- * giving a single continuous render loop only while keys are pressed.
- */
-function KeyboardMover() {
-  const camera = useThree((s) => s.camera)
-  const controls = useThree((s) => s.controls) as
-    | (THREE.EventDispatcher & { target?: THREE.Vector3; update?: () => void })
-    | null
-  const invalidate = useThree((s) => s.invalidate)
-  const keys = useRef<Set<string>>(new Set())
-
-  useEffect(() => {
-    const isTypingTarget = (el: Element | null): boolean => {
-      if (!el) return false
-      const tag = el.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
-      if ((el as HTMLElement).isContentEditable) return true
-      return false
-    }
-    const tracked = new Set(['w', 'a', 's', 'd', 'q', 'e', 'shift'])
-    const down = (e: KeyboardEvent) => {
-      if (isTypingTarget(document.activeElement)) return
-      const k = e.key.toLowerCase()
-      if (!tracked.has(k)) return
-      keys.current.add(k)
-      // Stop the page from scrolling on WASD when nothing else captures the key.
-      if (k !== 'shift') e.preventDefault()
-      invalidate()
-    }
-    const up = (e: KeyboardEvent) => {
-      keys.current.delete(e.key.toLowerCase())
-    }
-    const blur = () => {
-      // Release everything if the window loses focus — otherwise keys
-      // can "stick" down (no keyup fires while the window is in the
-      // background).
-      keys.current.clear()
-    }
-    window.addEventListener('keydown', down)
-    window.addEventListener('keyup', up)
-    window.addEventListener('blur', blur)
-    return () => {
-      window.removeEventListener('keydown', down)
-      window.removeEventListener('keyup', up)
-      window.removeEventListener('blur', blur)
-    }
-  }, [invalidate])
-
-  useFrame((_, delta) => {
-    if (keys.current.size === 0) return
-    // Base speed 5 m/s, Shift bumps to 12 m/s. Tuned so a typical
-    // 10-15m wide plan crosses in 2-3 seconds at base speed.
-    const speed = (keys.current.has('shift') ? 12 : 5) * delta
-
-    // Forward = camera look direction projected onto horizontal plane.
-    // We don't want W to fly into the ground when the camera is angled
-    // down (which it usually is when orbiting a building from above).
-    const forward = new THREE.Vector3()
-    camera.getWorldDirection(forward)
-    forward.y = 0
-    if (forward.lengthSq() < 1e-6) {
-      // Camera looking straight up/down — pick an arbitrary forward.
-      forward.set(0, 0, -1)
-    }
-    forward.normalize()
-
-    // Right = forward × world-up. (Cross order matters: forward × up
-    // gives the camera's right vector in a right-handed coordinate
-    // system, which Three.js uses.)
-    const right = new THREE.Vector3()
-    right.crossVectors(forward, camera.up).normalize()
-
-    const move = new THREE.Vector3()
-    if (keys.current.has('w')) move.addScaledVector(forward, speed)
-    if (keys.current.has('s')) move.addScaledVector(forward, -speed)
-    if (keys.current.has('d')) move.addScaledVector(right, speed)
-    if (keys.current.has('a')) move.addScaledVector(right, -speed)
-    if (keys.current.has('e')) move.y += speed
-    if (keys.current.has('q')) move.y -= speed
-
-    if (move.lengthSq() === 0) return
-
-    camera.position.add(move)
-    // Move the OrbitControls target by the SAME vector so the orbit
-    // pivot tracks the camera. Without this, the camera would slide
-    // off but mouse-drag would still try to orbit around the original
-    // target, snapping the view back.
-    if (controls && controls.target) {
-      controls.target.add(move)
-      controls.update?.()
-    }
-    // Keep the demand-driven loop spinning for as long as keys are held.
-    invalidate()
-  })
-
-  return null
-}
-
 // ---------- Scene ----------
 
 function Scene({
@@ -1318,20 +1165,21 @@ function Scene({
         </mesh>
       ))}
 
-      {/* Pointer-lock FPS controls. Click in the viewport to engage
-          (browser locks the cursor and feeds raw mouse deltas to the
-          camera as yaw/pitch); ESC releases. WASD/QE keyboard
-          movement keeps working whether locked or not.
-
-          We render PointerLockControls AFTER the initial camera
-          lookAt below has run on mount, so the user enters lock with
-          the camera already aimed at the building center. */}
-      <InitialCameraAim
-        targetX={segmentBounds.centerX}
-        targetZ={segmentBounds.centerZ}
+      {/* OrbitControls — mouse only:
+           - left drag: orbit around the current target
+           - right drag: pan (translates both camera and target)
+           - scroll: zoom, anchored at the cursor (zoomToCursor=true)
+             so you zoom INTO whatever you're hovering on, like a map
+          The pan-to-cursor behaviour replaces the WASD movement: to
+          travel to a new spot, scroll-zoom toward that spot then
+          right-drag to recenter the orbit target. */}
+      <OrbitControls
+        target={[segmentBounds.centerX, 1, segmentBounds.centerZ]}
+        enableDamping
+        dampingFactor={0.1}
+        zoomToCursor
+        makeDefault
       />
-      <PointerLockControls makeDefault />
-      <KeyboardMover />
     </>
   )
 }
@@ -1448,8 +1296,7 @@ function SizedCanvasShell({
           Canvas. Faded text, non-interactive (pointer-events-none) so
           it doesn't block orbit drags. */}
       <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
-        <div>click to look around · ESC to release</div>
-        <div>W/A/S/D = move · Q/E = down/up · shift = faster</div>
+        drag = orbit · right-drag = pan · scroll = zoom to cursor
       </div>
     </div>
   )
