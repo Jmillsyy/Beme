@@ -195,9 +195,18 @@ function resolveWallCourses(
   const courses: ResolvedCourse[] = []
   let y = 0
   let courseNum = 1
+  // Standard course module (block face + mortar) is 200 mm. Any band
+  // whose modular height differs is a HEIGHT-MAKEUP band (20.71 at
+  // 100mm modular, 20.140 at 150mm) — those bands carry their own
+  // distinct block code which we MUST preserve in bodyCode so the
+  // 3D renders them with their own colour. The series-range body
+  // override only applies to standard body courses.
+  const STD_COURSE_MODULE_MM = 200
   for (const band of bands) {
     if (band.count <= 0) continue
-    const courseHeightM = moduleHeightForBand(band.blockCode, library) / 1000
+    const bandModuleMm = moduleHeightForBand(band.blockCode, library)
+    const courseHeightM = bandModuleMm / 1000
+    const isHeightMakeupBand = bandModuleMm !== STD_COURSE_MODULE_MM
     for (let i = 0; i < band.count; i++) {
       const resolved = resolveCourseBlocks(scopedMakeup, courseNum)
       // Per-course body code resolution order:
@@ -207,14 +216,19 @@ function resolveWallCourses(
       //   - Last course (top course): topCourseBlockCode from makeup.
       //     Typically 20.48 H block or 20.20 bond beam when a slab sits
       //     above.
-      //   - Middle courses: series-range body overlay, falling through
-      //     to band code (which is the makeup's bodyBlockCode by
-      //     default).
+      //   - Height-makeup courses: use band.blockCode (20.71 / 20.140)
+      //     directly so they render with their own height-makeup
+      //     colour and aren't overridden by the generic body code.
+      //   - Middle body courses: series-range body overlay, falling
+      //     through to band code (which is the makeup's bodyBlockCode
+      //     by default).
       let bodyCode: BlockCode
       if (courseNum === 1) {
         bodyCode = resolved.baseCourseBlockCode || resolved.bodyBlockCode || band.blockCode
       } else if (courseNum === totalCourses) {
         bodyCode = scopedMakeup.topCourseBlockCode || resolved.bodyBlockCode || band.blockCode
+      } else if (isHeightMakeupBand) {
+        bodyCode = band.blockCode
       } else {
         bodyCode = resolved.bodyBlockCode || band.blockCode
       }
