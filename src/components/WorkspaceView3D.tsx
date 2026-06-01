@@ -663,8 +663,13 @@ function segmentsForStraightWall(
       widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
 
     const cells: Cell[] = []
-    if (length <= leftEndWidth + rightEndWidth) {
-      // Tiny wall — single end-coloured cell covers everything.
+    if (length <= leftEndWidth + 0.001) {
+      // Wall is shorter than (or equal to) one left end block. Emit a
+      // single cell at the wall length. If length < natural block
+      // width this is a physically "cut" block — unavoidable when the
+      // wall is shorter than the chosen block. The cell's BOX width
+      // matches the wall length (not the block's natural width)
+      // because the geometry has to fit the wall.
       cells.push({
         role: 'END',
         code: leftEndCode,
@@ -672,6 +677,28 @@ function segmentsForStraightWall(
         s0: 0,
         s1: length,
       })
+    } else if (length < leftEndWidth + rightEndWidth) {
+      // Wall fits left end at its natural width but not both ends.
+      // Render left at natural width, then right gets the remainder
+      // (right cell is physically a cut block, but at least the LEFT
+      // block stays at its natural width — the most common case where
+      // the user notices stretching).
+      cells.push({
+        role: 'END',
+        code: leftEndCode,
+        color: leftEndColor,
+        s0: 0,
+        s1: leftEndWidth,
+      })
+      if (length - leftEndWidth > 0.02) {
+        cells.push({
+          role: 'END',
+          code: rightEndCode,
+          color: rightEndColor,
+          s0: leftEndWidth,
+          s1: length,
+        })
+      }
     } else {
       cells.push({
         role: 'END',
