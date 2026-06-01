@@ -67,6 +67,15 @@ const CURVE_SAMPLES = 24
  *  defaults — full end 20.01 ≈ 390mm, half end 20.03 ≈ 190mm. */
 const FALLBACK_CORNER_WIDTH_MM = 390
 const FALLBACK_HALF_WIDTH_MM = 190
+const FALLBACK_BODY_WIDTH_MM = 390
+
+/** Visible mortar gap (m) inset on every block's right + top edges so
+ *  adjacent blocks have a small gap between them, producing the visual
+ *  of discrete blocks separated by mortar joints. 10mm matches the
+ *  actual mortar joint thickness used in the rest of the app's modular
+ *  math. Half is inset on each box's edge, so the gap between adjacent
+ *  boxes ends up at the full 10mm. */
+const MORTAR_GAP_M = 0.01
 
 // ---------- Props ----------
 
@@ -305,7 +314,12 @@ function segmentsForStraightWall(
    *  wall start) and a vertical band (y0..y1, metres from base). The
    *  `code` argument is the block code this box represents — used to
    *  flag specialty blocks (cleanout, knockout, lintel, etc.) for the
-   *  emissive glow highlight. */
+   *  emissive glow highlight.
+   *
+   *  Box dimensions are inset by MORTAR_GAP_M on both axes so adjacent
+   *  blocks have a visible mortar joint between them. The box stays
+   *  CENTRED on the requested span — the inset just makes it slightly
+   *  smaller on each side. */
   const buildBox = (
     s0: number,
     s1: number,
@@ -319,12 +333,47 @@ function segmentsForStraightWall(
       cx: sx + dirX * localCx,
       cy: (y0 + y1) / 2,
       cz: sz + dirZ * localCx,
-      length: s1 - s0,
-      heightM: y1 - y0,
+      length: Math.max(0.001, s1 - s0 - MORTAR_GAP_M),
+      heightM: Math.max(0.001, y1 - y0 - MORTAR_GAP_M),
       thickness,
       yRotation,
       color,
       highlight: isHighlightedBlock(code, library),
+    }
+  }
+
+  /** Walk a horizontal span [s0, s1] in body-block-width increments and
+   *  emit one box per block. The block width comes from the library so
+   *  a 290mm block stays 290mm in 3D. Any leftover at the end (less
+   *  than a full block) renders as a smaller block — represents a cut.
+   *  Used for the body region of each course, AND for sill / head fills
+   *  behind partially-crossing openings (so the visible blocks line up
+   *  with the rest of the course). */
+  const emitBlocksInSpan = (
+    spanStart: number,
+    spanEnd: number,
+    y0: number,
+    y1: number,
+    bodyCode: BlockCode,
+    bodyColor: string,
+    bodyW: number,
+    offsetFromStart: number = 0
+  ) => {
+    // offsetFromStart shifts where block boundaries land along the
+    // wall — used implicitly via where spanStart begins on each
+    // course (stretcher bond's halfW vs cornerW end cap widths give
+    // even / odd courses naturally-offset body starts).
+    let cursor = spanStart + offsetFromStart
+    // Don't emit blocks before spanStart even if offsetFromStart is
+    // negative — clamp.
+    if (cursor < spanStart) cursor = spanStart
+    while (cursor < spanEnd) {
+      const blockEnd = Math.min(cursor + bodyW, spanEnd)
+      const blockWidth = blockEnd - cursor
+      if (blockWidth > 0.02) {
+        boxes.push(buildBox(cursor, blockEnd, y0, y1, bodyColor, bodyCode))
+      }
+      cursor = blockEnd
     }
   }
 
@@ -355,9 +404,13 @@ function segmentsForStraightWall(
     boxes.push(buildBox(length - endWidth, length, y0, y1, endColor, endCode))
 
     // Body region: bound by [endWidth, length - endWidth], cut by any
-    // openings whose y-range fully covers this course's y-range.
+    // openings whose y-range fully covers this course's y-range. Each
+    // solid sub-span emits individual body blocks (not one slab) so the
+    // bond pattern is visible — stretcher offset emerges from even
+    // courses starting at halfW vs odd at cornerW.
     const bodyStart = endWidth
     const bodyEnd = length - endWidth
+    const bodyW = widthOf(bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
     const courseOpenings = wallOpenings
       .filter((o) => o.sill <= y0 && o.head >= y1) // opening covers this course
       .map((o) => ({
@@ -368,17 +421,17 @@ function segmentsForStraightWall(
       .sort((a, b) => a.s0 - b.s0)
 
     if (courseOpenings.length === 0) {
-      boxes.push(buildBox(bodyStart, bodyEnd, y0, y1, bodyColor, bodyCode))
+      emitBlocksInSpan(bodyStart, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW)
     } else {
       let cursor = bodyStart
       for (const op of courseOpenings) {
         if (op.s0 > cursor) {
-          boxes.push(buildBox(cursor, op.s0, y0, y1, bodyColor, bodyCode))
+          emitBlocksInSpan(cursor, op.s0, y0, y1, bodyCode, bodyColor, bodyW)
         }
         cursor = Math.max(cursor, op.s1)
       }
       if (cursor < bodyEnd) {
-        boxes.push(buildBox(cursor, bodyEnd, y0, y1, bodyColor, bodyCode))
+        emitBlocksInSpan(cursor, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW)
       }
     }
 
@@ -386,7 +439,8 @@ function segmentsForStraightWall(
     // Body colour fills the portion of the opening's span that falls
     // ABOVE the opening's head OR BELOW its sill, at this course's
     // y-range. So a 1200mm-high window leaves the courses below the
-    // sill + above the head solid behind it.
+    // sill + above the head solid behind it. Use emitBlocksInSpan so
+    // the visible blocks line up with the rest of the course's bond.
     for (const op of wallOpenings) {
       // Slice of this course that lies BELOW op.sill: course is below
       // the opening.
@@ -394,21 +448,21 @@ function segmentsForStraightWall(
         // Course straddles the sill — render solid up to the sill line.
         const fillTop = Math.min(y1, op.sill)
         if (fillTop > y0) {
-          boxes.push(buildBox(op.start, op.end, y0, fillTop, bodyColor, bodyCode))
+          emitBlocksInSpan(op.start, op.end, y0, fillTop, bodyCode, bodyColor, bodyW)
         }
       } else if (op.sill >= y1) {
         // Course is fully below the sill — fill the opening span solid.
-        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor, bodyCode))
+        emitBlocksInSpan(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW)
       }
       // Slice of this course that lies ABOVE op.head.
       if (op.head > y0 && op.head < y1) {
         const fillBottom = Math.max(y0, op.head)
         if (fillBottom < y1) {
-          boxes.push(buildBox(op.start, op.end, fillBottom, y1, bodyColor, bodyCode))
+          emitBlocksInSpan(op.start, op.end, fillBottom, y1, bodyCode, bodyColor, bodyW)
         }
       } else if (op.head <= y0) {
         // Course is fully above the head — fill the opening span solid.
-        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor, bodyCode))
+        emitBlocksInSpan(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW)
       }
     }
   }
