@@ -59,6 +59,7 @@ import {
   planWallLayout,
   verifyLayoutMatchesTally,
   cornerOwnershipFor,
+  outerEdgeEndpoints,
   type WallLayout,
 } from '../lib/blockCalc'
 
@@ -311,14 +312,28 @@ function segmentsFromWallLayout(
   layout: WallLayout,
   thicknessMm: number,
   colorMap: Map<string, string>,
-  library: Record<string, Block>
+  library: Record<string, Block>,
+  wallsById: Record<string, Wall>,
+  wallThicknessByWallId: Record<string, number>
 ): WallSegmentBox[] {
-  // Same plan→3D mapping as segmentsForStraightWall: negate both X
-  // and Y so the rendered model lines up with the plan view.
-  const sx = -wall.startX / 1000
-  const sz = -wall.startY / 1000
-  const ex = -wall.endX / 1000
-  const ez = -wall.endY / 1000
+  // The data endpoints `wall.startX/Y, wall.endX/Y` represent CENTRELINE
+  // positions and at corners they sit halfThickness inside the outer
+  // building corner (the drawing layer snaps new walls' endpoints to
+  // the centre of the existing wall's last block). The layout's
+  // block positions go from 0 to `wallLengthMm`, which is the
+  // OUTER-EDGE length — so the 3D wall must also span the outer
+  // edge to fit those positions. Otherwise blocks at s > centreline-
+  // length would render past the wall's data endpoint into thin air
+  // (and two walls at a corner would not visually meet at the
+  // outer corner — the 95mm offset the user reported).
+  //
+  // `outerEdgeEndpoints` runs the same overlap math as wallLengthMm
+  // but returns adjusted start/end positions instead of a scalar.
+  const ext = outerEdgeEndpoints(wall, wallThicknessByWallId, wallsById)
+  const sx = -ext.startX / 1000
+  const sz = -ext.startY / 1000
+  const ex = -ext.endX / 1000
+  const ez = -ext.endY / 1000
   const dx = ex - sx
   const dz = ez - sz
   const wallLenM = Math.hypot(dx, dz)
@@ -416,7 +431,8 @@ function segmentsForStraightWall(
   bondType: 'stretcher' | 'stack',
   colorMap: Map<string, string>,
   library: Record<string, Block>,
-  wallThicknessByWallId: Record<string, number>
+  wallThicknessByWallId: Record<string, number>,
+  wallsById?: Record<string, Wall>
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -425,10 +441,19 @@ function segmentsForStraightWall(
   // angle would show plan-left walls on screen-right (and vice versa)
   // because we're looking from the building's right side back toward
   // its left.
-  const sx = -wall.startX / 1000
-  const sz = -wall.startY / 1000
-  const ex = -wall.endX / 1000
-  const ez = -wall.endY / 1000
+  //
+  // outerEdgeEndpoints extends the wall to the outer-corner intersection
+  // when at corners (and pulls back to the through-wall face at
+  // T-junctions). Same math as wallLengthMm — keeps the 3D spatial
+  // extent in sync with the block-fit length so adjacent walls
+  // visually meet at the outer corner.
+  const ext = wallsById
+    ? outerEdgeEndpoints(wall, wallThicknessByWallId, wallsById)
+    : { startX: wall.startX, startY: wall.startY, endX: wall.endX, endY: wall.endY }
+  const sx = -ext.startX / 1000
+  const sz = -ext.startY / 1000
+  const ex = -ext.endX / 1000
+  const ez = -ext.endY / 1000
   const dx = ex - sx
   const dz = ez - sz
   const length = Math.hypot(dx, dz)
@@ -1338,6 +1363,12 @@ function Scene({
     const colorMap = buildBlockColorMap(allCodes)
 
     const out: WallSegmentBox[] = []
+    // Build wallsById ONCE outside the loop so both segmentsForStraightWall
+    // (for outer-edge endpoint extension) and segmentsFromWallLayout
+    // (for the same, plus corner ownership) can use it without
+    // rebuilding per wall.
+    const wallsByIdMap: Record<string, Wall> = {}
+    for (const w of walls) wallsByIdMap[w.id] = w
     walls.forEach((wall, i) => {
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
 
@@ -1360,7 +1391,7 @@ function Scene({
         out.push(
           ...segmentsForStraightWall(
             wall, openings, thicknessMm, solidCourse, totalHeightM,
-            'stack', brickColorMap, library, wallThicknessByWallId
+            'stack', brickColorMap, library, wallThicknessByWallId, wallsByIdMap
           )
         )
         return
@@ -1387,8 +1418,6 @@ function Scene({
         // openings. Tracked as the follow-up to task #62.
         const wallHasOpenings = openings.some((o) => o.wallId === wall.id)
         if (!wallHasOpenings) {
-          const wallsByIdMap: Record<string, Wall> = {}
-          for (const w of walls) wallsByIdMap[w.id] = w
           // Corner ownership: at each shared corner, only ONE wall
           // emits the corner block per course (alternating per
           // course). The cumulative count across both walls matches
@@ -1433,14 +1462,16 @@ function Scene({
               layout,
               thicknessMm,
               colorMap,
-              library
+              library,
+              wallsByIdMap,
+              wallThicknessByWallId
             )
           )
         } else {
           out.push(
             ...segmentsForStraightWall(
               wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
-              bondType, colorMap, library, wallThicknessByWallId
+              bondType, colorMap, library, wallThicknessByWallId, wallsByIdMap
             )
           )
         }
