@@ -77,6 +77,17 @@ const FALLBACK_BODY_WIDTH_MM = 390
  *  boxes ends up at the full 10mm. */
 const MORTAR_GAP_M = 0.01
 
+/** Mortar fill colour — warm medium-grey reading as cement between the
+ *  block faces. Renders behind each block course so the gaps between
+ *  blocks show mortar rather than empty space (the dark wrapper bg). */
+const MORTAR_COLOR = '#6a635a'
+
+/** Fraction of wall thickness the mortar layer occupies. Less than 1.0
+ *  means the mortar is RECESSED — set inside the wall slightly so block
+ *  faces sit visually proud of the mortar (matches real masonry where
+ *  blocks protrude a few mm beyond the mortar plane). */
+const MORTAR_THICKNESS_FRAC = 0.85
+
 // ---------- Props ----------
 
 export interface WorkspaceView3DProps {
@@ -377,8 +388,52 @@ function segmentsForStraightWall(
     }
   }
 
+  /** Push a mortar fill box at the requested span. Bypasses buildBox so
+   *  it doesn't get the MORTAR_GAP_M inset (mortar should fill the gaps
+   *  between blocks, not have gaps of its own). Renders at recessed
+   *  thickness so block faces sit visually proud of the mortar plane. */
+  const pushMortar = (s0: number, s1: number, y0: number, y1: number) => {
+    if (s1 - s0 < 0.005 || y1 - y0 < 0.005) return
+    const localCx = (s0 + s1) / 2
+    boxes.push({
+      cx: sx + dirX * localCx,
+      cy: (y0 + y1) / 2,
+      cz: sz + dirZ * localCx,
+      length: s1 - s0,
+      heightM: y1 - y0,
+      thickness: thickness * MORTAR_THICKNESS_FRAC,
+      yRotation,
+      color: MORTAR_COLOR,
+      highlight: false,
+    })
+  }
+
   for (const course of courses) {
     const { y0, y1, bodyCode, cornerCode, halfCode } = course
+
+    // Mortar fill for this course — emit BEFORE blocks so they render
+    // visually on top (though three.js depth-sorts so order doesn't
+    // strictly matter — recessed thickness keeps mortar behind block
+    // faces regardless of draw order). Cut by openings that fully span
+    // this course's y-range so window/door cutouts don't show mortar.
+    const courseSpanningOpenings = wallOpenings
+      .filter((o) => o.sill <= y0 && o.head >= y1)
+      .sort((a, b) => a.start - b.start)
+    if (courseSpanningOpenings.length === 0) {
+      pushMortar(0, length, y0, y1)
+    } else {
+      let mortarCursor = 0
+      for (const op of courseSpanningOpenings) {
+        if (op.start > mortarCursor) {
+          pushMortar(mortarCursor, op.start, y0, y1)
+        }
+        mortarCursor = Math.max(mortarCursor, op.end)
+      }
+      if (mortarCursor < length) {
+        pushMortar(mortarCursor, length, y0, y1)
+      }
+    }
+
     // End-cap pattern: stack bond = corner every course; stretcher =
     // corner on odd courses, half on even. Matches what the 2D preview
     // renders, so the colour distribution reads the same in 3D.
