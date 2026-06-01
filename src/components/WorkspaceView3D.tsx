@@ -486,7 +486,7 @@ function segmentsForStraightWall(
   // emitted last in spans that exclude both opening voids and lintel
   // footprints → no mortar bleeds through windows or behind lintels.
 
-  type CellRole = 'END' | 'BODY' | 'JAMB' | 'STRETCHER_HALF' | 'REMOVED'
+  type CellRole = 'END' | 'BODY' | 'JAMB' | 'REMOVED'
   interface Cell {
     role: CellRole
     code: BlockCode
@@ -507,96 +507,49 @@ function segmentsForStraightWall(
   //
   // FREE / T-JUNCTION ends — stretcher bond's even courses use a half
   // block at the end (offsetting the body grid by half a body-width
-  // vs odd courses).
+  // vs odd courses). This is the only place HALF blocks appear.
   //
-  // CORNER / CONTROL-JOINT ends — real masonry alternates which wall
-  // turns the corner per course. Each course, ONE wall has its end
-  // block (corner) AT the corner position; the OTHER wall butts an
-  // H-block (body) against it. Walls swap roles every course in
-  // stretcher bond → the bond offset / interlocking. Stack bond keeps
-  // one wall always leading.
+  // CORNER / CONTROL-JOINT ends — full corner block on EVERY course.
+  // Real masonry achieves bond offset at corners by the corner block
+  // physically rotating (turning the corner) on alternate courses —
+  // a 3D mass model can't represent that without L-shaped geometry,
+  // so each wall just always renders its corner block at the corner.
+  // Two adjacent walls' corner blocks overlap at the same physical
+  // corner cube, but with identical block dims + colors the overlap
+  // is invisible — reads as one solid corner column.
   //
-  // Phase is decided from wall IDs: the LOWER id leads on odd, the
-  // higher id leads on even. Deterministic + opposite-phase per pair.
+  // Length-makeup (3/4 / cut blocks) is a separate concern handled by
+  // the existing body-cell carving — not part of corner logic.
   const leftIsFreeEnd =
     wall.startJunction.type === 'free' ||
     wall.startJunction.type === 't-junction'
   const rightIsFreeEnd =
     wall.endJunction.type === 'free' ||
     wall.endJunction.type === 't-junction'
-  const leftCornerNeighbor =
-    wall.startJunction.type === 'corner' ||
-    wall.startJunction.type === 'control-joint'
-      ? wall.startJunction.connectedWallIds?.[0]
-      : undefined
-  const rightCornerNeighbor =
-    wall.endJunction.type === 'corner' ||
-    wall.endJunction.type === 'control-joint'
-      ? wall.endJunction.connectedWallIds?.[0]
-      : undefined
-  // 'lead-odd' = this wall has the corner block on odd courses; the
-  // other wall butts against it. 'lead-even' = opposite.
-  function cornerPhase(other: string | undefined): 'lead-odd' | 'lead-even' {
-    if (!other) return 'lead-odd'
-    return wall.id < other ? 'lead-odd' : 'lead-even'
-  }
-  const leftPhase = leftCornerNeighbor ? cornerPhase(leftCornerNeighbor) : null
-  const rightPhase = rightCornerNeighbor ? cornerPhase(rightCornerNeighbor) : null
-  function leadsAtCorner(
-    phase: 'lead-odd' | 'lead-even' | null,
-    courseNum: number
-  ): boolean {
-    if (!phase) return false
-    // Stack bond: one wall always leads (phase decides which).
-    if (bondType === 'stack') return phase === 'lead-odd'
-    // Stretcher: alternate per course.
-    return phase === 'lead-odd'
-      ? courseNum % 2 === 1
-      : courseNum % 2 === 0
-  }
 
   // ── Phase 1: build empty grid (per course: END + BODY cells + END) ──
   const grid: CourseEntry[] = courses.map((course) => {
     const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
+    // Halves ONLY at free ends in stretcher bond's even courses.
+    // Corner / control-joint ends always get the full corner block.
     const useHalfLeft = isEvenStretcher && leftIsFreeEnd
     const useHalfRight = isEvenStretcher && rightIsFreeEnd
-    // Corner-junction phase: does THIS wall lead the corner this course?
-    // Leading wall renders its end (corner) block AT the corner; the
-    // other wall butts against it.
-    const leadsLeftCorner = leadsAtCorner(leftPhase, course.courseNumber)
-    const leadsRightCorner = leadsAtCorner(rightPhase, course.courseNumber)
 
-    const cornerWidth =
-      widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
-    const halfBlockW =
-      widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
-    const halfColor = colorOf(course.halfCode)
-
-    // Per-end resolution. Outcomes:
-    //   - free / t-junction end → corner (odd) or half (even) at end
-    //     cell, width matches the chosen block.
-    //   - corner end + LEADING → corner block at end, width = cornerW.
-    //   - corner end + FOLLOWING → NO end block; the other wall's
-    //     corner block fills the corner cell. From this wall's
-    //     perspective the corner cell is empty.
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    // leftRenderEnd / rightRenderEnd — does THIS wall render an end
-    // block at this end? True for free ends and corner-LEAD ends.
-    const leftRenderEnd =
-      leftIsFreeEnd || (leftPhase !== null && leadsLeftCorner)
-    const rightRenderEnd =
-      rightIsFreeEnd || (rightPhase !== null && leadsRightCorner)
-    const leftEndWidth = leftRenderEnd
-      ? (useHalfLeft ? halfBlockW : cornerWidth)
-      : cornerWidth // body still leaves cornerW gap for the other wall's corner
-    const rightEndWidth = rightRenderEnd
-      ? (useHalfRight ? halfBlockW : cornerWidth)
-      : cornerWidth
-
+    const leftEndWidth =
+      (useHalfLeft
+        ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+        : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
+      1000
+    const rightEndWidth =
+      (useHalfRight
+        ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+        : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
+      1000
     // For jamb / merge logic — pick the WIDER of the two so jamb
     // widths and merge thresholds don't undersize.
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
@@ -617,21 +570,15 @@ function segmentsForStraightWall(
         s1: length,
       })
     } else {
-      // Left end cell — render only if this wall holds the corner
-      // (or it's a free end). Following walls at corner ends omit
-      // this cell so the OTHER wall's corner fills the visible space.
-      if (leftRenderEnd) {
-        cells.push({
-          role: 'END',
-          code: leftEndCode,
-          color: leftEndColor,
-          s0: 0,
-          s1: leftEndWidth,
-        })
-      }
-      const cursor = leftEndWidth
+      cells.push({
+        role: 'END',
+        code: leftEndCode,
+        color: leftEndColor,
+        s0: 0,
+        s1: leftEndWidth,
+      })
+      let c = leftEndWidth
       const bodyEnd = length - rightEndWidth
-      let c = cursor
       while (c < bodyEnd) {
         const cellEnd = Math.min(c + bodyW, bodyEnd)
         if (cellEnd - c > 0.02) {
@@ -645,16 +592,13 @@ function segmentsForStraightWall(
         }
         c += bodyW
       }
-      // Right end cell — same logic, render only if leading.
-      if (rightRenderEnd) {
-        cells.push({
-          role: 'END',
-          code: rightEndCode,
-          color: rightEndColor,
-          s0: length - rightEndWidth,
-          s1: length,
-        })
-      }
+      cells.push({
+        role: 'END',
+        code: rightEndCode,
+        color: rightEndColor,
+        s0: length - rightEndWidth,
+        s1: length,
+      })
     }
     return { course, cells, endCode, endColor, endWidth, bodyW }
   })
