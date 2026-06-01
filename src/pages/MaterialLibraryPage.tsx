@@ -9,6 +9,11 @@ import LibrarySectionControls from '../components/LibrarySectionControls'
 import { useAuth } from '../lib/auth'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
+import {
+  saveOrgSupplyItem,
+  deleteOrgSupplyItem,
+  useOrgSupplyItems,
+} from '../lib/orgSupplyItems'
 import type { SupplyItem, SupplyItemUnit } from '../types/userSettings'
 import type { OrgMember } from '../types/organisations'
 import { useEffect } from 'react'
@@ -228,7 +233,12 @@ function unitLabelOf(unit: SupplyItemUnit): string {
 
 function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
   const { settings } = useUserSettings()
-  const items = settings.supplyItems ?? []
+  const { currentOrgId } = useOrganisations()
+  const { items: orgItems, loading: orgLoading } = useOrgSupplyItems()
+  // Org members see the synced list; personal-mode users see the
+  // legacy IndexedDB list. The form / save / delete handlers below
+  // dispatch to the right side based on the same currentOrgId check.
+  const items = currentOrgId ? orgItems : settings.supplyItems ?? []
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   // Per-category collapse state in the editor, keyed by category
   // label (or 'Uncategorised'). Mirrors the workspace SupplyItemsPanel
@@ -250,22 +260,47 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
     return Array.from(set).sort((a, b) => a.localeCompare(b))
   }, [items])
 
-  function saveItem(item: SupplyItem) {
-    const existing = items.filter((i) => i.id !== item.id)
-    updateUserSettings({ supplyItems: [...existing, item] })
+  async function saveItem(item: SupplyItem) {
+    if (currentOrgId) {
+      // Org mode — upsert to Supabase. The org-items singleton
+      // optimistically updates so the UI re-renders before the
+      // network round-trip completes.
+      try {
+        await saveOrgSupplyItem(item)
+      } catch {
+        // Error already logged inside saveOrgSupplyItem. Leave the
+        // editor open so the user can retry.
+        return
+      }
+    } else {
+      // Personal mode — local IndexedDB.
+      const existing = items.filter((i) => i.id !== item.id)
+      updateUserSettings({ supplyItems: [...existing, item] })
+    }
     setEditingId(null)
   }
 
-  function deleteItem(id: string) {
+  async function deleteItem(id: string) {
     const item = items.find((i) => i.id === id)
     if (!item) return
     if (!window.confirm(`Remove "${item.name}" from your supply items?`)) return
-    updateUserSettings({ supplyItems: items.filter((i) => i.id !== id) })
+    if (currentOrgId) {
+      try {
+        await deleteOrgSupplyItem(id)
+      } catch {
+        return
+      }
+    } else {
+      updateUserSettings({ supplyItems: items.filter((i) => i.id !== id) })
+    }
   }
 
   return (
     <div className="space-y-3">
-      {items.length === 0 && (
+      {currentOrgId && orgLoading && (
+        <p className="text-sm text-ink-400 italic">Loading supply items…</p>
+      )}
+      {!(currentOrgId && orgLoading) && items.length === 0 && (
         <p className="text-sm text-ink-400 italic">
           No supply items yet. Click <strong>+ Add item</strong> to add the
           first one — e.g. brick ties at 2 per m², cement at 0.3 bags per m²,

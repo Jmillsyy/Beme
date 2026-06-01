@@ -8,6 +8,7 @@ import { initBlockLibrary } from './data/blockLibrary'
 import { initBrickLibrary } from './data/brickLibrary'
 import { initUserSettings } from './lib/userSettings'
 import { initOrganisations } from './lib/organisations'
+import { initOrgSupplyItems } from './lib/orgSupplyItems'
 
 // Apply the persisted theme (dark / light) before first render so there's no
 // flash of the wrong colour scheme.
@@ -24,6 +25,10 @@ void initUserSettings()
 // Supabase returns the user's memberships. The init also wires an
 // onAuthStateChange listener so the org list updates on sign-in / sign-out.
 initOrganisations()
+// Org-scoped supply items follow the active org — initOrgSupplyItems
+// subscribes to org-state changes so switching orgs refetches the
+// matching item list. No-op when Supabase isn't configured.
+initOrgSupplyItems()
 
 // Wrap the existing <App /> (which still owns the <Routes> tree) in a
 // Data Router. Doing it this way means we get useBlocker / useNavigation

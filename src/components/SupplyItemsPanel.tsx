@@ -2,6 +2,8 @@ import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { SupplyItem, SupplyItemUnit } from '../types/userSettings'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrgSupplyItems } from '../lib/orgSupplyItems'
+import { useOrganisations } from '../lib/organisations'
 
 /**
  * Per-mode brick/block tally inputs that drive the supply-item rate maths.
@@ -108,7 +110,12 @@ function SupplyItemsPanelImpl({
     {}
   )
   const { settings } = useUserSettings()
-  const items = settings.supplyItems ?? []
+  const { currentOrgId } = useOrganisations()
+  const { items: orgItems } = useOrgSupplyItems()
+  // Source of truth: org-synced items when an org is active, otherwise
+  // the IndexedDB-backed userSettings list (personal / offline mode).
+  // The same UI works for both.
+  const items = currentOrgId ? orgItems : settings.supplyItems ?? []
 
   const applicableItems = useMemo(
     () => items.filter((i) => i.appliesTo.includes(metrics.mode)),
