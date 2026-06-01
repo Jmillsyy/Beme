@@ -350,10 +350,11 @@ function segmentsForStraightWall(
    *  flag specialty blocks (cleanout, knockout, lintel, etc.) for the
    *  emissive glow highlight.
    *
-   *  Box dimensions are inset by MORTAR_GAP_M on both axes so adjacent
-   *  blocks have a visible mortar joint between them. The box stays
-   *  CENTRED on the requested span — the inset just makes it slightly
-   *  smaller on each side. */
+   *  Mortar gap applied only on INNER edges (where the cell has an
+   *  adjacent neighbour). Outer edges flush with the wall boundary
+   *  (s0=0 left end, s1=length right end, y0=0 wall base, y1=total
+   *  wall top) get no inset so the wall has a clean outer face
+   *  without visible mortar at the corners or sill. */
   const buildBox = (
     s0: number,
     s1: number,
@@ -362,13 +363,22 @@ function segmentsForStraightWall(
     color: string,
     code: BlockCode
   ): WallSegmentBox => {
-    const localCx = (s0 + s1) / 2
+    const halfGap = MORTAR_GAP_M / 2
+    const leftInset = s0 < 0.001 ? 0 : halfGap
+    const rightInset = s1 > length - 0.001 ? 0 : halfGap
+    const bottomInset = y0 < 0.001 ? 0 : halfGap
+    const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
+    const aS0 = s0 + leftInset
+    const aS1 = s1 - rightInset
+    const aY0 = y0 + bottomInset
+    const aY1 = y1 - topInset
+    const localCx = (aS0 + aS1) / 2
     return {
       cx: sx + dirX * localCx,
-      cy: (y0 + y1) / 2,
+      cy: (aY0 + aY1) / 2,
       cz: sz + dirZ * localCx,
-      length: Math.max(0.001, s1 - s0 - MORTAR_GAP_M),
-      heightM: Math.max(0.001, y1 - y0 - MORTAR_GAP_M),
+      length: Math.max(0.001, aS1 - aS0),
+      heightM: Math.max(0.001, aY1 - aY0),
       thickness,
       yRotation,
       color,
