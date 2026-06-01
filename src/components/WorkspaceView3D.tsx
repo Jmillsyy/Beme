@@ -42,7 +42,7 @@
  *   - One directional light, no shadows. Fine for a mass model.
  */
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
@@ -1009,6 +1009,127 @@ function segmentsForCurvedWall(
   return boxes
 }
 
+// ---------- Keyboard movement ----------
+
+/**
+ * WASD + QE camera-flythrough. Translates BOTH the camera position and
+ * the OrbitControls target by the same vector each frame, so the orbit
+ * pivot moves with the camera (mouse-drag still works after WASD — you
+ * orbit around your new location, not the original target).
+ *
+ * Controls:
+ *   W / S — forward / back along camera look direction (projected onto
+ *           the horizontal plane so you don't fly into the ground when
+ *           the camera is angled down).
+ *   A / D — strafe left / right.
+ *   Q / E — descend / ascend (world-Y).
+ *   Shift — 2.4× speed multiplier.
+ *
+ * Input is read from window-level listeners but the handler bails out
+ * if the focused element is an INPUT / TEXTAREA / contenteditable, so
+ * typing "wall" in a side-panel input doesn't fly the camera around.
+ *
+ * Because the Canvas runs with frameloop="demand", we have to manually
+ * invalidate() to keep frames rendering while any key is held — the
+ * useFrame callback itself doesn't tick unless someone requests a
+ * frame. We invalidate at the end of every move, and once on keydown,
+ * giving a single continuous render loop only while keys are pressed.
+ */
+function KeyboardMover() {
+  const camera = useThree((s) => s.camera)
+  const controls = useThree((s) => s.controls) as
+    | (THREE.EventDispatcher & { target?: THREE.Vector3; update?: () => void })
+    | null
+  const invalidate = useThree((s) => s.invalidate)
+  const keys = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    const isTypingTarget = (el: Element | null): boolean => {
+      if (!el) return false
+      const tag = el.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if ((el as HTMLElement).isContentEditable) return true
+      return false
+    }
+    const tracked = new Set(['w', 'a', 's', 'd', 'q', 'e', 'shift'])
+    const down = (e: KeyboardEvent) => {
+      if (isTypingTarget(document.activeElement)) return
+      const k = e.key.toLowerCase()
+      if (!tracked.has(k)) return
+      keys.current.add(k)
+      // Stop the page from scrolling on WASD when nothing else captures the key.
+      if (k !== 'shift') e.preventDefault()
+      invalidate()
+    }
+    const up = (e: KeyboardEvent) => {
+      keys.current.delete(e.key.toLowerCase())
+    }
+    const blur = () => {
+      // Release everything if the window loses focus — otherwise keys
+      // can "stick" down (no keyup fires while the window is in the
+      // background).
+      keys.current.clear()
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', blur)
+    }
+  }, [invalidate])
+
+  useFrame((_, delta) => {
+    if (keys.current.size === 0) return
+    // Base speed 5 m/s, Shift bumps to 12 m/s. Tuned so a typical
+    // 10-15m wide plan crosses in 2-3 seconds at base speed.
+    const speed = (keys.current.has('shift') ? 12 : 5) * delta
+
+    // Forward = camera look direction projected onto horizontal plane.
+    // We don't want W to fly into the ground when the camera is angled
+    // down (which it usually is when orbiting a building from above).
+    const forward = new THREE.Vector3()
+    camera.getWorldDirection(forward)
+    forward.y = 0
+    if (forward.lengthSq() < 1e-6) {
+      // Camera looking straight up/down — pick an arbitrary forward.
+      forward.set(0, 0, -1)
+    }
+    forward.normalize()
+
+    // Right = forward × world-up. (Cross order matters: forward × up
+    // gives the camera's right vector in a right-handed coordinate
+    // system, which Three.js uses.)
+    const right = new THREE.Vector3()
+    right.crossVectors(forward, camera.up).normalize()
+
+    const move = new THREE.Vector3()
+    if (keys.current.has('w')) move.addScaledVector(forward, speed)
+    if (keys.current.has('s')) move.addScaledVector(forward, -speed)
+    if (keys.current.has('d')) move.addScaledVector(right, speed)
+    if (keys.current.has('a')) move.addScaledVector(right, -speed)
+    if (keys.current.has('e')) move.y += speed
+    if (keys.current.has('q')) move.y -= speed
+
+    if (move.lengthSq() === 0) return
+
+    camera.position.add(move)
+    // Move the OrbitControls target by the SAME vector so the orbit
+    // pivot tracks the camera. Without this, the camera would slide
+    // off but mouse-drag would still try to orbit around the original
+    // target, snapping the view back.
+    if (controls && controls.target) {
+      controls.target.add(move)
+      controls.update?.()
+    }
+    // Keep the demand-driven loop spinning for as long as keys are held.
+    invalidate()
+  })
+
+  return null
+}
+
 // ---------- Scene ----------
 
 function Scene({
@@ -1171,6 +1292,7 @@ function Scene({
         dampingFactor={0.1}
         makeDefault
       />
+      <KeyboardMover />
     </>
   )
 }
@@ -1282,6 +1404,14 @@ function SizedCanvasShell({
   return (
     <div ref={ref} className="absolute inset-0">
       {size ? children(size.w, size.h) : null}
+      {/* Controls hint, bottom-left of the viewport. position absolute
+          relative to the SizedCanvasShell wrapper so it overlays the
+          Canvas. Faded text, non-interactive (pointer-events-none) so
+          it doesn't block orbit drags. */}
+      <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
+        <div>drag = orbit · scroll = zoom · right-drag = pan</div>
+        <div>W/A/S/D = move · Q/E = down/up · shift = faster</div>
+      </div>
     </div>
   )
 }
