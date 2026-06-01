@@ -313,7 +313,8 @@ function segmentsForStraightWall(
   totalHeightM: number,
   bondType: 'stretcher' | 'stack',
   colorMap: Map<string, string>,
-  library: Record<string, Block>
+  library: Record<string, Block>,
+  wallThicknessByWallId: Record<string, number>
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -580,20 +581,25 @@ function segmentsForStraightWall(
     const useHalfLeft = isEvenStretcher && leftIsFreeEnd
     const useHalfRight = isEvenStretcher && rightIsFreeEnd
 
-    // Corner ends ALWAYS render a corner-coloured cell (no
-    // alternating between corner and body colors). What alternates is
-    // the WIDTH of that corner cell:
-    //   - On the course where THIS wall owns the corner (its corner
-    //     block runs along this wall): full cornerW wide.
-    //   - On the course where the OTHER wall owns: just halfW wide,
-    //     representing the wraparound face of the OTHER wall's corner
-    //     block visible on this wall's outside face at the corner.
+    // Corner handling that eliminates the dark gap at corner cubes
+    // while keeping the corner column solid red and producing the
+    // stretcher bond offset:
     //
-    // This natural alternation produces the stretcher bond offset in
-    // the body — body cells end at (length - cornerW) on owning
-    // courses, (length - halfW) on non-owning courses → bodies offset
-    // by halfW per course, just like 200×200×400 corner blocks
-    // stacking at 90° in real masonry.
+    //  - OWNING this corner this course: extend corner cell PAST the
+    //    wall end by the PERPENDICULAR wall's half-thickness. The
+    //    extended cell covers the corner cube AND wraps slightly into
+    //    the perpendicular wall's territory — visible as red on the
+    //    perpendicular wall's outer face at the corner cube position.
+    //  - NOT OWNING this corner this course: render NO corner cell.
+    //    Body starts/ends at perpHalfThickness (not 0 / not length)
+    //    so the wall doesn't overlap the corner cube — the corner is
+    //    filled by the OWNING wall's extended cell.
+    //
+    // Result: the corner column has red on every course (always one
+    // wall's extended cell is at the corner cube), body grid origin
+    // shifts between cornerW (owning) and perpHalfThickness (non-
+    // owning) → natural stretcher bond offset without halves
+    // appearing at corners.
     const halfBlockW =
       widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
     const cornerWidth =
@@ -606,23 +612,41 @@ function segmentsForStraightWall(
     const ownsRightThisCourse =
       rightHasCornerJunction &&
       ownsCornerThisCourse(rightPhase, course.courseNumber)
+    // Perpendicular wall thickness — needed for the wraparound /
+    // body-skip logic. Falls back to this wall's own thickness when
+    // the perpendicular wall's id isn't in the lookup.
+    const leftPerpThicknessM =
+      leftCornerNeighbor !== undefined
+        ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) / 1000
+        : thicknessMm / 1000
+    const rightPerpThicknessM =
+      rightCornerNeighbor !== undefined
+        ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) / 1000
+        : thicknessMm / 1000
+    const leftPerpHalf = leftPerpThicknessM / 2
+    const rightPerpHalf = rightPerpThicknessM / 2
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    // End-cell width per junction state:
-    //   - corner junction + this wall owns: full cornerW.
-    //   - corner junction + other wall owns: halfW (wraparound).
-    //   - free / t-junction: corner or half by parity (as before).
+    // Render decisions for end cells:
+    //   - free / t-junction: always render (corner or half by parity)
+    //   - corner end + owning: render extended corner cell
+    //   - corner end + non-owning: render NO cell at this end
+    const renderLeftEnd = !leftHasCornerJunction || ownsLeftThisCourse
+    const renderRightEnd = !rightHasCornerJunction || ownsRightThisCourse
+    // leftEndWidth is the "body-side" inset of the left end cell —
+    // where body cells begin. For corner-owning ends, body starts at
+    // cornerWidth (the corner cell ends here on its body-facing edge).
+    // For corner non-owning ends, body starts at leftPerpHalf to skip
+    // the corner cube.
     const leftEndWidth = leftHasCornerJunction
-      ? (ownsLeftThisCourse ? cornerWidth : halfBlockW)
+      ? (ownsLeftThisCourse ? cornerWidth : leftPerpHalf)
       : (useHalfLeft ? halfBlockW : cornerWidth)
     const rightEndWidth = rightHasCornerJunction
-      ? (ownsRightThisCourse ? cornerWidth : halfBlockW)
+      ? (ownsRightThisCourse ? cornerWidth : rightPerpHalf)
       : (useHalfRight ? halfBlockW : cornerWidth)
-    const renderLeftEnd = true
-    const renderRightEnd = true
 
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
     const endColor = colorOf(endCode)
@@ -643,11 +667,17 @@ function segmentsForStraightWall(
       })
     } else {
       if (renderLeftEnd) {
+        // For corner-owning ends: extend cell PAST wall start by
+        // leftPerpHalf so it wraps into the perpendicular wall's
+        // territory and covers the corner cube. For free / t-junction
+        // ends, no extension (s0=0 — flush with wall start).
+        const leftS0 =
+          leftHasCornerJunction && ownsLeftThisCourse ? -leftPerpHalf : 0
         cells.push({
           role: 'END',
           code: leftEndCode,
           color: leftEndColor,
-          s0: 0,
+          s0: leftS0,
           s1: leftEndWidth,
         })
       }
@@ -667,12 +697,18 @@ function segmentsForStraightWall(
         c += bodyW
       }
       if (renderRightEnd) {
+        // Mirror of left — extend PAST wall end by rightPerpHalf when
+        // owning, otherwise s1=length flush.
+        const rightS1 =
+          rightHasCornerJunction && ownsRightThisCourse
+            ? length + rightPerpHalf
+            : length
         cells.push({
           role: 'END',
           code: rightEndCode,
           color: rightEndColor,
           s0: length - rightEndWidth,
-          s1: length,
+          s1: rightS1,
         })
       }
     }
@@ -950,7 +986,8 @@ function segmentsForCurvedWall(
   totalHeightM: number,
   bondType: 'stretcher' | 'stack',
   colorMap: Map<string, string>,
-  library: Record<string, Block>
+  library: Record<string, Block>,
+  wallThicknessByWallId: Record<string, number>
 ): WallSegmentBox[] {
   if (wall.midX === undefined || wall.midY === undefined) return []
   const geom = arcFromThreePoints(
@@ -960,7 +997,7 @@ function segmentsForCurvedWall(
   )
   if (!geom) {
     return segmentsForStraightWall(
-      wall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library
+      wall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library, wallThicknessByWallId
     )
   }
   const samples = sampleArc(geom, CURVE_SAMPLES + 1)
@@ -977,7 +1014,7 @@ function segmentsForCurvedWall(
     }
     boxes.push(
       ...segmentsForStraightWall(
-        fakeWall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library
+        fakeWall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library, wallThicknessByWallId
       )
     )
   }
@@ -1053,7 +1090,7 @@ function Scene({
         out.push(
           ...segmentsForStraightWall(
             wall, openings, thicknessMm, solidCourse, totalHeightM,
-            'stack', brickColorMap, library
+            'stack', brickColorMap, library, wallThicknessByWallId
           )
         )
         return
@@ -1066,14 +1103,14 @@ function Scene({
         out.push(
           ...segmentsForCurvedWall(
             wall, thicknessMm, wr.courses, wr.totalHeightM,
-            bondType, colorMap, library
+            bondType, colorMap, library, wallThicknessByWallId
           )
         )
       } else {
         out.push(
           ...segmentsForStraightWall(
             wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
-            bondType, colorMap, library
+            bondType, colorMap, library, wallThicknessByWallId
           )
         )
       }
