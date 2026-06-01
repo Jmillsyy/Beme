@@ -44,7 +44,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
+import type { Wall, Opening, WallMakeup, BrickMakeup, CourseBand } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { Block, BlockCode } from '../types/blocks'
 import { arcFromThreePoints, sampleArc, isCurvedWall } from '../lib/curveGeom'
@@ -177,13 +177,24 @@ function resolveWallCourses(
     typeof wall.heightMmOverride === 'number'
       ? { ...makeup, heightMm: wall.heightMmOverride }
       : makeup
-  // skipHeightMakeup defaults to false so the 20.71 (90mm) and
-  // 20.140 (140mm) height-makeup courses ARE included in the bands
-  // list — same as the calc engine and the no-openings
-  // planWallLayout path. The flag exists for the wall-types preview
-  // (which intentionally hides blocks the user didn't configure);
-  // it doesn't belong on the 3D rendering path.
-  const { bands } = convertMakeupToBands(scopedMakeup, undefined)
+  // Band source priority:
+  //   1. makeup.coursePattern (user-defined band stack) — authoritative
+  //      when set, mirrors how buildCourses / planWallLayout pick
+  //      bands. convertMakeupToBands IGNORES coursePattern and always
+  //      derives from heightMm, so calling it for a coursePattern
+  //      makeup produces a stale band list that doesn't match the
+  //      no-openings 3D renderer.
+  //   2. convertMakeupToBands(scopedMakeup, undefined) — synthesised
+  //      from heightMm using the standard stack rules (base + body…
+  //      + optional height-makeup + top). skipHeightMakeup defaults
+  //      to false so the 20.71 / 20.140 rows are included; that flag
+  //      exists for the wall-types preview, not the 3D path.
+  const bands: CourseBand[] =
+    scopedMakeup.coursePattern && scopedMakeup.coursePattern.length > 0
+      ? scopedMakeup.coursePattern
+          .filter((b) => b.count > 0)
+          .map((b) => ({ blockCode: b.blockCode, count: b.count }))
+      : convertMakeupToBands(scopedMakeup, undefined).bands
 
   // Count total courses first so we know which one is the "top course"
   // and can stamp the topCourseBlockCode (typically a bond beam 20.20).
@@ -204,7 +215,12 @@ function resolveWallCourses(
   const STD_COURSE_MODULE_MM = 200
   for (const band of bands) {
     if (band.count <= 0) continue
-    const bandModuleMm = moduleHeightForBand(band.blockCode, library)
+    // Pass the full CourseBand (not band.blockCode). BlockCode is
+    // `string` so TS doesn't catch a mistyped first arg; at runtime
+    // `(band.blockCode as any).blockCode` is undefined and
+    // moduleHeightForBand returns its 200mm fallback for every band
+    // — which is exactly the height-makeup-not-rendering bug.
+    const bandModuleMm = moduleHeightForBand(band, library)
     const courseHeightM = bandModuleMm / 1000
     const isHeightMakeupBand = bandModuleMm !== STD_COURSE_MODULE_MM
     for (let i = 0; i < band.count; i++) {
