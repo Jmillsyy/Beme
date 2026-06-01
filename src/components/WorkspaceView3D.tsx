@@ -506,17 +506,14 @@ function segmentsForStraightWall(
   // Junction-aware end handling:
   //
   // FREE / T-JUNCTION ends — stretcher bond's even courses use a half
-  // block at the end (offsetting the body grid by half a body-width
-  // vs odd courses). This is the only place HALF blocks appear.
+  // block at the end. This is the ONLY place halves appear.
   //
-  // CORNER / CONTROL-JOINT ends — full corner block on EVERY course.
-  // Real masonry achieves bond offset at corners by the corner block
-  // physically rotating (turning the corner) on alternate courses —
-  // a 3D mass model can't represent that without L-shaped geometry,
-  // so each wall just always renders its corner block at the corner.
-  // Two adjacent walls' corner blocks overlap at the same physical
-  // corner cube, but with identical block dims + colors the overlap
-  // is invisible — reads as one solid corner column.
+  // CORNER / CONTROL-JOINT ends — ONE wall owns the corner cube. The
+  // other wall's body extends INTO the corner space (its last block
+  // butts against the owner's corner block). Owner is determined
+  // deterministically from wall IDs (lower id owns). This avoids the
+  // dual-corner-column visual that emerged when both walls rendered
+  // their own corner block at the same position.
   //
   // Length-makeup (3/4 / cut blocks) is a separate concern handled by
   // the existing body-cell carving — not part of corner logic.
@@ -526,42 +523,74 @@ function segmentsForStraightWall(
   const rightIsFreeEnd =
     wall.endJunction.type === 'free' ||
     wall.endJunction.type === 't-junction'
+  const leftCornerNeighbor =
+    wall.startJunction.type === 'corner' ||
+    wall.startJunction.type === 'control-joint'
+      ? wall.startJunction.connectedWallIds?.[0]
+      : undefined
+  const rightCornerNeighbor =
+    wall.endJunction.type === 'corner' ||
+    wall.endJunction.type === 'control-joint'
+      ? wall.endJunction.connectedWallIds?.[0]
+      : undefined
+  // ownsCorner = this wall has the lower id of the pair. Owner renders
+  // its corner block at the corner; the OTHER wall extends body INTO
+  // the corner space (no end block on that side). Same every course
+  // (no per-course alternation) — keeps the wall consistent visually.
+  const ownsLeftCorner =
+    leftCornerNeighbor !== undefined && wall.id < leftCornerNeighbor
+  const ownsRightCorner =
+    rightCornerNeighbor !== undefined && wall.id < rightCornerNeighbor
+  const leftHasCornerJunction = leftCornerNeighbor !== undefined
+  const rightHasCornerJunction = rightCornerNeighbor !== undefined
 
   // ── Phase 1: build empty grid (per course: END + BODY cells + END) ──
   const grid: CourseEntry[] = courses.map((course) => {
     const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
     // Halves ONLY at free ends in stretcher bond's even courses.
-    // Corner / control-joint ends always get the full corner block.
     const useHalfLeft = isEvenStretcher && leftIsFreeEnd
     const useHalfRight = isEvenStretcher && rightIsFreeEnd
+
+    // Render decisions per end:
+    //  - free / t-junction: always render an end cell (corner or half)
+    //  - corner that this wall OWNS: render corner block at the end
+    //  - corner that this wall DOES NOT own: NO end cell here; body
+    //    cells extend INTO the corner cube up to the wall's full
+    //    length, butting against the owner's corner block in 3D space.
+    const renderLeftEnd = !leftHasCornerJunction || ownsLeftCorner
+    const renderRightEnd = !rightHasCornerJunction || ownsRightCorner
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    const leftEndWidth =
-      (useHalfLeft
-        ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
-        : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
-      1000
-    const rightEndWidth =
-      (useHalfRight
-        ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
-        : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
-      1000
-    // For jamb / merge logic — pick the WIDER of the two so jamb
-    // widths and merge thresholds don't undersize.
+    const leftEndWidth = renderLeftEnd
+      ? (useHalfLeft
+          ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+          : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
+        1000
+      : 0 // no end reserved — body cells start at 0
+    const rightEndWidth = renderRightEnd
+      ? (useHalfRight
+          ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+          : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
+        1000
+      : 0
+    // For jamb / merge logic — width of the corner block (the wall's
+    // notional end-cap width even when no end cell is rendered here).
+    const cornerWidth =
+      widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
     const endColor = colorOf(endCode)
-    const endWidth = Math.max(leftEndWidth, rightEndWidth)
+    const endWidth = Math.max(leftEndWidth || cornerWidth, rightEndWidth || cornerWidth)
     const bodyColor = colorOf(course.bodyCode)
     const bodyW =
       widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
 
     const cells: Cell[] = []
     if (length <= leftEndWidth + rightEndWidth) {
-      // Tiny wall — one end-coloured cell covers everything (use left).
+      // Tiny wall — single end-coloured cell covers everything.
       cells.push({
         role: 'END',
         code: leftEndCode,
@@ -570,13 +599,15 @@ function segmentsForStraightWall(
         s1: length,
       })
     } else {
-      cells.push({
-        role: 'END',
-        code: leftEndCode,
-        color: leftEndColor,
-        s0: 0,
-        s1: leftEndWidth,
-      })
+      if (renderLeftEnd) {
+        cells.push({
+          role: 'END',
+          code: leftEndCode,
+          color: leftEndColor,
+          s0: 0,
+          s1: leftEndWidth,
+        })
+      }
       let c = leftEndWidth
       const bodyEnd = length - rightEndWidth
       while (c < bodyEnd) {
@@ -592,13 +623,15 @@ function segmentsForStraightWall(
         }
         c += bodyW
       }
-      cells.push({
-        role: 'END',
-        code: rightEndCode,
-        color: rightEndColor,
-        s0: length - rightEndWidth,
-        s1: length,
-      })
+      if (renderRightEnd) {
+        cells.push({
+          role: 'END',
+          code: rightEndCode,
+          color: rightEndColor,
+          s0: length - rightEndWidth,
+          s1: length,
+        })
+      }
     }
     return { course, cells, endCode, endColor, endWidth, bodyW }
   })
