@@ -564,42 +564,53 @@ function segmentsForStraightWall(
     const useHalfLeft = isEvenStretcher && leftIsFreeEnd
     const useHalfRight = isEvenStretcher && rightIsFreeEnd
 
-    // Render decisions per end:
-    //  - free / t-junction: always render an end cell (corner or half)
-    //  - corner this wall owns this course: render corner block here.
-    //  - corner this wall doesn't own this course: NO end cell; body
-    //    extends INTO the corner cube up to the wall's full length,
-    //    butting against the owner's corner block in 3D space.
+    // Corner ends ALWAYS render a corner-coloured cell (no
+    // alternating between corner and body colors). What alternates is
+    // the WIDTH of that corner cell:
+    //   - On the course where THIS wall owns the corner (its corner
+    //     block runs along this wall): full cornerW wide.
+    //   - On the course where the OTHER wall owns: just halfW wide,
+    //     representing the wraparound face of the OTHER wall's corner
+    //     block visible on this wall's outside face at the corner.
+    //
+    // This natural alternation produces the stretcher bond offset in
+    // the body — body cells end at (length - cornerW) on owning
+    // courses, (length - halfW) on non-owning courses → bodies offset
+    // by halfW per course, just like 200×200×400 corner blocks
+    // stacking at 90° in real masonry.
+    const halfBlockW =
+      widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
+    const cornerWidth =
+      widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
+    const leftHasCornerJunction = leftPhase !== null
+    const rightHasCornerJunction = rightPhase !== null
     const ownsLeftThisCourse =
-      leftPhase !== null && ownsCornerThisCourse(leftPhase, course.courseNumber)
+      leftHasCornerJunction &&
+      ownsCornerThisCourse(leftPhase, course.courseNumber)
     const ownsRightThisCourse =
-      rightPhase !== null && ownsCornerThisCourse(rightPhase, course.courseNumber)
-    const renderLeftEnd = leftIsFreeEnd || ownsLeftThisCourse
-    const renderRightEnd = rightIsFreeEnd || ownsRightThisCourse
+      rightHasCornerJunction &&
+      ownsCornerThisCourse(rightPhase, course.courseNumber)
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    const leftEndWidth = renderLeftEnd
-      ? (useHalfLeft
-          ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
-          : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
-        1000
-      : 0 // no end reserved — body cells start at 0
-    const rightEndWidth = renderRightEnd
-      ? (useHalfRight
-          ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
-          : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
-        1000
-      : 0
-    // For jamb / merge logic — width of the corner block (the wall's
-    // notional end-cap width even when no end cell is rendered here).
-    const cornerWidth =
-      widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
+    // End-cell width per junction state:
+    //   - corner junction + this wall owns: full cornerW.
+    //   - corner junction + other wall owns: halfW (wraparound).
+    //   - free / t-junction: corner or half by parity (as before).
+    const leftEndWidth = leftHasCornerJunction
+      ? (ownsLeftThisCourse ? cornerWidth : halfBlockW)
+      : (useHalfLeft ? halfBlockW : cornerWidth)
+    const rightEndWidth = rightHasCornerJunction
+      ? (ownsRightThisCourse ? cornerWidth : halfBlockW)
+      : (useHalfRight ? halfBlockW : cornerWidth)
+    const renderLeftEnd = true
+    const renderRightEnd = true
+
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
     const endColor = colorOf(endCode)
-    const endWidth = Math.max(leftEndWidth || cornerWidth, rightEndWidth || cornerWidth)
+    const endWidth = Math.max(leftEndWidth, rightEndWidth)
     const bodyColor = colorOf(course.bodyCode)
     const bodyW =
       widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
