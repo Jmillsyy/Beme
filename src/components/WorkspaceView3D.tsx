@@ -227,9 +227,16 @@ function segmentsForStraightWall(
   colorMap: Map<string, string>,
   library: Record<string, Block>
 ): WallSegmentBox[] {
-  const sx = wall.startX / 1000
+  // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
+  // there from day 1 ("plan down" = "3D back"); the X negation mirrors
+  // the model so its on-screen left/right matches the plan's left/right
+  // when viewed from the camera's +X+Y+Z corner. Without it the camera
+  // angle would show plan-left walls on screen-right (and vice versa)
+  // because we're looking from the building's right side back toward
+  // its left.
+  const sx = -wall.startX / 1000
   const sz = -wall.startY / 1000
-  const ex = wall.endX / 1000
+  const ex = -wall.endX / 1000
   const ez = -wall.endY / 1000
   const dx = ex - sx
   const dz = ez - sz
@@ -555,8 +562,11 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     if (walls.length === 0) return [10, 12, 10]
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
     for (const w of walls) {
-      const sx = w.startX / 1000, sz = -w.startY / 1000
-      const ex = w.endX / 1000, ez = -w.endY / 1000
+      // Mirror X to match the negation in segmentsForStraightWall so
+      // the bounding box (and therefore the camera target) lines up
+      // with where the walls actually render.
+      const sx = -w.startX / 1000, sz = -w.startY / 1000
+      const ex = -w.endX / 1000, ez = -w.endY / 1000
       minX = Math.min(minX, sx, ex)
       maxX = Math.max(maxX, sx, ex)
       minZ = Math.min(minZ, sz, ez)
