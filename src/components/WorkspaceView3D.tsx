@@ -199,6 +199,45 @@ interface WallSegmentBox {
   thickness: number
   yRotation: number
   color: string
+  /** True for specialty blocks (cleanout, knockout, lintel, curve wedge,
+   *  bond beam). Renders with an emissive glow so they stand out from
+   *  the body / corner / half blocks that make up the bulk of the wall. */
+  highlight: boolean
+}
+
+/**
+ * Decide whether a given block code should be visually highlighted in
+ * the 3D view. Used to make specialty blocks (the ones with a specific
+ * structural purpose — cleanouts, knockouts, lintels, bond-beam tops,
+ * curve wedges) stand out from the regular body / corner / half blocks.
+ *
+ * Detection is two-pronged:
+ *   1. ROLE — base-course, base-tile, lintel, top-course, curve-tight.
+ *      Catches block codes the library has tagged for these roles.
+ *   2. NAME pattern — anything containing Knockout / Cleanout / Lintel /
+ *      Wedge / Bond Beam in its name. Catches blocks like 20.21 (Knockout
+ *      Corner) whose role is just 'corner' but whose NAME identifies it
+ *      as a specialty piece.
+ */
+const HIGHLIGHT_ROLES = new Set([
+  'base-course',
+  'base-tile',
+  'lintel',
+  'top-course',
+  'curve-tight',
+])
+const HIGHLIGHT_NAME_RE = /knockout|cleanout|lintel|wedge|bond.?beam/i
+
+function isHighlightedBlock(
+  code: BlockCode,
+  library: Record<string, Block>
+): boolean {
+  if (!code) return false
+  const block = library[code]
+  if (!block) return false
+  if (block.roles.some((r) => HIGHLIGHT_ROLES.has(r))) return true
+  if (HIGHLIGHT_NAME_RE.test(block.name)) return true
+  return false
 }
 
 /**
@@ -263,13 +302,17 @@ function segmentsForStraightWall(
   const boxes: WallSegmentBox[] = []
 
   /** Build a centred box from a span along local X (s0..s1, metres from
-   *  wall start) and a vertical band (y0..y1, metres from base). */
+   *  wall start) and a vertical band (y0..y1, metres from base). The
+   *  `code` argument is the block code this box represents — used to
+   *  flag specialty blocks (cleanout, knockout, lintel, etc.) for the
+   *  emissive glow highlight. */
   const buildBox = (
     s0: number,
     s1: number,
     y0: number,
     y1: number,
-    color: string
+    color: string,
+    code: BlockCode
   ): WallSegmentBox => {
     const localCx = (s0 + s1) / 2
     return {
@@ -281,6 +324,7 @@ function segmentsForStraightWall(
       thickness,
       yRotation,
       color,
+      highlight: isHighlightedBlock(code, library),
     }
   }
 
@@ -301,14 +345,14 @@ function segmentsForStraightWall(
     // Tiny wall (≤ 2 end-caps wide): render the whole course as a
     // single end-coloured box. Avoids negative-width body slabs.
     if (length <= endWidth * 2) {
-      boxes.push(buildBox(0, length, y0, y1, endColor))
+      boxes.push(buildBox(0, length, y0, y1, endColor, endCode))
       continue
     }
 
     // Left end-cap.
-    boxes.push(buildBox(0, endWidth, y0, y1, endColor))
+    boxes.push(buildBox(0, endWidth, y0, y1, endColor, endCode))
     // Right end-cap.
-    boxes.push(buildBox(length - endWidth, length, y0, y1, endColor))
+    boxes.push(buildBox(length - endWidth, length, y0, y1, endColor, endCode))
 
     // Body region: bound by [endWidth, length - endWidth], cut by any
     // openings whose y-range fully covers this course's y-range.
@@ -324,17 +368,17 @@ function segmentsForStraightWall(
       .sort((a, b) => a.s0 - b.s0)
 
     if (courseOpenings.length === 0) {
-      boxes.push(buildBox(bodyStart, bodyEnd, y0, y1, bodyColor))
+      boxes.push(buildBox(bodyStart, bodyEnd, y0, y1, bodyColor, bodyCode))
     } else {
       let cursor = bodyStart
       for (const op of courseOpenings) {
         if (op.s0 > cursor) {
-          boxes.push(buildBox(cursor, op.s0, y0, y1, bodyColor))
+          boxes.push(buildBox(cursor, op.s0, y0, y1, bodyColor, bodyCode))
         }
         cursor = Math.max(cursor, op.s1)
       }
       if (cursor < bodyEnd) {
-        boxes.push(buildBox(cursor, bodyEnd, y0, y1, bodyColor))
+        boxes.push(buildBox(cursor, bodyEnd, y0, y1, bodyColor, bodyCode))
       }
     }
 
@@ -350,21 +394,21 @@ function segmentsForStraightWall(
         // Course straddles the sill — render solid up to the sill line.
         const fillTop = Math.min(y1, op.sill)
         if (fillTop > y0) {
-          boxes.push(buildBox(op.start, op.end, y0, fillTop, bodyColor))
+          boxes.push(buildBox(op.start, op.end, y0, fillTop, bodyColor, bodyCode))
         }
       } else if (op.sill >= y1) {
         // Course is fully below the sill — fill the opening span solid.
-        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor))
+        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor, bodyCode))
       }
       // Slice of this course that lies ABOVE op.head.
       if (op.head > y0 && op.head < y1) {
         const fillBottom = Math.max(y0, op.head)
         if (fillBottom < y1) {
-          boxes.push(buildBox(op.start, op.end, fillBottom, y1, bodyColor))
+          boxes.push(buildBox(op.start, op.end, fillBottom, y1, bodyColor, bodyCode))
         }
       } else if (op.head <= y0) {
         // Course is fully above the head — fill the opening span solid.
-        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor))
+        boxes.push(buildBox(op.start, op.end, y0, y1, bodyColor, bodyCode))
       }
     }
   }
@@ -539,7 +583,19 @@ function Scene({
       {segments.map((s, i) => (
         <mesh key={i} position={[s.cx, s.cy, s.cz]} rotation={[0, s.yRotation, 0]}>
           <boxGeometry args={[s.length, s.heightM, s.thickness]} />
-          <meshStandardMaterial color={s.color} />
+          {/* Highlighted specialty blocks (cleanout / knockout / lintel /
+              curve wedge / bond beam) emit a glow of their own colour so
+              they stand out from the body / corner blocks around them.
+              Regular blocks render with a flat standard material. */}
+          {s.highlight ? (
+            <meshStandardMaterial
+              color={s.color}
+              emissive={s.color}
+              emissiveIntensity={0.45}
+            />
+          ) : (
+            <meshStandardMaterial color={s.color} />
+          )}
         </mesh>
       ))}
 
