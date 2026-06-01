@@ -508,12 +508,13 @@ function segmentsForStraightWall(
   // FREE / T-JUNCTION ends — stretcher bond's even courses use a half
   // block at the end. This is the ONLY place halves appear.
   //
-  // CORNER / CONTROL-JOINT ends — ONE wall owns the corner cube. The
-  // other wall's body extends INTO the corner space (its last block
-  // butts against the owner's corner block). Owner is determined
-  // deterministically from wall IDs (lower id owns). This avoids the
-  // dual-corner-column visual that emerged when both walls rendered
-  // their own corner block at the same position.
+  // CORNER / CONTROL-JOINT ends — ONE wall owns the corner cube
+  // PER COURSE. In stretcher bond ownership ALTERNATES per course
+  // (this is exactly how natural stretcher bond emerges at corners
+  // when 200×200×400 blocks stack at 90°). In stack bond the lower-id
+  // wall always owns. Whichever wall isn't the owner this course has
+  // its body extend INTO the corner space (its last body block butts
+  // against the owner's corner block).
   //
   // Length-makeup (3/4 / cut blocks) is a separate concern handled by
   // the existing body-cell carving — not part of corner logic.
@@ -533,16 +534,27 @@ function segmentsForStraightWall(
     wall.endJunction.type === 'control-joint'
       ? wall.endJunction.connectedWallIds?.[0]
       : undefined
-  // ownsCorner = this wall has the lower id of the pair. Owner renders
-  // its corner block at the corner; the OTHER wall extends body INTO
-  // the corner space (no end block on that side). Same every course
-  // (no per-course alternation) — keeps the wall consistent visually.
-  const ownsLeftCorner =
-    leftCornerNeighbor !== undefined && wall.id < leftCornerNeighbor
-  const ownsRightCorner =
-    rightCornerNeighbor !== undefined && wall.id < rightCornerNeighbor
-  const leftHasCornerJunction = leftCornerNeighbor !== undefined
-  const rightHasCornerJunction = rightCornerNeighbor !== undefined
+  // Corner phase: 'lead-odd' = this wall owns the corner on odd
+  // courses (and the OTHER wall owns on even). Determined deterministically
+  // from id comparison so the two walls have opposite phases.
+  type CornerPhase = 'lead-odd' | 'lead-even'
+  function cornerPhase(other: string): CornerPhase {
+    return wall.id < other ? 'lead-odd' : 'lead-even'
+  }
+  const leftPhase: CornerPhase | null = leftCornerNeighbor
+    ? cornerPhase(leftCornerNeighbor)
+    : null
+  const rightPhase: CornerPhase | null = rightCornerNeighbor
+    ? cornerPhase(rightCornerNeighbor)
+    : null
+  function ownsCornerThisCourse(
+    phase: CornerPhase | null,
+    courseNum: number
+  ): boolean {
+    if (!phase) return false
+    if (bondType === 'stack') return phase === 'lead-odd'
+    return phase === 'lead-odd' ? courseNum % 2 === 1 : courseNum % 2 === 0
+  }
 
   // ── Phase 1: build empty grid (per course: END + BODY cells + END) ──
   const grid: CourseEntry[] = courses.map((course) => {
@@ -554,12 +566,16 @@ function segmentsForStraightWall(
 
     // Render decisions per end:
     //  - free / t-junction: always render an end cell (corner or half)
-    //  - corner that this wall OWNS: render corner block at the end
-    //  - corner that this wall DOES NOT own: NO end cell here; body
-    //    cells extend INTO the corner cube up to the wall's full
-    //    length, butting against the owner's corner block in 3D space.
-    const renderLeftEnd = !leftHasCornerJunction || ownsLeftCorner
-    const renderRightEnd = !rightHasCornerJunction || ownsRightCorner
+    //  - corner this wall owns this course: render corner block here.
+    //  - corner this wall doesn't own this course: NO end cell; body
+    //    extends INTO the corner cube up to the wall's full length,
+    //    butting against the owner's corner block in 3D space.
+    const ownsLeftThisCourse =
+      leftPhase !== null && ownsCornerThisCourse(leftPhase, course.courseNumber)
+    const ownsRightThisCourse =
+      rightPhase !== null && ownsCornerThisCourse(rightPhase, course.courseNumber)
+    const renderLeftEnd = leftIsFreeEnd || ownsLeftThisCourse
+    const renderRightEnd = rightIsFreeEnd || ownsRightThisCourse
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
