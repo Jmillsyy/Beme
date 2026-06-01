@@ -741,12 +741,24 @@ function segmentsForStraightWall(
   // Codes / widths come from the library so any region's blocks
   // work — no hardcoded AU defaults.
   for (const entry of grid) {
-    const { course, cells, endCode, endColor, endWidth } = entry
+    const { course, cells } = entry
     const { y0, y1 } = course
     const openingsFull = wallOpenings
       .filter((o) => o.sill <= y0 + 0.001 && o.head >= y1 - 0.001)
       .sort((a, b) => a.start - b.start)
     if (openingsFull.length === 0) continue
+
+    // Per-course jamb code + width — alternates corner/half on
+    // stretcher bond, just like wall end caps. Stack bond always
+    // uses corner. This is what stops jamb columns at openings from
+    // rendering as stack bond (the user-visible 'no stack bond
+    // unless the wall type is stack' rule).
+    const isEvenStretcher =
+      bondType === 'stretcher' && course.courseNumber % 2 === 0
+    const jambCode = isEvenStretcher ? course.halfCode : course.cornerCode
+    const jambColor = colorOf(jambCode)
+    const jambW =
+      widthOf(jambCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
 
     for (let i = 0; i < openingsFull.length; i++) {
       const op = openingsFull[i]
@@ -754,33 +766,33 @@ function segmentsForStraightWall(
       const nextOp = i < openingsFull.length - 1 ? openingsFull[i + 1] : null
 
       // Left jamb of this opening — at [start, op.start].
-      // Start is the LARGER of: wall start (0), ideal endWidth back
+      // Start is the LARGER of: wall start (0), ideal jambW back
       // from op, OR midpoint of the pier between prev opening and
       // this one (so paired inner jambs meet rather than overlap).
-      const leftIdeal = op.start - endWidth
+      const leftIdeal = op.start - jambW
       const leftFloor = prevOp ? (prevOp.end + op.start) / 2 : 0
       const leftJambStart = Math.max(0, leftIdeal, leftFloor)
       if (op.start - leftJambStart > 0.02) {
         stampZone(cells, leftJambStart, op.start, {
           role: 'JAMB',
-          code: endCode,
-          color: endColor,
+          code: jambCode,
+          color: jambColor,
           s0: leftJambStart,
           s1: op.start,
         })
       }
 
       // Right jamb of this opening — at [op.end, end]. End is
-      // the SMALLER of: wall end (length), ideal endWidth forward
+      // the SMALLER of: wall end (length), ideal jambW forward
       // from op, OR midpoint of the pier with next opening.
-      const rightIdeal = op.end + endWidth
+      const rightIdeal = op.end + jambW
       const rightCeil = nextOp ? (op.end + nextOp.start) / 2 : length
       const rightJambEnd = Math.min(length, rightIdeal, rightCeil)
       if (rightJambEnd - op.end > 0.02) {
         stampZone(cells, op.end, rightJambEnd, {
           role: 'JAMB',
-          code: endCode,
-          color: endColor,
+          code: jambCode,
+          color: jambColor,
           s0: op.end,
           s1: rightJambEnd,
         })
