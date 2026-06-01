@@ -1295,6 +1295,12 @@ function Scene({
         enableDamping
         dampingFactor={0.1}
         enableZoom={false}
+        // Negative speeds invert the mouse direction so dragging
+        // "grabs and pulls" the scene rather than orbiting/panning
+        // the opposite way of the cursor — matches the natural
+        // expectation when interacting with a 3D model in a window.
+        rotateSpeed={-1}
+        panSpeed={-1}
         makeDefault
       />
       <CursorDolly />
