@@ -1478,10 +1478,18 @@ export function planWallLayout(
 
     // Start end block — at a shared corner we may SKIP emission if
     // another wall at the same corner owns the block this course.
-    // The s cursor still advances past the reserved end-width so the
-    // body grid stays at the same modular position (the cube space
-    // is "empty" on this wall's layout but filled by the OTHER
-    // wall's owning block when rendered together).
+    //
+    // When SKIPPED, the body cursor advances by only the corner CUBE
+    // DEPTH (= perpendicular wall's thickness) instead of the full
+    // cornerW. The cube boundary is the actual extent of the corner
+    // along this wall's axis; the perpendicular wall's owning corner
+    // block fills the cube AND extends 100-200mm past it into its
+    // own wall, NOT into this one. So body blocks on this wall can
+    // start right at the cube boundary — no gap.
+    //
+    // The shift between owning vs non-owning (cornerW - cubeDepth)
+    // is the natural stretcher-bond offset that real corner blocks
+    // produce when 200×200×400 blocks stack at 90°.
     const startIsCornerJunction =
       wall.startJunction.type === 'corner' ||
       wall.startJunction.type === 'control-joint'
@@ -1489,6 +1497,22 @@ export function planWallLayout(
       !cornerOwnership || !startIsCornerJunction
         ? true
         : cornerOwnership({ wallEnd: 'start', courseNumber })
+    // Perpendicular wall's thickness = corner cube depth on this
+    // wall's axis. Fallback to this wall's own thickness (almost
+    // always equal at a corner) then 190 if unknown.
+    const wallThickness =
+      thicknessByWallId?.[wall.id] ??
+      BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ??
+      190
+    const startNeighborId =
+      wall.startJunction.type === 'corner' ||
+      wall.startJunction.type === 'control-joint'
+        ? wall.startJunction.connectedWallIds?.[0]
+        : undefined
+    const startCubeDepth =
+      startNeighborId !== undefined
+        ? (thicknessByWallId?.[startNeighborId] ?? wallThickness)
+        : wallThickness
     if (ownsStartCorner) {
       layout.blocks.push({
         code: startBlock,
@@ -1500,8 +1524,11 @@ export function planWallLayout(
         widthMm: startEndWidth,
         courseIdx: i,
       })
+      s += startEndWidth + MORTAR_MM
+    } else {
+      // Skipped — body grid starts at the cube boundary, not cornerW.
+      s += startCubeDepth + MORTAR_MM
     }
-    s += startEndWidth + MORTAR_MM
 
     // Start lead-ins.
     for (let k = 0; k < startLeadInCount; k++) {
@@ -1556,11 +1583,12 @@ export function planWallLayout(
       s += leadInWidth + MORTAR_MM
     }
 
-    // End block — anchored to the wall's end so any rounding error
-    // accumulates in the body region (which is where the calc allows
-    // a cut block to absorb the gap). Same ownership rule as the
-    // start: skip if another wall at this corner owns the block this
-    // course.
+    // End block — anchored at the right end of the wall. Same
+    // ownership rule as the start: skip if another wall at this
+    // corner owns the block this course. When skipped, the corner
+    // cube boundary sits at (length - cubeDepth); body region
+    // extends to there so the gap that would otherwise sit between
+    // the last body block and the end gets filled.
     const endIsCornerJunction =
       wall.endJunction.type === 'corner' ||
       wall.endJunction.type === 'control-joint'
@@ -1568,6 +1596,15 @@ export function planWallLayout(
       !cornerOwnership || !endIsCornerJunction
         ? true
         : cornerOwnership({ wallEnd: 'end', courseNumber })
+    const endNeighborId =
+      wall.endJunction.type === 'corner' ||
+      wall.endJunction.type === 'control-joint'
+        ? wall.endJunction.connectedWallIds?.[0]
+        : undefined
+    const endCubeDepth =
+      endNeighborId !== undefined
+        ? (thicknessByWallId?.[endNeighborId] ?? wallThickness)
+        : wallThickness
     if (ownsEndCorner) {
       layout.blocks.push({
         code: endBlock,
@@ -1579,6 +1616,12 @@ export function planWallLayout(
         widthMm: endEndWidth,
         courseIdx: i,
       })
+    } else {
+      // Non-owning end: no corner block emitted. The bodies already
+      // emitted above can run up to (length - cubeDepth). If the
+      // last body falls short of the cube boundary, we leave the
+      // small remaining gap — it absorbs into the mortar bed.
+      void endCubeDepth
     }
 
     // Paired-tile (cleanouts): the tally adds ceil(bodyCount /
