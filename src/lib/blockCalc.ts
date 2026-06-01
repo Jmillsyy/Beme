@@ -1197,10 +1197,71 @@ export interface WallLayout {
 }
 
 /**
+ * Decides which wall at a corner places the corner block for a given
+ * course. Returns true if THIS wall is the owner of the corner at
+ * `end` ('start' or 'end' of THIS wall) on the given 1-based course.
+ *
+ * Two-wall corners: alternates per course so the cumulative count
+ * across both walls equals N (one corner block per course at the
+ * cube), matching what calculateProjectTally produces after its
+ * deduplication subtraction.
+ *
+ * 3+ wall corners: rotates ownership round-robin by sorted wall id.
+ *
+ * Free / T-junction / control-joint ends: not a shared corner — caller
+ * should not consult this function (those ends always own their end
+ * block).
+ */
+export type CornerOwnership = (args: {
+  wallEnd: 'start' | 'end'
+  courseNumber: number
+}) => boolean
+
+/**
+ * Build a CornerOwnership function for a given wall, deriving phase
+ * from its junction `connectedWallIds`. Walls connect at corners with
+ * one or more other walls; this function decides which wall owns the
+ * shared corner block on each course by id-sorted index modulo the
+ * participant count.
+ *
+ * For a 2-wall corner the result is exactly opposite-phase between
+ * the two walls — odd courses belong to the lower-id wall, even to
+ * the higher-id wall. That's the natural stretcher-bond alternation
+ * a real corner block produces when 200×200×400 blocks stack at 90°.
+ */
+export function cornerOwnershipFor(wall: Wall): CornerOwnership {
+  const partySortedAt = (junction: Wall['startJunction']) => {
+    if (junction.type !== 'corner' && junction.type !== 'control-joint') {
+      return null
+    }
+    const others = junction.connectedWallIds ?? []
+    if (others.length === 0) return null
+    const all = [...others, wall.id].sort()
+    const myIdx = all.indexOf(wall.id)
+    return { all, myIdx, n: all.length }
+  }
+  const startInfo = partySortedAt(wall.startJunction)
+  const endInfo = partySortedAt(wall.endJunction)
+  return ({ wallEnd, courseNumber }) => {
+    const info = wallEnd === 'start' ? startInfo : endInfo
+    if (!info) return true // Not a shared corner — caller owns it.
+    return (courseNumber - 1) % info.n === info.myIdx
+  }
+}
+
+/**
  * Returns the positioned-block layout for a wall using the same rules
  * as `calculateWallTally`. The sum of `blocks` by code MUST match the
  * tally produced for the same inputs (the dev-time verifier asserts
  * this).
+ *
+ * `cornerOwnership` (optional) deduplicates corner blocks at shared
+ * corners. Without it the layout matches per-wall `calculateWallTally`
+ * exactly (each wall counts its full corner column at every corner).
+ * With it, the layout only emits a corner block when this wall is the
+ * owner of the corner for that course — total corners across all
+ * walls then equals the project-level deduplicated count produced by
+ * `calculateProjectTally` (which subtracts (n-1) per shared corner).
  *
  * Curved walls fall through to a simpler centreline-based layout for
  * now; openings are not yet applied (TODO).
@@ -1210,7 +1271,8 @@ export function planWallLayout(
   makeup: WallMakeup,
   openings: Opening[] = [],
   thicknessByWallId?: Record<string, number>,
-  wallsById?: Record<string, Wall>
+  wallsById?: Record<string, Wall>,
+  cornerOwnership?: CornerOwnership
 ): WallLayout {
   // Curved walls: return a minimal stub layout (no blocks) for now.
   // The 3D code's existing curve sampler still works as the fallback
@@ -1414,17 +1476,31 @@ export function planWallLayout(
       continue
     }
 
-    // Start end block.
-    layout.blocks.push({
-      code: startBlock,
-      role:
-        BLOCK_LIBRARY[startBlock]?.roles.includes('corner')
-          ? 'corner'
-          : 'end-half',
-      s0Mm: s,
-      widthMm: startEndWidth,
-      courseIdx: i,
-    })
+    // Start end block — at a shared corner we may SKIP emission if
+    // another wall at the same corner owns the block this course.
+    // The s cursor still advances past the reserved end-width so the
+    // body grid stays at the same modular position (the cube space
+    // is "empty" on this wall's layout but filled by the OTHER
+    // wall's owning block when rendered together).
+    const startIsCornerJunction =
+      wall.startJunction.type === 'corner' ||
+      wall.startJunction.type === 'control-joint'
+    const ownsStartCorner =
+      !cornerOwnership || !startIsCornerJunction
+        ? true
+        : cornerOwnership({ wallEnd: 'start', courseNumber })
+    if (ownsStartCorner) {
+      layout.blocks.push({
+        code: startBlock,
+        role:
+          BLOCK_LIBRARY[startBlock]?.roles.includes('corner')
+            ? 'corner'
+            : 'end-half',
+        s0Mm: s,
+        widthMm: startEndWidth,
+        courseIdx: i,
+      })
+    }
     s += startEndWidth + MORTAR_MM
 
     // Start lead-ins.
@@ -1482,17 +1558,28 @@ export function planWallLayout(
 
     // End block — anchored to the wall's end so any rounding error
     // accumulates in the body region (which is where the calc allows
-    // a cut block to absorb the gap).
-    layout.blocks.push({
-      code: endBlock,
-      role:
-        BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
-          ? 'corner'
-          : 'end-half',
-      s0Mm: Math.max(s, lengthMm - endEndWidth),
-      widthMm: endEndWidth,
-      courseIdx: i,
-    })
+    // a cut block to absorb the gap). Same ownership rule as the
+    // start: skip if another wall at this corner owns the block this
+    // course.
+    const endIsCornerJunction =
+      wall.endJunction.type === 'corner' ||
+      wall.endJunction.type === 'control-joint'
+    const ownsEndCorner =
+      !cornerOwnership || !endIsCornerJunction
+        ? true
+        : cornerOwnership({ wallEnd: 'end', courseNumber })
+    if (ownsEndCorner) {
+      layout.blocks.push({
+        code: endBlock,
+        role:
+          BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
+            ? 'corner'
+            : 'end-half',
+        s0Mm: Math.max(s, lengthMm - endEndWidth),
+        widthMm: endEndWidth,
+        courseIdx: i,
+      })
+    }
 
     // Paired-tile (cleanouts): the tally adds ceil(bodyCount /
     // pairedPer) of the tile. We emit those tiles paired with body
@@ -1563,10 +1650,15 @@ export function verifyLayoutMatchesTally(
   makeup: WallMakeup,
   openings: Opening[] = [],
   thicknessByWallId?: Record<string, number>,
-  wallsById?: Record<string, Wall>
+  wallsById?: Record<string, Wall>,
+  cornerOwnershipApplied = false
 ): { ok: boolean; differences: Array<{ code: BlockCode; layout: number; tally: number }> } {
-  // Skip the check while openings live in calculateWallTally only.
-  if (openings.length > 0 || layout.isCurved) {
+  // Skip the check while openings live in calculateWallTally only,
+  // for curved walls (not yet handled by layout), and when corner
+  // ownership was applied — the layout intentionally drops corners
+  // on non-owning courses, so its per-wall tally is BELOW
+  // calculateWallTally by design.
+  if (openings.length > 0 || layout.isCurved || cornerOwnershipApplied) {
     return { ok: true, differences: [] }
   }
   const layoutTally = tallyFromLayout(layout)

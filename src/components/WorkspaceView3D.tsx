@@ -58,6 +58,7 @@ import { selectBlockLintel } from '../lib/lintels'
 import {
   planWallLayout,
   verifyLayoutMatchesTally,
+  cornerOwnershipFor,
   type WallLayout,
 } from '../lib/blockCalc'
 
@@ -1388,17 +1389,26 @@ function Scene({
         if (!wallHasOpenings) {
           const wallsByIdMap: Record<string, Wall> = {}
           for (const w of walls) wallsByIdMap[w.id] = w
+          // Corner ownership: at each shared corner, only ONE wall
+          // emits the corner block per course (alternating per
+          // course). The cumulative count across both walls matches
+          // calculateProjectTally's deduplicated total — and gives
+          // visible stretcher-bond alternation at corners in 3D.
+          const ownership = cornerOwnershipFor(wall)
           const layout = planWallLayout(
             wall,
             wr.makeup,
             [],
             wallThicknessByWallId,
-            wallsByIdMap
+            wallsByIdMap,
+            ownership
           )
-          // Dev-time sanity check: layout aggregated → tally MUST
-          // match calculateWallTally. Logs once per disagreement so
-          // we surface drift if anyone edits one path without the
-          // other.
+          // Dev-time sanity check: layout aggregated → tally check.
+          // With ownership applied, the per-wall tally is below
+          // calculateWallTally by design (corners deduplicated), so
+          // the verifier no-ops in this mode. Project-level
+          // verification would need a separate pass across all walls
+          // — a TODO once openings + curves are handled too.
           if (import.meta.env.DEV) {
             const check = verifyLayoutMatchesTally(
               layout,
@@ -1406,7 +1416,8 @@ function Scene({
               wr.makeup,
               [],
               wallThicknessByWallId,
-              wallsByIdMap
+              wallsByIdMap,
+              /* cornerOwnershipApplied */ true
             )
             if (!check.ok) {
               // eslint-disable-next-line no-console
