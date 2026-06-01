@@ -55,6 +55,7 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { buildBlockColorMap } from '../lib/blockColors'
+import { selectBlockLintel } from '../lib/lintels'
 
 // ---------- Constants ----------
 
@@ -353,13 +354,27 @@ function segmentsForStraightWall(
     }
   }
 
-  /** Walk a horizontal span [s0, s1] in body-block-width increments and
-   *  emit one box per block. The block width comes from the library so
-   *  a 290mm block stays 290mm in 3D. Any leftover at the end (less
-   *  than a full block) renders as a smaller block — represents a cut.
-   *  Used for the body region of each course, AND for sill / head fills
-   *  behind partially-crossing openings (so the visible blocks line up
-   *  with the rest of the course). */
+  /** Walk a horizontal span [spanStart, spanEnd] and emit one box per
+   *  body block, ALIGNED to the course's natural block grid anchored
+   *  at `gridOrigin`. The block width comes from the library so a
+   *  290mm block stays 290mm in 3D.
+   *
+   *  Why grid alignment matters: head-fill / sill-fill spans don't
+   *  start at the course's natural body-block boundary — they start
+   *  at the opening's edge. Without grid alignment, head-fill blocks
+   *  would start at the opening edge regardless of the course's bond,
+   *  making every course above an opening look like stack bond (rows
+   *  aligned) even when the wall is stretcher.
+   *
+   *  Grid origin = the course's end-cap width (cornerW on odd courses,
+   *  halfW on even). Body blocks naturally start at that offset and
+   *  step by bodyW. By computing block boundaries relative to that
+   *  origin (not the span start), head-fill blocks line up with the
+   *  rest of the course's bond — including the stretcher offset that
+   *  makes even / odd courses staircase. Blocks at the span edges are
+   *  clipped to [spanStart, spanEnd] so partial blocks show as cuts
+   *  (matching real masonry where the bricklayer cuts a block at an
+   *  opening edge). */
   const emitBlocksInSpan = (
     spanStart: number,
     spanEnd: number,
@@ -368,25 +383,44 @@ function segmentsForStraightWall(
     bodyCode: BlockCode,
     bodyColor: string,
     bodyW: number,
-    offsetFromStart: number = 0
+    gridOrigin: number
   ) => {
-    // offsetFromStart shifts where block boundaries land along the
-    // wall — used implicitly via where spanStart begins on each
-    // course (stretcher bond's halfW vs cornerW end cap widths give
-    // even / odd courses naturally-offset body starts).
-    let cursor = spanStart + offsetFromStart
-    // Don't emit blocks before spanStart even if offsetFromStart is
-    // negative — clamp.
-    if (cursor < spanStart) cursor = spanStart
+    // First grid line at or before spanStart.
+    const firstIdx = Math.floor((spanStart - gridOrigin) / bodyW)
+    let cursor = gridOrigin + firstIdx * bodyW
     while (cursor < spanEnd) {
       const blockEnd = Math.min(cursor + bodyW, spanEnd)
-      const blockWidth = blockEnd - cursor
+      const blockStart = Math.max(cursor, spanStart)
+      const blockWidth = blockEnd - blockStart
       if (blockWidth > 0.02) {
-        boxes.push(buildBox(cursor, blockEnd, y0, y1, bodyColor, bodyCode))
+        boxes.push(
+          buildBox(blockStart, blockEnd, y0, y1, bodyColor, bodyCode)
+        )
       }
-      cursor = blockEnd
+      cursor += bodyW
     }
   }
+
+  /** Pre-compute lintel info per opening — for each opening, the lintel
+   *  block code and which course (1-indexed from bottom) the lintel sits
+   *  in. Lintel course = the FIRST course whose bottom is at or above
+   *  the opening's head height. Null when the library has no lintel
+   *  block tagged. */
+  const wallHeightMm = totalHeightM * 1000
+  const lintelByOpening = wallOpenings.map((op) => {
+    const headHeightMm = wallHeightMm - op.sill * 1000 - (op.head - op.sill) * 1000
+    if (headHeightMm <= 0) return null
+    const spec = selectBlockLintel(headHeightMm)
+    if (!spec) return null
+    const lintelCourse = courses.find((c) => c.y0 >= op.head - 0.001)
+    if (!lintelCourse) return null
+    return {
+      code: spec.code as BlockCode,
+      courseNumber: lintelCourse.courseNumber,
+      spanStart: op.start,
+      spanEnd: op.end,
+    }
+  })
 
   /** Push a mortar fill box at the requested span. Bypasses buildBox so
    *  it doesn't get the MORTAR_GAP_M inset (mortar should fill the gaps
@@ -475,18 +509,31 @@ function segmentsForStraightWall(
       .filter((o) => o.s1 > o.s0)
       .sort((a, b) => a.s0 - b.s0)
 
+    // Grid origin for this course's body blocks — anchors emitBlocksInSpan
+    // so head / sill fills inherit the course's stretcher offset instead
+    // of starting fresh at each opening edge (which made every course
+    // above an opening look like stack bond).
+    const gridOrigin = endWidth
+
+    // Lintel for the course — if any opening's lintel sits in this
+    // course, render the lintel block (single highlighted box) at the
+    // opening span and skip body-block emission across that span.
+    const lintelsHere = lintelByOpening.filter(
+      (l) => l && l.courseNumber === course.courseNumber
+    ) as { code: BlockCode; courseNumber: number; spanStart: number; spanEnd: number }[]
+
     if (courseOpenings.length === 0) {
-      emitBlocksInSpan(bodyStart, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW)
+      emitBlocksInSpan(bodyStart, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
     } else {
       let cursor = bodyStart
       for (const op of courseOpenings) {
         if (op.s0 > cursor) {
-          emitBlocksInSpan(cursor, op.s0, y0, y1, bodyCode, bodyColor, bodyW)
+          emitBlocksInSpan(cursor, op.s0, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
         }
         cursor = Math.max(cursor, op.s1)
       }
       if (cursor < bodyEnd) {
-        emitBlocksInSpan(cursor, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW)
+        emitBlocksInSpan(cursor, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
       }
     }
 
@@ -494,8 +541,29 @@ function segmentsForStraightWall(
     // Body colour fills the portion of the opening's span that falls
     // ABOVE the opening's head OR BELOW its sill, at this course's
     // y-range. So a 1200mm-high window leaves the courses below the
-    // sill + above the head solid behind it. Use emitBlocksInSpan so
-    // the visible blocks line up with the rest of the course's bond.
+    // sill + above the head solid behind it. Pass gridOrigin so the
+    // visible blocks line up with the rest of the course's bond
+    // (stretcher offset propagates above/below openings correctly).
+    //
+    // Skips opening spans where a lintel sits in this course — the
+    // lintel render below replaces the head fill at that span.
+    const lintelSpans = lintelsHere.map((l) => ({ s0: l.spanStart, s1: l.spanEnd }))
+    const skipLintelSpans = (s0: number, s1: number, ...args: [number, number, BlockCode, string, number, number]) => {
+      // Emit blocks in [s0, s1] except where a lintel covers this course.
+      const sortedLintels = lintelSpans
+        .filter((l) => l.s1 > s0 && l.s0 < s1)
+        .sort((a, b) => a.s0 - b.s0)
+      if (sortedLintels.length === 0) {
+        emitBlocksInSpan(s0, s1, ...args)
+        return
+      }
+      let cur = s0
+      for (const l of sortedLintels) {
+        if (l.s0 > cur) emitBlocksInSpan(cur, Math.min(l.s0, s1), ...args)
+        cur = Math.max(cur, l.s1)
+      }
+      if (cur < s1) emitBlocksInSpan(cur, s1, ...args)
+    }
     for (const op of wallOpenings) {
       // Slice of this course that lies BELOW op.sill: course is below
       // the opening.
@@ -503,22 +571,30 @@ function segmentsForStraightWall(
         // Course straddles the sill — render solid up to the sill line.
         const fillTop = Math.min(y1, op.sill)
         if (fillTop > y0) {
-          emitBlocksInSpan(op.start, op.end, y0, fillTop, bodyCode, bodyColor, bodyW)
+          skipLintelSpans(op.start, op.end, y0, fillTop, bodyCode, bodyColor, bodyW, gridOrigin)
         }
       } else if (op.sill >= y1) {
         // Course is fully below the sill — fill the opening span solid.
-        emitBlocksInSpan(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW)
+        skipLintelSpans(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
       }
       // Slice of this course that lies ABOVE op.head.
       if (op.head > y0 && op.head < y1) {
         const fillBottom = Math.max(y0, op.head)
         if (fillBottom < y1) {
-          emitBlocksInSpan(op.start, op.end, fillBottom, y1, bodyCode, bodyColor, bodyW)
+          skipLintelSpans(op.start, op.end, fillBottom, y1, bodyCode, bodyColor, bodyW, gridOrigin)
         }
       } else if (op.head <= y0) {
         // Course is fully above the head — fill the opening span solid.
-        emitBlocksInSpan(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW)
+        skipLintelSpans(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
       }
+    }
+
+    // Lintel render — single box per lintel at its opening span,
+    // exactly one course tall, using the lintel block's code (which
+    // is highlighted via emissive thanks to isHighlightedBlock).
+    for (const l of lintelsHere) {
+      const lintelColor = colorOf(l.code)
+      boxes.push(buildBox(l.spanStart, l.spanEnd, y0, y1, lintelColor, l.code))
     }
   }
 
@@ -594,6 +670,24 @@ function Scene({
       if (!wr) continue
       for (const c of wr.courses) {
         allCodes.push(c.bodyCode, c.cornerCode, c.halfCode)
+      }
+    }
+    // Lintel codes — collected for every opening on a block wall so the
+    // lintel block gets its own distinct palette slot. selectBlockLintel
+    // resolves per opening's head height; null if the library carries
+    // no lintel-tagged block.
+    for (const wall of walls) {
+      if (wall.trade === 'brick') continue
+      const heightMm =
+        typeof wall.heightMmOverride === 'number'
+          ? wall.heightMmOverride
+          : makeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
+      const wallOpenings = openings.filter((o) => o.wallId === wall.id)
+      for (const op of wallOpenings) {
+        const headHeightMm = heightMm - op.sillHeightMm - op.heightMm
+        if (headHeightMm <= 0) continue
+        const spec = selectBlockLintel(headHeightMm)
+        if (spec) allCodes.push(spec.code)
       }
     }
     const colorMap = buildBlockColorMap(allCodes)
