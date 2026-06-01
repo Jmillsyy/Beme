@@ -55,6 +55,11 @@ import {
 } from '../lib/makeups'
 import { buildBlockColorMap } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
+import {
+  planWallLayout,
+  verifyLayoutMatchesTally,
+  type WallLayout,
+} from '../lib/blockCalc'
 
 // ---------- Constants ----------
 
@@ -285,6 +290,104 @@ function isHighlightedBlock(
   if (block.roles.some((r) => HIGHLIGHT_ROLES.has(r))) return true
   if (HIGHLIGHT_NAME_RE.test(block.name)) return true
   return false
+}
+
+/**
+ * Convert a tally-aligned `WallLayout` (from `lib/blockCalc`) into 3D
+ * sub-boxes. Each PositionedBlock becomes exactly one box, sized at
+ * the block's library face width × course face height, positioned in
+ * wall-local s/y coordinates and transformed to world space.
+ *
+ * This path GUARANTEES the user sees exactly what the export tally
+ * counts — same code paths produce the layout for both renderer and
+ * tally aggregation. Used for non-curved walls without openings;
+ * curves and openings fall back to the legacy `segmentsForStraightWall`
+ * until `planWallLayout` learns to emit jambs / lintels / curve
+ * samples.
+ */
+function segmentsFromWallLayout(
+  wall: Wall,
+  layout: WallLayout,
+  thicknessMm: number,
+  colorMap: Map<string, string>,
+  library: Record<string, Block>
+): WallSegmentBox[] {
+  // Same plan→3D mapping as segmentsForStraightWall: negate both X
+  // and Y so the rendered model lines up with the plan view.
+  const sx = -wall.startX / 1000
+  const sz = -wall.startY / 1000
+  const ex = -wall.endX / 1000
+  const ez = -wall.endY / 1000
+  const dx = ex - sx
+  const dz = ez - sz
+  const wallLenM = Math.hypot(dx, dz)
+  if (wallLenM === 0 || layout.blocks.length === 0) return []
+  const yRotation = Math.atan2(-dz, dx)
+  const thickness = thicknessMm / 1000
+  const dirX = dx / wallLenM
+  const dirZ = dz / wallLenM
+
+  // Mortar joint visualisation: each box is inset slightly on edges
+  // that face a neighbour, so adjacent blocks read as discrete units.
+  // Outer wall edges and the wall base / top are flush (no inset)
+  // for clean corners.
+  const halfGap = MORTAR_GAP_M / 2
+  const totalHeightM = layout.heightMm / 1000
+
+  const boxes: WallSegmentBox[] = []
+  const colorOf = (code: BlockCode) =>
+    colorMap.get(code) ?? DEFAULT_WALL_COLOR
+
+  for (const block of layout.blocks) {
+    // Paired tiles sit inside the wall cavity (cleanout backing) and
+    // don't have a face on the exterior to render. Skip them so the
+    // 3D doesn't show stray boxes at body interior positions.
+    if (block.role === 'paired-tile') continue
+
+    const course = layout.courses[block.courseIdx]
+    if (!course) continue
+
+    // Convert mm → m.
+    const s0 = block.s0Mm / 1000
+    const s1 = (block.s0Mm + block.widthMm) / 1000
+    const y0 = course.yBottomMm / 1000
+    const y1 = (course.yBottomMm + course.heightMm) / 1000
+
+    // Clamp s to wall length so cut blocks don't overhang the model
+    // (the tally still counts the full block; here we just trim the
+    // visible face).
+    const cs0 = Math.max(0, Math.min(wallLenM, s0))
+    const cs1 = Math.max(0, Math.min(wallLenM, s1))
+    if (cs1 - cs0 < 0.001) continue
+
+    // Mortar-style inset on edges that face a neighbour. Edges
+    // touching the wall envelope stay flush.
+    const leftInset = cs0 < 0.001 ? 0 : halfGap
+    const rightInset = cs1 > wallLenM - 0.001 ? 0 : halfGap
+    const bottomInset = y0 < 0.001 ? 0 : halfGap
+    const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
+
+    const aS0 = cs0 + leftInset
+    const aS1 = cs1 - rightInset
+    const aY0 = y0 + bottomInset
+    const aY1 = y1 - topInset
+    if (aS1 - aS0 < 0.001 || aY1 - aY0 < 0.001) continue
+
+    const localCx = (aS0 + aS1) / 2
+    boxes.push({
+      cx: sx + dirX * localCx,
+      cy: (aY0 + aY1) / 2,
+      cz: sz + dirZ * localCx,
+      length: aS1 - aS0,
+      heightM: aY1 - aY0,
+      thickness,
+      yRotation,
+      color: colorOf(block.code),
+      highlight: isHighlightedBlock(block.code, library),
+    })
+  }
+
+  return boxes
 }
 
 /**
@@ -1273,12 +1376,63 @@ function Scene({
           )
         )
       } else {
-        out.push(
-          ...segmentsForStraightWall(
-            wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
-            bondType, colorMap, library, wallThicknessByWallId
+        // Use the tally-aligned layout path when the wall has no
+        // openings. The layout enumerates exactly the blocks the
+        // export tally counts (verifyLayoutMatchesTally confirms it
+        // at dev-time), so what the user sees IS what gets exported.
+        //
+        // Openings still take the legacy path until planWallLayout
+        // learns to emit jambs / lintels / body-subtraction under
+        // openings. Tracked as the follow-up to task #62.
+        const wallHasOpenings = openings.some((o) => o.wallId === wall.id)
+        if (!wallHasOpenings) {
+          const wallsByIdMap: Record<string, Wall> = {}
+          for (const w of walls) wallsByIdMap[w.id] = w
+          const layout = planWallLayout(
+            wall,
+            wr.makeup,
+            [],
+            wallThicknessByWallId,
+            wallsByIdMap
           )
-        )
+          // Dev-time sanity check: layout aggregated → tally MUST
+          // match calculateWallTally. Logs once per disagreement so
+          // we surface drift if anyone edits one path without the
+          // other.
+          if (import.meta.env.DEV) {
+            const check = verifyLayoutMatchesTally(
+              layout,
+              wall,
+              wr.makeup,
+              [],
+              wallThicknessByWallId,
+              wallsByIdMap
+            )
+            if (!check.ok) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `[3D layout] tally mismatch for wall ${wall.id}:`,
+                check.differences
+              )
+            }
+          }
+          out.push(
+            ...segmentsFromWallLayout(
+              wall,
+              layout,
+              thicknessMm,
+              colorMap,
+              library
+            )
+          )
+        } else {
+          out.push(
+            ...segmentsForStraightWall(
+              wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
+              bondType, colorMap, library, wallThicknessByWallId
+            )
+          )
+        }
       }
     })
 
