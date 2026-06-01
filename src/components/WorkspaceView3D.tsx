@@ -486,7 +486,7 @@ function segmentsForStraightWall(
   // emitted last in spans that exclude both opening voids and lintel
   // footprints → no mortar bleeds through windows or behind lintels.
 
-  type CellRole = 'END' | 'BODY' | 'JAMB' | 'REMOVED'
+  type CellRole = 'END' | 'BODY' | 'JAMB' | 'STRETCHER_HALF' | 'REMOVED'
   interface Cell {
     role: CellRole
     code: BlockCode
@@ -546,6 +546,22 @@ function segmentsForStraightWall(
     const bodyW =
       widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
 
+    // Stretcher offset at corner ends: real masonry can't alternate
+    // corner/half AT the corner (the adjacent wall's corner block
+    // claims that position). Instead, even courses insert a HALF block
+    // immediately INSIDE the corner — shifting the body grid by halfW
+    // for the bond offset. So:
+    //   - Odd: |corner|body|body|...|body|corner|
+    //   - Even: |corner|half|body|...|body|half|corner|
+    // Only fires at corner / control-joint ends with stretcher bond
+    // on even courses. Free ends keep the simpler alternation
+    // (corner/half at the actual end cap).
+    const insertHalfAfterLeftCorner = isEvenStretcher && !leftIsFreeEnd
+    const insertHalfBeforeRightCorner = isEvenStretcher && !rightIsFreeEnd
+    const halfBlockW =
+      widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
+    const halfColor = colorOf(course.halfCode)
+
     const cells: Cell[] = []
     if (length <= leftEndWidth + rightEndWidth) {
       // Tiny wall — one end-coloured cell covers everything (use left).
@@ -564,8 +580,22 @@ function segmentsForStraightWall(
         s0: 0,
         s1: leftEndWidth,
       })
-      const bodyEnd = length - rightEndWidth
       let cursor = leftEndWidth
+      // Stretcher offset: half inside left corner on even courses.
+      if (insertHalfAfterLeftCorner && cursor + halfBlockW < length - rightEndWidth) {
+        cells.push({
+          role: 'STRETCHER_HALF',
+          code: course.halfCode,
+          color: halfColor,
+          s0: cursor,
+          s1: cursor + halfBlockW,
+        })
+        cursor += halfBlockW
+      }
+      // Body region: cursor → bodyEnd. bodyEnd reserves the right end
+      // cap + (optional) right-corner offset half.
+      const rightHalfReserve = insertHalfBeforeRightCorner ? halfBlockW : 0
+      const bodyEnd = length - rightEndWidth - rightHalfReserve
       while (cursor < bodyEnd) {
         const cellEnd = Math.min(cursor + bodyW, bodyEnd)
         if (cellEnd - cursor > 0.02) {
@@ -578,6 +608,16 @@ function segmentsForStraightWall(
           })
         }
         cursor += bodyW
+      }
+      // Stretcher offset: half inside right corner on even courses.
+      if (insertHalfBeforeRightCorner) {
+        cells.push({
+          role: 'STRETCHER_HALF',
+          code: course.halfCode,
+          color: halfColor,
+          s0: length - rightEndWidth - halfBlockW,
+          s1: length - rightEndWidth,
+        })
       }
       cells.push({
         role: 'END',
