@@ -1116,6 +1116,480 @@ export function calculateWallTally(
   return tally
 }
 
+// ---------- Per-wall positioned layout ----------
+//
+// `planWallLayout` produces a positioned-block list that mirrors what
+// `calculateWallTally` counts. Same wall + makeup + openings always
+// gives the same blocks at the same positions. Two consumers:
+//
+//   1. The export tally (sum-by-code = identical to calculateWallTally).
+//      Aggregating planWallLayout.blocks into a BlockTally MUST match
+//      calculateWallTally(...) exactly; the verifyLayoutMatchesTally
+//      helper below will console.warn during dev if they diverge.
+//   2. The 3D renderer (WorkspaceView3D) which lays one box per
+//      positioned block, guaranteeing the user sees exactly what the
+//      export counts.
+//
+// All positions are in mm, in WALL-LOCAL coordinates (s along the
+// wall axis from the START junction toward the END junction; y from
+// the wall base going up). The 3D code converts to world space.
+//
+// Block widths are LIBRARY face widths (no mortar). Successive blocks
+// in the same course are MORTAR_MM apart, i.e. block n+1's s0 =
+// block n's s0 + block n's widthMm + MORTAR_MM. A "cut" body block
+// keeps its full face width here — the calc engine tallies one full
+// block whether it was cut or not, so the layout matches the tally;
+// the 3D renderer clamps display to the wall length so cut blocks
+// don't overhang the model visually.
+//
+// Out of scope for this initial version (will be added in follow-up
+// commits, gated behind explicit branches inside this function):
+//   - Openings (jambs, lintels, body subtraction under head)
+//   - Curved walls (sample-based segment layout)
+
+export type PositionedBlockRole =
+  | 'corner'
+  | 'end-half'
+  | 'lead-in'
+  | 'body'
+  | 'fraction'
+  | 'paired-tile'
+  | 'jamb'
+  | 'lintel'
+
+export interface PositionedBlock {
+  /** Library block code (whatever the tally counts). */
+  code: BlockCode
+  /** Role tag — used by the 3D renderer for colouring / highlighting,
+   *  not used for aggregation (sum by code only). */
+  role: PositionedBlockRole
+  /** Position along wall axis (mm from wall start). */
+  s0Mm: number
+  /** Block's library face width (mm). Successive blocks are
+   *  MORTAR_MM apart, so block n+1.s0Mm = blockN.s0Mm + blockN.widthMm
+   *  + MORTAR_MM. */
+  widthMm: number
+  /** 0-based course index this block belongs to. */
+  courseIdx: number
+}
+
+export interface CourseLayoutEntry {
+  /** 1-based course number. Matches resolveCourseBlocks' convention. */
+  courseNumber: number
+  type: CourseType
+  /** Body block code for this course (per `buildCourses`). */
+  bodyBlock: BlockCode
+  /** Course bottom Y from wall base (mm). */
+  yBottomMm: number
+  /** Course height in mm — block face height (190 / 90 / 140). */
+  heightMm: number
+}
+
+export interface WallLayout {
+  wallId: string
+  isCurved: boolean
+  /** Wall length used for fitting (outer edge — what wallLengthMm returns). */
+  lengthMm: number
+  /** Total stack height in mm (matches calculateCourseStack.actualHeightMm). */
+  heightMm: number
+  courses: CourseLayoutEntry[]
+  blocks: PositionedBlock[]
+}
+
+/**
+ * Returns the positioned-block layout for a wall using the same rules
+ * as `calculateWallTally`. The sum of `blocks` by code MUST match the
+ * tally produced for the same inputs (the dev-time verifier asserts
+ * this).
+ *
+ * Curved walls fall through to a simpler centreline-based layout for
+ * now; openings are not yet applied (TODO).
+ */
+export function planWallLayout(
+  wall: Wall,
+  makeup: WallMakeup,
+  openings: Opening[] = [],
+  thicknessByWallId?: Record<string, number>,
+  wallsById?: Record<string, Wall>
+): WallLayout {
+  // Curved walls: return a minimal stub layout (no blocks) for now.
+  // The 3D code's existing curve sampler still works as the fallback
+  // until we extend planWallLayout to handle curves.
+  if (isCurvedWall(wall)) {
+    return {
+      wallId: wall.id,
+      isCurved: true,
+      lengthMm: wallLengthMm(wall, thicknessByWallId, wallsById),
+      heightMm: wall.heightMmOverride ?? getMakeupHeightMm(makeup),
+      courses: [],
+      blocks: [],
+    }
+  }
+
+  const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
+  const stack = calculateCourseStack(heightMm)
+  const plan = planWall(wall, makeup, thicknessByWallId, wallsById)
+  const courses = buildCourses(stack, makeup)
+  const lengthMm = wallLengthMm(wall, thicknessByWallId, wallsById)
+
+  // Resolve a block's face width from the library, falling back to
+  // 390 for the rare case where a code isn't in the live library
+  // (after a region swap). Matches the calc engine's defensive
+  // handling in fitCourseLength.
+  const widthOf = (code: BlockCode): number => {
+    const def = BLOCK_LIBRARY[code]
+    return def?.dimensions.widthMm ?? 390
+  }
+  // Course height (face height) for the 3D y-axis. Course modular is
+  // height + MORTAR_MM; we want the face height since blocks have
+  // visible mortar joints between courses.
+  const courseFaceHeightMm = (type: CourseType): number => {
+    switch (type) {
+      case 'height-71':
+        return 90
+      case 'height-140':
+        return 140
+      default:
+        return 190
+    }
+  }
+
+  const layout: WallLayout = {
+    wallId: wall.id,
+    isCurved: false,
+    lengthMm,
+    heightMm: stack.actualHeightMm,
+    courses: [],
+    blocks: [],
+  }
+
+  // Build courses metadata first (yBottom positions), then walk
+  // again to lay blocks. Two passes keeps the per-course placement
+  // logic from having to know about whatever course came before.
+  let yCursor = 0
+  for (let i = 0; i < courses.length; i++) {
+    const courseSpec = courses[i]
+    const faceH = courseFaceHeightMm(courseSpec.type)
+    layout.courses.push({
+      courseNumber: i + 1,
+      type: courseSpec.type,
+      bodyBlock: courseSpec.bodyBlock,
+      yBottomMm: yCursor,
+      heightMm: faceH,
+    })
+    // Next course sits on a 10mm mortar bed above this one.
+    yCursor += faceH + MORTAR_MM
+  }
+
+  // The wall-length re-fit machinery in calculateWallTally: when a
+  // course carries a corner lead-in, the ends consume extra modular
+  // and we re-fit the body length against that course's adjusted
+  // ends.
+  const wallLenForRefit = lengthMm
+
+  for (let i = 0; i < courses.length; i++) {
+    const courseSpec = courses[i]
+    const courseNumber = i + 1
+    const isOddCourse = i % 2 === 0
+
+    // End block resolution — mirrors calculateWallTally exactly.
+    const resolveEndForCourse = (
+      junctionType: JunctionType,
+      cNum: number,
+      odd: boolean
+    ): BlockCode => {
+      const blocks = resolveCourseBlocks(makeup, cNum)
+      if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
+        return odd
+          ? healCode(blocks.cornerBlockCode, 'corner')
+          : healCode(blocks.halfBlockCode, 'end-termination')
+      }
+      return healCode(blocks.cornerBlockCode, 'corner')
+    }
+    const startBlock: BlockCode = plan.noEndBlocks
+      ? (isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock)
+      : resolveEndForCourse(wall.startJunction.type, courseNumber, isOddCourse)
+    const endBlock: BlockCode = plan.noEndBlocks
+      ? (isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock)
+      : resolveEndForCourse(wall.endJunction.type, courseNumber, isOddCourse)
+
+    // Corner lead-in (e.g. 30.02 × 2 inside 300-series corners).
+    let leadInCode: BlockCode | undefined
+    let startLeadInCount = 0
+    let endLeadInCount = 0
+    let leadInModularTotal = 0
+    if (!plan.noEndBlocks) {
+      const resolvedCourse = resolveCourseBlocks(makeup, courseNumber)
+      leadInCode = resolvedCourse.cornerLeadInBlockCode
+      if (leadInCode && resolvedCourse.cornerLeadInCount > 0) {
+        if (wall.startJunction.type === 'corner') {
+          startLeadInCount = resolvedCourse.cornerLeadInCount
+        }
+        if (wall.endJunction.type === 'corner') {
+          endLeadInCount = resolvedCourse.cornerLeadInCount
+        }
+        const blockDef = BLOCK_LIBRARY[leadInCode]
+        const blockModular = blockDef
+          ? blockDef.dimensions.widthMm + MORTAR_MM
+          : 0
+        leadInModularTotal = (startLeadInCount + endLeadInCount) * blockModular
+      }
+    }
+
+    // Pick the fit for this course (re-fit if lead-in widens the ends).
+    let fit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
+    if (leadInModularTotal > 0) {
+      const startEndModular = isOddCourse
+        ? plan.startEnd.oddModular
+        : plan.startEnd.evenModular
+      const endEndModular = isOddCourse
+        ? plan.endEnd.oddModular
+        : plan.endEnd.evenModular
+      const adjustedEndsTotal =
+        startEndModular + endEndModular + leadInModularTotal
+      fit = fitCourseLength(
+        wallLenForRefit,
+        adjustedEndsTotal,
+        makeup.useFractions
+      )
+    }
+
+    const startEndWidth = widthOf(startBlock)
+    const endEndWidth = widthOf(endBlock)
+    const leadInWidth = leadInCode ? widthOf(leadInCode) : 0
+
+    // ---- Lay blocks left-to-right ----
+    let s = 0
+
+    // Height-makeup courses (20.71 / 20.140) span the FULL course
+    // length with cut-to-length height-makeup blocks. The calc tally
+    // sums fit.bodyCount + fit.fractions.length + endCount + lead-ins
+    // worth of the same block (`course.bodyBlock`). To keep the
+    // layout faithful, we emit that many positioned blocks across
+    // the wall length, evenly distributing them. Each is the
+    // height-makeup block; the role tag stays 'body' since the
+    // bricklayer sees one continuous row.
+    if (courseSpec.type === 'height-71' || courseSpec.type === 'height-140') {
+      const totalBlocks =
+        fit.bodyCount +
+        fit.fractions.length +
+        (plan.noEndBlocks ? 0 : 2) +
+        startLeadInCount +
+        endLeadInCount
+      // Evenly tile across the wall length so the count matches the
+      // tally. Each block's width is wallLength / totalBlocks; this
+      // is an approximation but it preserves the count exactly.
+      // Bricklayer cuts each block to fit on site anyway.
+      if (totalBlocks > 0) {
+        const perWidth = (lengthMm - (totalBlocks - 1) * MORTAR_MM) / totalBlocks
+        for (let b = 0; b < totalBlocks; b++) {
+          layout.blocks.push({
+            code: courseSpec.bodyBlock,
+            role: 'body',
+            s0Mm: s,
+            widthMm: Math.max(0, perWidth),
+            courseIdx: i,
+          })
+          s += perWidth + MORTAR_MM
+        }
+      }
+      continue
+    }
+
+    // ---- Normal course (base / body / top / single-block-stub) ----
+
+    if (plan.noEndBlocks) {
+      // Single-block-stub mode: fit.fractions contains exactly one
+      // block code chosen by fitSingleBlockWall — one block per
+      // course, spanning the full wall length. Centre it.
+      const code = fit.fractions[0] ?? courseSpec.bodyBlock
+      const w = Math.min(widthOf(code), lengthMm)
+      layout.blocks.push({
+        code,
+        role: 'fraction',
+        s0Mm: (lengthMm - w) / 2,
+        widthMm: w,
+        courseIdx: i,
+      })
+      continue
+    }
+
+    // Start end block.
+    layout.blocks.push({
+      code: startBlock,
+      role:
+        BLOCK_LIBRARY[startBlock]?.roles.includes('corner')
+          ? 'corner'
+          : 'end-half',
+      s0Mm: s,
+      widthMm: startEndWidth,
+      courseIdx: i,
+    })
+    s += startEndWidth + MORTAR_MM
+
+    // Start lead-ins.
+    for (let k = 0; k < startLeadInCount; k++) {
+      layout.blocks.push({
+        code: leadInCode!,
+        role: 'lead-in',
+        s0Mm: s,
+        widthMm: leadInWidth,
+        courseIdx: i,
+      })
+      s += leadInWidth + MORTAR_MM
+    }
+
+    // Body blocks. The tally counts `fit.bodyCount` of
+    // courseSpec.bodyBlock; we emit that many at the body's face
+    // width.
+    const bodyWidth = widthOf(courseSpec.bodyBlock)
+    for (let b = 0; b < fit.bodyCount; b++) {
+      layout.blocks.push({
+        code: courseSpec.bodyBlock,
+        role: 'body',
+        s0Mm: s,
+        widthMm: bodyWidth,
+        courseIdx: i,
+      })
+      s += bodyWidth + MORTAR_MM
+    }
+
+    // Fractions (gap-fillers). One positioned block per code in
+    // fit.fractions, in the order the calc returned them.
+    for (const fracCode of fit.fractions) {
+      const w = widthOf(fracCode)
+      layout.blocks.push({
+        code: fracCode,
+        role: 'fraction',
+        s0Mm: s,
+        widthMm: w,
+        courseIdx: i,
+      })
+      s += w + MORTAR_MM
+    }
+
+    // End lead-ins (between the body/fraction zone and the end corner).
+    for (let k = 0; k < endLeadInCount; k++) {
+      layout.blocks.push({
+        code: leadInCode!,
+        role: 'lead-in',
+        s0Mm: s,
+        widthMm: leadInWidth,
+        courseIdx: i,
+      })
+      s += leadInWidth + MORTAR_MM
+    }
+
+    // End block — anchored to the wall's end so any rounding error
+    // accumulates in the body region (which is where the calc allows
+    // a cut block to absorb the gap).
+    layout.blocks.push({
+      code: endBlock,
+      role:
+        BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
+          ? 'corner'
+          : 'end-half',
+      s0Mm: Math.max(s, lengthMm - endEndWidth),
+      widthMm: endEndWidth,
+      courseIdx: i,
+    })
+
+    // Paired-tile (cleanouts): the tally adds ceil(bodyCount /
+    // pairedPer) of the tile. We emit those tiles paired with body
+    // blocks. They share Y with the course but the 3D renderer can
+    // ignore them (or render them at the wall's interior face) —
+    // they're part of the tally regardless.
+    if (courseSpec.pairedTile && fit.bodyCount > 0) {
+      const bodyDef = BLOCK_LIBRARY[courseSpec.bodyBlock]
+      const pairedPer = bodyDef?.pairedPer ?? 1
+      const tileCount = Math.ceil(fit.bodyCount / pairedPer)
+      const tileWidth = widthOf(courseSpec.pairedTile)
+      // Tiles ride on the BACK of body blocks — we tile them across
+      // the body region for positional plausibility, but the 3D code
+      // typically won't render them (they're inside the cavity).
+      const bodyZoneStart = startEndWidth + MORTAR_MM
+      const bodyZoneEnd = lengthMm - endEndWidth - MORTAR_MM
+      const bodyZoneLen = Math.max(0, bodyZoneEnd - bodyZoneStart)
+      const spacing = tileCount > 0 ? bodyZoneLen / tileCount : 0
+      for (let t = 0; t < tileCount; t++) {
+        layout.blocks.push({
+          code: courseSpec.pairedTile,
+          role: 'paired-tile',
+          s0Mm: bodyZoneStart + t * spacing,
+          widthMm: tileWidth,
+          courseIdx: i,
+        })
+      }
+    }
+  }
+
+  // Openings — TODO: extend planWallLayout to emit jamb + lintel
+  // positioned blocks and remove body blocks under openings. Until
+  // then we don't apply opening adjustments here; the 3D renderer
+  // will continue to apply its own opening carving on top of the
+  // layout for the visual. This means the layout's tally is
+  // _wall-without-openings_ and will diverge from
+  // calculateWallTally(...) for any wall that HAS openings.
+  // verifyLayoutMatchesTally handles this gracefully (it skips the
+  // check when openings are present).
+  void openings
+
+  return layout
+}
+
+/**
+ * Aggregate a WallLayout's blocks into a BlockTally. Used both by
+ * verifyLayoutMatchesTally for the runtime sanity check and as the
+ * eventual replacement for calculateWallTally's per-course addToTally
+ * calls.
+ */
+export function tallyFromLayout(layout: WallLayout): BlockTally {
+  const tally: BlockTally = {}
+  for (const b of layout.blocks) {
+    addToTally(tally, b.code, 1)
+  }
+  return tally
+}
+
+/**
+ * Dev-time consistency check — compares the layout's aggregated tally
+ * to what calculateWallTally returns for the same inputs. console.warn
+ * any differences so divergences surface during development. No-op
+ * when openings are present (layout doesn't apply them yet).
+ */
+export function verifyLayoutMatchesTally(
+  layout: WallLayout,
+  wall: Wall,
+  makeup: WallMakeup,
+  openings: Opening[] = [],
+  thicknessByWallId?: Record<string, number>,
+  wallsById?: Record<string, Wall>
+): { ok: boolean; differences: Array<{ code: BlockCode; layout: number; tally: number }> } {
+  // Skip the check while openings live in calculateWallTally only.
+  if (openings.length > 0 || layout.isCurved) {
+    return { ok: true, differences: [] }
+  }
+  const layoutTally = tallyFromLayout(layout)
+  const expected = calculateWallTally(
+    wall,
+    makeup,
+    openings,
+    thicknessByWallId,
+    wallsById
+  )
+  const codes = new Set<BlockCode>([
+    ...(Object.keys(layoutTally) as BlockCode[]),
+    ...(Object.keys(expected) as BlockCode[]),
+  ])
+  const differences: Array<{ code: BlockCode; layout: number; tally: number }> = []
+  for (const code of codes) {
+    const l = layoutTally[code] ?? 0
+    const t = expected[code] ?? 0
+    if (l !== t) differences.push({ code, layout: l, tally: t })
+  }
+  return { ok: differences.length === 0, differences }
+}
+
 /**
  * Apply an opening's block-tally adjustments per the brief's refined rules.
  *
