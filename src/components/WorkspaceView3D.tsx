@@ -522,15 +522,50 @@ function segmentsForStraightWall(
       (l) => l && l.courseNumber === course.courseNumber
     ) as { code: BlockCode; courseNumber: number; spanStart: number; spanEnd: number }[]
 
-    if (courseOpenings.length === 0) {
+    // Combined exclusion list for body-block emission: course-spanning
+    // openings (which also get JAMB caps inserted at their edges) +
+    // lintel spans (no jambs — lintel takes the whole span). Both excluded
+    // from body blocks so we don't z-fight or render through the void.
+    type BodyExclusion = { s0: number; s1: number; needsJambs: boolean }
+    const bodyExclusions: BodyExclusion[] = [
+      ...courseOpenings.map((o) => ({ s0: o.s0, s1: o.s1, needsJambs: true })),
+      ...lintelsHere.map((l) => ({
+        s0: l.spanStart,
+        s1: l.spanEnd,
+        needsJambs: false,
+      })),
+    ].sort((a, b) => a.s0 - b.s0)
+
+    if (bodyExclusions.length === 0) {
       emitBlocksInSpan(bodyStart, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
     } else {
       let cursor = bodyStart
-      for (const op of courseOpenings) {
-        if (op.s0 > cursor) {
-          emitBlocksInSpan(cursor, op.s0, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
+      const jambW = endWidth
+      for (const ex of bodyExclusions) {
+        // For openings: reserve a jambW-wide cap on each side. Body
+        // blocks emit only up to (op.s0 - jambW), jamb cap fills
+        // (op.s0 - jambW, op.s0), opening void, right jamb fills
+        // (op.s1, op.s1 + jambW), then body blocks resume.
+        // For lintels: no jamb (the lintel block already spans the
+        // full opening width plus its own structural bearing).
+        const cutStart = ex.needsJambs
+          ? Math.max(bodyStart, ex.s0 - jambW)
+          : ex.s0
+        const cutEnd = ex.needsJambs
+          ? Math.min(bodyEnd, ex.s1 + jambW)
+          : ex.s1
+        if (cutStart > cursor) {
+          emitBlocksInSpan(cursor, cutStart, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
         }
-        cursor = Math.max(cursor, op.s1)
+        if (ex.needsJambs) {
+          if (cutStart < ex.s0) {
+            boxes.push(buildBox(cutStart, ex.s0, y0, y1, endColor, endCode))
+          }
+          if (cutEnd > ex.s1) {
+            boxes.push(buildBox(ex.s1, cutEnd, y0, y1, endColor, endCode))
+          }
+        }
+        cursor = Math.max(cursor, cutEnd)
       }
       if (cursor < bodyEnd) {
         emitBlocksInSpan(cursor, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
