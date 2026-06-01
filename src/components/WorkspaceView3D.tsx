@@ -177,9 +177,13 @@ function resolveWallCourses(
     typeof wall.heightMmOverride === 'number'
       ? { ...makeup, heightMm: wall.heightMmOverride }
       : makeup
-  const { bands } = convertMakeupToBands(scopedMakeup, undefined, {
-    skipHeightMakeup: true,
-  })
+  // skipHeightMakeup defaults to false so the 20.71 (90mm) and
+  // 20.140 (140mm) height-makeup courses ARE included in the bands
+  // list — same as the calc engine and the no-openings
+  // planWallLayout path. The flag exists for the wall-types preview
+  // (which intentionally hides blocks the user didn't configure);
+  // it doesn't belong on the 3D rendering path.
+  const { bands } = convertMakeupToBands(scopedMakeup, undefined)
 
   // Count total courses first so we know which one is the "top course"
   // and can stamp the topCourseBlockCode (typically a bond beam 20.20).
