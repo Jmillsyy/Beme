@@ -454,266 +454,298 @@ function segmentsForStraightWall(
     })
   }
 
-  for (const course of courses) {
-    const { y0, y1, bodyCode, cornerCode, halfCode } = course
+  // === BLOCK-GRID ARCHITECTURE ===
+  //
+  // Instead of making layout decisions during emission (which produced
+  // edge-case bugs around multi-opening walls), we build a complete
+  // data model of every cell in the wall first, transform it through
+  // a series of phases, then emit one mesh per non-removed cell.
+  // Cells never overlap by construction → no z-fighting. Mortar is
+  // emitted last in spans that exclude both opening voids and lintel
+  // footprints → no mortar bleeds through windows or behind lintels.
 
-    // Mortar fill for this course — emit BEFORE blocks so they render
-    // visually on top (though three.js depth-sorts so order doesn't
-    // strictly matter — recessed thickness keeps mortar behind block
-    // faces regardless of draw order). Cut by openings that fully span
-    // this course's y-range so window/door cutouts don't show mortar.
-    const courseSpanningOpenings = wallOpenings
-      .filter((o) => o.sill <= y0 && o.head >= y1)
-      .sort((a, b) => a.start - b.start)
-    if (courseSpanningOpenings.length === 0) {
-      pushMortar(0, length, y0, y1)
-    } else {
-      let mortarCursor = 0
-      for (const op of courseSpanningOpenings) {
-        if (op.start > mortarCursor) {
-          pushMortar(mortarCursor, op.start, y0, y1)
-        }
-        mortarCursor = Math.max(mortarCursor, op.end)
-      }
-      if (mortarCursor < length) {
-        pushMortar(mortarCursor, length, y0, y1)
-      }
-    }
+  type CellRole = 'END' | 'BODY' | 'JAMB' | 'REMOVED'
+  interface Cell {
+    role: CellRole
+    code: BlockCode
+    color: string
+    s0: number
+    s1: number
+  }
+  interface CourseEntry {
+    course: ResolvedCourse
+    cells: Cell[]
+    endCode: BlockCode
+    endColor: string
+    endWidth: number
+    bodyW: number
+  }
 
-    // End-cap pattern: stack bond = corner every course; stretcher =
-    // corner on odd courses, half on even. Matches what the 2D preview
-    // renders, so the colour distribution reads the same in 3D.
-    const useHalf = bondType === 'stretcher' && course.courseNumber % 2 === 0
-    const endCode = useHalf ? halfCode : cornerCode
+  // ── Phase 1: build empty grid (per course: END + BODY cells + END) ──
+  const grid: CourseEntry[] = courses.map((course) => {
+    const useHalf =
+      bondType === 'stretcher' && course.courseNumber % 2 === 0
+    const endCode = useHalf ? course.halfCode : course.cornerCode
     const endColor = colorOf(endCode)
-    const bodyColor = colorOf(bodyCode)
+    const bodyColor = colorOf(course.bodyCode)
     const endWidthMm = useHalf
-      ? widthOf(halfCode, library, FALLBACK_HALF_WIDTH_MM)
-      : widthOf(cornerCode, library, FALLBACK_CORNER_WIDTH_MM)
+      ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+      : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)
     const endWidth = endWidthMm / 1000
+    const bodyW =
+      widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
 
-    // Tiny wall (≤ 2 end-caps wide): render the whole course as a
-    // single end-coloured box. Avoids negative-width body slabs.
+    const cells: Cell[] = []
     if (length <= endWidth * 2) {
-      boxes.push(buildBox(0, length, y0, y1, endColor, endCode))
-      continue
-    }
-
-    // Left end-cap.
-    boxes.push(buildBox(0, endWidth, y0, y1, endColor, endCode))
-    // Right end-cap.
-    boxes.push(buildBox(length - endWidth, length, y0, y1, endColor, endCode))
-
-    // Body region: bound by [endWidth, length - endWidth], cut by any
-    // openings whose y-range fully covers this course's y-range. Each
-    // solid sub-span emits individual body blocks (not one slab) so the
-    // bond pattern is visible — stretcher offset emerges from even
-    // courses starting at halfW vs odd at cornerW.
-    const bodyStart = endWidth
-    const bodyEnd = length - endWidth
-    const bodyW = widthOf(bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
-    const courseOpenings = wallOpenings
-      .filter((o) => o.sill <= y0 && o.head >= y1) // opening covers this course
-      .map((o) => ({
-        s0: Math.max(bodyStart, o.start),
-        s1: Math.min(bodyEnd, o.end),
-      }))
-      .filter((o) => o.s1 > o.s0)
-      .sort((a, b) => a.s0 - b.s0)
-
-    // Grid origin for this course's body blocks — anchors emitBlocksInSpan
-    // so head / sill fills inherit the course's stretcher offset instead
-    // of starting fresh at each opening edge (which made every course
-    // above an opening look like stack bond).
-    const gridOrigin = endWidth
-
-    // Lintels that overlap this course's y range. A 390mm lintel block
-    // covers ~2 normal courses, so a single lintel footprint may
-    // appear here twice (once per course it overlaps). Body emission
-    // must skip the lintel span in EVERY overlapping course or the
-    // body blocks would z-fight with the lintel's geometry.
-    const lintelsOverlapping = lintelFootprints.filter(
-      (l) => l.y0 < y1 - 0.001 && l.y1 > y0 + 0.001
-    )
-
-    // Combined exclusion list for body-block emission: course-spanning
-    // openings (which also get JAMB caps inserted at their edges) +
-    // overlapping lintel spans (no jambs — lintel block takes the whole
-    // span). Both excluded from body blocks so we don't z-fight or
-    // render through the void.
-    type BodyExclusion = { s0: number; s1: number; needsJambs: boolean }
-    const bodyExclusions: BodyExclusion[] = [
-      ...courseOpenings.map((o) => ({ s0: o.s0, s1: o.s1, needsJambs: true })),
-      ...lintelsOverlapping.map((l) => ({
-        s0: l.spanStart,
-        s1: l.spanEnd,
-        needsJambs: false,
-      })),
-    ].sort((a, b) => a.s0 - b.s0)
-
-    if (bodyExclusions.length === 0) {
-      emitBlocksInSpan(bodyStart, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
+      // Tiny wall — one end-coloured cell covers everything.
+      cells.push({
+        role: 'END',
+        code: endCode,
+        color: endColor,
+        s0: 0,
+        s1: length,
+      })
     } else {
-      // Compute each exclusion's cut region (jambW expanded for openings)
-      // and MERGE overlapping cut regions. When two openings are closer
-      // than 2 × jambW apart (e.g. 190mm pier between two doors), their
-      // jamb spaces overlap — merging into a single super-region prevents
-      // double-emitting jambs in the gap. Only the outermost jambs of the
-      // merged group render; the wall between adjacent openings emits as
-      // body blocks (the real masonry would treat that narrow section as
-      // a structural pier).
-      const jambW = endWidth
-      type CutRegion = {
-        s0: number
-        s1: number
-        needsJambs: boolean
-        cutStart: number
-        cutEnd: number
+      cells.push({
+        role: 'END',
+        code: endCode,
+        color: endColor,
+        s0: 0,
+        s1: endWidth,
+      })
+      const bodyEnd = length - endWidth
+      let cursor = endWidth
+      while (cursor < bodyEnd) {
+        const cellEnd = Math.min(cursor + bodyW, bodyEnd)
+        if (cellEnd - cursor > 0.02) {
+          cells.push({
+            role: 'BODY',
+            code: course.bodyCode,
+            color: bodyColor,
+            s0: cursor,
+            s1: cellEnd,
+          })
+        }
+        cursor += bodyW
       }
-      const cutRegions: CutRegion[] = bodyExclusions
-        .map((ex) => ({
-          ...ex,
-          cutStart: ex.needsJambs
-            ? Math.max(bodyStart, ex.s0 - jambW)
-            : ex.s0,
-          cutEnd: ex.needsJambs
-            ? Math.min(bodyEnd, ex.s1 + jambW)
-            : ex.s1,
-        }))
-        .sort((a, b) => a.cutStart - b.cutStart)
+      cells.push({
+        role: 'END',
+        code: endCode,
+        color: endColor,
+        s0: length - endWidth,
+        s1: length,
+      })
+    }
+    return { course, cells, endCode, endColor, endWidth, bodyW }
+  })
 
-      type MergedRegion = {
-        cutStart: number
-        cutEnd: number
-        openings: CutRegion[]
-      }
-      const merged: MergedRegion[] = []
-      for (const cr of cutRegions) {
-        const last = merged[merged.length - 1]
-        if (last && cr.cutStart <= last.cutEnd) {
-          last.cutEnd = Math.max(last.cutEnd, cr.cutEnd)
-          last.openings.push(cr)
-        } else {
-          merged.push({ cutStart: cr.cutStart, cutEnd: cr.cutEnd, openings: [cr] })
-        }
-      }
-
-      let cursor = bodyStart
-      for (const m of merged) {
-        if (m.cutStart > cursor) {
-          emitBlocksInSpan(cursor, m.cutStart, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
-        }
-        const firstOp = m.openings[0]
-        const lastOp = m.openings[m.openings.length - 1]
-        // Outer left jamb (only if first opening in the group needs jambs).
-        if (firstOp.needsJambs && m.cutStart < firstOp.s0) {
-          boxes.push(buildBox(m.cutStart, firstOp.s0, y0, y1, endColor, endCode))
-        }
-        // Body blocks in the gaps BETWEEN adjacent openings within this
-        // merged group — the "pier" sections that real masonry treats as
-        // narrow structural walls between openings.
-        for (let i = 0; i < m.openings.length - 1; i++) {
-          const opA = m.openings[i]
-          const opB = m.openings[i + 1]
-          if (opB.s0 > opA.s1) {
-            emitBlocksInSpan(opA.s1, opB.s0, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
-          }
-        }
-        // Outer right jamb (only if last opening in the group needs jambs).
-        if (lastOp.needsJambs && m.cutEnd > lastOp.s1) {
-          boxes.push(buildBox(lastOp.s1, m.cutEnd, y0, y1, endColor, endCode))
-        }
-        cursor = Math.max(cursor, m.cutEnd)
-      }
-      if (cursor < bodyEnd) {
-        emitBlocksInSpan(cursor, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
+  // ── Helper: stamp a span (replace cells in [zoneS0, zoneS1]) ─────
+  // Removes/clips/splits any cells overlapping the zone, then inserts
+  // a new cell at [zoneS0, zoneS1] (or just clears them if `newCell`
+  // is null). Keeps cells sorted by s0 and non-overlapping. Threshold
+  // 0.02m drops slivers that would z-fight visibly.
+  const stampZone = (
+    cells: Cell[],
+    zoneS0: number,
+    zoneS1: number,
+    newCell: Cell | null
+  ) => {
+    for (let i = cells.length - 1; i >= 0; i--) {
+      const c = cells[i]
+      if (c.s1 <= zoneS0 + 0.001 || c.s0 >= zoneS1 - 0.001) continue
+      if (c.s0 >= zoneS0 - 0.001 && c.s1 <= zoneS1 + 0.001) {
+        cells.splice(i, 1)
+      } else if (c.s0 < zoneS0 && c.s1 > zoneS1) {
+        // Cell straddles both edges of zone — split into two
+        const right: Cell = { ...c, s0: zoneS1 }
+        cells[i] = { ...c, s1: zoneS0 }
+        cells.splice(i + 1, 0, right)
+      } else if (c.s0 < zoneS0) {
+        c.s1 = zoneS0
+      } else {
+        c.s0 = zoneS1
       }
     }
-
-    // Sill + head fills for partially-crossing openings at this course.
-    // Body colour fills the portion of the opening's span that falls
-    // ABOVE the opening's head OR BELOW its sill, at this course's
-    // y-range. So a 1200mm-high window leaves the courses below the
-    // sill + above the head solid behind it. Pass gridOrigin so the
-    // visible blocks line up with the rest of the course's bond
-    // (stretcher offset propagates above/below openings correctly).
-    //
-    // Skips opening spans where a lintel covers this course — the
-    // lintel render below replaces the head fill at that span. Uses
-    // lintelsOverlapping (not just first course) so all overlapping
-    // courses skip the lintel span.
-    const lintelSpans = lintelsOverlapping.map((l) => ({
-      s0: l.spanStart,
-      s1: l.spanEnd,
-    }))
-    const skipLintelSpans = (s0: number, s1: number, ...args: [number, number, BlockCode, string, number, number]) => {
-      // Emit blocks in [s0, s1] except where a lintel covers this course.
-      const sortedLintels = lintelSpans
-        .filter((l) => l.s1 > s0 && l.s0 < s1)
-        .sort((a, b) => a.s0 - b.s0)
-      if (sortedLintels.length === 0) {
-        emitBlocksInSpan(s0, s1, ...args)
-        return
-      }
-      let cur = s0
-      for (const l of sortedLintels) {
-        if (l.s0 > cur) emitBlocksInSpan(cur, Math.min(l.s0, s1), ...args)
-        cur = Math.max(cur, l.s1)
-      }
-      if (cur < s1) emitBlocksInSpan(cur, s1, ...args)
+    if (newCell) cells.push(newCell)
+    cells.sort((a, b) => a.s0 - b.s0)
+    // Drop slivers left behind
+    for (let i = cells.length - 1; i >= 0; i--) {
+      if (cells[i].s1 - cells[i].s0 < 0.02) cells.splice(i, 1)
     }
+  }
+
+  // ── Phase 2: opening cuts (carve voids) ─────────────────────────
+  // For each course, any opening that intersects the course's y-range
+  // (fully or partially) removes cells in [op.start, op.end] where
+  // the opening covers the FULL vertical range of the cell. Partial
+  // sill/head overlaps don't carve (cells stay; mortar fills the
+  // straddle region behind the partial opening).
+  for (const entry of grid) {
+    const { course, cells } = entry
+    const { y0, y1 } = course
     for (const op of wallOpenings) {
-      // Slice of this course that lies BELOW op.sill: course is below
-      // the opening.
-      if (op.sill > y0 && op.sill < y1) {
-        // Course straddles the sill — render solid up to the sill line.
-        const fillTop = Math.min(y1, op.sill)
-        if (fillTop > y0) {
-          skipLintelSpans(op.start, op.end, y0, fillTop, bodyCode, bodyColor, bodyW, gridOrigin)
-        }
-      } else if (op.sill >= y1) {
-        // Course is fully below the sill — fill the opening span solid.
-        skipLintelSpans(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
-      }
-      // Slice of this course that lies ABOVE op.head.
-      if (op.head > y0 && op.head < y1) {
-        const fillBottom = Math.max(y0, op.head)
-        if (fillBottom < y1) {
-          skipLintelSpans(op.start, op.end, fillBottom, y1, bodyCode, bodyColor, bodyW, gridOrigin)
-        }
-      } else if (op.head <= y0) {
-        // Course is fully above the head — fill the opening span solid.
-        skipLintelSpans(op.start, op.end, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
+      // Only fully-covering openings carve (sill at or below course
+      // bottom AND head at or above course top).
+      if (op.sill > y0 + 0.001) continue
+      if (op.head < y1 - 0.001) continue
+      stampZone(cells, op.start, op.end, {
+        role: 'REMOVED',
+        code: '' as BlockCode,
+        color: '#000',
+        s0: op.start,
+        s1: op.end,
+      })
+    }
+  }
+
+  // ── Phase 3: merge close openings + stamp jambs ─────────────────
+  // For each course, openings that fully cover the course get jamb
+  // caps at their edges. When two openings are closer than 2 × jambW,
+  // their cut zones overlap — merge into a group and only emit outer
+  // jambs (the gap between becomes solid body / pier blocks via the
+  // already-placed cells outside the carved opening).
+  for (const entry of grid) {
+    const { course, cells, endCode, endColor, endWidth } = entry
+    const { y0, y1 } = course
+    const openingsFull = wallOpenings
+      .filter((o) => o.sill <= y0 + 0.001 && o.head >= y1 - 0.001)
+      .sort((a, b) => a.start - b.start)
+    if (openingsFull.length === 0) continue
+
+    type Group = { start: number; end: number; cutStart: number; cutEnd: number }
+    const groups: Group[] = []
+    for (const op of openingsFull) {
+      const cutStart = Math.max(0, op.start - endWidth)
+      const cutEnd = Math.min(length, op.end + endWidth)
+      const last = groups[groups.length - 1]
+      if (last && cutStart <= last.cutEnd) {
+        last.end = op.end
+        last.cutEnd = Math.max(last.cutEnd, cutEnd)
+      } else {
+        groups.push({ start: op.start, end: op.end, cutStart, cutEnd })
       }
     }
-
-    // Lintel render — emit ONCE per lintel at its first overlapping
-    // course (where the lintel's y0 falls inside this course's y range).
-    // Walk the opening span in lintel-block-width increments so the
-    // lintel reads as multiple side-by-side specialty blocks (matching
-    // real masonry where the lintel is typically several 190mm-wide
-    // blocks spanning the opening). Heights from the block library so
-    // a 390mm-tall 20.18 renders at its full 390mm height (covering
-    // ~2 courses), not collapsed to one course's worth.
-    const lintelsToEmitHere = lintelFootprints.filter(
-      (l) => l.y0 >= y0 - 0.001 && l.y0 < y1 - 0.001
-    )
-    for (const l of lintelsToEmitHere) {
-      const lintelColor = colorOf(l.code)
-      let cursor = l.spanStart
-      while (cursor < l.spanEnd) {
-        const blockEnd = Math.min(cursor + l.blockWidthM, l.spanEnd)
-        const blockWidth = blockEnd - cursor
-        if (blockWidth > 0.02) {
-          boxes.push(buildBox(cursor, blockEnd, l.y0, l.y1, lintelColor, l.code))
-        }
-        cursor += l.blockWidthM
+    // Stamp outer jambs only — between merged openings, body cells
+    // already placed in earlier phases stay in place.
+    for (const g of groups) {
+      // Left jamb [g.cutStart, g.start] — only if it doesn't touch
+      // the wall's own left end cap.
+      if (g.start - g.cutStart > 0.02 && g.cutStart > 0.001) {
+        stampZone(cells, g.cutStart, g.start, {
+          role: 'JAMB',
+          code: endCode,
+          color: endColor,
+          s0: g.cutStart,
+          s1: g.start,
+        })
+      }
+      // Right jamb [g.end, g.cutEnd] — only if it doesn't touch
+      // the wall's own right end cap.
+      if (g.cutEnd - g.end > 0.02 && g.cutEnd < length - 0.001) {
+        stampZone(cells, g.end, g.cutEnd, {
+          role: 'JAMB',
+          code: endCode,
+          color: endColor,
+          s0: g.end,
+          s1: g.cutEnd,
+        })
       }
     }
   }
 
+  // ── Phase 4: stamp lintels ───────────────────────────────────────
+  // Lintels span multiple courses vertically (e.g. 20.18 = 390mm = 2
+  // course heights). For each lintel footprint, in EVERY course it
+  // overlaps, remove cells in the lintel x range. Then emit the
+  // lintel separately as its own multi-course mesh.
+  interface LintelMesh {
+    code: BlockCode
+    color: string
+    s0: number
+    s1: number
+    y0: number
+    y1: number
+    blockWidthM: number
+  }
+  const lintelMeshes: LintelMesh[] = []
+  for (const lintel of lintelFootprints) {
+    for (const entry of grid) {
+      const { course, cells } = entry
+      if (course.y1 <= lintel.y0 + 0.001) continue
+      if (course.y0 >= lintel.y1 - 0.001) continue
+      stampZone(cells, lintel.spanStart, lintel.spanEnd, null)
+    }
+    lintelMeshes.push({
+      code: lintel.code,
+      color: colorOf(lintel.code),
+      s0: lintel.spanStart,
+      s1: lintel.spanEnd,
+      y0: lintel.y0,
+      y1: lintel.y1,
+      blockWidthM: lintel.blockWidthM,
+    })
+  }
+
+  // ── Phase 5: emit cells ──────────────────────────────────────────
+  for (const { course, cells } of grid) {
+    for (const cell of cells) {
+      if (cell.role === 'REMOVED') continue
+      boxes.push(
+        buildBox(cell.s0, cell.s1, course.y0, course.y1, cell.color, cell.code)
+      )
+    }
+  }
+
+  // ── Phase 6: emit lintels (as individual blocks across span) ────
+  for (const lm of lintelMeshes) {
+    let cursor = lm.s0
+    while (cursor < lm.s1) {
+      const blockEnd = Math.min(cursor + lm.blockWidthM, lm.s1)
+      if (blockEnd - cursor > 0.02) {
+        boxes.push(buildBox(cursor, blockEnd, lm.y0, lm.y1, lm.color, lm.code))
+      }
+      cursor += lm.blockWidthM
+    }
+  }
+
+  // ── Phase 7: emit mortar ─────────────────────────────────────────
+  // Per course, mortar spans the wall length except where:
+  //   - Any opening fully covers the course (window/door voids)
+  //   - Any lintel footprint covers this course's y range
+  for (const { course } of grid) {
+    const { y0, y1 } = course
+    const excl: { s0: number; s1: number }[] = []
+    for (const op of wallOpenings) {
+      if (op.sill <= y0 + 0.001 && op.head >= y1 - 0.001) {
+        excl.push({ s0: op.start, s1: op.end })
+      }
+    }
+    for (const l of lintelFootprints) {
+      if (l.y0 < y1 - 0.001 && l.y1 > y0 + 0.001) {
+        excl.push({ s0: l.spanStart, s1: l.spanEnd })
+      }
+    }
+    excl.sort((a, b) => a.s0 - b.s0)
+    const merged: { s0: number; s1: number }[] = []
+    for (const e of excl) {
+      const last = merged[merged.length - 1]
+      if (last && e.s0 <= last.s1) {
+        last.s1 = Math.max(last.s1, e.s1)
+      } else {
+        merged.push({ s0: e.s0, s1: e.s1 })
+      }
+    }
+    let cursor = 0
+    for (const m of merged) {
+      if (m.s0 > cursor) pushMortar(cursor, m.s0, y0, y1)
+      cursor = Math.max(cursor, m.s1)
+    }
+    if (cursor < length) pushMortar(cursor, length, y0, y1)
+  }
+
   return boxes
 }
+
 
 /**
  * Curved-wall variant. Samples the arc into N straight segments and
