@@ -586,20 +586,28 @@ function segmentsForStraightWall(
     // alternates per course is the WIDTH of that cell:
     //
     //   - On the course where THIS wall owns the corner cube (its
-    //     corner block runs along this wall): full cornerW wide.
-    //   - On the course where the OTHER wall owns: only halfW wide,
-    //     representing the wraparound — the OTHER wall's corner block
-    //     ends with its short face visible on this wall's outside.
+    //     corner block runs along this wall): full cornerW wide
+    //     (~390mm). The block extends past the corner cube into this
+    //     wall's body region.
+    //   - On the course where the OTHER wall owns: only the corner-
+    //     cube depth wide (= the OTHER wall's thickness, ~190mm for
+    //     200 series or ~290mm for 300 series). This represents the
+    //     short header face of the other wall's corner block visible
+    //     on this wall's exterior at the corner cube.
+    //
+    // CRITICAL: non-owning width must equal the perpendicular wall's
+    // thickness, NOT halfBlockW. For 200 series these are the same
+    // number (~190mm) so either works; for 300 series the wall is
+    // 290mm thick and using halfBlockW=190 leaves a 100mm gap where
+    // the green body cell shows next to the red corner column —
+    // visually wrong, the corner column appears to step in/out.
     //
     // The two walls at a corner are deterministically opposite phase
-    // (lower-id leads on odd), so on any given course one wall has
-    // cornerW and the other has halfW. Together they fill the corner
-    // cube cleanly with red on both visible faces.
-    //
-    // The width difference (cornerW vs halfW = ~200mm) shifts the
-    // body grid by halfW between courses → natural stretcher bond
-    // offset, exactly how 200×200×400 corner blocks stacking at 90°
-    // produce it in real masonry. No specialty L-blocks required.
+    // (lower-id leads on odd), so on every course one wall has
+    // cornerW and the other has cornerCubeDepth. The body grid then
+    // offsets by (cornerW - cornerCubeDepth) between courses, which
+    // is the natural stretcher bond offset produced by real corner
+    // blocks stacking at 90° (200mm for 200 series, 100mm for 300).
     //
     // In stack bond ownership doesn't alternate; the lower-id wall
     // always owns so widths stay constant and bodies don't offset.
@@ -607,6 +615,17 @@ function segmentsForStraightWall(
       widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
     const cornerWidth =
       widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
+    // Corner cube depth on this wall's axis = perpendicular wall's
+    // thickness. Fallback to this wall's own thickness (almost always
+    // the same — same-series walls meet at corners), then halfBlockW.
+    const leftCornerCubeDepth =
+      leftCornerNeighbor !== undefined
+        ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) / 1000
+        : thicknessMm / 1000
+    const rightCornerCubeDepth =
+      rightCornerNeighbor !== undefined
+        ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) / 1000
+        : thicknessMm / 1000
     const leftHasCornerJunction = leftPhase !== null
     const rightHasCornerJunction = rightPhase !== null
     const ownsLeftThisCourse =
@@ -626,13 +645,14 @@ function segmentsForStraightWall(
     const renderRightEnd = true
     // End-cell widths per junction state:
     //   - corner junction + this wall owns this course: cornerW.
-    //   - corner junction + other wall owns this course: halfW.
+    //   - corner junction + other wall owns this course: corner cube
+    //     depth (= perpendicular wall's thickness).
     //   - free / t-junction: corner or half by parity (free-end rule).
     const leftEndWidth = leftHasCornerJunction
-      ? (ownsLeftThisCourse ? cornerWidth : halfBlockW)
+      ? (ownsLeftThisCourse ? cornerWidth : leftCornerCubeDepth)
       : (useHalfLeft ? halfBlockW : cornerWidth)
     const rightEndWidth = rightHasCornerJunction
-      ? (ownsRightThisCourse ? cornerWidth : halfBlockW)
+      ? (ownsRightThisCourse ? cornerWidth : rightCornerCubeDepth)
       : (useHalfRight ? halfBlockW : cornerWidth)
 
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
