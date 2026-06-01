@@ -42,7 +42,7 @@
  *   - One directional light, no shadows. Fine for a mass model.
  */
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
@@ -1009,6 +1009,124 @@ function segmentsForCurvedWall(
   return boxes
 }
 
+// ---------- Cursor dolly ----------
+
+/**
+ * Replaces OrbitControls' built-in zoom with a "fly toward cursor"
+ * wheel handler. On scroll, we:
+ *
+ *   1. Raycast from the camera through the cursor's NDC position.
+ *   2. Find the first wall mesh the ray hits — that's the dolly
+ *      target. If nothing's hit, project the ray onto a horizontal
+ *      plane at the OrbitControls target's Y (so the user can still
+ *      pan-zoom across empty ground).
+ *   3. Move BOTH the camera and the OrbitControls target by a fixed
+ *      fraction (`STEP`) of the distance toward that point.
+ *
+ * Why move the target too: OrbitControls' rotate pivot is the target.
+ * If we leave it where it was, the user zooms onto a block, then
+ * tries to orbit it, and the camera swings around the OLD target —
+ * which is somewhere behind them now. Moving the target with the
+ * camera keeps orbit anchored on what the user is looking at.
+ *
+ * OrbitControls' native zoom is disabled (enableZoom=false on the
+ * OrbitControls JSX below) so the two don't fight over the wheel.
+ */
+function CursorDolly() {
+  const gl = useThree((s) => s.gl)
+  const camera = useThree((s) => s.camera)
+  const scene = useThree((s) => s.scene)
+  const controls = useThree((s) => s.controls) as
+    | (THREE.EventDispatcher & {
+        target?: THREE.Vector3
+        update?: () => void
+      })
+    | null
+  const invalidate = useThree((s) => s.invalidate)
+
+  useEffect(() => {
+    const dom = gl.domElement
+    const raycaster = new THREE.Raycaster()
+    const ndc = new THREE.Vector2()
+
+    // Fraction of the distance to the cursor point we travel per
+    // wheel tick. 0.2 = 20% closer (or farther) per scroll line.
+    // Geometric decay → many small ticks converge naturally on the
+    // target without ever overshooting.
+    const STEP = 0.2
+    // Don't dolly camera through the cursor point — clamp so we
+    // always stay at least this far away (in metres).
+    const MIN_DISTANCE = 0.05
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = dom.getBoundingClientRect()
+      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(ndc, camera)
+
+      // Prefer raycasting against actual scene objects so the user
+      // can zoom onto a specific block. `recursive=true` so we hit
+      // descendants of groups.
+      const hits = raycaster.intersectObjects(scene.children, true)
+      let dollyPoint: THREE.Vector3 | null = null
+      if (hits.length > 0) {
+        dollyPoint = hits[0].point.clone()
+      } else {
+        // Empty space — fall back to a horizontal plane at the
+        // current orbit target's Y so the user can still pan-zoom
+        // across the ground area without geometry under the cursor.
+        const planeY = controls?.target?.y ?? 0
+        const dir = raycaster.ray.direction
+        if (Math.abs(dir.y) > 1e-6) {
+          const t = (planeY - camera.position.y) / dir.y
+          if (t > 0) {
+            dollyPoint = camera.position
+              .clone()
+              .addScaledVector(dir, t)
+          }
+        }
+      }
+      // Final fallback — dolly 10m forward along the ray. Means
+      // scroll always does SOMETHING even if the geometry is sparse.
+      if (!dollyPoint) {
+        dollyPoint = camera.position
+          .clone()
+          .addScaledVector(raycaster.ray.direction, 10)
+      }
+
+      const toPoint = new THREE.Vector3().subVectors(
+        dollyPoint,
+        camera.position
+      )
+      const distance = toPoint.length()
+      // deltaY > 0 means scroll-DOWN, conventionally zoom-out.
+      const sign = e.deltaY < 0 ? 1 : -1
+      // Move sign * STEP * distance toward the dolly point. On zoom-in
+      // we clamp so we don't end up at distance < MIN_DISTANCE.
+      let amount = sign * STEP * distance
+      if (sign === 1 && distance - amount < MIN_DISTANCE) {
+        amount = Math.max(0, distance - MIN_DISTANCE)
+      }
+      const move = toPoint.normalize().multiplyScalar(amount)
+
+      camera.position.add(move)
+      if (controls && controls.target) {
+        controls.target.add(move)
+        controls.update?.()
+      }
+      invalidate()
+    }
+
+    // passive:false so preventDefault works (otherwise the page would
+    // scroll along with our zoom in some browsers).
+    dom.addEventListener('wheel', onWheel, { passive: false })
+    return () => dom.removeEventListener('wheel', onWheel)
+  }, [gl, camera, scene, controls, invalidate])
+
+  return null
+}
+
 // ---------- Scene ----------
 
 function Scene({
@@ -1165,21 +1283,20 @@ function Scene({
         </mesh>
       ))}
 
-      {/* OrbitControls — mouse only:
-           - left drag: orbit around the current target
-           - right drag: pan (translates both camera and target)
-           - scroll: zoom, anchored at the cursor (zoomToCursor=true)
-             so you zoom INTO whatever you're hovering on, like a map
-          The pan-to-cursor behaviour replaces the WASD movement: to
-          travel to a new spot, scroll-zoom toward that spot then
-          right-drag to recenter the orbit target. */}
+      {/* OrbitControls — mouse only. Built-in zoom is OFF; CursorDolly
+          below owns the wheel and flies the camera + target toward
+          whatever block is under the cursor.
+           - left drag : orbit around the current target
+           - right drag: pan (translates camera + target)
+           - scroll    : handled by CursorDolly */}
       <OrbitControls
         target={[segmentBounds.centerX, 1, segmentBounds.centerZ]}
         enableDamping
         dampingFactor={0.1}
-        zoomToCursor
+        enableZoom={false}
         makeDefault
       />
+      <CursorDolly />
     </>
   )
 }
@@ -1296,7 +1413,7 @@ function SizedCanvasShell({
           Canvas. Faded text, non-interactive (pointer-events-none) so
           it doesn't block orbit drags. */}
       <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
-        drag = orbit · right-drag = pan · scroll = zoom to cursor
+        drag = orbit · right-drag = pan · scroll = fly toward cursor
       </div>
     </div>
   )
