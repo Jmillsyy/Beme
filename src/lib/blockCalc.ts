@@ -1522,39 +1522,38 @@ export function planWallLayout(
       startNeighborId !== undefined
         ? (thicknessByWallId?.[startNeighborId] ?? wallThickness)
         : wallThickness
-    // ALWAYS emit a full cornerW-wide corner block at the start.
-    // When this wall is the owner this course, count it in the
-    // tally (real corner block). When it's NOT the owner, emit it
-    // as renderOnly so the perpendicular wall's owning block is the
-    // only one counted but BOTH walls' corner blocks render at the
-    // cube — they overlap (same red colour, visually consistent)
-    // and each extends ~200mm into its own wall direction.
-    //
-    // This eliminates the gap on non-owning courses that a narrow
-    // cubeDepth-only filler caused, and the corner column reads as
-    // a solid red column on every course. The visible stretcher-
-    // bond alternation comes from the extension direction
-    // alternating which wall it sits on.
-    //
-    // Body grid advances by full cornerW + mortar on every course
-    // (not just owning) so the body cells stay aligned across
-    // courses and the wall length budget matches what the calc
-    // engine assumed in fitCourseLength.
-    layout.blocks.push({
-      code: startBlock,
-      role:
-        BLOCK_LIBRARY[startBlock]?.roles.includes('corner')
-          ? 'corner'
-          : 'end-half',
-      s0Mm: s,
-      widthMm: startEndWidth,
-      courseIdx: i,
-      renderOnly: ownsStartCorner ? undefined : true,
-    })
-    s += startEndWidth + MORTAR_MM
-    // startCubeDepth no longer used — keep computation behind void
-    // so the lint pass doesn't complain.
-    void startCubeDepth
+    if (ownsStartCorner) {
+      layout.blocks.push({
+        code: startBlock,
+        role:
+          BLOCK_LIBRARY[startBlock]?.roles.includes('corner')
+            ? 'corner'
+            : 'end-half',
+        s0Mm: s,
+        widthMm: startEndWidth,
+        courseIdx: i,
+      })
+      s += startEndWidth + MORTAR_MM
+    } else {
+      // Skipped — body grid starts at the cube boundary, not cornerW.
+      // We still emit a render-only "cube filler" at s∈[0, cubeDepth]
+      // so this wall's exterior shows continuous corner colour across
+      // the cube area on every course. The perpendicular wall's
+      // owning corner block fills the cube physically but its faces
+      // don't lie on THIS wall's exterior plane, so without the
+      // filler the camera sees a recessed gap. renderOnly=true keeps
+      // this out of the tally — the perpendicular wall's block is
+      // already counted.
+      layout.blocks.push({
+        code: startBlock,
+        role: 'corner',
+        s0Mm: 0,
+        widthMm: startCubeDepth,
+        courseIdx: i,
+        renderOnly: true,
+      })
+      s += startCubeDepth + MORTAR_MM
+    }
 
     // Start lead-ins.
     for (let k = 0; k < startLeadInCount; k++) {
@@ -1631,20 +1630,31 @@ export function planWallLayout(
       endNeighborId !== undefined
         ? (thicknessByWallId?.[endNeighborId] ?? wallThickness)
         : wallThickness
-    // Same treatment at the end: full cornerW block on every course,
-    // renderOnly when not the owner.
-    layout.blocks.push({
-      code: endBlock,
-      role:
-        BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
-          ? 'corner'
-          : 'end-half',
-      s0Mm: Math.max(s, lengthMm - endEndWidth),
-      widthMm: endEndWidth,
-      courseIdx: i,
-      renderOnly: ownsEndCorner ? undefined : true,
-    })
-    void endCubeDepth
+    if (ownsEndCorner) {
+      layout.blocks.push({
+        code: endBlock,
+        role:
+          BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
+            ? 'corner'
+            : 'end-half',
+        s0Mm: Math.max(s, lengthMm - endEndWidth),
+        widthMm: endEndWidth,
+        courseIdx: i,
+      })
+    } else {
+      // Non-owning end: emit a render-only cube filler at
+      // s∈[length - cubeDepth, length] so the cube exterior is
+      // visually continuous on every course (same reasoning as the
+      // start cube filler above).
+      layout.blocks.push({
+        code: endBlock,
+        role: 'corner',
+        s0Mm: lengthMm - endCubeDepth,
+        widthMm: endCubeDepth,
+        courseIdx: i,
+        renderOnly: true,
+      })
+    }
 
     // Paired-tile (cleanouts): the tally adds ceil(bodyCount /
     // pairedPer) of the tile. We emit those tiles paired with body
