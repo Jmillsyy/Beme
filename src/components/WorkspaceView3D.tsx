@@ -70,10 +70,13 @@ const FALLBACK_CORNER_WIDTH_MM = 390
 const FALLBACK_HALF_WIDTH_MM = 190
 const FALLBACK_BODY_WIDTH_MM = 390
 
-/** Visible mortar gap (m) inset on every block's edges that face a
- *  neighbouring cell. Currently 0 — mortar removed at user request.
- *  Blocks butt directly with no visible joint. */
-const MORTAR_GAP_M = 0
+/** Visible gap (m) inset on every block's edges that face a
+ *  neighbouring cell. We keep the gap so adjacent blocks read as
+ *  discrete units (bond pattern stays visible) but Phase 7 mortar
+ *  emission is skipped — the gap shows the dark wrapper background
+ *  rather than a mortar fill. 6mm reads as a clean joint at typical
+ *  camera distances without producing thick / glitchy seams. */
+const MORTAR_GAP_M = 0.006
 
 /** Mortar fill colour — warm medium-grey reading as cement between the
  *  block faces. Renders behind each block course so the gaps between
