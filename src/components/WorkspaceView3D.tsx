@@ -580,40 +580,59 @@ function segmentsForStraightWall(
     const useHalfLeft = isEvenStretcher && leftIsFreeEnd
     const useHalfRight = isEvenStretcher && rightIsFreeEnd
 
-    // Simple uniform corner handling: at corner / control-joint ends,
-    // always render a full cornerW cell on every course (both walls).
-    // The two walls' cells overlap at the corner cube; with identical
-    // red corner color the overlap is visually invisible (z-fight
-    // resolves to the same pixel colour either way).
+    // Corner-cell handling — both walls ALWAYS render a corner-
+    // coloured end cell (so the visible corner column stays solid red
+    // every course, no alternating red/green flicker). What
+    // alternates per course is the WIDTH of that cell:
     //
-    // Trade-off: walls with corners on BOTH ends will look stack-bond-
-    // ish in the body (no per-course offset). This matches reality
-    // for masonry without specialty corner-pattern blocks. Walls
-    // with at least one free end still show stretcher offset via
-    // the corner/half alternation at the free end.
+    //   - On the course where THIS wall owns the corner cube (its
+    //     corner block runs along this wall): full cornerW wide.
+    //   - On the course where the OTHER wall owns: only halfW wide,
+    //     representing the wraparound — the OTHER wall's corner block
+    //     ends with its short face visible on this wall's outside.
+    //
+    // The two walls at a corner are deterministically opposite phase
+    // (lower-id leads on odd), so on any given course one wall has
+    // cornerW and the other has halfW. Together they fill the corner
+    // cube cleanly with red on both visible faces.
+    //
+    // The width difference (cornerW vs halfW = ~200mm) shifts the
+    // body grid by halfW between courses → natural stretcher bond
+    // offset, exactly how 200×200×400 corner blocks stacking at 90°
+    // produce it in real masonry. No specialty L-blocks required.
+    //
+    // In stack bond ownership doesn't alternate; the lower-id wall
+    // always owns so widths stay constant and bodies don't offset.
     const halfBlockW =
       widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
     const cornerWidth =
       widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
     const leftHasCornerJunction = leftPhase !== null
     const rightHasCornerJunction = rightPhase !== null
+    const ownsLeftThisCourse =
+      leftHasCornerJunction &&
+      ownsCornerThisCourse(leftPhase, course.courseNumber)
+    const ownsRightThisCourse =
+      rightHasCornerJunction &&
+      ownsCornerThisCourse(rightPhase, course.courseNumber)
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    // Always render end cells (no follow logic — both walls render
-    // their corner blocks every course, overlap is invisible).
+    // Always render end cells (overlap with the perpendicular wall's
+    // cell is invisible because both are the same corner colour).
     const renderLeftEnd = true
     const renderRightEnd = true
-    // End-cell widths:
-    //   - corner junction: always full cornerW.
-    //   - free / t-junction: corner or half by parity (existing logic).
+    // End-cell widths per junction state:
+    //   - corner junction + this wall owns this course: cornerW.
+    //   - corner junction + other wall owns this course: halfW.
+    //   - free / t-junction: corner or half by parity (free-end rule).
     const leftEndWidth = leftHasCornerJunction
-      ? cornerWidth
+      ? (ownsLeftThisCourse ? cornerWidth : halfBlockW)
       : (useHalfLeft ? halfBlockW : cornerWidth)
     const rightEndWidth = rightHasCornerJunction
-      ? cornerWidth
+      ? (ownsRightThisCourse ? cornerWidth : halfBlockW)
       : (useHalfRight ? halfBlockW : cornerWidth)
 
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
