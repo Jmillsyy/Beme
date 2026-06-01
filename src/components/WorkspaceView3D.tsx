@@ -581,71 +581,40 @@ function segmentsForStraightWall(
     const useHalfLeft = isEvenStretcher && leftIsFreeEnd
     const useHalfRight = isEvenStretcher && rightIsFreeEnd
 
-    // Corner handling that eliminates the dark gap at corner cubes
-    // while keeping the corner column solid red and producing the
-    // stretcher bond offset:
+    // Simple uniform corner handling: at corner / control-joint ends,
+    // always render a full cornerW cell on every course (both walls).
+    // The two walls' cells overlap at the corner cube; with identical
+    // red corner color the overlap is visually invisible (z-fight
+    // resolves to the same pixel colour either way).
     //
-    //  - OWNING this corner this course: extend corner cell PAST the
-    //    wall end by the PERPENDICULAR wall's half-thickness. The
-    //    extended cell covers the corner cube AND wraps slightly into
-    //    the perpendicular wall's territory — visible as red on the
-    //    perpendicular wall's outer face at the corner cube position.
-    //  - NOT OWNING this corner this course: render NO corner cell.
-    //    Body starts/ends at perpHalfThickness (not 0 / not length)
-    //    so the wall doesn't overlap the corner cube — the corner is
-    //    filled by the OWNING wall's extended cell.
-    //
-    // Result: the corner column has red on every course (always one
-    // wall's extended cell is at the corner cube), body grid origin
-    // shifts between cornerW (owning) and perpHalfThickness (non-
-    // owning) → natural stretcher bond offset without halves
-    // appearing at corners.
+    // Trade-off: walls with corners on BOTH ends will look stack-bond-
+    // ish in the body (no per-course offset). This matches reality
+    // for masonry without specialty corner-pattern blocks. Walls
+    // with at least one free end still show stretcher offset via
+    // the corner/half alternation at the free end.
     const halfBlockW =
       widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
     const cornerWidth =
       widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
     const leftHasCornerJunction = leftPhase !== null
     const rightHasCornerJunction = rightPhase !== null
-    const ownsLeftThisCourse =
-      leftHasCornerJunction &&
-      ownsCornerThisCourse(leftPhase, course.courseNumber)
-    const ownsRightThisCourse =
-      rightHasCornerJunction &&
-      ownsCornerThisCourse(rightPhase, course.courseNumber)
-    // Perpendicular wall thickness — needed for the wraparound /
-    // body-skip logic. Falls back to this wall's own thickness when
-    // the perpendicular wall's id isn't in the lookup.
-    const leftPerpThicknessM =
-      leftCornerNeighbor !== undefined
-        ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) / 1000
-        : thicknessMm / 1000
-    const rightPerpThicknessM =
-      rightCornerNeighbor !== undefined
-        ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) / 1000
-        : thicknessMm / 1000
-    const leftPerpHalf = leftPerpThicknessM / 2
-    const rightPerpHalf = rightPerpThicknessM / 2
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    // Render decisions for end cells:
-    //   - free / t-junction: always render (corner or half by parity)
-    //   - corner end + owning: render extended corner cell
-    //   - corner end + non-owning: render NO cell at this end
-    const renderLeftEnd = !leftHasCornerJunction || ownsLeftThisCourse
-    const renderRightEnd = !rightHasCornerJunction || ownsRightThisCourse
-    // leftEndWidth is the "body-side" inset of the left end cell —
-    // where body cells begin. For corner-owning ends, body starts at
-    // cornerWidth (the corner cell ends here on its body-facing edge).
-    // For corner non-owning ends, body starts at leftPerpHalf to skip
-    // the corner cube.
+    // Always render end cells (no follow logic — both walls render
+    // their corner blocks every course, overlap is invisible).
+    const renderLeftEnd = true
+    const renderRightEnd = true
+    // End-cell widths:
+    //   - corner junction: always full cornerW.
+    //   - free / t-junction: corner or half by parity (existing logic).
     const leftEndWidth = leftHasCornerJunction
-      ? (ownsLeftThisCourse ? cornerWidth : leftPerpHalf)
+      ? cornerWidth
       : (useHalfLeft ? halfBlockW : cornerWidth)
     const rightEndWidth = rightHasCornerJunction
-      ? (ownsRightThisCourse ? cornerWidth : rightPerpHalf)
+      ? cornerWidth
       : (useHalfRight ? halfBlockW : cornerWidth)
 
     const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
@@ -666,21 +635,13 @@ function segmentsForStraightWall(
         s1: length,
       })
     } else {
-      if (renderLeftEnd) {
-        // For corner-owning ends: extend cell PAST wall start by
-        // leftPerpHalf so it wraps into the perpendicular wall's
-        // territory and covers the corner cube. For free / t-junction
-        // ends, no extension (s0=0 — flush with wall start).
-        const leftS0 =
-          leftHasCornerJunction && ownsLeftThisCourse ? -leftPerpHalf : 0
-        cells.push({
-          role: 'END',
-          code: leftEndCode,
-          color: leftEndColor,
-          s0: leftS0,
-          s1: leftEndWidth,
-        })
-      }
+      cells.push({
+        role: 'END',
+        code: leftEndCode,
+        color: leftEndColor,
+        s0: 0,
+        s1: leftEndWidth,
+      })
       let c = leftEndWidth
       const bodyEnd = length - rightEndWidth
       while (c < bodyEnd) {
@@ -696,21 +657,13 @@ function segmentsForStraightWall(
         }
         c += bodyW
       }
-      if (renderRightEnd) {
-        // Mirror of left — extend PAST wall end by rightPerpHalf when
-        // owning, otherwise s1=length flush.
-        const rightS1 =
-          rightHasCornerJunction && ownsRightThisCourse
-            ? length + rightPerpHalf
-            : length
-        cells.push({
-          role: 'END',
-          code: rightEndCode,
-          color: rightEndColor,
-          s0: length - rightEndWidth,
-          s1: rightS1,
-        })
-      }
+      cells.push({
+        role: 'END',
+        code: rightEndCode,
+        color: rightEndColor,
+        s0: length - rightEndWidth,
+        s1: length,
+      })
     }
     return { course, cells, endCode, endColor, endWidth, bodyW }
   })
