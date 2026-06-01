@@ -554,33 +554,76 @@ function segmentsForStraightWall(
     if (bodyExclusions.length === 0) {
       emitBlocksInSpan(bodyStart, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
     } else {
-      let cursor = bodyStart
+      // Compute each exclusion's cut region (jambW expanded for openings)
+      // and MERGE overlapping cut regions. When two openings are closer
+      // than 2 × jambW apart (e.g. 190mm pier between two doors), their
+      // jamb spaces overlap — merging into a single super-region prevents
+      // double-emitting jambs in the gap. Only the outermost jambs of the
+      // merged group render; the wall between adjacent openings emits as
+      // body blocks (the real masonry would treat that narrow section as
+      // a structural pier).
       const jambW = endWidth
-      for (const ex of bodyExclusions) {
-        // For openings: reserve a jambW-wide cap on each side. Body
-        // blocks emit only up to (op.s0 - jambW), jamb cap fills
-        // (op.s0 - jambW, op.s0), opening void, right jamb fills
-        // (op.s1, op.s1 + jambW), then body blocks resume.
-        // For lintels: no jamb (the lintel block already spans the
-        // full opening width plus its own structural bearing).
-        const cutStart = ex.needsJambs
-          ? Math.max(bodyStart, ex.s0 - jambW)
-          : ex.s0
-        const cutEnd = ex.needsJambs
-          ? Math.min(bodyEnd, ex.s1 + jambW)
-          : ex.s1
-        if (cutStart > cursor) {
-          emitBlocksInSpan(cursor, cutStart, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
+      type CutRegion = {
+        s0: number
+        s1: number
+        needsJambs: boolean
+        cutStart: number
+        cutEnd: number
+      }
+      const cutRegions: CutRegion[] = bodyExclusions
+        .map((ex) => ({
+          ...ex,
+          cutStart: ex.needsJambs
+            ? Math.max(bodyStart, ex.s0 - jambW)
+            : ex.s0,
+          cutEnd: ex.needsJambs
+            ? Math.min(bodyEnd, ex.s1 + jambW)
+            : ex.s1,
+        }))
+        .sort((a, b) => a.cutStart - b.cutStart)
+
+      type MergedRegion = {
+        cutStart: number
+        cutEnd: number
+        openings: CutRegion[]
+      }
+      const merged: MergedRegion[] = []
+      for (const cr of cutRegions) {
+        const last = merged[merged.length - 1]
+        if (last && cr.cutStart <= last.cutEnd) {
+          last.cutEnd = Math.max(last.cutEnd, cr.cutEnd)
+          last.openings.push(cr)
+        } else {
+          merged.push({ cutStart: cr.cutStart, cutEnd: cr.cutEnd, openings: [cr] })
         }
-        if (ex.needsJambs) {
-          if (cutStart < ex.s0) {
-            boxes.push(buildBox(cutStart, ex.s0, y0, y1, endColor, endCode))
-          }
-          if (cutEnd > ex.s1) {
-            boxes.push(buildBox(ex.s1, cutEnd, y0, y1, endColor, endCode))
+      }
+
+      let cursor = bodyStart
+      for (const m of merged) {
+        if (m.cutStart > cursor) {
+          emitBlocksInSpan(cursor, m.cutStart, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
+        }
+        const firstOp = m.openings[0]
+        const lastOp = m.openings[m.openings.length - 1]
+        // Outer left jamb (only if first opening in the group needs jambs).
+        if (firstOp.needsJambs && m.cutStart < firstOp.s0) {
+          boxes.push(buildBox(m.cutStart, firstOp.s0, y0, y1, endColor, endCode))
+        }
+        // Body blocks in the gaps BETWEEN adjacent openings within this
+        // merged group — the "pier" sections that real masonry treats as
+        // narrow structural walls between openings.
+        for (let i = 0; i < m.openings.length - 1; i++) {
+          const opA = m.openings[i]
+          const opB = m.openings[i + 1]
+          if (opB.s0 > opA.s1) {
+            emitBlocksInSpan(opA.s1, opB.s0, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
           }
         }
-        cursor = Math.max(cursor, cutEnd)
+        // Outer right jamb (only if last opening in the group needs jambs).
+        if (lastOp.needsJambs && m.cutEnd > lastOp.s1) {
+          boxes.push(buildBox(lastOp.s1, m.cutEnd, y0, y1, endColor, endCode))
+        }
+        cursor = Math.max(cursor, m.cutEnd)
       }
       if (cursor < bodyEnd) {
         emitBlocksInSpan(cursor, bodyEnd, y0, y1, bodyCode, bodyColor, bodyW, gridOrigin)
