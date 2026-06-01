@@ -1050,10 +1050,11 @@ function CursorDolly() {
     const ndc = new THREE.Vector2()
 
     // Fraction of the distance to the cursor point we travel per
-    // wheel tick. 0.2 = 20% closer (or farther) per scroll line.
-    // Geometric decay → many small ticks converge naturally on the
-    // target without ever overshooting.
-    const STEP = 0.2
+    // wheel tick. 0.08 = 8% closer (or farther) per scroll line —
+    // smooth feel, takes ~8-10 ticks to halve the distance. Geometric
+    // decay → many small ticks converge naturally on the target
+    // without ever overshooting.
+    const STEP = 0.08
     // Don't dolly camera through the cursor point — clamp so we
     // always stay at least this far away (in metres).
     const MIN_DISTANCE = 0.05
