@@ -3,6 +3,11 @@ import { setBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { setBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { LIBRARY_TEMPLATES } from '../data/libraryTemplates'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
+import {
+  deleteOrgSupplyItem,
+  useOrgSupplyItems,
+} from '../lib/orgSupplyItems'
 import RegionPicker from './RegionPicker'
 
 export type LibrarySectionKind = 'block' | 'brick' | 'supply'
@@ -35,17 +40,26 @@ export default function LibrarySectionControls({
   const { settings } = useUserSettings()
   const { library: blockLib } = useBlockLibrary()
   const { library: brickLib } = useBrickLibrary()
+  const { currentOrgId } = useOrganisations()
+  const { items: orgSupplyItems } = useOrgSupplyItems()
   const [showPicker, setShowPicker] = useState(false)
 
+  // Supply count comes from Supabase when an org is active (the
+  // canonical org-scoped list); otherwise from the local IndexedDB
+  // list. Without this guard, a second device that's never had local
+  // items would show the empty-state above the synced items below.
+  const supplyCount = currentOrgId
+    ? orgSupplyItems.length
+    : settings.supplyItems?.length ?? 0
   // Pull the right count + reset action for this section kind.
   const count =
     kind === 'block'
       ? Object.keys(blockLib).length
       : kind === 'brick'
       ? Object.keys(brickLib).length
-      : settings.supplyItems?.length ?? 0
+      : supplyCount
 
-  function handleReset() {
+  async function handleReset() {
     const label =
       kind === 'block' ? 'blocks' : kind === 'brick' ? 'bricks' : 'supply items'
     const ok = window.confirm(
@@ -56,7 +70,23 @@ export default function LibrarySectionControls({
     if (!ok) return
     if (kind === 'block') setBlockLibrary({})
     else if (kind === 'brick') setBrickLibrary({})
-    else updateUserSettings({ supplyItems: [] })
+    else if (kind === 'supply') {
+      if (currentOrgId) {
+        // Delete each org item from Supabase. The optimistic update
+        // inside deleteOrgSupplyItem keeps the singleton in sync as
+        // each row removes.
+        for (const item of orgSupplyItems) {
+          try {
+            await deleteOrgSupplyItem(item.id)
+          } catch {
+            // Failure is logged inside the helper; keep going so a
+            // partial reset still removes what it can.
+          }
+        }
+      } else {
+        updateUserSettings({ supplyItems: [] })
+      }
+    }
   }
 
   // ───────── EMPTY STATE ─────────
