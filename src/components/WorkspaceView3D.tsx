@@ -71,13 +71,9 @@ const FALLBACK_HALF_WIDTH_MM = 190
 const FALLBACK_BODY_WIDTH_MM = 390
 
 /** Visible mortar gap (m) inset on every block's edges that face a
- *  neighbouring cell. Adjacent blocks have a small gap between them,
- *  producing the visual of discrete blocks separated by mortar joints.
- *  6mm is enough to read as a joint at typical camera distances
- *  without producing thick / glitchy lines or risking z-fight when
- *  the cell edges are close to perpendicular geometry from an
- *  adjacent wall. */
-const MORTAR_GAP_M = 0.006
+ *  neighbouring cell. Currently 0 — mortar removed at user request.
+ *  Blocks butt directly with no visible joint. */
+const MORTAR_GAP_M = 0
 
 /** Mortar fill colour — warm medium-grey reading as cement between the
  *  block faces. Renders behind each block course so the gaps between
@@ -889,40 +885,10 @@ function segmentsForStraightWall(
     }
   }
 
-  // ── Phase 7: emit mortar ─────────────────────────────────────────
-  // Per course, mortar spans the wall length except where:
-  //   - Any opening fully covers the course (window/door voids)
-  //   - Any lintel footprint covers this course's y range
-  for (const { course } of grid) {
-    const { y0, y1 } = course
-    const excl: { s0: number; s1: number }[] = []
-    for (const op of wallOpenings) {
-      if (op.sill <= y0 + 0.001 && op.head >= y1 - 0.001) {
-        excl.push({ s0: op.start, s1: op.end })
-      }
-    }
-    for (const l of lintelFootprints) {
-      if (l.y0 < y1 - 0.001 && l.y1 > y0 + 0.001) {
-        excl.push({ s0: l.spanStart, s1: l.spanEnd })
-      }
-    }
-    excl.sort((a, b) => a.s0 - b.s0)
-    const merged: { s0: number; s1: number }[] = []
-    for (const e of excl) {
-      const last = merged[merged.length - 1]
-      if (last && e.s0 <= last.s1) {
-        last.s1 = Math.max(last.s1, e.s1)
-      } else {
-        merged.push({ s0: e.s0, s1: e.s1 })
-      }
-    }
-    let cursor = 0
-    for (const m of merged) {
-      if (m.s0 > cursor) pushMortar(cursor, m.s0, y0, y1)
-      cursor = Math.max(cursor, m.s1)
-    }
-    if (cursor < length) pushMortar(cursor, length, y0, y1)
-  }
+  // Phase 7 (mortar emit) intentionally skipped — mortar removed at
+  // user request. pushMortar / lintelFootprints kept defined above
+  // so re-enabling later is just removing this `void` line.
+  void pushMortar
 
   return boxes
 }
