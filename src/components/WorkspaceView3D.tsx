@@ -401,26 +401,38 @@ function segmentsForStraightWall(
     }
   }
 
-  /** Pre-compute lintel info per opening — for each opening, the lintel
-   *  block code and which course (1-indexed from bottom) the lintel sits
-   *  in. Lintel course = the FIRST course whose bottom is at or above
-   *  the opening's head height. Null when the library has no lintel
-   *  block tagged. */
+  /** Pre-compute lintel footprints per opening. Each footprint is the
+   *  3D-space rectangle the lintel block(s) occupy: x = opening span,
+   *  y = (op.head → op.head + lintel.heightMm). The lintel block's
+   *  ACTUAL dimensions come from the library, so a 20.18 lintel
+   *  (390mm tall, 190mm wide) renders at its true 390mm height and
+   *  fills the opening width with 190mm-wide blocks side-by-side.
+   *
+   *  The lintel often spans MULTIPLE courses (a 390mm lintel takes up
+   *  ~2 courses of 200mm). So body emission in EVERY course whose y-
+   *  range overlaps the lintel footprint must exclude the lintel's
+   *  span — not just the single "lintel course". */
   const wallHeightMm = totalHeightM * 1000
-  const lintelByOpening = wallOpenings.map((op) => {
-    const headHeightMm = wallHeightMm - op.sill * 1000 - (op.head - op.sill) * 1000
-    if (headHeightMm <= 0) return null
-    const spec = selectBlockLintel(headHeightMm)
-    if (!spec) return null
-    const lintelCourse = courses.find((c) => c.y0 >= op.head - 0.001)
-    if (!lintelCourse) return null
-    return {
-      code: spec.code as BlockCode,
-      courseNumber: lintelCourse.courseNumber,
-      spanStart: op.start,
-      spanEnd: op.end,
-    }
-  })
+  const lintelFootprints = wallOpenings
+    .map((op) => {
+      const headHeightMm = wallHeightMm - op.sill * 1000 - (op.head - op.sill) * 1000
+      if (headHeightMm <= 0) return null
+      const spec = selectBlockLintel(headHeightMm)
+      if (!spec) return null
+      const block = library[spec.code]
+      if (!block) return null
+      const lintelHeightM = block.dimensions.heightMm / 1000
+      const lintelBlockW = block.dimensions.widthMm / 1000
+      return {
+        code: spec.code as BlockCode,
+        spanStart: op.start,
+        spanEnd: op.end,
+        y0: op.head,
+        y1: op.head + lintelHeightM,
+        blockWidthM: lintelBlockW,
+      }
+    })
+    .filter((l): l is NonNullable<typeof l> => l !== null)
 
   /** Push a mortar fill box at the requested span. Bypasses buildBox so
    *  it doesn't get the MORTAR_GAP_M inset (mortar should fill the gaps
@@ -515,21 +527,24 @@ function segmentsForStraightWall(
     // above an opening look like stack bond).
     const gridOrigin = endWidth
 
-    // Lintel for the course — if any opening's lintel sits in this
-    // course, render the lintel block (single highlighted box) at the
-    // opening span and skip body-block emission across that span.
-    const lintelsHere = lintelByOpening.filter(
-      (l) => l && l.courseNumber === course.courseNumber
-    ) as { code: BlockCode; courseNumber: number; spanStart: number; spanEnd: number }[]
+    // Lintels that overlap this course's y range. A 390mm lintel block
+    // covers ~2 normal courses, so a single lintel footprint may
+    // appear here twice (once per course it overlaps). Body emission
+    // must skip the lintel span in EVERY overlapping course or the
+    // body blocks would z-fight with the lintel's geometry.
+    const lintelsOverlapping = lintelFootprints.filter(
+      (l) => l.y0 < y1 - 0.001 && l.y1 > y0 + 0.001
+    )
 
     // Combined exclusion list for body-block emission: course-spanning
     // openings (which also get JAMB caps inserted at their edges) +
-    // lintel spans (no jambs — lintel takes the whole span). Both excluded
-    // from body blocks so we don't z-fight or render through the void.
+    // overlapping lintel spans (no jambs — lintel block takes the whole
+    // span). Both excluded from body blocks so we don't z-fight or
+    // render through the void.
     type BodyExclusion = { s0: number; s1: number; needsJambs: boolean }
     const bodyExclusions: BodyExclusion[] = [
       ...courseOpenings.map((o) => ({ s0: o.s0, s1: o.s1, needsJambs: true })),
-      ...lintelsHere.map((l) => ({
+      ...lintelsOverlapping.map((l) => ({
         s0: l.spanStart,
         s1: l.spanEnd,
         needsJambs: false,
@@ -580,9 +595,14 @@ function segmentsForStraightWall(
     // visible blocks line up with the rest of the course's bond
     // (stretcher offset propagates above/below openings correctly).
     //
-    // Skips opening spans where a lintel sits in this course — the
-    // lintel render below replaces the head fill at that span.
-    const lintelSpans = lintelsHere.map((l) => ({ s0: l.spanStart, s1: l.spanEnd }))
+    // Skips opening spans where a lintel covers this course — the
+    // lintel render below replaces the head fill at that span. Uses
+    // lintelsOverlapping (not just first course) so all overlapping
+    // courses skip the lintel span.
+    const lintelSpans = lintelsOverlapping.map((l) => ({
+      s0: l.spanStart,
+      s1: l.spanEnd,
+    }))
     const skipLintelSpans = (s0: number, s1: number, ...args: [number, number, BlockCode, string, number, number]) => {
       // Emit blocks in [s0, s1] except where a lintel covers this course.
       const sortedLintels = lintelSpans
@@ -624,12 +644,28 @@ function segmentsForStraightWall(
       }
     }
 
-    // Lintel render — single box per lintel at its opening span,
-    // exactly one course tall, using the lintel block's code (which
-    // is highlighted via emissive thanks to isHighlightedBlock).
-    for (const l of lintelsHere) {
+    // Lintel render — emit ONCE per lintel at its first overlapping
+    // course (where the lintel's y0 falls inside this course's y range).
+    // Walk the opening span in lintel-block-width increments so the
+    // lintel reads as multiple side-by-side specialty blocks (matching
+    // real masonry where the lintel is typically several 190mm-wide
+    // blocks spanning the opening). Heights from the block library so
+    // a 390mm-tall 20.18 renders at its full 390mm height (covering
+    // ~2 courses), not collapsed to one course's worth.
+    const lintelsToEmitHere = lintelFootprints.filter(
+      (l) => l.y0 >= y0 - 0.001 && l.y0 < y1 - 0.001
+    )
+    for (const l of lintelsToEmitHere) {
       const lintelColor = colorOf(l.code)
-      boxes.push(buildBox(l.spanStart, l.spanEnd, y0, y1, lintelColor, l.code))
+      let cursor = l.spanStart
+      while (cursor < l.spanEnd) {
+        const blockEnd = Math.min(cursor + l.blockWidthM, l.spanEnd)
+        const blockWidth = blockEnd - cursor
+        if (blockWidth > 0.02) {
+          boxes.push(buildBox(cursor, blockEnd, l.y0, l.y1, lintelColor, l.code))
+        }
+        cursor += l.blockWidthM
+      }
     }
   }
 
