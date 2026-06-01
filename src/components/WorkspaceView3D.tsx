@@ -620,12 +620,24 @@ function segmentsForStraightWall(
     }
   }
 
-  // ── Phase 3: merge close openings + stamp jambs ─────────────────
-  // For each course, openings that fully cover the course get jamb
-  // caps at their edges. When two openings are closer than 2 × jambW,
-  // their cut zones overlap — merge into a group and only emit outer
-  // jambs (the gap between becomes solid body / pier blocks via the
-  // already-placed cells outside the carved opening).
+  // ── Phase 3: stamp jambs at every opening edge ──────────────────
+  // Walls can't terminate with a body block — every opening edge
+  // needs a corner/half (closed-end) block. So for each opening,
+  // emit a jamb on BOTH sides (not just outer edges of merged
+  // groups). When two openings are close together (narrow pier),
+  // each opening's inner jamb gets clipped at the pier midpoint
+  // so the two jambs meet in the middle instead of overlapping.
+  //
+  // Pier widths and how this resolves:
+  //   - pier ≥ 2 × endWidth: each opening gets full endWidth jamb,
+  //     remaining body fits in the middle (jamb + body + jamb)
+  //   - pier = 2 × endWidth: each jamb full endWidth, no body
+  //     (just two jambs touching: jamb | jamb)
+  //   - pier < 2 × endWidth: each jamb clipped to half the pier
+  //     width so they meet at the midpoint (two narrow cut jambs)
+  //
+  // Codes / widths come from the library so any region's blocks
+  // work — no hardcoded AU defaults.
   for (const entry of grid) {
     const { course, cells, endCode, endColor, endWidth } = entry
     const { y0, y1 } = course
@@ -634,42 +646,41 @@ function segmentsForStraightWall(
       .sort((a, b) => a.start - b.start)
     if (openingsFull.length === 0) continue
 
-    type Group = { start: number; end: number; cutStart: number; cutEnd: number }
-    const groups: Group[] = []
-    for (const op of openingsFull) {
-      const cutStart = Math.max(0, op.start - endWidth)
-      const cutEnd = Math.min(length, op.end + endWidth)
-      const last = groups[groups.length - 1]
-      if (last && cutStart <= last.cutEnd) {
-        last.end = op.end
-        last.cutEnd = Math.max(last.cutEnd, cutEnd)
-      } else {
-        groups.push({ start: op.start, end: op.end, cutStart, cutEnd })
-      }
-    }
-    // Stamp outer jambs only — between merged openings, body cells
-    // already placed in earlier phases stay in place.
-    for (const g of groups) {
-      // Left jamb [g.cutStart, g.start] — only if it doesn't touch
-      // the wall's own left end cap.
-      if (g.start - g.cutStart > 0.02 && g.cutStart > 0.001) {
-        stampZone(cells, g.cutStart, g.start, {
+    for (let i = 0; i < openingsFull.length; i++) {
+      const op = openingsFull[i]
+      const prevOp = i > 0 ? openingsFull[i - 1] : null
+      const nextOp = i < openingsFull.length - 1 ? openingsFull[i + 1] : null
+
+      // Left jamb of this opening — at [start, op.start].
+      // Start is the LARGER of: wall start (0), ideal endWidth back
+      // from op, OR midpoint of the pier between prev opening and
+      // this one (so paired inner jambs meet rather than overlap).
+      const leftIdeal = op.start - endWidth
+      const leftFloor = prevOp ? (prevOp.end + op.start) / 2 : 0
+      const leftJambStart = Math.max(0, leftIdeal, leftFloor)
+      if (op.start - leftJambStart > 0.02) {
+        stampZone(cells, leftJambStart, op.start, {
           role: 'JAMB',
           code: endCode,
           color: endColor,
-          s0: g.cutStart,
-          s1: g.start,
+          s0: leftJambStart,
+          s1: op.start,
         })
       }
-      // Right jamb [g.end, g.cutEnd] — only if it doesn't touch
-      // the wall's own right end cap.
-      if (g.cutEnd - g.end > 0.02 && g.cutEnd < length - 0.001) {
-        stampZone(cells, g.end, g.cutEnd, {
+
+      // Right jamb of this opening — at [op.end, end]. End is
+      // the SMALLER of: wall end (length), ideal endWidth forward
+      // from op, OR midpoint of the pier with next opening.
+      const rightIdeal = op.end + endWidth
+      const rightCeil = nextOp ? (op.end + nextOp.start) / 2 : length
+      const rightJambEnd = Math.min(length, rightIdeal, rightCeil)
+      if (rightJambEnd - op.end > 0.02) {
+        stampZone(cells, op.end, rightJambEnd, {
           role: 'JAMB',
           code: endCode,
           color: endColor,
-          s0: g.end,
-          s1: g.cutEnd,
+          s0: op.end,
+          s1: rightJambEnd,
         })
       }
     }
