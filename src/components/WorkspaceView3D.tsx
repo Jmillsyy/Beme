@@ -43,7 +43,6 @@
  */
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
@@ -1009,186 +1008,181 @@ function segmentsForCurvedWall(
   return boxes
 }
 
-// ---------- First-person orbit pivot ----------
+// ---------- Initial camera aim ----------
 
 /**
- * Snaps the OrbitControls target to a tiny offset in front of the
- * camera at the start of every LEFT-button drag, so OrbitControls'
- * rotation acts as a "look around from where I am" first-person
- * camera instead of orbiting around a faraway point.
- *
- * OrbitControls always rotates the camera around its target. Default
- * target is far from the camera, so dragging swings you around that
- * distant pivot — feels wrong for inspecting a building from a
- * specific spot. By moving the target to camera.position + forward *
- * 0.1 right before the drag starts, the spherical rotation has
- * essentially zero radius, so the camera direction itself rotates
- * (= first-person look).
- *
- * Right-click drag is left alone: pan needs target-as-pivot semantics
- * (translates both camera and target by the cursor delta) and that
- * still works fine with whatever target position is current.
+ * Aims the camera at the given world point ONCE on mount. Without
+ * an OrbitControls target to set lookAt implicitly, the camera
+ * defaults to facing world origin instead of the building. Runs
+ * BEFORE FirstPersonControls mounts so the controls' yaw/pitch
+ * seed picks up this orientation.
  */
-function FirstPersonOrbitPivot() {
-  const gl = useThree((s) => s.gl)
+function InitialCameraAim({
+  targetX,
+  targetZ,
+}: {
+  targetX: number
+  targetZ: number
+}) {
   const camera = useThree((s) => s.camera)
-  const controls = useThree((s) => s.controls) as
-    | (THREE.EventDispatcher & {
-        target?: THREE.Vector3
-        update?: () => void
-      })
-    | null
   const invalidate = useThree((s) => s.invalidate)
-
+  const aimedRef = useRef(false)
   useEffect(() => {
-    const dom = gl.domElement
-    const onPointerDown = (e: PointerEvent) => {
-      // Only left button — pan is right-button and shouldn't reset
-      // the target (pan needs the existing target as its pivot
-      // semantically, and we don't want to teleport the orbit pivot
-      // when the user is about to pan).
-      if (e.button !== 0) return
-      if (!controls || !controls.target) return
-      const forward = new THREE.Vector3()
-      camera.getWorldDirection(forward)
-      // 0.1m in front of the camera. Small enough that orbit rotation
-      // feels like rotating in place but non-zero so OrbitControls'
-      // distance math doesn't divide-by-zero.
-      controls.target
-        .copy(camera.position)
-        .addScaledVector(forward, 0.1)
-      controls.update?.()
-      invalidate()
-    }
-    dom.addEventListener('pointerdown', onPointerDown)
-    return () => dom.removeEventListener('pointerdown', onPointerDown)
-  }, [gl, camera, controls, invalidate])
-
+    if (aimedRef.current) return
+    aimedRef.current = true
+    camera.lookAt(targetX, 1, targetZ)
+    invalidate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   return null
 }
 
-// ---------- Cursor dolly ----------
+// ---------- First-person controls ----------
 
 /**
- * Replaces OrbitControls' built-in zoom with a "fly toward cursor"
- * wheel handler. On scroll, we:
+ * Mouse-only first-person camera. No OrbitControls, no target, no
+ * pivot point.
  *
- *   1. Raycast from the camera through the cursor's NDC position.
- *   2. Find the first wall mesh the ray hits — that's the dolly
- *      target. If nothing's hit, project the ray onto a horizontal
- *      plane at the OrbitControls target's Y (so the user can still
- *      pan-zoom across empty ground).
- *   3. Move BOTH the camera and the OrbitControls target by a fixed
- *      fraction (`STEP`) of the distance toward that point.
+ *   - Drag (any button): yaw + pitch applied directly to
+ *     camera.quaternion. The camera rotates around its own position,
+ *     not around any external point.
+ *   - Wheel: dolly along the camera's look direction. Distance-aware
+ *     via a raycast — far from geometry the steps are larger, close
+ *     up they get finer, so zooming in to inspect a wall stays
+ *     controllable.
  *
- * Why move the target too: OrbitControls' rotate pivot is the target.
- * If we leave it where it was, the user zooms onto a block, then
- * tries to orbit it, and the camera swings around the OLD target —
- * which is somewhere behind them now. Moving the target with the
- * camera keeps orbit anchored on what the user is looking at.
+ * Yaw rotates around the world-Y axis (so the horizon stays level
+ * no matter how far you tilt). Pitch is clamped to ±89° so you
+ * don't flip upside-down when looking straight up/down.
  *
- * OrbitControls' native zoom is disabled (enableZoom=false on the
- * OrbitControls JSX below) so the two don't fight over the wheel.
+ * Internal yaw/pitch state is seeded from the camera's initial
+ * quaternion on mount, so wherever the camera is aimed at startup
+ * is where this controller picks up from.
  */
-function CursorDolly() {
-  const gl = useThree((s) => s.gl)
+function FirstPersonControls() {
   const camera = useThree((s) => s.camera)
+  const gl = useThree((s) => s.gl)
   const scene = useThree((s) => s.scene)
-  const controls = useThree((s) => s.controls) as
-    | (THREE.EventDispatcher & {
-        target?: THREE.Vector3
-        update?: () => void
-      })
-    | null
   const invalidate = useThree((s) => s.invalidate)
 
   useEffect(() => {
     const dom = gl.domElement
+
+    // Seed yaw/pitch from current camera quaternion. Order 'YXZ' so
+    // yaw (Y) is applied before pitch (X) — matches how typical
+    // first-person cameras combine the two without roll bleed.
+    const startEuler = new THREE.Euler().setFromQuaternion(
+      camera.quaternion,
+      'YXZ'
+    )
+    const state = {
+      dragging: false,
+      pointerId: -1,
+      lastX: 0,
+      lastY: 0,
+      yaw: startEuler.y,
+      pitch: startEuler.x,
+    }
+
+    // Mouse sensitivity: radians of rotation per pixel of drag. ~0.18°/px.
+    const LOOK_SENSITIVITY = 0.003
+    // Pitch limit — just under 90° so the up-axis doesn't gimbal flip.
+    const PITCH_LIMIT = (Math.PI / 2) * 0.99
+
+    // Wheel zoom — distance-aware. Each tick moves a fraction of the
+    // way to whatever the camera is looking at (raycast forward).
+    // Falls back to a fixed distance if the ray hits nothing so wheel
+    // still does something in empty space.
+    const WHEEL_STEP = 0.12 // 12% of forward-hit distance per tick
+    const WHEEL_MIN_DISTANCE = 0.05 // metres — don't poke through walls
+    const WHEEL_FALLBACK_DISTANCE = 10 // metres of "phantom" forward dist
+
     const raycaster = new THREE.Raycaster()
-    const ndc = new THREE.Vector2()
+    const fwd = new THREE.Vector3()
 
-    // Fraction of the distance to the cursor point we travel per
-    // wheel tick. 0.08 = 8% closer (or farther) per scroll line —
-    // smooth feel, takes ~8-10 ticks to halve the distance. Geometric
-    // decay → many small ticks converge naturally on the target
-    // without ever overshooting.
-    const STEP = 0.08
-    // Don't dolly camera through the cursor point — clamp so we
-    // always stay at least this far away (in metres).
-    const MIN_DISTANCE = 0.05
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const rect = dom.getBoundingClientRect()
-      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-      raycaster.setFromCamera(ndc, camera)
-
-      // Prefer raycasting against actual scene objects so the user
-      // can zoom onto a specific block. `recursive=true` so we hit
-      // descendants of groups.
-      const hits = raycaster.intersectObjects(scene.children, true)
-      let dollyPoint: THREE.Vector3 | null = null
-      if (hits.length > 0) {
-        dollyPoint = hits[0].point.clone()
-      } else {
-        // Empty space — fall back to a horizontal plane at the
-        // current orbit target's Y so the user can still pan-zoom
-        // across the ground area without geometry under the cursor.
-        const planeY = controls?.target?.y ?? 0
-        const dir = raycaster.ray.direction
-        if (Math.abs(dir.y) > 1e-6) {
-          const t = (planeY - camera.position.y) / dir.y
-          if (t > 0) {
-            dollyPoint = camera.position
-              .clone()
-              .addScaledVector(dir, t)
-          }
-        }
-      }
-      // Final fallback — dolly 10m forward along the ray. Means
-      // scroll always does SOMETHING even if the geometry is sparse.
-      if (!dollyPoint) {
-        dollyPoint = camera.position
-          .clone()
-          .addScaledVector(raycaster.ray.direction, 10)
-      }
-
-      const toPoint = new THREE.Vector3().subVectors(
-        dollyPoint,
-        camera.position
-      )
-      const distance = toPoint.length()
-      // deltaY > 0 means scroll-DOWN, conventionally zoom-out.
-      const sign = e.deltaY < 0 ? 1 : -1
-      // Move sign * STEP * distance toward the dolly point. On zoom-in
-      // we clamp so we don't end up at distance < MIN_DISTANCE.
-      let amount = sign * STEP * distance
-      if (sign === 1 && distance - amount < MIN_DISTANCE) {
-        amount = Math.max(0, distance - MIN_DISTANCE)
-      }
-      const move = toPoint.normalize().multiplyScalar(amount)
-
-      camera.position.add(move)
-      // SET the orbit target to whatever's under the cursor (not
-      // translate-by-move). The previous version slid both camera and
-      // target by the same vector, which kept the target some
-      // distance in FRONT of the camera — so orbiting after a zoom
-      // still swung around a point you weren't looking at. Snapping
-      // the target to the cursor hit makes orbit rotate around
-      // exactly the wall/block you just zoomed onto.
-      if (controls && controls.target) {
-        controls.target.copy(dollyPoint)
-        controls.update?.()
-      }
+    const applyRotation = () => {
+      const e = new THREE.Euler(state.pitch, state.yaw, 0, 'YXZ')
+      camera.quaternion.setFromEuler(e)
       invalidate()
     }
 
-    // passive:false so preventDefault works (otherwise the page would
-    // scroll along with our zoom in some browsers).
+    const onPointerDown = (e: PointerEvent) => {
+      // Any button captures drag → look. (User said mouse-only;
+      // they're not strafing or distinguishing buttons here.)
+      state.dragging = true
+      state.pointerId = e.pointerId
+      state.lastX = e.clientX
+      state.lastY = e.clientY
+      dom.setPointerCapture?.(e.pointerId)
+      // Prevent the browser's default behaviours (text selection,
+      // context menu pre-empt) while dragging.
+      e.preventDefault()
+    }
+    const onPointerMove = (e: PointerEvent) => {
+      if (!state.dragging) return
+      const dx = e.clientX - state.lastX
+      const dy = e.clientY - state.lastY
+      state.lastX = e.clientX
+      state.lastY = e.clientY
+      // Negative on yaw so dragging right rotates view right (the
+      // mouse appears to "grab and pull" the scene). Negative on
+      // pitch too so dragging up looks up. Flip the sign of
+      // LOOK_SENSITIVITY here if a user later prefers inverted.
+      state.yaw -= dx * LOOK_SENSITIVITY
+      state.pitch -= dy * LOOK_SENSITIVITY
+      if (state.pitch > PITCH_LIMIT) state.pitch = PITCH_LIMIT
+      if (state.pitch < -PITCH_LIMIT) state.pitch = -PITCH_LIMIT
+      applyRotation()
+    }
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerId !== state.pointerId) return
+      state.dragging = false
+      state.pointerId = -1
+      dom.releasePointerCapture?.(e.pointerId)
+    }
+    const onContextMenu = (e: MouseEvent) => {
+      // Suppress the right-click menu so right-drag-to-look works.
+      e.preventDefault()
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      camera.getWorldDirection(fwd) // unit vector, current look dir
+
+      // Raycast forward FROM THE CAMERA along its current look
+      // direction (not toward the cursor — we don't want zoom to
+      // teleport the camera off-axis; it should just travel along
+      // where the user is already looking).
+      raycaster.set(camera.position, fwd)
+      const hits = raycaster.intersectObjects(scene.children, true)
+      const distance = hits.length > 0 ? hits[0].distance : WHEEL_FALLBACK_DISTANCE
+
+      const sign = e.deltaY < 0 ? 1 : -1 // up = forward
+      let amount = sign * WHEEL_STEP * distance
+      // Clamp so a zoom-in doesn't poke through the wall.
+      if (sign === 1 && distance - amount < WHEEL_MIN_DISTANCE) {
+        amount = Math.max(0, distance - WHEEL_MIN_DISTANCE)
+      }
+      camera.position.addScaledVector(fwd, amount)
+      invalidate()
+    }
+
+    dom.addEventListener('pointerdown', onPointerDown)
+    dom.addEventListener('pointermove', onPointerMove)
+    dom.addEventListener('pointerup', onPointerUp)
+    dom.addEventListener('pointercancel', onPointerUp)
+    dom.addEventListener('contextmenu', onContextMenu)
     dom.addEventListener('wheel', onWheel, { passive: false })
-    return () => dom.removeEventListener('wheel', onWheel)
-  }, [gl, camera, scene, controls, invalidate])
+
+    return () => {
+      dom.removeEventListener('pointerdown', onPointerDown)
+      dom.removeEventListener('pointermove', onPointerMove)
+      dom.removeEventListener('pointerup', onPointerUp)
+      dom.removeEventListener('pointercancel', onPointerUp)
+      dom.removeEventListener('contextmenu', onContextMenu)
+      dom.removeEventListener('wheel', onWheel)
+    }
+  }, [camera, gl, scene, invalidate])
 
   return null
 }
@@ -1349,27 +1343,17 @@ function Scene({
         </mesh>
       ))}
 
-      {/* OrbitControls — mouse only. Built-in zoom is OFF; CursorDolly
-          below owns the wheel and flies the camera + target toward
-          whatever block is under the cursor.
-           - left drag : orbit around the current target
-           - right drag: pan (translates camera + target)
-           - scroll    : handled by CursorDolly */}
-      <OrbitControls
-        target={[segmentBounds.centerX, 1, segmentBounds.centerZ]}
-        enableDamping
-        dampingFactor={0.1}
-        enableZoom={false}
-        // Negative speeds invert the mouse direction so dragging
-        // "grabs and pulls" the scene rather than orbiting/panning
-        // the opposite way of the cursor — matches the natural
-        // expectation when interacting with a 3D model in a window.
-        rotateSpeed={-1}
-        panSpeed={-1}
-        makeDefault
+      {/* InitialCameraAim must render BEFORE FirstPersonControls
+          so its lookAt is applied before the controls seed their
+          yaw/pitch state from camera.quaternion. */}
+      <InitialCameraAim
+        targetX={segmentBounds.centerX}
+        targetZ={segmentBounds.centerZ}
       />
-      <FirstPersonOrbitPivot />
-      <CursorDolly />
+      {/* First-person mouse camera. Drag rotates the camera around
+          its own position (no orbit target, no pivot point), wheel
+          dollies along the camera's look direction. No keyboard. */}
+      <FirstPersonControls />
     </>
   )
 }
@@ -1486,7 +1470,7 @@ function SizedCanvasShell({
           Canvas. Faded text, non-interactive (pointer-events-none) so
           it doesn't block orbit drags. */}
       <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
-        drag = orbit · right-drag = pan · scroll = fly toward cursor
+        drag = look around · scroll = move forward
       </div>
     </div>
   )
