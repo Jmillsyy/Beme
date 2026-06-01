@@ -170,6 +170,13 @@ function resolveWallCourses(
     skipHeightMakeup: true,
   })
 
+  // Count total courses first so we know which one is the "top course"
+  // and can stamp the topCourseBlockCode (typically a bond beam 20.20).
+  const totalCourses = bands.reduce(
+    (sum, b) => sum + Math.max(0, b.count),
+    0
+  )
+
   const courses: ResolvedCourse[] = []
   let y = 0
   let courseNum = 1
@@ -178,14 +185,29 @@ function resolveWallCourses(
     const courseHeightM = moduleHeightForBand(band.blockCode, library) / 1000
     for (let i = 0; i < band.count; i++) {
       const resolved = resolveCourseBlocks(scopedMakeup, courseNum)
+      // Per-course body code resolution order:
+      //   - Course 1 (base course): baseCourseBlockCode from makeup /
+      //     series-range. Typically 20.45 cleanout (with internal
+      //     50.45 tile — not visualised separately).
+      //   - Last course (top course): topCourseBlockCode from makeup.
+      //     Typically 20.48 H block or 20.20 bond beam when a slab sits
+      //     above.
+      //   - Middle courses: series-range body overlay, falling through
+      //     to band code (which is the makeup's bodyBlockCode by
+      //     default).
+      let bodyCode: BlockCode
+      if (courseNum === 1) {
+        bodyCode = resolved.baseCourseBlockCode || resolved.bodyBlockCode || band.blockCode
+      } else if (courseNum === totalCourses) {
+        bodyCode = scopedMakeup.topCourseBlockCode || resolved.bodyBlockCode || band.blockCode
+      } else {
+        bodyCode = resolved.bodyBlockCode || band.blockCode
+      }
       courses.push({
         courseNumber: courseNum,
         y0: y,
         y1: y + courseHeightM,
-        // Series-range body overlays the band's body code. Bands come
-        // from the makeup's coursePattern (or defaults), but series
-        // ranges can replace it for specific course ranges.
-        bodyCode: resolved.bodyBlockCode || band.blockCode,
+        bodyCode,
         cornerCode: resolved.cornerBlockCode,
         halfCode: resolved.halfBlockCode,
       })
