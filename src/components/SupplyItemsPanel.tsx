@@ -24,6 +24,13 @@ interface ProjectMetrics {
   blockCount: number
   /** Number of openings drawn on the project. */
   openingCount: number
+  /** Width in mm of every opening drawn on the project. Used by
+   *  per-opening supply items with openingWidthMin/Max ranges so
+   *  e.g. a "Galintel 1500" item only counts openings whose width
+   *  falls in its range. Length should match openingCount; callers
+   *  may pass [] when widths aren't available (the range filter
+   *  will fall back to counting all openings). */
+  openingWidthsMm: number[]
 }
 
 interface SupplyItemsPanelProps {
@@ -75,8 +82,29 @@ function quantityFor(item: SupplyItem, rate: number, m: ProjectMetrics): number 
       return rate * m.areaSqM
     case 'per-m-lineal':
       return rate * m.lengthM
-    case 'per-opening':
-      return rate * m.openingCount
+    case 'per-opening': {
+      // Width-range-aware: an item with openingWidthMinMm /
+      // openingWidthMaxMm only counts openings whose width falls
+      // within its range. Items with NEITHER bound (the legacy /
+      // ties-and-flashings case) keep applying to every opening.
+      const min = item.openingWidthMinMm
+      const max = item.openingWidthMaxMm
+      if (min === undefined && max === undefined) {
+        return rate * m.openingCount
+      }
+      // No widths provided → fall back to the unfiltered count so a
+      // caller that didn't pass widths doesn't silently zero out the
+      // item.
+      if (m.openingWidthsMm.length === 0) {
+        return rate * m.openingCount
+      }
+      const matching = m.openingWidthsMm.filter(
+        (w) =>
+          (min === undefined || w >= min) &&
+          (max === undefined || w <= max)
+      ).length
+      return rate * matching
+    }
   }
 }
 

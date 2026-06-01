@@ -2121,6 +2121,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickCount: tally.brickCount,
         blockCount: 0,
         openingCount: tally.openingCount,
+        // Individual opening widths so width-ranged supply items
+        // (Galintels et al.) count only the openings they cover.
+        openingWidthsMm: allOpenings.map((o) => o.widthMm),
       }
     }
     // Block mode (or any unknown — fall back to block math which yields 0s).
@@ -2151,6 +2154,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       brickCount: 0,
       blockCount,
       openingCount: allOpenings.length,
+      openingWidthsMm: allOpenings.map((o) => o.widthMm),
     }
     // blockLibraryVersion is a tally-engine dependency (calculateProjectTally
     // reaches into the live BLOCK_LIBRARY); listing it here re-runs the memo
