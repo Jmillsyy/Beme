@@ -130,6 +130,15 @@ export interface SupplyItem {
    */
   enabledByDefault: boolean
   /**
+   * Optional grouping label — items sharing the same category render as
+   * a collapsible section in the SupplyItemsPanel. Free-text so users
+   * pick whatever taxonomy works for them ("Lintels", "Galintel",
+   * "Ties", "Cement", etc.). Items without a category fall under
+   * "Uncategorised". Case-sensitive equality groups items together;
+   * the UI offers autocomplete from existing categories.
+   */
+  category?: string
+  /**
    * For `unit: 'per-opening'` supplies ONLY — restrict the count to
    * openings whose WIDTH falls within this range (mm). Lets the user
    * configure lintels / sills / heads as supply items that auto-pick

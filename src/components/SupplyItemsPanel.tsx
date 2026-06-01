@@ -100,6 +100,13 @@ function SupplyItemsPanelImpl({
   onRateChange,
 }: SupplyItemsPanelProps) {
   const [expanded, setExpanded] = useState(true)
+  // Per-category collapse state. Keyed by category label (or
+  // 'Uncategorised'). Categories default to expanded; collapsing one
+  // only hides its items in this session — not persisted because
+  // category collapse is a UI affordance, not a project setting.
+  const [categoryCollapsed, setCategoryCollapsed] = useState<Record<string, boolean>>(
+    {}
+  )
   const { settings } = useUserSettings()
   const items = settings.supplyItems ?? []
 
@@ -107,6 +114,22 @@ function SupplyItemsPanelImpl({
     () => items.filter((i) => i.appliesTo.includes(metrics.mode)),
     [items, metrics.mode]
   )
+
+  // Group items by category, preserving the user's order within each
+  // group. Items without a category go under 'Uncategorised'. The
+  // outer Map preserves insertion order so groups appear in the order
+  // they first show in the items list.
+  const UNCATEGORISED = 'Uncategorised'
+  const groupedItems = useMemo(() => {
+    const groups = new Map<string, SupplyItem[]>()
+    for (const item of applicableItems) {
+      const key = item.category?.trim() || UNCATEGORISED
+      const existing = groups.get(key)
+      if (existing) existing.push(item)
+      else groups.set(key, [item])
+    }
+    return Array.from(groups.entries())
+  }, [applicableItems])
 
   const includedCount = applicableItems.filter(
     (i) => selections[i.id] !== false
@@ -148,81 +171,129 @@ function SupplyItemsPanelImpl({
               for every {metrics.mode} estimate.
             </p>
           ) : (
-            <div className="space-y-2">
-              {applicableItems.map((item) => {
-                const included = selections[item.id] !== false
-                const rate = effectiveRate(item, rateOverrides)
-                const qty = quantityFor(item, rate, metrics)
-                const rounded = Math.max(0, Math.ceil(qty))
-                const hasOverride = rateOverrides[item.id] !== undefined
+            <div className="space-y-3">
+              {groupedItems.map(([category, categoryItems]) => {
+                // If there's only ONE group AND it's Uncategorised, skip
+                // the section header entirely — same visual as the
+                // pre-categories flat list. Users who haven't categorised
+                // anything see no extra chrome.
+                const showHeader =
+                  groupedItems.length > 1 || category !== UNCATEGORISED
+                const groupCollapsed = !!categoryCollapsed[category]
+                const groupIncluded = categoryItems.filter(
+                  (i) => selections[i.id] !== false
+                ).length
                 return (
-                  <div
-                    key={item.id}
-                    className={`p-3 border rounded-lg transition-colors ${
-                      included
-                        ? 'border-ink-600 bg-ink-700/40'
-                        : 'border-ink-700 bg-ink-800/40'
-                    }`}
-                  >
-                    <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={included}
-                        onChange={(e) => onToggle(item.id, e.target.checked)}
-                      />
-                      <span
-                        className={
-                          included ? 'text-ink-100' : 'text-ink-400 line-through'
+                  <div key={category} className="space-y-2">
+                    {showHeader && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCategoryCollapsed((s) => ({
+                            ...s,
+                            [category]: !groupCollapsed,
+                          }))
                         }
+                        className="flex items-center gap-2 w-full text-left group"
                       >
-                        {item.name}
-                      </span>
-                      <span
-                        className={`ml-auto text-xs tabular-nums font-semibold ${
-                          included ? 'text-beme-300' : 'text-ink-500'
-                        }`}
-                      >
-                        {included ? rounded.toLocaleString() : '—'}
-                      </span>
-                    </label>
-                    {included && (
-                      <div className="mt-2 ml-6 flex items-center gap-2 text-sm flex-wrap">
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={
-                            hasOverride
-                              ? rateOverrides[item.id]
-                              : item.rate
-                          }
-                          onChange={(e) => {
-                            const v = e.target.value
-                            if (v === '') {
-                              onRateChange(item.id, undefined)
-                              return
-                            }
-                            const n = parseFloat(v)
-                            if (Number.isFinite(n) && n >= 0) {
-                              onRateChange(item.id, n)
-                            }
-                          }}
-                          className="w-20 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 tabular-nums"
-                          aria-label={`${item.name} rate`}
-                        />
-                        <span className="text-ink-300">
-                          {UNIT_SUFFIX[item.unit]}
+                        <span className="text-ink-500 group-hover:text-ink-300 text-[10px]">
+                          {groupCollapsed ? '▸' : '▾'}
                         </span>
-                        {hasOverride && (
-                          <button
-                            type="button"
-                            onClick={() => onRateChange(item.id, undefined)}
-                            className="text-xs text-ink-400 hover:text-beme-300 underline-offset-2 hover:underline"
-                            title={`Reset to library default (${item.rate} ${UNIT_SUFFIX[item.unit]})`}
-                          >
-                            Reset
-                          </button>
-                        )}
+                        <span className="text-xs font-semibold uppercase tracking-wide text-ink-300 group-hover:text-beme-300">
+                          {category}
+                        </span>
+                        <span className="text-[11px] text-ink-500">
+                          · {groupIncluded}/{categoryItems.length}
+                        </span>
+                      </button>
+                    )}
+                    {!groupCollapsed && (
+                      <div className="space-y-2">
+                        {categoryItems.map((item) => {
+                          const included = selections[item.id] !== false
+                          const rate = effectiveRate(item, rateOverrides)
+                          const qty = quantityFor(item, rate, metrics)
+                          const rounded = Math.max(0, Math.ceil(qty))
+                          const hasOverride = rateOverrides[item.id] !== undefined
+                          return (
+                            <div
+                              key={item.id}
+                              className={`p-3 border rounded-lg transition-colors ${
+                                included
+                                  ? 'border-ink-600 bg-ink-700/40'
+                                  : 'border-ink-700 bg-ink-800/40'
+                              }`}
+                            >
+                              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={included}
+                                  onChange={(e) =>
+                                    onToggle(item.id, e.target.checked)
+                                  }
+                                />
+                                <span
+                                  className={
+                                    included
+                                      ? 'text-ink-100'
+                                      : 'text-ink-400 line-through'
+                                  }
+                                >
+                                  {item.name}
+                                </span>
+                                <span
+                                  className={`ml-auto text-xs tabular-nums font-semibold ${
+                                    included ? 'text-beme-300' : 'text-ink-500'
+                                  }`}
+                                >
+                                  {included ? rounded.toLocaleString() : '—'}
+                                </span>
+                              </label>
+                              {included && (
+                                <div className="mt-2 ml-6 flex items-center gap-2 text-sm flex-wrap">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={
+                                      hasOverride
+                                        ? rateOverrides[item.id]
+                                        : item.rate
+                                    }
+                                    onChange={(e) => {
+                                      const v = e.target.value
+                                      if (v === '') {
+                                        onRateChange(item.id, undefined)
+                                        return
+                                      }
+                                      const n = parseFloat(v)
+                                      if (Number.isFinite(n) && n >= 0) {
+                                        onRateChange(item.id, n)
+                                      }
+                                    }}
+                                    className="w-20 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 tabular-nums"
+                                    aria-label={`${item.name} rate`}
+                                  />
+                                  <span className="text-ink-300">
+                                    {UNIT_SUFFIX[item.unit]}
+                                  </span>
+                                  {hasOverride && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onRateChange(item.id, undefined)
+                                      }
+                                      className="text-xs text-ink-400 hover:text-beme-300 underline-offset-2 hover:underline"
+                                      title={`Reset to library default (${item.rate} ${UNIT_SUFFIX[item.unit]})`}
+                                    >
+                                      Reset
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
                   </div>

@@ -234,6 +234,16 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
   const editing =
     editingId && editingId !== 'new' ? items.find((i) => i.id === editingId) : null
 
+  // Unique category labels currently in use, sorted alphabetically.
+  // Powers the category-input datalist autocomplete in SupplyItemForm.
+  const existingCategories = useMemo(() => {
+    const set = new Set<string>()
+    for (const it of items) {
+      if (it.category && it.category.trim()) set.add(it.category.trim())
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [items])
+
   function saveItem(item: SupplyItem) {
     const existing = items.filter((i) => i.id !== item.id)
     updateUserSettings({ supplyItems: [...existing, item] })
@@ -257,18 +267,53 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
         </p>
       )}
 
-      {items
-        .slice()
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((item) => (
-          <SupplyItemRow
-            key={item.id}
-            item={item}
-            readOnly={readOnly}
-            onEdit={() => setEditingId(item.id)}
-            onDelete={() => deleteItem(item.id)}
-          />
-        ))}
+      {/* Group items by category for the editor list — same grouping
+          the workspace SupplyItemsPanel uses. Inside each group items
+          stay sorted by name. Uncategorised group rendered last. */}
+      {(() => {
+        const UNCAT = 'Uncategorised'
+        const groups = new Map<string, SupplyItem[]>()
+        for (const it of items) {
+          const key = it.category?.trim() || UNCAT
+          const arr = groups.get(key)
+          if (arr) arr.push(it)
+          else groups.set(key, [it])
+        }
+        // Stable sort: named categories alphabetically first,
+        // Uncategorised last. Within each group, sort by name.
+        const entries = Array.from(groups.entries()).sort(([a], [b]) => {
+          if (a === UNCAT) return 1
+          if (b === UNCAT) return -1
+          return a.localeCompare(b)
+        })
+        return entries.map(([category, list]) => {
+          const showHeader = entries.length > 1 || category !== UNCAT
+          return (
+            <div key={category} className="space-y-2">
+              {showHeader && (
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mt-2">
+                  {category}{' '}
+                  <span className="text-ink-500 font-normal">
+                    · {list.length}
+                  </span>
+                </h4>
+              )}
+              {list
+                .slice()
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((item) => (
+                  <SupplyItemRow
+                    key={item.id}
+                    item={item}
+                    readOnly={readOnly}
+                    onEdit={() => setEditingId(item.id)}
+                    onDelete={() => deleteItem(item.id)}
+                  />
+                ))}
+            </div>
+          )
+        })
+      })()}
 
       {!readOnly && editingId === null && (
         <button
@@ -282,6 +327,7 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
       {editingId !== null && !readOnly && (
         <SupplyItemForm
           existing={editing ?? null}
+          existingCategories={existingCategories}
           onSave={saveItem}
           onCancel={() => setEditingId(null)}
         />
@@ -346,14 +392,20 @@ function SupplyItemRow({
 
 function SupplyItemForm({
   existing,
+  existingCategories,
   onSave,
   onCancel,
 }: {
   existing: SupplyItem | null
+  /** Unique category labels already in use across the org's supply
+   *  items, used to populate the category input's datalist for
+   *  autocomplete. Sorted by the parent. */
+  existingCategories: string[]
   onSave: (item: SupplyItem) => void
   onCancel: () => void
 }) {
   const [name, setName] = useState(existing?.name ?? '')
+  const [category, setCategory] = useState(existing?.category ?? '')
   const [description, setDescription] = useState(existing?.description ?? '')
   const [unit, setUnit] = useState<SupplyItemUnit>(existing?.unit ?? 'per-m2')
   const [rate, setRate] = useState<number>(existing?.rate ?? 1)
@@ -399,6 +451,9 @@ function SupplyItemForm({
       rate,
       appliesTo,
       enabledByDefault,
+      // Only persist category when non-empty after trim — undefined
+      // groups the item under 'Uncategorised' in the panel.
+      ...(category.trim() ? { category: category.trim() } : {}),
       ...(isPerOpening && openingWidthMin !== ''
         ? { openingWidthMinMm: openingWidthMin }
         : {}),
@@ -424,6 +479,27 @@ function SupplyItemForm({
             placeholder="e.g. Brick ties, Cement, N12 rebar"
             className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
           />
+        </label>
+
+        <label className="text-sm">
+          <span className="block text-ink-300 mb-1">Category (optional)</span>
+          <input
+            type="text"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="e.g. Galintel, Ties, Cement"
+            list="supply-item-categories"
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+          />
+          {/* datalist gives a native HTML autocomplete from already-used
+              categories — typing 'Gal' surfaces 'Galintel' as a
+              suggestion if any other item uses it. Free-text otherwise,
+              so users can introduce new categories any time. */}
+          <datalist id="supply-item-categories">
+            {existingCategories.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
         </label>
 
         <label className="text-sm">
