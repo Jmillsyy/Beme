@@ -1009,6 +1009,64 @@ function segmentsForCurvedWall(
   return boxes
 }
 
+// ---------- First-person orbit pivot ----------
+
+/**
+ * Snaps the OrbitControls target to a tiny offset in front of the
+ * camera at the start of every LEFT-button drag, so OrbitControls'
+ * rotation acts as a "look around from where I am" first-person
+ * camera instead of orbiting around a faraway point.
+ *
+ * OrbitControls always rotates the camera around its target. Default
+ * target is far from the camera, so dragging swings you around that
+ * distant pivot — feels wrong for inspecting a building from a
+ * specific spot. By moving the target to camera.position + forward *
+ * 0.1 right before the drag starts, the spherical rotation has
+ * essentially zero radius, so the camera direction itself rotates
+ * (= first-person look).
+ *
+ * Right-click drag is left alone: pan needs target-as-pivot semantics
+ * (translates both camera and target by the cursor delta) and that
+ * still works fine with whatever target position is current.
+ */
+function FirstPersonOrbitPivot() {
+  const gl = useThree((s) => s.gl)
+  const camera = useThree((s) => s.camera)
+  const controls = useThree((s) => s.controls) as
+    | (THREE.EventDispatcher & {
+        target?: THREE.Vector3
+        update?: () => void
+      })
+    | null
+  const invalidate = useThree((s) => s.invalidate)
+
+  useEffect(() => {
+    const dom = gl.domElement
+    const onPointerDown = (e: PointerEvent) => {
+      // Only left button — pan is right-button and shouldn't reset
+      // the target (pan needs the existing target as its pivot
+      // semantically, and we don't want to teleport the orbit pivot
+      // when the user is about to pan).
+      if (e.button !== 0) return
+      if (!controls || !controls.target) return
+      const forward = new THREE.Vector3()
+      camera.getWorldDirection(forward)
+      // 0.1m in front of the camera. Small enough that orbit rotation
+      // feels like rotating in place but non-zero so OrbitControls'
+      // distance math doesn't divide-by-zero.
+      controls.target
+        .copy(camera.position)
+        .addScaledVector(forward, 0.1)
+      controls.update?.()
+      invalidate()
+    }
+    dom.addEventListener('pointerdown', onPointerDown)
+    return () => dom.removeEventListener('pointerdown', onPointerDown)
+  }, [gl, camera, controls, invalidate])
+
+  return null
+}
+
 // ---------- Cursor dolly ----------
 
 /**
@@ -1310,6 +1368,7 @@ function Scene({
         panSpeed={-1}
         makeDefault
       />
+      <FirstPersonOrbitPivot />
       <CursorDolly />
     </>
   )
