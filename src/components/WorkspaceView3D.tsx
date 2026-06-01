@@ -503,40 +503,69 @@ function segmentsForStraightWall(
     bodyW: number
   }
 
+  // Junction-aware end selection: at FREE / T-junction ends, stretcher
+  // bond's even courses use a half block (to offset the body grid by
+  // half a body-width vs odd courses). At CORNER / control-joint ends,
+  // the corner block always wins — in real masonry the interlocking
+  // adjacent wall fills the half-position, so a half block here would
+  // be wrong. So only "free-style" ends alternate; corner ends always
+  // get the corner block.
+  const leftIsFreeEnd =
+    wall.startJunction.type === 'free' ||
+    wall.startJunction.type === 't-junction'
+  const rightIsFreeEnd =
+    wall.endJunction.type === 'free' ||
+    wall.endJunction.type === 't-junction'
+
   // ── Phase 1: build empty grid (per course: END + BODY cells + END) ──
   const grid: CourseEntry[] = courses.map((course) => {
-    const useHalf =
+    const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
-    const endCode = useHalf ? course.halfCode : course.cornerCode
+    const useHalfLeft = isEvenStretcher && leftIsFreeEnd
+    const useHalfRight = isEvenStretcher && rightIsFreeEnd
+    const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
+    const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
+    const leftEndColor = colorOf(leftEndCode)
+    const rightEndColor = colorOf(rightEndCode)
+    const leftEndWidth =
+      (useHalfLeft
+        ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+        : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
+      1000
+    const rightEndWidth =
+      (useHalfRight
+        ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+        : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)) /
+      1000
+    // For jamb / merge logic — pick the WIDER of the two so jamb
+    // widths and merge thresholds don't undersize.
+    const endCode = useHalfLeft && useHalfRight ? course.halfCode : course.cornerCode
     const endColor = colorOf(endCode)
+    const endWidth = Math.max(leftEndWidth, rightEndWidth)
     const bodyColor = colorOf(course.bodyCode)
-    const endWidthMm = useHalf
-      ? widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
-      : widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM)
-    const endWidth = endWidthMm / 1000
     const bodyW =
       widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM) / 1000
 
     const cells: Cell[] = []
-    if (length <= endWidth * 2) {
-      // Tiny wall — one end-coloured cell covers everything.
+    if (length <= leftEndWidth + rightEndWidth) {
+      // Tiny wall — one end-coloured cell covers everything (use left).
       cells.push({
         role: 'END',
-        code: endCode,
-        color: endColor,
+        code: leftEndCode,
+        color: leftEndColor,
         s0: 0,
         s1: length,
       })
     } else {
       cells.push({
         role: 'END',
-        code: endCode,
-        color: endColor,
+        code: leftEndCode,
+        color: leftEndColor,
         s0: 0,
-        s1: endWidth,
+        s1: leftEndWidth,
       })
-      const bodyEnd = length - endWidth
-      let cursor = endWidth
+      const bodyEnd = length - rightEndWidth
+      let cursor = leftEndWidth
       while (cursor < bodyEnd) {
         const cellEnd = Math.min(cursor + bodyW, bodyEnd)
         if (cellEnd - cursor > 0.02) {
@@ -552,9 +581,9 @@ function segmentsForStraightWall(
       }
       cells.push({
         role: 'END',
-        code: endCode,
-        color: endColor,
-        s0: length - endWidth,
+        code: rightEndCode,
+        color: rightEndColor,
+        s0: length - rightEndWidth,
         s1: length,
       })
     }
