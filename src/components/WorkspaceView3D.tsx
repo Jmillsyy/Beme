@@ -70,13 +70,14 @@ const FALLBACK_CORNER_WIDTH_MM = 390
 const FALLBACK_HALF_WIDTH_MM = 190
 const FALLBACK_BODY_WIDTH_MM = 390
 
-/** Visible mortar gap (m) inset on every block's right + top edges so
- *  adjacent blocks have a small gap between them, producing the visual
- *  of discrete blocks separated by mortar joints. 10mm matches the
- *  actual mortar joint thickness used in the rest of the app's modular
- *  math. Half is inset on each box's edge, so the gap between adjacent
- *  boxes ends up at the full 10mm. */
-const MORTAR_GAP_M = 0.01
+/** Visible mortar gap (m) inset on every block's edges that face a
+ *  neighbouring cell. Adjacent blocks have a small gap between them,
+ *  producing the visual of discrete blocks separated by mortar joints.
+ *  6mm is enough to read as a joint at typical camera distances
+ *  without producing thick / glitchy lines or risking z-fight when
+ *  the cell edges are close to perpendicular geometry from an
+ *  adjacent wall. */
+const MORTAR_GAP_M = 0.006
 
 /** Mortar fill colour — warm medium-grey reading as cement between the
  *  block faces. Renders behind each block course so the gaps between
@@ -86,8 +87,13 @@ const MORTAR_COLOR = '#6a635a'
 /** Fraction of wall thickness the mortar layer occupies. Less than 1.0
  *  means the mortar is RECESSED — set inside the wall slightly so block
  *  faces sit visually proud of the mortar (matches real masonry where
- *  blocks protrude a few mm beyond the mortar plane). */
-const MORTAR_THICKNESS_FRAC = 0.85
+ *  blocks protrude a few mm beyond the mortar plane).
+ *
+ *  0.88 gives a clear depth separation between block face (z = +thickness/2)
+ *  and mortar plane (z = +thickness * 0.44) — enough to avoid z-fight
+ *  artifacts even at oblique camera angles without exaggerating the
+ *  step into a deep groove. */
+const MORTAR_THICKNESS_FRAC = 0.88
 
 // ---------- Props ----------
 
