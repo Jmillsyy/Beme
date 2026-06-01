@@ -1112,8 +1112,15 @@ function CursorDolly() {
       const move = toPoint.normalize().multiplyScalar(amount)
 
       camera.position.add(move)
+      // SET the orbit target to whatever's under the cursor (not
+      // translate-by-move). The previous version slid both camera and
+      // target by the same vector, which kept the target some
+      // distance in FRONT of the camera — so orbiting after a zoom
+      // still swung around a point you weren't looking at. Snapping
+      // the target to the cursor hit makes orbit rotate around
+      // exactly the wall/block you just zoomed onto.
       if (controls && controls.target) {
-        controls.target.add(move)
+        controls.target.copy(dollyPoint)
         controls.update?.()
       }
       invalidate()
