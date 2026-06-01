@@ -1455,6 +1455,45 @@ function Scene({
                 check.differences
               )
             }
+            // Per-wall corner diagnostic — surfaces the resolved
+            // cornerBlock code, its widthMm, junction type at each
+            // end, and the ownership phase at each end. If a wall's
+            // corner block is rendering at the wrong width or never
+            // alternating, this log makes it obvious which wall.
+            const startConnected = wall.startJunction.connectedWallIds ?? []
+            const endConnected = wall.endJunction.connectedWallIds ?? []
+            const cornerCode = wr.makeup.cornerBlockCode
+            const cornerBlockDef = library[cornerCode]
+            const startInfo = startConnected.length
+              ? [wall.id, ...startConnected].sort()
+              : null
+            const endInfo = endConnected.length
+              ? [wall.id, ...endConnected].sort()
+              : null
+            // eslint-disable-next-line no-console
+            console.log(
+              `[3D corner] wall=${wall.id.slice(0, 8)}…`,
+              {
+                startJunction: wall.startJunction.type,
+                startConnected,
+                startMyIdx: startInfo ? startInfo.indexOf(wall.id) : null,
+                startPhase: startInfo
+                  ? `1/${startInfo.length}`
+                  : 'n/a',
+                endJunction: wall.endJunction.type,
+                endConnected,
+                endMyIdx: endInfo ? endInfo.indexOf(wall.id) : null,
+                endPhase: endInfo ? `1/${endInfo.length}` : 'n/a',
+                cornerCode,
+                cornerWidthMm: cornerBlockDef?.dimensions.widthMm,
+                halfCode: wr.makeup.halfBlockCode,
+                halfWidthMm: wr.makeup.halfBlockCode
+                  ? library[wr.makeup.halfBlockCode]?.dimensions.widthMm
+                  : undefined,
+                thicknessMm,
+                bondType,
+              }
+            )
           }
           out.push(
             ...segmentsFromWallLayout(
