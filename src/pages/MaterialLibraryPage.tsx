@@ -230,6 +230,12 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
   const { settings } = useUserSettings()
   const items = settings.supplyItems ?? []
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
+  // Per-category collapse state in the editor, keyed by category
+  // label (or 'Uncategorised'). Mirrors the workspace SupplyItemsPanel
+  // collapse — defaults to expanded, not persisted (UI affordance).
+  const [collapsedCategories, setCollapsedCategories] = useState<
+    Record<string, boolean>
+  >({})
 
   const editing =
     editingId && editingId !== 'new' ? items.find((i) => i.id === editingId) : null
@@ -288,28 +294,44 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
         })
         return entries.map(([category, list]) => {
           const showHeader = entries.length > 1 || category !== UNCAT
+          const collapsed = !!collapsedCategories[category]
           return (
             <div key={category} className="space-y-2">
               {showHeader && (
-                <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mt-2">
-                  {category}{' '}
-                  <span className="text-ink-500 font-normal">
-                    · {list.length}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsedCategories((s) => ({
+                      ...s,
+                      [category]: !collapsed,
+                    }))
+                  }
+                  className="flex items-center gap-2 w-full text-left group mt-2"
+                >
+                  <span className="text-ink-500 group-hover:text-ink-300 text-[11px]">
+                    {collapsed ? '▸' : '▾'}
                   </span>
-                </h4>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-300 group-hover:text-beme-300">
+                    {category}{' '}
+                    <span className="text-ink-500 font-normal normal-case tracking-normal">
+                      · {list.length}
+                    </span>
+                  </h4>
+                </button>
               )}
-              {list
-                .slice()
-                .sort((a, b) => a.name.localeCompare(b.name))
-                .map((item) => (
-                  <SupplyItemRow
-                    key={item.id}
-                    item={item}
-                    readOnly={readOnly}
-                    onEdit={() => setEditingId(item.id)}
-                    onDelete={() => deleteItem(item.id)}
-                  />
-                ))}
+              {!collapsed &&
+                list
+                  .slice()
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((item) => (
+                    <SupplyItemRow
+                      key={item.id}
+                      item={item}
+                      readOnly={readOnly}
+                      onEdit={() => setEditingId(item.id)}
+                      onDelete={() => deleteItem(item.id)}
+                    />
+                  ))}
             </div>
           )
         })
