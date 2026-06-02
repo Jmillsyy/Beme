@@ -6413,6 +6413,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               wallThicknessByWallId={wallThicknessByWallId}
               areas={areas}
               library={BLOCK_LIBRARY}
+              pdfFile={pdfFile}
+              currentPageNumber={currentPage}
+              pageWidthMm={pagesData[currentPage]?.pageWidthMm}
+              pageHeightMm={pagesData[currentPage]?.pageHeightMm}
+              pageScaleRatio={pagesData[currentPage]?.pageScaleRatio}
             />
           </Suspense>
         </div>

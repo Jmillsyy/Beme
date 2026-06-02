@@ -56,6 +56,8 @@ import {
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { bandColor } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
+import { rasterisePdfPage } from '../lib/pdfRaster'
+import { BRICK_LIBRARY } from '../data/brickLibrary'
 import {
   planWallLayout,
   verifyLayoutMatchesTally,
@@ -73,7 +75,12 @@ const FALLBACK_HEIGHT_MM = 2400
 // slightly weathered tone of a finished wall. Also acts as the
 // fallback when a block code isn't in the colour map (rare).
 const DEFAULT_WALL_COLOR = '#a85540'
-const GROUND_COLOR = '#3a3f48'
+// Ground plane colour matches the canvas clear colour (#1a1d24) so the
+// horizon line disappears and the viewport reads as one continuous
+// background — like the 2D view's flat canvas. The plane itself stays
+// for raycast hits (fly-to-cursor scroll-zoom needs something to land
+// on past the building).
+const GROUND_COLOR = '#1a1d24'
 const CURVE_SAMPLES = 24
 
 /** Fallback widths (mm) when the library doesn't carry the block. AU
@@ -116,6 +123,19 @@ export interface WorkspaceView3DProps {
   wallThicknessByWallId: Record<string, number>
   areas: ProjectArea[]
   library: Record<string, Block>
+  /**
+   * Optional plan-as-floor texture inputs. When all four are present, the
+   * 3D scene replaces its dark ground plane with the current PDF page
+   * rendered as a black-and-white floor sized to its real-world footprint
+   * (pageWidthMm × pageScaleRatio), so every wall sits directly on its
+   * 2D-drawn position. Missing any one → fall back to the dark ground
+   * plane (no behaviour change for callers that don't pass these).
+   */
+  pdfFile?: File | null
+  currentPageNumber?: number
+  pageWidthMm?: number
+  pageHeightMm?: number
+  pageScaleRatio?: number
 }
 
 // ---------- Helpers ----------
@@ -1599,9 +1619,12 @@ function CADControls({
     const fitView = () => {
       target.set(initialTargetX, 1, initialTargetZ)
       const FIT_FOV_RAD = (45 * Math.PI) / 180
+      // Same aggressive multiplier (0.55) as the initial framing so
+      // F-fit and the initial view match. See initialCamera comments
+      // for the trade-off.
       const dist = Math.max(
         4,
-        (sceneSizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 1.1
+        (sceneSizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.55
       )
       // theta = horizontal angle (45° = corner view).
       // phi = polar angle from world Y; ~60° gives a 3/4 elevation.
@@ -1677,7 +1700,11 @@ function Scene({
   wallThicknessByWallId,
   library,
   navStyle,
-}: Omit<WorkspaceView3DProps, 'areas'> & { navStyle: NavStyle }) {
+  planTexture,
+}: Omit<WorkspaceView3DProps, 'areas'> & {
+  navStyle: NavStyle
+  planTexture: { texture: THREE.Texture; widthM: number; heightM: number } | null
+}) {
   const { segments, segmentBounds } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
@@ -1740,31 +1767,413 @@ function Scene({
     // rebuilding per wall.
     const wallsByIdMap: Record<string, Wall> = {}
     for (const w of walls) wallsByIdMap[w.id] = w
+
+    /**
+     * Emit a mortar fill behind every brick/block face of the given wall.
+     * Mortar is a recessed box (depth × MORTAR_THICKNESS_FRAC), inset
+     * from the wall envelope by MORTAR_GAP_M so its side/top/bottom
+     * faces tuck behind the brick/block faces (which span the full
+     * envelope at outer edges with no half-gap inset). Bricks/blocks
+     * have a 3mm half-gap inset on edges that face a neighbour, so the
+     * resulting 6mm gaps reveal this mortar plane behind them.
+     *
+     * Openings: emits as horizontal bands split at every opening y-
+     * boundary; each band's strips skip s-ranges covered by an opening
+     * fully spanning the band. Opening cavities stay empty instead of
+     * showing mortar through.
+     */
+    function emitMortarForWall(
+      wall: Wall,
+      thicknessMm: number,
+      totalHeightM: number,
+      wallOpenings: Opening[]
+    ) {
+      const sxw = -wall.startX / 1000
+      const szw = -wall.startY / 1000
+      const exw = -wall.endX / 1000
+      const ezw = -wall.endY / 1000
+      const dxw = exw - sxw
+      const dzw = ezw - szw
+      const wallLenM = Math.hypot(dxw, dzw)
+      if (wallLenM < 0.001) return
+      const dirXw = dxw / wallLenM
+      const dirZw = dzw / wallLenM
+      const yRotW = Math.atan2(-dzw, dxw)
+      const mortarThick = (thicknessMm / 1000) * MORTAR_THICKNESS_FRAC
+
+      const opLocal: { s0: number; s1: number; y0: number; y1: number }[] = []
+      const yBoundaries = new Set<number>([0, totalHeightM])
+      for (const op of wallOpenings) {
+        if (op.wallId !== wall.id) continue
+        const s0 = Math.max(0, op.startAlongWallMm / 1000)
+        const s1 = Math.min(wallLenM, (op.startAlongWallMm + op.widthMm) / 1000)
+        const y0 = Math.max(0, op.sillHeightMm / 1000)
+        const y1 = Math.min(totalHeightM, (op.sillHeightMm + op.heightMm) / 1000)
+        if (s1 > s0 + 0.001 && y1 > y0 + 0.001) {
+          opLocal.push({ s0, s1, y0, y1 })
+          yBoundaries.add(y0)
+          yBoundaries.add(y1)
+        }
+      }
+      const sortedYs = Array.from(yBoundaries).sort((a, b) => a - b)
+
+      const envelopeInset = MORTAR_GAP_M
+      const pushMortarStrip = (s0: number, s1: number, y0: number, y1: number) => {
+        const aS0 = s0 < 0.001 ? envelopeInset : s0
+        const aS1 = s1 > wallLenM - 0.001 ? wallLenM - envelopeInset : s1
+        const aY0 = y0 < 0.001 ? envelopeInset : y0
+        const aY1 = y1 > totalHeightM - 0.001 ? totalHeightM - envelopeInset : y1
+        if (aS1 - aS0 < 0.005 || aY1 - aY0 < 0.005) return
+        const localCx = (aS0 + aS1) / 2
+        out.push({
+          cx: sxw + dirXw * localCx,
+          cy: (aY0 + aY1) / 2,
+          cz: szw + dirZw * localCx,
+          length: aS1 - aS0,
+          heightM: aY1 - aY0,
+          thickness: mortarThick,
+          yRotation: yRotW,
+          color: MORTAR_COLOR,
+          highlight: false,
+        })
+      }
+
+      for (let bi = 0; bi < sortedYs.length - 1; bi++) {
+        const bandY0 = sortedYs[bi]
+        const bandY1 = sortedYs[bi + 1]
+        if (bandY1 - bandY0 < 0.001) continue
+        const blockingOps = opLocal
+          .filter((o) => o.y0 <= bandY0 + 0.001 && o.y1 >= bandY1 - 0.001)
+          .sort((a, b) => a.s0 - b.s0)
+        let cursor = 0
+        for (const op of blockingOps) {
+          if (op.s0 > cursor) pushMortarStrip(cursor, op.s0, bandY0, bandY1)
+          cursor = Math.max(cursor, op.s1)
+        }
+        if (cursor < wallLenM) pushMortarStrip(cursor, wallLenM, bandY0, bandY1)
+      }
+    }
+
+    /**
+     * Auto-detect when a block wall's geometry needs a corner lead-in
+     * to land on stretcher bond, and search the library for a matching
+     * block.
+     *
+     * Bond math: for the body grid to offset by exactly half a body
+     * modular between owning and non-owning courses at a corner,
+     * `corner_width − cube_depth` must equal `body_modular / 2`. For
+     * 200-series (corner 390, cube 190, body 390+10) this is automatic:
+     * 200 = 200. For 300-series (corner 390, cube 290) it's off by
+     * 100mm — that gap is exactly what the 30.02 lead-in block fills.
+     *
+     * Returns a makeup with `cornerLeadInBlockCode` + `cornerLeadInCount`
+     * overridden if (a) a lead-in is needed (>5mm mismatch), AND (b) the
+     * library contains a block whose width matches the required lead-in
+     * width (= required_modular − mortar). When neither condition holds
+     * the original makeup is returned unchanged.
+     */
+    function resolveLeadInForWall(
+      wall: Wall,
+      makeup: WallMakeup
+    ): WallMakeup {
+      const bodyBlock = library[makeup.bodyBlockCode]
+      const cornerBlock = library[makeup.cornerBlockCode]
+      if (!bodyBlock || !cornerBlock) return makeup
+      const bodyWidth = bodyBlock.dimensions.widthMm
+      const cornerWidth = cornerBlock.dimensions.widthMm
+      const MORTAR = DEFAULT_MORTAR_JOINT_MM
+      const halfBodyModular = (bodyWidth + MORTAR) / 2
+
+      // Use the start-corner's neighbour for cube depth; fall back to
+      // end-corner or this wall's own thickness if start isn't a corner.
+      const lookupCubeDepth = (): number => {
+        const sNeighbor = wall.startJunction.type === 'corner'
+          ? wall.startJunction.connectedWallIds?.[0]
+          : undefined
+        const eNeighbor = wall.endJunction.type === 'corner'
+          ? wall.endJunction.connectedWallIds?.[0]
+          : undefined
+        const id = sNeighbor ?? eNeighbor
+        if (!id) return wallThicknessByWallId[wall.id] ?? 190
+        return wallThicknessByWallId[id] ?? wallThicknessByWallId[wall.id] ?? 190
+      }
+      const cubeDepth = lookupCubeDepth()
+      const requiredLeadInModular = halfBodyModular - (cornerWidth - cubeDepth)
+      const requiredLeadInWidth = requiredLeadInModular - MORTAR
+
+      // Find a library block whose width is close to required. Sorted
+      // by closeness so we pick the best match. Exclude the corner
+      // block itself and anything with role 'corner' (don't pick the
+      // wrong block by accident).
+      const candidates = Object.values(library)
+        .filter((b) => b.code !== makeup.cornerBlockCode && b.code !== makeup.bodyBlockCode)
+        .filter((b) => Math.abs(b.dimensions.widthMm - requiredLeadInWidth) <= 15)
+        .sort(
+          (a, b) =>
+            Math.abs(a.dimensions.widthMm - requiredLeadInWidth) -
+            Math.abs(b.dimensions.widthMm - requiredLeadInWidth)
+        )
+      const match = candidates[0]
+
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.log(`[lead-in detect] wall=${wall.id.slice(0, 8)}…`, {
+          bodyBlockCode: makeup.bodyBlockCode,
+          cornerBlockCode: makeup.cornerBlockCode,
+          bodyWidthMm: bodyWidth,
+          cornerWidthMm: cornerWidth,
+          cubeDepthMm: cubeDepth,
+          halfBodyModularMm: halfBodyModular,
+          requiredLeadInModularMm: requiredLeadInModular,
+          requiredLeadInWidthMm: requiredLeadInWidth,
+          existingMakeupLeadInCode: makeup.cornerLeadInBlockCode ?? null,
+          libraryCandidates: candidates.slice(0, 5).map((b) => ({
+            code: b.code,
+            widthMm: b.dimensions.widthMm,
+          })),
+          picked: match?.code ?? null,
+          willApplyOverride: !!match && requiredLeadInModular >= 5,
+        })
+      }
+
+      if (requiredLeadInModular < 5) return makeup // already on bond
+      if (requiredLeadInWidth < 5) return makeup
+      if (!match) return makeup
+      return {
+        ...makeup,
+        cornerLeadInBlockCode: match.code,
+        cornerLeadInCount: 1,
+      }
+    }
+
     walls.forEach((wall, i) => {
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
 
       if (wall.trade === 'brick') {
-        // Brick walls render as one solid extrusion for v1. Per-course
-        // banding (BrickMakeup.courseRanges) is a follow-up.
+        // Brick walls render as a stacked grid of actual brick-sized
+        // units. We look up the brick type's dimensions (default
+        // standard 230×76×110), generate one course per brick height +
+        // 10mm mortar joint, and pass a synthetic '__brick__' entry
+        // into the library so segmentsForStraightWall reads the
+        // right body width per cell. Same carve + jamb code path as
+        // before; the smaller course height also means partial-height
+        // openings line up against course boundaries cleanly.
         const heightMm = resolveWallHeightMm(wall, makeupsById, brickMakeupsById)
         const totalHeightM = heightMm / 1000
-        const solidCourse: ResolvedCourse[] = [
-          {
-            courseNumber: 1,
-            y0: 0,
-            y1: totalHeightM,
-            bodyCode: '__brick__',
-            cornerCode: '__brick__',
-            halfCode: '__brick__',
-          },
-        ]
-        const brickColorMap = new Map([['__brick__', DEFAULT_WALL_COLOR]])
+
+        // Resolve brick dimensions from the brick library via the
+        // makeup's brickTypeCode. Falls back to AU standard if the
+        // code isn't recognised (older/migrated makeups).
+        const brickMakeup = brickMakeupsById[wall.makeupId]
+        const brickType = brickMakeup?.brickTypeCode
+          ? BRICK_LIBRARY[brickMakeup.brickTypeCode]
+          : undefined
+        const brickWidthMm = brickType?.widthMm ?? 230
+        const brickHeightMm = brickType?.heightMm ?? 76
+        const brickDepthMm = brickType?.depthMm ?? 110
+        const BRICK_MORTAR_MM = 10
+        const courseModularMm = brickHeightMm + BRICK_MORTAR_MM
+
+        // Synthetic library entries so widthOf/heightOf calls inside
+        // segmentsForStraightWall return brick dimensions rather than
+        // block fallbacks (390mm wide etc.). Three entries:
+        //   __brick__       — full brick (body + owning-corner end)
+        //   __brick_half__  — half brick (free-end even courses in
+        //                     stretcher bond, creating the half-unit
+        //                     offset between alternating courses)
+        //   __brick_cube__  — cut brick the width of the corner cube
+        //                     depth (= wall thickness). Used at the
+        //                     wall end on courses where another wall
+        //                     OWNS the corner this course; sits flush
+        //                     with the cube boundary so the body grid
+        //                     starts at (cube + mortar) instead of
+        //                     (full brick + mortar). Difference =
+        //                     230 − 110 = 120mm = half-body modular,
+        //                     which is the stretcher offset needed
+        //                     between alternating courses. End result:
+        //                     bricks interlock cleanly at corners.
+        const brickLibrary: Record<string, Block> = {
+          ...library,
+          ['__brick__']: {
+            code: '__brick__',
+            name: brickType?.name ?? 'Brick',
+            description: 'Brick wall unit',
+            dimensions: {
+              widthMm: brickWidthMm,
+              heightMm: brickHeightMm,
+              depthMm: brickDepthMm,
+            },
+            roles: ['body', 'corner'],
+          } as Block,
+          ['__brick_half__']: {
+            code: '__brick_half__',
+            name: `${brickType?.name ?? 'Brick'} (half)`,
+            description: 'Half brick — stretcher bond end',
+            dimensions: {
+              widthMm: brickWidthMm / 2,
+              heightMm: brickHeightMm,
+              depthMm: brickDepthMm,
+            },
+            roles: ['end-termination'],
+          } as Block,
+          ['__brick_cube__']: {
+            code: '__brick_cube__',
+            name: `${brickType?.name ?? 'Brick'} (corner cut)`,
+            description: 'Cut brick at non-owning corner — width = cube depth',
+            dimensions: {
+              widthMm: thicknessMm,
+              heightMm: brickHeightMm,
+              depthMm: brickDepthMm,
+            },
+            roles: ['end-termination'],
+          } as Block,
+        }
+
+        // Colour: same concrete-grey palette as blocks (bandColor)
+        // keyed on the brick type code so each brick type gets a
+        // consistent palette slot project-wide.
+        const brickPaletteKey = brickMakeup?.brickTypeCode ?? wall.makeupId
+        const brickColorMap = new Map([['__brick__', bandColor(brickPaletteKey)]])
+
+        // Default opening position: head sits HEAD_DROP_FROM_TOP_MM
+        // (= 300mm) below the wall top, with the opening height
+        // subtracted downward from there. The 2D opening tool only
+        // captures width × height for brick openings (no explicit
+        // vertical position), so without this override every opening
+        // would default to sill=0 (door at floor).
+        const HEAD_DROP_FROM_TOP_MM = 300
+        const brickOpenings = openings.map((o) => {
+          if (o.wallId !== wall.id) return o
+          const sill = Math.max(0, heightMm - HEAD_DROP_FROM_TOP_MM - o.heightMm)
+          return { ...o, sillHeightMm: sill }
+        })
+
+        // Build brick courses bottom-up at the brick's modular
+        // height, snapping the final course to the wall top so the
+        // top edge stays flush (last course may be a partial-height
+        // cut, like real masonry trimming the last course to fit).
+        //
+        // Corner ownership: at every shared corner, only ONE wall
+        // owns it per course (alternating). On non-owning courses
+        // this wall's end should be the CUT BRICK (__brick_cube__,
+        // width = wall thickness), not a full brick — that flush-to-
+        // the-cube end shifts the body grid by half a body modular
+        // between owning and non-owning courses, restoring stretcher
+        // bond at corners. Only applied when BOTH ends are corner
+        // junctions so we don't disturb the free-end stretcher
+        // alternation (which uses cornerCode on odd courses).
+        const bothEndsCorner =
+          wall.startJunction.type === 'corner' &&
+          wall.endJunction.type === 'corner'
+        const brickCornerOwnership = bothEndsCorner
+          ? cornerOwnershipFor(wall)
+          : null
+
+        const brickCourses: ResolvedCourse[] = []
+        let cursorMm = 0
+        let courseIdx = 0
+        while (cursorMm < heightMm - 0.5) {
+          const y0Mm = cursorMm
+          const y1Mm = Math.min(heightMm, cursorMm + brickHeightMm)
+          if (y1Mm - y0Mm > 0.5) {
+            const courseNumber = courseIdx + 1
+            const ownsThisCourse = brickCornerOwnership
+              ? brickCornerOwnership({ wallEnd: 'start', courseNumber })
+              : true
+            brickCourses.push({
+              courseNumber,
+              y0: y0Mm / 1000,
+              y1: y1Mm / 1000,
+              bodyCode: '__brick__',
+              cornerCode: ownsThisCourse ? '__brick__' : '__brick_cube__',
+              halfCode: '__brick_half__',
+            })
+          }
+          cursorMm += courseModularMm
+          courseIdx++
+        }
+        // Insert opening sill/head boundaries as additional course
+        // splits so partial-height openings carve cleanly (a course
+        // is only marked REMOVED when fully inside an opening's
+        // sill→head range — small bricks already align closely, but
+        // splitting at exact boundaries removes any sliver where
+        // bricks straddle the opening edges).
+        const yBoundariesMm = new Set<number>()
+        for (const op of brickOpenings) {
+          if (op.wallId !== wall.id) continue
+          const sillMm = Math.max(0, Math.min(heightMm, op.sillHeightMm))
+          const headMm = Math.max(0, Math.min(heightMm, op.sillHeightMm + op.heightMm))
+          if (headMm > sillMm) {
+            yBoundariesMm.add(sillMm)
+            yBoundariesMm.add(headMm)
+          }
+        }
+        if (yBoundariesMm.size > 0) {
+          // Re-build courses by splitting any course that straddles
+          // a boundary into two sub-courses at the boundary.
+          const split: ResolvedCourse[] = []
+          for (const c of brickCourses) {
+            const cuts = Array.from(yBoundariesMm)
+              .map((mm) => mm / 1000)
+              .filter((y) => y > c.y0 + 0.0005 && y < c.y1 - 0.0005)
+              .sort((a, b) => a - b)
+            if (cuts.length === 0) {
+              split.push(c)
+              continue
+            }
+            let last = c.y0
+            for (const y of cuts) {
+              split.push({ ...c, y0: last, y1: y })
+              last = y
+            }
+            split.push({ ...c, y0: last, y1: c.y1 })
+          }
+          brickCourses.splice(0, brickCourses.length, ...split.map((c, i) => ({ ...c, courseNumber: i + 1 })))
+        }
+
+        // Add half-brick AND cube-cut brick to the colour map so
+        // every brick variant renders the same colour — the
+        // stretcher offset / corner-ownership swap is a geometric
+        // pattern, not a visual distinction.
+        brickColorMap.set('__brick_half__', bandColor(brickPaletteKey))
+        brickColorMap.set('__brick_cube__', bandColor(brickPaletteKey))
+
+        // Fudged thickness map for brick corners.
+        //
+        // segmentsForStraightWall uses
+        // wallThicknessByWallId[neighbor] as the corner CUBE DEPTH —
+        // i.e. the width of the end cell on non-owning courses. With
+        // real brick depth (110mm) and brick width 230mm, that puts
+        // the body grid offset at 230 − 110 = 120mm. But proper
+        // stretcher bond needs an offset of EXACTLY half a brick
+        // width = 115mm. The 5mm error compounds at every corner
+        // column, sliding the bond out of alignment.
+        //
+        // Fix: tell the function each brick neighbour is 115mm thick
+        // (= brickW/2). It then uses 115mm as the cube depth, giving
+        // a perfect half-brick offset. Real box geometry stays at
+        // 110mm (passed via `thicknessMm`), so the wall's physical
+        // depth is unchanged — only the corner CUT BRICK extends a
+        // hidden 5mm into the perpendicular wall's cube zone. Both
+        // walls are the same colour at the corner, so the overlap
+        // reads as one continuous brick.
+        const brickCubeThicknessMap: Record<string, number> = { ...wallThicknessByWallId }
+        for (const w of walls) {
+          if (w.trade === 'brick') {
+            const m = brickMakeupsById[w.makeupId]
+            const t = m?.brickTypeCode ? BRICK_LIBRARY[m.brickTypeCode] : undefined
+            const wBrickWidth = t?.widthMm ?? 230
+            brickCubeThicknessMap[w.id] = wBrickWidth / 2
+          }
+        }
+
         out.push(
           ...segmentsForStraightWall(
-            wall, openings, thicknessMm, solidCourse, totalHeightM,
-            'stack', brickColorMap, library, wallThicknessByWallId, wallsByIdMap
+            wall, brickOpenings, thicknessMm, brickCourses, totalHeightM,
+            'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap
           )
         )
+        emitMortarForWall(wall, thicknessMm, totalHeightM, brickOpenings)
         return
       }
 
@@ -1795,9 +2204,17 @@ function Scene({
           // calculateProjectTally's deduplicated total — and gives
           // visible stretcher-bond alternation at corners in 3D.
           const ownership = cornerOwnershipFor(wall)
+          // Auto-detect lead-in: when the wall's body width vs cube
+          // depth math doesn't naturally land on stretcher bond (e.g.
+          // 300-series corners are 100mm off), search the library for
+          // a block of the right width and inject it as the makeup's
+          // corner lead-in. The calc engine then emits it on owning
+          // courses between the corner block and body — same as a
+          // hand-configured cornerLeadInBlockCode would.
+          const effectiveMakeup = resolveLeadInForWall(wall, wr.makeup)
           const layout = planWallLayout(
             wall,
-            wr.makeup,
+            effectiveMakeup,
             [],
             wallThicknessByWallId,
             wallsByIdMap,
@@ -1879,12 +2296,26 @@ function Scene({
             )
           )
         } else {
+          // Note: the auto-lead-in detection only applies on the
+          // planWallLayout path above (no-openings walls). The legacy
+          // segmentsForStraightWall path takes pre-resolved courses
+          // (wr.courses) which are generated upstream from wr.makeup
+          // — wiring lead-in into that path would require re-running
+          // the course resolution with the effective makeup. Follow-
+          // up for walls with openings that need 300-series corners.
           out.push(
             ...segmentsForStraightWall(
               wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
               bondType, colorMap, library, wallThicknessByWallId, wallsByIdMap
             )
           )
+        }
+        // Same mortar fill as brick walls — recessed behind the block
+        // faces, inset from the outer envelope so its side / top /
+        // bottom box faces tuck behind the block faces, skipped
+        // wherever openings carve voids.
+        if (!isCurvedWall(wall)) {
+          emitMortarForWall(wall, thicknessMm, wr.totalHeightM, openings)
         }
       }
     })
@@ -1938,13 +2369,47 @@ function Scene({
           Two-sided so looking at the ground from below (e.g. an
           underground cutaway angle the user might pan into) still
           paints something instead of going black. */}
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[segmentBounds.centerX, -0.02, segmentBounds.centerZ]}
-      >
-        <planeGeometry args={[segmentBounds.sizeMax * 50, segmentBounds.sizeMax * 50]} />
-        <meshStandardMaterial color={GROUND_COLOR} side={THREE.DoubleSide} />
-      </mesh>
+      {/* Dark ground plane — only when no plan texture is in play.
+          When the plan-as-floor is mounted (just below), this would
+          z-fight with it (5mm apart) AND be visually identical
+          underneath the plan texture's matching background colour, so
+          we skip it entirely. */}
+      {!planTexture && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[segmentBounds.centerX, -0.02, segmentBounds.centerZ]}
+        >
+          <planeGeometry args={[segmentBounds.sizeMax * 50, segmentBounds.sizeMax * 50]} />
+          <meshStandardMaterial color={GROUND_COLOR} side={THREE.DoubleSide} />
+        </mesh>
+      )}
+
+      {/* Plan-as-floor: when the host has rasterised the current PDF
+          page, render it as a horizontal plane sized to its real-world
+          footprint (page_mm × scale_ratio). Sits at y=-0.015 — above
+          the dark ground plane (-0.02) to avoid z-fighting, below the
+          wall base (y=0) so the bottom course visually rests on it.
+
+          Position centres the plane at (-w/2, -h/2) so its extent
+          matches the building's world-negative-quadrant coords. The
+          texture itself is 180°-mirrored (both U and V) at rasterise
+          time to compensate for the 3D renderer's wall X/Y negation,
+          landing image (0,0) at world (0,0). DoubleSide so the plane
+          stays visible regardless of which face the rotation points
+          upward. */}
+      {planTexture && (
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[-planTexture.widthM / 2, -0.015, -planTexture.heightM / 2]}
+        >
+          <planeGeometry args={[planTexture.widthM, planTexture.heightM]} />
+          <meshBasicMaterial
+            map={planTexture.texture}
+            toneMapped={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      )}
 
       {/* One mesh per wall sub-box. Per-course rendering means ~5x more
           meshes than band rendering, but with ~30 walls × 13 courses ×
@@ -2008,7 +2473,7 @@ function loadNavStyle(): NavStyle {
 }
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
-  const { walls } = props
+  const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio } = props
   const [navStyle, setNavStyleState] = useState<NavStyle>(loadNavStyle)
   const setNavStyle = (v: NavStyle) => {
     setNavStyleState(v)
@@ -2020,6 +2485,102 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
       // can still switch the live setting.
     }
   }
+
+  // ── Plan-as-floor texture ───────────────────────────────────────
+  // When the host passes pdfFile + page metadata, rasterise the
+  // current page, threshold to a B&W line drawing, and expose it as
+  // a THREE texture sized to the page's REAL-WORLD footprint
+  // (page_mm × scale_ratio). Scene mounts it as a horizontal plane
+  // under the walls so every wall sits on top of its 2D-drawn
+  // position. Missing any input → null → Scene falls back to the
+  // dark ground plane.
+  const [planTexture, setPlanTexture] = useState<{
+    texture: THREE.Texture
+    widthM: number
+    heightM: number
+  } | null>(null)
+  useEffect(() => {
+    if (
+      !pdfFile ||
+      !currentPageNumber ||
+      !pageWidthMm ||
+      !pageHeightMm ||
+      !pageScaleRatio
+    ) {
+      setPlanTexture(null)
+      return
+    }
+    let cancelled = false
+    let createdTexture: THREE.Texture | null = null
+    rasterisePdfPage(pdfFile, currentPageNumber, 2).then((result) => {
+      if (cancelled || !result) return
+      // Need an HTMLImage to draw onto a 2D canvas before we can
+      // apply the B&W threshold pixel pass.
+      const img = new Image()
+      img.onload = () => {
+        if (cancelled) return
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0)
+        // B&W wireframe pass: pixels darker than ~78% white become a
+        // mid-tone grey line on the dark canvas background; everything
+        // else becomes the canvas-background colour so the page "white"
+        // disappears and only the drawn lines remain visible against
+        // the 3D scene background.
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+        const data = imageData.data
+        for (let i = 0; i < data.length; i += 4) {
+          const gray = (data[i] + data[i + 1] + data[i + 2]) / 3
+          if (gray < 200) {
+            // Drawn line — light enough to read against the dark scene.
+            data[i] = 200
+            data[i + 1] = 200
+            data[i + 2] = 200
+            data[i + 3] = 255
+          } else {
+            // Page background — match the canvas clearColor so it
+            // visually disappears.
+            data[i] = 26  // #1a
+            data[i + 1] = 29 // #1d
+            data[i + 2] = 36 // #24
+            data[i + 3] = 255
+          }
+        }
+        ctx.putImageData(imageData, 0, 0)
+        const texture = new THREE.CanvasTexture(canvas)
+        texture.minFilter = THREE.LinearFilter
+        texture.magFilter = THREE.LinearFilter
+        // Mirror BOTH axes. After rotating the plane -π/2 around X (to
+        // lay it flat) and positioning it at (-w/2, ., -h/2) so its
+        // extent matches the building's negative-quadrant world coords,
+        // the natural texture mapping puts image top-left at world
+        // (-w, -h) — diagonally OPPOSITE of where we need it (0, 0).
+        // Mirroring both UVs rotates the texture 180° so image top-
+        // left ends up at world (0, 0), matching the negated wall
+        // coordinate frame.
+        texture.wrapS = THREE.RepeatWrapping
+        texture.wrapT = THREE.RepeatWrapping
+        texture.repeat.x = -1
+        texture.repeat.y = -1
+        texture.offset.x = 1
+        texture.offset.y = 1
+        texture.needsUpdate = true
+        createdTexture = texture
+        const widthM = (pageWidthMm * pageScaleRatio) / 1000
+        const heightM = (pageHeightMm * pageScaleRatio) / 1000
+        setPlanTexture({ texture, widthM, heightM })
+      }
+      img.src = result.dataUrl
+    })
+    return () => {
+      cancelled = true
+      // Free GPU memory when the page changes or 3D unmounts.
+      if (createdTexture) createdTexture.dispose()
+    }
+  }, [pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio])
 
   const initialCamera = useMemo<[number, number, number]>(() => {
     if (walls.length === 0) return [10, 12, 10]
@@ -2045,9 +2606,22 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     // angle so the building reads as a 3/4 view instead of a top-down.
     const sizeX = Math.max(maxX - minX, 4)
     const sizeZ = Math.max(maxZ - minZ, 4)
-    const diagonal = Math.hypot(sizeX, sizeZ)
+    // Use the LARGER horizontal extent (not the diagonal) so the
+    // initial framing matches what F-fit does. Previously we used
+    // the diagonal which over-shot distance by ~1.4× for square-ish
+    // footprints, leaving a lot of empty canvas around the model.
+    const sizeMax = Math.max(sizeX, sizeZ)
     const FIT_FOV_RAD = (45 * Math.PI) / 180
-    const dist = (diagonal / 2) / Math.tan(FIT_FOV_RAD / 2) * 1.1
+    // Aggressive fill: a 3/4 view projects the building's horizontal
+    // extent onto the viewport as roughly `sizeMax × sin(elevation) +
+    // height`, which is smaller than `sizeMax` itself — so fitting
+    // the camera to `sizeMax` over-shoots distance and leaves the
+    // building taking ~50% of the canvas. Multiplier 0.55 brings the
+    // camera in close enough that the projected building fills the
+    // viewport edge-to-edge for square-ish footprints; long thin
+    // buildings may clip on the long axis at this multiplier (F-fit
+    // is the user's recovery).
+    const dist = (sizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.55
     // Place at 45° around the building, slightly elevated. Keeping
     // Y proportional to dist (0.55) gives a comfortable 3/4 view.
     return [cx + dist * 0.7, dist * 0.55, cz + dist * 0.7]
@@ -2087,7 +2661,7 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         style={{ position: 'absolute', inset: 0, display: 'block' }}
       >
         <Suspense fallback={null}>
-          <Scene {...props} navStyle={navStyle} />
+          <Scene {...props} navStyle={navStyle} planTexture={planTexture} />
         </Suspense>
       </Canvas>
 
