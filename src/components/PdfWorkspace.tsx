@@ -2720,16 +2720,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     let sillForSave: number
 
     if (mode === 'brick') {
-      // Brick mode: user types height directly; sill irrelevant for tally (just stored as 0).
-      if (brickOpeningHeightMm < 100) return
+      // Brick mode: user types height directly; sill irrelevant for
+      // tally (just stored as 0). 0mm is allowed — lintel-only
+      // marker (counts the per-opening supply item without removing
+      // any wall area). Reject negative only.
+      if (brickOpeningHeightMm < 0) return
       openingHeightForSave = brickOpeningHeightMm
       sillForSave = 0
     } else {
-      // Block mode: opening height = wall − sill − head.
+      // Block mode: opening height = wall − sill − head. 0 allowed
+      // (lintel-only marker — same rationale as brick mode).
       const makeup = makeupsById[wall.makeupId]
       const wallHeightMm = wall.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
       const computed = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
-      if (computed < 100) return
+      if (computed < 0) return
       openingHeightForSave = computed
       sillForSave = openingSillHeightMm
     }
