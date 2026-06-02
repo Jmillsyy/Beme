@@ -171,23 +171,31 @@ function SupplyItemsPanelImpl({
   // outer Map preserves insertion order so groups appear in the order
   // they first show in the items list.
   const UNCATEGORISED = 'Uncategorised'
+
+  // Per-project include/exclude moved to the export modal — this
+  // panel is now read-only. The `selections` prop is still honoured
+  // (existing exclusions stay out of the auto-tally for back-compat)
+  // but rows of excluded items aren't rendered here. Users adjust
+  // any item's quantity from the Export estimate modal.
+  void onToggle
+  const visibleApplicableItems = useMemo(
+    () => applicableItems.filter((i) => selections[i.id] !== false),
+    [applicableItems, selections]
+  )
+
   const groupedItems = useMemo(() => {
     const groups = new Map<string, SupplyItem[]>()
-    for (const item of applicableItems) {
+    for (const item of visibleApplicableItems) {
       const key = item.category?.trim() || UNCATEGORISED
       const existing = groups.get(key)
       if (existing) existing.push(item)
       else groups.set(key, [item])
     }
     return Array.from(groups.entries())
-  }, [applicableItems])
-
-  const includedCount = applicableItems.filter(
-    (i) => selections[i.id] !== false
-  ).length
+  }, [visibleApplicableItems])
 
   return (
-    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
       <div className="flex items-center gap-2 mb-2 min-w-0">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -200,9 +208,9 @@ function SupplyItemsPanelImpl({
             Supply items
           </h3>
           <span className="text-xs text-ink-400 truncate min-w-0">
-            {applicableItems.length === 0
+            {visibleApplicableItems.length === 0
               ? '· none'
-              : `· ${includedCount}/${applicableItems.length}`}
+              : `· ${visibleApplicableItems.length}`}
           </span>
         </button>
         <Link
@@ -216,7 +224,7 @@ function SupplyItemsPanelImpl({
 
       {expanded && (
         <>
-          {applicableItems.length === 0 ? (
+          {visibleApplicableItems.length === 0 ? (
             <p className="text-xs text-ink-400 italic mt-2">
               Add supply items in the Material library — they'll appear here
               for every {metrics.mode} estimate.
@@ -231,9 +239,6 @@ function SupplyItemsPanelImpl({
                 const showHeader =
                   groupedItems.length > 1 || category !== UNCATEGORISED
                 const groupCollapsed = !!categoryCollapsed[category]
-                const groupIncluded = categoryItems.filter(
-                  (i) => selections[i.id] !== false
-                ).length
                 return (
                   <div key={category} className="space-y-2">
                     {showHeader && (
@@ -254,62 +259,37 @@ function SupplyItemsPanelImpl({
                           {category}
                         </span>
                         <span className="text-[11px] text-ink-500">
-                          · {groupIncluded}/{categoryItems.length}
+                          · {categoryItems.length}
                         </span>
                       </button>
                     )}
                     {!groupCollapsed && (
                       <div className="space-y-2">
                         {categoryItems.map((item) => {
-                          const included = selections[item.id] !== false
-                          // Always use the library rate — per-project
-                          // overrides have been removed from this panel
-                          // so the rate is locked to whatever the Material
-                          // library says. effectiveRate still honours any
-                          // legacy overrides in rateOverrides for
-                          // back-compat with saved projects.
+                          // Rate sourced from the library — effectiveRate
+                          // honours any legacy per-project override stored
+                          // in rateOverrides for back-compat. Quantity is
+                          // the auto-calc; per-export quantity overrides
+                          // live in the Export estimate modal.
                           const rate = effectiveRate(item, rateOverrides)
                           const qty = quantityFor(item, rate, metrics)
                           const rounded = Math.max(0, Math.ceil(qty))
                           return (
                             <div
                               key={item.id}
-                              className={`p-3 border rounded-lg transition-colors ${
-                                included
-                                  ? 'border-ink-600 bg-ink-700/40'
-                                  : 'border-ink-700 bg-ink-800/40'
-                              }`}
+                              className="p-3 border rounded-lg border-ink-600 bg-ink-700/40"
                             >
-                              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={included}
-                                  onChange={(e) =>
-                                    onToggle(item.id, e.target.checked)
-                                  }
-                                />
-                                <span
-                                  className={
-                                    included
-                                      ? 'text-ink-100'
-                                      : 'text-ink-400 line-through'
-                                  }
-                                >
+                              <div className="flex items-center gap-2 text-sm font-medium">
+                                <span className="text-ink-100">
                                   {item.name}
                                 </span>
-                                <span
-                                  className={`ml-auto text-xs tabular-nums font-semibold ${
-                                    included ? 'text-beme-300' : 'text-ink-500'
-                                  }`}
-                                >
-                                  {included ? rounded.toLocaleString() : '—'}
+                                <span className="ml-auto text-xs tabular-nums font-semibold text-beme-300">
+                                  {rounded.toLocaleString()}
                                 </span>
-                              </label>
-                              {included && (
-                                <div className="mt-2 ml-6 text-xs text-ink-400">
-                                  {rate} {UNIT_SUFFIX[item.unit]}
-                                </div>
-                              )}
+                              </div>
+                              <div className="mt-2 text-xs text-ink-400">
+                                {rate} {UNIT_SUFFIX[item.unit]}
+                              </div>
                             </div>
                           )
                         })}

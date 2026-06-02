@@ -43,6 +43,13 @@ export interface CombinedExportParams {
   /** Per-project supply-item include/exclude map. Shared across trades. */
   supplyItemSelections?: Record<string, boolean>
   supplyItemRateOverrides?: Record<string, number>
+  /**
+   * Per-supply-item quantity ADJUSTMENTS shared across both trades —
+   * forwarded unchanged to both single-trade builders so the same
+   * supply item appearing in both sections (e.g. ties) honours the
+   * user's modal adjustment consistently.
+   */
+  supplyItemAdjustments?: Record<string, number>
   business?: BusinessExportInfo
   pdfFile?: File
 
@@ -55,6 +62,8 @@ export interface CombinedExportParams {
   pierMakeups?: PierMakeup[]
   /** Pages with block walls (or with both, with brick walls filtered out by caller). */
   blockPagesInfo?: PageInfo[]
+  /** Per-block quantity adjustments — see ExportParams in blockExport.ts. */
+  blockAdjustments?: Record<string, number>
 
   // Brick side — pre-filtered to brick walls / makeups
   brickInclusions: BrickExportInclusions
@@ -64,6 +73,8 @@ export interface CombinedExportParams {
   brickSettings: BrickSettings
   /** Pages with brick walls (or with both, with block walls filtered out by caller). */
   brickPagesInfo?: PageInfo[]
+  /** Per-brick-type quantity adjustments — see brickExport ExportParams. */
+  brickAdjustments?: Record<string, number>
 }
 
 /**
@@ -94,6 +105,7 @@ export async function exportCombinedEstimate(
     referenceNumber,
     supplyItemSelections,
     supplyItemRateOverrides,
+    supplyItemAdjustments,
     business,
     pdfFile,
     blockInclusions,
@@ -103,12 +115,14 @@ export async function exportCombinedEstimate(
     blockPiers,
     pierMakeups,
     blockPagesInfo,
+    blockAdjustments,
     brickInclusions,
     brickWalls,
     brickMakeups,
     brickOpenings,
     brickSettings,
     brickPagesInfo,
+    brickAdjustments,
   } = params
 
   // Strip both trades' disclaimers — we emit one shared disclaimer at
@@ -128,6 +142,7 @@ export async function exportCombinedEstimate(
     referenceNumber,
     supplyItemSelections,
     supplyItemRateOverrides,
+    supplyItemAdjustments,
     walls: blockWalls,
     makeups: blockMakeups,
     openings: blockOpenings,
@@ -136,6 +151,7 @@ export async function exportCombinedEstimate(
     business,
     pdfFile,
     pagesInfo: blockPagesInfo,
+    blockAdjustments,
   })
 
   const brickBuilt = await buildBrickEstimateHtml({
@@ -144,6 +160,7 @@ export async function exportCombinedEstimate(
     referenceNumber,
     supplyItemSelections,
     supplyItemRateOverrides,
+    supplyItemAdjustments,
     walls: brickWalls,
     openings: brickOpenings,
     settings: brickSettings,
@@ -151,6 +168,7 @@ export async function exportCombinedEstimate(
     business,
     pdfFile,
     pagesInfo: brickPagesInfo,
+    brickAdjustments,
   })
 
   // Divider sheet between the two trade sections — a single page with a

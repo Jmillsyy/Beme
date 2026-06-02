@@ -53,6 +53,17 @@ interface ProjectBarProps {
   onToggleStatus: () => void
   onDelete: () => void
   onOpenDetails: () => void
+  /**
+   * Opens the export-estimate modal. Surfaces as a compact "Export"
+   * button next to Save changes / Mark as completed so the user
+   * doesn't have to scroll the right rail to find the export trigger.
+   * Optional so callers that don't have an export flow (or are
+   * rendering the bar pre-PDF-load) can omit it; the button hides
+   * when the callback is missing.
+   */
+  onExport?: () => void
+  /** Whether export is currently allowed (false → button disabled). */
+  canExport?: boolean
 }
 
 /**
@@ -103,6 +114,8 @@ export default function ProjectBar({
   onToggleStatus,
   onDelete,
   onOpenDetails,
+  onExport,
+  canExport = false,
 }: ProjectBarProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -288,6 +301,27 @@ export default function ProjectBar({
             }
           >
             {status === 'completed' ? 'Mark as in progress' : 'Mark as completed'}
+          </button>
+        )}
+
+        {/* Compact Export trigger. Sits to the right of Mark as
+            completed so the row reads "write → status → export" —
+            the export pill closes out the action cluster and is the
+            user's last step before sending the estimate. Same modal
+            as ever, controlled-open from PdfWorkspace. Hidden when
+            no onExport is wired; disabled when there are no walls. */}
+        {onExport && (
+          <button
+            onClick={onExport}
+            disabled={!canExport}
+            title={
+              canExport
+                ? 'Open the export estimate modal'
+                : 'Draw at least one wall to enable export'
+            }
+            className="px-3.5 py-2 rounded-md border border-beme-500/70 text-beme-300 text-sm hover:bg-beme-500/15 hover:text-beme-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+          >
+            Export
           </button>
         )}
 

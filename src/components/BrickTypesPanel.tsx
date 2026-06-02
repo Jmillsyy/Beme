@@ -52,7 +52,7 @@ export default function BrickTypesPanel({
   }, [makeups, activeMakeup])
 
   return (
-    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
       <div className="flex items-center justify-between mb-2 gap-2">
         <button
           onClick={() => setExpanded((v) => !v)}

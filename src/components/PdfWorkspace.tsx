@@ -909,6 +909,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const [projectCompletedAt, setProjectCompletedAt] = useState<string | null>(null)
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null)
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false)
+  /**
+   * Export-modal open state. Lifted to the workspace so two entry
+   * points share the same dialog instance: the big rail-side
+   * "Export estimate" button at the bottom of the right rail, and the
+   * compact "Export" button in the top ProjectBar sitting next to
+   * Save changes / Mark as completed. Both write to this state; the
+   * controlled-mode UnifiedExportPanel reads it as `open`.
+   */
+  const [exportModalOpen, setExportModalOpen] = useState(false)
 
   /**
    * Source request — set when this project was created via the "pick up"
@@ -4699,6 +4708,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onToggleStatus={handleToggleProjectStatus}
             onDelete={handleDeleteProject}
             onOpenDetails={() => setDetailsDrawerOpen(true)}
+            onExport={() => setExportModalOpen(true)}
+            canExport={allWallsRaw.length > 0}
           />
         )}
 
@@ -4818,7 +4829,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             </div>
 
             {/* ── Right rail: same as workspace mode ── */}
-            <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
+            <aside className="w-full mt-3 space-y-4 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
                 <WallTypesPanel
                   // Per-area filter — same as the main render below.
@@ -4899,6 +4910,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           onToggleStatus={handleToggleProjectStatus}
           onDelete={handleDeleteProject}
           onOpenDetails={() => setDetailsDrawerOpen(true)}
+          onExport={() => setExportModalOpen(true)}
+          canExport={allWallsRaw.length > 0}
         />
       )}
 
@@ -6866,7 +6879,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           canvas on smaller screens.
 
           Stays visible in BOTH 2D and 3D modes. */}
-      <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
+      <aside className="w-full mt-3 space-y-4 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
         {/* Area tabs — named subdivisions of the project ("Balcony",
             "Staircase", "Level 1", etc.). Sits at the TOP of the right
@@ -6877,12 +6890,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             everything regardless. Only shown in block/brick workspace
             views, not on the empty-state / upload-zone gate.
 
-            Wrapped with pt-1 + mb-1.5 to mirror the canvas-side toolbar's
-            sticky wrapper (pt-1 pb-1 mb-1.5) so the chip group lines up
-            on the same horizontal Y as the "Draw wall / Ruler / etc."
-            toolbar to its left. */}
+            Wrapped with pt-1 + pb-1 to mirror the canvas-side toolbar's
+            sticky wrapper so the chip group lines up on the same
+            horizontal Y as the "Draw wall / Ruler / etc." toolbar to
+            its left. The rail's space-y-4 owns the gap to the next
+            panel below, so no extra bottom margin here. */}
         {(mode === 'block' || mode === 'brick') && viewMode !== '3d' && (
-          <div className="pt-1 pb-1 mb-1.5">
+          <div className="pt-1 pb-1">
             <AreaTabs
               areas={areas}
               activeAreaId={activeAreaId}
@@ -7061,6 +7075,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           supplyItemSelections={supplyItemSelections}
           supplyItemRateOverrides={supplyItemRateOverrides}
           pdfFile={pdfFile}
+          open={exportModalOpen}
+          onOpenChange={setExportModalOpen}
           allWalls={allWallsRaw}
           allOpenings={Object.values(openingsByPage).flat()}
           allPiers={Object.values(piersByPage).flat()}

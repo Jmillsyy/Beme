@@ -54,6 +54,29 @@ interface ExportParams {
   supplyItemSelections?: Record<string, boolean>
   /** Per-project rate overrides for supply items. */
   supplyItemRateOverrides?: Record<string, number>
+  /**
+   * Per-supply-item quantity ADJUSTMENTS, keyed by supply item id.
+   * Same semantics as {@link blockAdjustments}: a positive value
+   * subtracts from the auto-computed (rate × metric, rounded up)
+   * quantity, a negative value adds to it. Used when the user wants
+   * to override the per-project supply count from the export modal
+   * (e.g. "I already have 5 bags of cement on site, so order 5 less"
+   * or "add 2 extras for breakage"). Missing keys → no change.
+   * Applied AFTER the rate maths and Math.ceil rounding, then
+   * clamped to >= 0 so a too-aggressive adjustment can't render a
+   * negative row.
+   */
+  supplyItemAdjustments?: Record<string, number>
+  /**
+   * Per-block quantity ADJUSTMENTS (a count to subtract from the
+   * computed tally). Used when the user has some blocks already on
+   * site or reused from another job and doesn't want them on the
+   * order list. Each entry is a positive number representing "remove
+   * this many of code X from the final schedule." Missing codes
+   * count as 0 (no change). After subtraction, counts are clamped
+   * to >= 0 so a too-aggressive adjustment can't render a negative.
+   */
+  blockAdjustments?: Record<BlockCode, number>
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
@@ -961,6 +984,7 @@ export async function buildBlockEstimateHtml(
     referenceNumber,
     supplyItemSelections,
     supplyItemRateOverrides,
+    supplyItemAdjustments,
     walls,
     makeups,
     openings,
@@ -984,13 +1008,34 @@ export async function buildBlockEstimateHtml(
 
   const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
   const pierMakeupsById = Object.fromEntries(pierMakeups.map((m) => [m.id, m]))
-  const tally: BlockTally = calculateProjectTally(
+  const rawTally: BlockTally = calculateProjectTally(
     walls,
     makeupsById,
     openings,
     piers,
     pierMakeupsById
   )
+  // Apply per-block adjustments. Each entry in `blockAdjustments` is
+  // a SIGNED delta to subtract from the tally:
+  //   - positive number → remove from tally (already on site, reused).
+  //   - negative number → add extra to the tally (extra blocks not
+  //     automatically counted, or a block code the user wants to
+  //     include that's not in the auto-tally at all).
+  // Iterate over the union of tally codes + adjustment codes so
+  // "add-only" entries (code present in adjustments but not in
+  // rawTally) appear in the schedule. Final clamped to >= 0.
+  const tally: BlockTally = {}
+  const adjustmentCodes = Object.keys(params.blockAdjustments ?? {}) as BlockCode[]
+  const allCodes = new Set<BlockCode>([
+    ...(Object.keys(rawTally) as BlockCode[]),
+    ...adjustmentCodes,
+  ])
+  for (const code of allCodes) {
+    const base = rawTally[code] ?? 0
+    const adj = params.blockAdjustments?.[code] ?? 0
+    const remaining = Math.max(0, base - adj)
+    if (remaining > 0) tally[code] = remaining
+  }
   const entries = tallyEntries(tally)
   const totalBlocks = entries.reduce((sum, [, c]) => sum + c, 0)
 
@@ -1093,10 +1138,19 @@ export async function buildBlockEstimateHtml(
         continue
     }
     const rounded = Math.ceil(qty)
-    if (rounded <= 0) continue
+    // Apply the user's per-supply-item adjustment (positive = remove,
+    // negative = add) AFTER rounding so the modal's preview number
+    // matches what lands in the PDF. Clamp to >= 0 to avoid negative
+    // rows on aggressive subtractions. We skip rows that resolve to
+    // zero, but we don't gate on the pre-adjusted `rounded` value —
+    // an adjustment with a negative delta can promote a zero-qty
+    // item into the schedule.
+    const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
+    const finalQty = Math.max(0, rounded - supplyAdj)
+    if (finalQty <= 0) continue
     supplyRows.push({
       name: item.name,
-      qty: rounded,
+      qty: finalQty,
       noteRate,
       category: item.category?.trim() || 'Uncategorised',
     })

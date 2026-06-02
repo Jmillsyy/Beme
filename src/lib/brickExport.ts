@@ -76,12 +76,31 @@ interface ExportParams {
    * the library default rate." Applied before per-unit math.
    */
   supplyItemRateOverrides?: Record<string, number>
+  /**
+   * Per-supply-item quantity ADJUSTMENTS, keyed by supply item id.
+   * Same semantics as {@link brickAdjustments}: a positive value
+   * subtracts from the auto-computed (rate × metric, rounded up)
+   * quantity, a negative value adds. Used when the user wants to
+   * override per-supply counts from the export modal (e.g. excluding
+   * a tie supply that's already on site, or padding ties for
+   * breakage). Missing keys → no change. Applied AFTER Math.ceil
+   * rounding, then clamped to >= 0.
+   */
+  supplyItemAdjustments?: Record<string, number>
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
   /** Brick wall types — used to colour the Wall Layout diagrams and group
    *  walls for the legend. Optional + defaulted-empty for older callers. */
   makeups?: BrickMakeup[]
+  /**
+   * Per brick-type quantity adjustments — same semantics as
+   * `blockAdjustments` in blockExport: positive number = bricks of
+   * that type to SUBTRACT from the final schedule. Used when some
+   * bricks are already on site, reused, or excluded from the order.
+   * Keyed by brick type code. Final count clamped to >= 0.
+   */
+  brickAdjustments?: Record<string, number>
   /** Optional business identity (from user settings). Same shape as block export. */
   business?: BusinessExportInfo
   /** The primary plan PDF — when supplied alongside pagesInfo, each Wall
@@ -506,6 +525,7 @@ export async function buildBrickEstimateHtml(
     referenceNumber,
     supplyItemSelections,
     supplyItemRateOverrides,
+    supplyItemAdjustments,
     walls,
     openings,
     settings,
@@ -526,7 +546,61 @@ export async function buildBrickEstimateHtml(
   // Pass makeups through so per-makeup course bands (single bottom
   // course + double-height above, etc.) feed into the printed tally
   // exactly as they do in the workspace tally panel.
-  const tally = calculateBrickTally(walls, openings, settings, makeups)
+  const rawTally = calculateBrickTally(walls, openings, settings, makeups)
+  // Apply per-brick-type signed adjustments. Same semantics as the
+  // block side:
+  //   - positive → remove from tally (on-site / reused).
+  //   - negative → add extra (user wants more than the auto-count,
+  //     or a brick type not in the auto-tally at all).
+  // Final counts clamped to >= 0.
+  const adjMap = params.brickAdjustments ?? {}
+  let adjustedBricksByType: Record<string, number> = {}
+  let adjustedBrickCount: number = 0
+  if (Object.keys(rawTally.bricksByType).length > 0) {
+    // Mixed-type project — iterate over union of tally codes +
+    // adjustment codes so add-only entries land in the schedule.
+    const allCodes = new Set([
+      ...Object.keys(rawTally.bricksByType),
+      ...Object.keys(adjMap),
+    ])
+    for (const code of allCodes) {
+      const base = rawTally.bricksByType[code] ?? 0
+      const adj = adjMap[code] ?? 0
+      const remaining = Math.max(0, base - adj)
+      if (remaining > 0) adjustedBricksByType[code] = remaining
+      adjustedBrickCount += remaining
+    }
+  } else {
+    // Single-type project — adjustments apply to the project's
+    // configured brick type code. Other codes in adjMap (if any)
+    // are extra rows added by the user.
+    const projectCode = settings.brickTypeCode
+    const projectAdj = adjMap[projectCode] ?? 0
+    const projectRemaining = Math.max(0, rawTally.brickCount - projectAdj)
+    if (projectRemaining > 0) {
+      adjustedBricksByType[projectCode] = projectRemaining
+      adjustedBrickCount += projectRemaining
+    }
+    for (const [code, adj] of Object.entries(adjMap)) {
+      if (code === projectCode) continue
+      // Add-only entries — base is 0, adj negative means add.
+      const remaining = Math.max(0, 0 - adj)
+      if (remaining > 0) {
+        adjustedBricksByType[code] = remaining
+        adjustedBrickCount += remaining
+      }
+    }
+    // When NO add-only entries land in bricksByType, fall back to
+    // empty so downstream consumers use the flat brickCount path.
+    if (Object.keys(adjustedBricksByType).length === 1 && adjustedBricksByType[projectCode] !== undefined) {
+      adjustedBricksByType = {}
+    }
+  }
+  const tally = {
+    ...rawTally,
+    bricksByType: adjustedBricksByType,
+    brickCount: adjustedBrickCount,
+  }
 
   const headerTitle =
     projectDetails.siteAddress.trim() ||
@@ -616,10 +690,18 @@ export async function buildBrickEstimateHtml(
         continue
     }
     const rounded = Math.ceil(qty)
-    if (rounded <= 0) continue
+    // Apply the user's per-supply-item adjustment (positive = remove,
+    // negative = add) AFTER rounding so the modal's preview number
+    // matches the row that lands in the PDF. Clamp to >= 0; skip
+    // zero-qty rows. The pre-adjusted `rounded` is intentionally
+    // NOT gated to zero — a negative delta promotes a zero-qty item
+    // into the schedule.
+    const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
+    const finalQty = Math.max(0, rounded - supplyAdj)
+    if (finalQty <= 0) continue
     supplyRows.push({
       name: item.name,
-      qty: rounded,
+      qty: finalQty,
       noteRate,
       category: item.category?.trim() || 'Uncategorised',
     })

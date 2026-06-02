@@ -51,7 +51,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
 
   if (walls.length === 0) {
     return (
-      <div className="my-4 border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm">
+      <div className="border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm">
         Draw your first wall to see the brick tally.
       </div>
     )
@@ -63,7 +63,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   const hasBreakdown = typeBreakdown.length > 0
 
   return (
-    <div className="my-4 border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
+    <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="w-full bg-ink-700 px-3 py-2 border-b border-ink-600 flex items-center justify-between gap-2 text-left group"
