@@ -2441,19 +2441,47 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       ? `R${Math.round(radiusMm)}mm`
       : 'straight-ish'
 
-    // Dedup: if there's already a curve makeup for the same zone (which
-    // dictates the body block) with the same height, reuse it. Two curves
-    // drawn for the same intent — a wedge run at the same wall height —
-    // become a single row in the Wall Types panel with count N rather than
-    // N separate types. The new wall's actual radius is stored on the wall
-    // geometry (start/mid/end → arcFromThreePoints), so each instance keeps
-    // its own arc; only the makeup is shared.
+    // Resolve which area this curve (and its auto-created makeup, if any)
+    // should belong to. Same chain as handleAddMakeup:
+    //   1. activeAreaId (we're inside a specific area)
+    //   2. areas[0]?.id (we're on All view; pick the first area)
+    //   3. null → fall back to auto-creating a 'New Area' below
+    // Without this, the curve makeup ended up with areaId = undefined and
+    // got demoted to All-only, so the curve wall looked unbound even
+    // though its wall geometry carried the right areaId.
+    let targetAreaId: string | null = activeAreaId
+      ? activeAreaId
+      : areas.length > 0
+        ? areas[0].id
+        : null
+    let nextAreas = areas
+    if (!targetAreaId) {
+      const newAreaId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      nextAreas = [...areas, { id: newAreaId, name: 'New Area' }]
+      setAreas(nextAreas)
+      setActiveAreaId(newAreaId)
+      targetAreaId = newAreaId
+    }
+
+    // Dedup: if there's already a curve makeup for the same zone +
+    // bodyBlock + height AND the same target area, reuse it. Two curves
+    // drawn for the same intent become one row in the Wall Types panel
+    // with count N rather than N separate types.
+    //
+    // Crucially we ALSO match on areaId — without that filter a curve
+    // drawn in Ground Floor would reuse a same-shape makeup that belongs
+    // to First Floor, and the wall would inherit a makeupId pointing at
+    // another area's wall type list, looking orphaned in its own area.
     const existingCurveMakeup = makeups.find((m) => {
       if (typeof m.curveRadiusMm !== 'number' || !isFinite(m.curveRadiusMm)) return false
       const existingZone = curveZoneForRadius(m.curveRadiusMm)
       if (existingZone !== zone) return false
       if (m.bodyBlockCode !== bodyBlock) return false
       if (m.heightMm !== newCurveHeightMm) return false
+      if ((m.areaId ?? null) !== targetAreaId) return false
       return true
     })
 
@@ -2504,6 +2532,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       if (isFinite(radiusMm)) {
         curveMakeup.curveRadiusMm = radiusMm
       }
+      // Stamp the resolved area on the makeup so it shows up in the
+      // correct area's Wall Types panel. createDefaultWallMakeup
+      // doesn't set areaId; without this assignment the makeup
+      // landed in All-only and the curve wall looked orphaned.
+      if (targetAreaId) {
+        curveMakeup.areaId = targetAreaId
+      }
       makeupId = curveMakeup.id
       nextMakeups = [...makeups, curveMakeup]
       nextMakeupsById = { ...makeupsById, [curveMakeup.id]: curveMakeup }
@@ -2520,8 +2555,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // expose the curve tool), but stamp the trade defensively so a
       // future brick curve doesn't accidentally render as a block wall.
       trade: mode === 'brick' ? 'brick' : 'block',
-      // Stamp the active area, same as straight walls.
-      ...(activeAreaId ? { areaId: activeAreaId } : {}),
+      // Stamp the resolved target area — keeps wall and its makeup
+      // anchored to the same area. Using activeAreaId here directly
+      // would diverge from the makeup's areaId in the auto-create-an-
+      // area branch (which advances targetAreaId past whatever
+      // activeAreaId was on entry).
+      ...(targetAreaId ? { areaId: targetAreaId } : {}),
       startX: startMm.x,
       startY: startMm.y,
       endX: endMm.x,
@@ -2546,9 +2585,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     brickSettings,
     newCurveHeightMm,
     // Same reason as handleWallAdded: the curve stamps activeAreaId
-    // at line ~2477, so a stale closure here would silently drop the
-    // area assignment for any curve drawn after switching areas.
+    // (and now resolves a target area from `areas`), so a stale
+    // closure here would silently drop the area assignment.
     activeAreaId,
+    areas,
   ])
 
   /**
