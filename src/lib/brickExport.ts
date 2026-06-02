@@ -467,11 +467,14 @@ function buildAssumptions(
   // supply-items section of the assumption list, so the reader still
   // knows what's being priced.
 
-  // Supply items contributed from the user's Material library — each item
-  // tells the reader the rate that was applied, in the same plain-English
-  // style as the ties / plascourse lines above. Built by the caller so the
-  // rate text can read off the same item objects that drove the tally.
-  items.push(...supplyItemNotes)
+  // Per-item supply notes are NOT appended any more. With 16+
+  // Galintel SKUs (and ties / cement / rebar etc.) the assumptions
+  // section became dominated by allowance-rate lines. The Accessories
+  // table on the tally page already lists every supply with its
+  // quantity and is grouped by category, so the reader gets the same
+  // information in a cleaner format. supplyItemNotes is left in the
+  // signature for caller back-compat; nothing consumes it here.
+  void supplyItemNotes
 
   // Custom notes from the user — split on newlines, ignore blank lines
   const customLines = customNotes

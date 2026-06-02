@@ -922,11 +922,14 @@ function buildAssumptions(
 
   items.push('No waste allowance applied — quantities are net as measured.')
 
-  // Supply items the user has enabled in their Material library — render
-  // one rate-and-quantity line each so the customer sees where the count
-  // came from. Built by the caller off the same supplyRows that drove the
-  // Accessories table so the two never drift.
-  items.push(...supplyItemNotes)
+  // Supply-item lines deliberately NOT appended here. Per-item notes
+  // ('<name> allowance at <rate> — <qty> included.' × N) became
+  // overwhelming once users had 16+ Galintel SKUs configured. Each
+  // supply item is already listed in the Accessories table (grouped
+  // by category) so the customer can see what's quoted without the
+  // assumptions section becoming a wall of allowance lines. supplyItemNotes
+  // is kept in the signature for back-compat but ignored.
+  void supplyItemNotes
 
   // Custom notes from the user — split on newlines, ignore blank lines
   const customLines = customNotes
