@@ -1,30 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ProjectArea } from '../lib/projectStorage'
 
 /**
- * Area selector — single 'Area: <name> ▾' button that opens a dropdown
- * menu listing every area on the project. Replaces the older horizontal
- * tabs strip; same external props so callers (PdfWorkspace) don't have
- * to change.
+ * Area selector — collapsible panel that matches the chrome of the
+ * WallTypesPanel / SupplyItemsPanel directly below it. Same outer
+ * container (border + rounded + padded), same header pattern (chevron
+ * + title + active-name caption), same inline expansion (the list of
+ * areas drops down INSIDE the panel rather than as a floating menu).
  *
- * Menu contents:
- *   - **All** — always at the top, never deletable. Active state when
- *     activeAreaId is null.
- *   - One row per area (with its colour dot, name, hover-revealed
- *     rename ✎ and delete × buttons).
- *   - A divider, then **+ New area** at the bottom.
+ * Why panel-style instead of a dropdown:
+ *   - Sits in the same column as Wall types / Supply items. A floating
+ *     dropdown looked like a button rather than a section, so users
+ *     didn't see it as part of the right-rail grouping.
+ *   - Inline expansion stacks nicely with the panels below (no
+ *     overlap, no z-index fights).
  *
- * Rationale for the change:
- *   - Projects routinely have 5+ areas (Front, Back, Garage, Alfresco,
- *     Granny flat, …). The pills strip overflowed and made selection
- *     mouseable but not great with a long list.
- *   - A dropdown keeps the chrome tiny, surfaces every area in a
- *     single scrollable column, and the rename / delete affordances
- *     stay one click away on hover.
+ * Inside, when expanded:
+ *   - **All areas** row at the top (selects null = show every area).
+ *   - One row per area, with colour dot + hover-revealed rename ✎ /
+ *     delete × buttons.
+ *   - "+ New area" button at the bottom of the list.
  *
- * Pure presentation — owns no persistent state. The workspace owns
- * `activeAreaId` (per-session) and `areas` (project-persisted); this
- * component just renders + dispatches.
+ * Pure presentation — workspace owns `activeAreaId` (per-session) and
+ * `areas` (project-persisted); this component just renders + dispatches.
  */
 export default function AreaTabs({
   areas,
@@ -45,49 +43,21 @@ export default function AreaTabs({
   /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
 }) {
-  // open = dropdown visible; creating = New area modal; editingId = Edit
-  // area modal pre-filled with that area's name.
-  const [open, setOpen] = useState(false)
+  // expanded = panel body visible; creating = New area modal; editingId =
+  // Edit area modal pre-filled with that area's name. Defaults to
+  // EXPANDED so the user sees the area list on first load — same default
+  // as SupplyItemsPanel.
+  const [expanded, setExpanded] = useState(true)
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const editingArea = editingId
     ? areas.find((a) => a.id === editingId) ?? null
     : null
 
-  const buttonRef = useRef<HTMLButtonElement | null>(null)
-  const menuRef = useRef<HTMLDivElement | null>(null)
-
-  // Close on outside click + Escape — same pattern as project menus
-  // elsewhere in the workspace. Modals (rename / new) stop propagation
-  // so the menu doesn't close from under them.
-  useEffect(() => {
-    if (!open) return
-    function onPointer(e: MouseEvent) {
-      const t = e.target as Node
-      if (
-        buttonRef.current?.contains(t) ||
-        menuRef.current?.contains(t)
-      ) {
-        return
-      }
-      setOpen(false)
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('mousedown', onPointer)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('mousedown', onPointer)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
   const handleCreate = (name: string) => {
     const trimmed = name.trim()
     if (trimmed) onCreate(trimmed)
     setCreating(false)
-    setOpen(false)
   }
 
   const handleRename = (id: string, name: string) => {
@@ -110,50 +80,42 @@ export default function AreaTabs({
   const activeLabel = activeArea?.name ?? 'All areas'
 
   return (
-    // Wrapper width matches the right-rail panel width (lg:w-[340px])
-    // so the Area dropdown lines up with the Wall types panel and the
-    // Trade row below it instead of floating as a narrow button.
-    <div className="relative w-full lg:w-[340px]">
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        // Match the canvas-side toolbar buttons (px-3 py-1.5 text-sm
-        // rounded-lg) so the area selector sits flush with them on the
-        // same horizontal line. w-full so the button fills the wrapper
-        // (and therefore lines up with the right-rail panel width).
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ink-800 border border-ink-600 text-sm text-ink-100 hover:bg-ink-700 transition-colors w-full"
-      >
-        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">
-          Area
-        </span>
-        {activeArea?.colorHex && (
-          <span
-            className="inline-block w-2 h-2 rounded-full"
-            style={{ backgroundColor: activeArea.colorHex }}
-            aria-hidden
-          />
-        )}
-        <span className="truncate flex-1 text-left">{activeLabel}</span>
-        <span className="text-ink-500 text-xs">▾</span>
-      </button>
+    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+      <div className="flex items-center gap-2 min-w-0">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-2 text-left group flex-1 min-w-0"
+          aria-expanded={expanded}
+        >
+          <span className="text-ink-500 group-hover:text-ink-300 text-xs flex-shrink-0">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300 flex-shrink-0">
+            Area
+          </h3>
+          {activeArea?.colorHex && (
+            <span
+              className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+              style={{ backgroundColor: activeArea.colorHex }}
+              aria-hidden
+            />
+          )}
+          <span className="text-xs text-ink-400 truncate min-w-0">
+            · {activeLabel}
+          </span>
+        </button>
+      </div>
 
-      {open && (
+      {expanded && (
         <div
-          ref={menuRef}
           role="listbox"
           aria-label="Project areas"
-          className="absolute z-40 mt-1 w-64 max-h-[60vh] overflow-y-auto rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 py-1 text-sm"
+          className="mt-2 space-y-0.5"
         >
           <AreaMenuRow
             label="All areas"
             active={activeAreaId === null}
-            onSelect={() => {
-              onSelect(null)
-              setOpen(false)
-            }}
+            onSelect={() => onSelect(null)}
           />
           {areas.length > 0 && (
             <div className="border-t border-ink-700 my-1" />
@@ -164,13 +126,8 @@ export default function AreaTabs({
               label={area.name}
               colorHex={area.colorHex}
               active={activeAreaId === area.id}
-              onSelect={() => {
-                onSelect(area.id)
-                setOpen(false)
-              }}
-              onRename={() => {
-                setEditingId(area.id)
-              }}
+              onSelect={() => onSelect(area.id)}
+              onRename={() => setEditingId(area.id)}
               onDelete={
                 onDelete
                   ? () => {
@@ -189,10 +146,8 @@ export default function AreaTabs({
           <div className="border-t border-ink-700 my-1" />
           <button
             type="button"
-            onClick={() => {
-              setCreating(true)
-            }}
-            className="w-full text-left px-3 py-1.5 text-xs font-medium text-beme-300 hover:bg-ink-700 transition-colors"
+            onClick={() => setCreating(true)}
+            className="w-full text-left px-2 py-1.5 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded-md transition-colors"
           >
             + New area
           </button>
@@ -240,9 +195,9 @@ function AreaMenuRow({
 }) {
   return (
     <div
-      className={`group relative flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer ${
+      className={`group relative flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer transition-colors ${
         active
-          ? 'bg-beme-500/15 text-beme-300'
+          ? 'bg-beme-500/15 text-beme-300 ring-1 ring-beme-500/30'
           : 'text-ink-100 hover:bg-ink-700'
       }`}
       onClick={onSelect}
