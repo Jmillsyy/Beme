@@ -897,7 +897,7 @@ export async function buildBrickEstimateHtml(
               const makeup =
                 b.makeupId === '__none__'
                   ? null
-                  : brickMakeups?.find((m) => m.id === b.makeupId) ?? null
+                  : makeups.find((m) => m.id === b.makeupId) ?? null
               const label = makeup?.name ?? 'No wall type'
               const gross = b.grossAreaSqMm / 1_000_000
               const opening = b.openingAreaSqMm / 1_000_000
