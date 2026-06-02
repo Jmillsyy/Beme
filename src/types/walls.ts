@@ -142,6 +142,17 @@ export interface WallMakeup {
   /** Human-readable name, e.g. "External 3100mm Stretcher". */
   name: string
 
+  /**
+   * Optional area scope — when set, this wall type is exclusive to
+   * the matching ProjectArea and only appears in the WallTypesPanel
+   * when that area is active (or "All" is selected). Undefined on
+   * makeups created before per-area scoping; project load migrates
+   * those to the first area on the project, or to a new 'Default'
+   * area if there are none. Going forward every new makeup gets the
+   * current activeAreaId stamped on it at creation.
+   */
+  areaId?: string
+
   bondType: BondType
   /** Wall height in mm. */
   heightMm: number
@@ -567,6 +578,12 @@ export interface BrickMakeup {
   id: string
   /** Human-readable name, e.g. "Facework", "Rendered", "Common 76mm". */
   name: string
+  /**
+   * Optional area scope — same semantics as WallMakeup.areaId. Set on
+   * creation to the current activeAreaId; legacy makeups without one
+   * are migrated to the first area on project load.
+   */
+  areaId?: string
   /**
    * Brick type code this makeup uses. References a row in the user's
    * BrickLibrary. Each makeup carries its own brick type so a single

@@ -961,6 +961,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           openingsByPage: proj.openingsByPage,
           piersByPage: proj.piersByPage ?? {},
         }
+        // ── Migrate per-area scope for makeups ────────────────────────
+        // Older projects saved makeups without an areaId — every wall
+        // type was shared across all areas. The model is now per-area:
+        // each makeup is exclusive to one ProjectArea (only visible in
+        // that area's panel and on All). Migrate any makeup lacking
+        // areaId to the first area, creating a 'Default' area if the
+        // project has none. After this pass every persisted makeup has
+        // a valid areaId.
+        const hydratedAreas: ProjectArea[] =
+          proj.areas && proj.areas.length > 0
+            ? [...proj.areas]
+            : []
+        const needsAreaForMigration =
+          (proj.makeups ?? []).some((m) => !m.areaId) ||
+          (proj.brickMakeups ?? []).some((m) => !m.areaId)
+        if (needsAreaForMigration && hydratedAreas.length === 0) {
+          // Create a Default area to receive the legacy makeups. The
+          // user can rename it after the load completes.
+          hydratedAreas.push({
+            id:
+              typeof crypto !== 'undefined' &&
+              typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `area-${Date.now()}`,
+            name: 'Default',
+          })
+        }
+        const migrationAreaId = hydratedAreas[0]?.id
+        const migrateMakeup = <T extends { areaId?: string }>(m: T): T =>
+          m.areaId
+            ? m
+            : ({ ...m, areaId: migrationAreaId } as T)
+
         // Brick walls used to be saved with makeupId === '' because they
         // had no per-wall type. Now they reference a BrickMakeup the same way
         // block walls reference a WallMakeup. Migrate on load: hydrate the
@@ -969,8 +1002,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         // engine + selection UI find a real makeup. Block walls are unaffected.
         const hydratedBrickMakeups =
           proj.brickMakeups && proj.brickMakeups.length > 0
-            ? proj.brickMakeups
-            : createDefaultBrickMakeups()
+            ? proj.brickMakeups.map(migrateMakeup)
+            : createDefaultBrickMakeups().map(migrateMakeup)
         const defaultBrickMakeupId = hydratedBrickMakeups[0]?.id ?? ''
         setBrickMakeups(hydratedBrickMakeups)
         setActiveBrickMakeupId(proj.activeBrickMakeupId ?? defaultBrickMakeupId)
@@ -992,13 +1025,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             : savedPiers[0]?.id ?? null
         setActivePierMakeupId(resolvedActive)
         setCurrentPage(proj.currentPage || 1)
-        // Hydrate project Areas. activeAreaId stays as its default (null
-        // → "All" tab) on load — landing in a specific area on every
-        // reopen would be surprising. User picks the area to focus on
-        // from the tab bar after the project loads.
-        if (proj.areas && proj.areas.length > 0) setAreas(proj.areas)
+        // Hydrate project Areas (including any synthesised Default area
+        // from the migration block above). activeAreaId stays as its
+        // default (null → "All" tab) on load — landing in a specific
+        // area on every reopen would be surprising. User picks the
+        // area to focus on after the project loads.
+        if (hydratedAreas.length > 0) setAreas(hydratedAreas)
         if (proj.makeups && proj.makeups.length > 0) {
-          setMakeups(proj.makeups)
+          setMakeups(proj.makeups.map(migrateMakeup))
           if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
         }
         if (proj.brickSettings) setBrickSettings(proj.brickSettings)
@@ -2557,8 +2591,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, selectedWallId, setSelectedWallId])
 
   function handleAddMakeup(makeup: WallMakeup) {
-    setMakeups((prev) => [...prev, makeup])
-    setActiveMakeupId(makeup.id)
+    // Stamp the current area on the new makeup so it shows only in
+    // that area's panel (or All). When creating from the All view
+    // (activeAreaId === null) we fall back to the first area; if no
+    // areas exist yet the makeup is created with no areaId — the
+    // user can assign one later by editing the type.
+    const stamped: WallMakeup = makeup.areaId
+      ? makeup
+      : {
+          ...makeup,
+          areaId: activeAreaId ?? areas[0]?.id,
+        }
+    setMakeups((prev) => [...prev, stamped])
+    setActiveMakeupId(stamped.id)
   }
 
   function handleUpdateMakeup(updated: WallMakeup) {
@@ -2623,8 +2668,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // ---------- Brick makeup CRUD ----------
 
   function handleAddBrickMakeup(makeup: BrickMakeup) {
-    setBrickMakeups((prev) => [...prev, makeup])
-    setActiveBrickMakeupId(makeup.id)
+    // Same per-area stamping as handleAddMakeup (block side).
+    const stamped: BrickMakeup = makeup.areaId
+      ? makeup
+      : {
+          ...makeup,
+          areaId: activeAreaId ?? areas[0]?.id,
+        }
+    setBrickMakeups((prev) => [...prev, stamped])
+    setActiveBrickMakeupId(stamped.id)
   }
 
   function handleUpdateBrickMakeup(updated: BrickMakeup) {
@@ -4572,28 +4624,35 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             {/* ── Right rail: same as workspace mode ── */}
             <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
-                <>
-                  <WallTypesPanel
-                    makeups={makeups}
-                    activeMakeupId={activeMakeupId}
-                    wallCountsByMakeupId={wallCountsByMakeupId}
-                    onSetActive={handleActivateMakeup}
-                    onAddMakeup={handleAddMakeup}
-                    onUpdateMakeup={handleUpdateMakeup}
-                    onDeleteMakeup={handleDeleteMakeup}
-                    pierMakeups={pierMakeups}
-                    pierCountsByMakeupId={pierCountsByMakeupId}
-                    activePierMakeupId={activePierMakeupId}
-                    onSetActivePier={setActivePierMakeupId}
-                    onAddPierMakeup={handleAddPierMakeup}
-                    onUpdatePierMakeup={handleUpdatePierMakeup}
-                    onDeletePierMakeup={handleDeletePierMakeup}
-                  />
-                </>
+                <WallTypesPanel
+                  // Per-area filter — same as the main render below.
+                  makeups={
+                    activeAreaId
+                      ? makeups.filter((m) => m.areaId === activeAreaId)
+                      : makeups
+                  }
+                  activeMakeupId={activeMakeupId}
+                  wallCountsByMakeupId={wallCountsByMakeupId}
+                  onSetActive={handleActivateMakeup}
+                  onAddMakeup={handleAddMakeup}
+                  onUpdateMakeup={handleUpdateMakeup}
+                  onDeleteMakeup={handleDeleteMakeup}
+                  pierMakeups={pierMakeups}
+                  pierCountsByMakeupId={pierCountsByMakeupId}
+                  activePierMakeupId={activePierMakeupId}
+                  onSetActivePier={setActivePierMakeupId}
+                  onAddPierMakeup={handleAddPierMakeup}
+                  onUpdatePierMakeup={handleUpdatePierMakeup}
+                  onDeletePierMakeup={handleDeletePierMakeup}
+                />
               )}
               {mode === 'brick' && (
                 <BrickTypesPanel
-                  makeups={brickMakeups}
+                  makeups={
+                    activeAreaId
+                      ? brickMakeups.filter((m) => m.areaId === activeAreaId)
+                      : brickMakeups
+                  }
                   activeMakeupId={activeBrickMakeupId}
                   wallCountsByMakeupId={wallCountsByMakeupId}
                   onSetActive={handleActivateBrickMakeup}
@@ -6679,10 +6738,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         )}
 
         {/* Wall types management panel (block mode) — pier types live
-            inside this panel too, listed below the wall types. */}
+            inside this panel too, listed below the wall types.
+            Makeups filtered to the active area so each area only shows
+            its own wall types; 'All' shows every makeup across areas. */}
         {mode === 'block' && (
           <WallTypesPanel
-            makeups={makeups}
+            makeups={
+              activeAreaId
+                ? makeups.filter((m) => m.areaId === activeAreaId)
+                : makeups
+            }
             activeMakeupId={activeMakeupId}
             wallCountsByMakeupId={wallCountsByMakeupId}
             onSetActive={handleActivateMakeup}
@@ -6705,10 +6770,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
         {/* Brick wall types (brick mode). Brick library is edited
             from the Material library page; we don't show it in the
-            workspace right-rail any more. */}
+            workspace right-rail any more. Same per-area filtering as
+            block. */}
         {mode === 'brick' && (
           <BrickTypesPanel
-            makeups={brickMakeups}
+            makeups={
+              activeAreaId
+                ? brickMakeups.filter((m) => m.areaId === activeAreaId)
+                : brickMakeups
+            }
             activeMakeupId={activeBrickMakeupId}
             wallCountsByMakeupId={wallCountsByMakeupId}
             onSetActive={handleActivateBrickMakeup}

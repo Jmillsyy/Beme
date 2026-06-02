@@ -1,27 +1,30 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ProjectArea } from '../lib/projectStorage'
 
 /**
- * Area tabs — a horizontal strip of named buckets the estimator uses to
- * organise their work inside a single project. Sits above the
- * WallTypesPanel in the right rail.
+ * Area selector — single 'Area: <name> ▾' button that opens a dropdown
+ * menu listing every area on the project. Replaces the older horizontal
+ * tabs strip; same external props so callers (PdfWorkspace) don't have
+ * to change.
  *
- * Tabs visible from left to right:
- *   - **All** — always present, never deletable. Shows every wall in
- *     the project regardless of `areaId`. The active state when
- *     `activeAreaId` is null.
- *   - One tab per area in `areas`
- *   - **+ New area** at the end — opens a small focused modal
+ * Menu contents:
+ *   - **All** — always at the top, never deletable. Active state when
+ *     activeAreaId is null.
+ *   - One row per area (with its colour dot, name, hover-revealed
+ *     rename ✎ and delete × buttons).
+ *   - A divider, then **+ New area** at the bottom.
  *
- * Pure presentation — owns no persistent state. The workspace controls
- * `activeAreaId` (transient UI state) and `areas` (saved on the
- * project). This component just renders + dispatches.
+ * Rationale for the change:
+ *   - Projects routinely have 5+ areas (Front, Back, Garage, Alfresco,
+ *     Granny flat, …). The pills strip overflowed and made selection
+ *     mouseable but not great with a long list.
+ *   - A dropdown keeps the chrome tiny, surfaces every area in a
+ *     single scrollable column, and the rename / delete affordances
+ *     stay one click away on hover.
  *
- * Rename + delete affordances surface on hover of each area pill:
- *   - ✎ → opens an "Edit area" modal pre-filled with the name
- *   - × → confirmation prompt then delete
- * Double-click an area pill is a power-user shortcut to the same
- * rename modal.
+ * Pure presentation — owns no persistent state. The workspace owns
+ * `activeAreaId` (per-session) and `areas` (project-persisted); this
+ * component just renders + dispatches.
  */
 export default function AreaTabs({
   areas,
@@ -32,27 +35,59 @@ export default function AreaTabs({
   onDelete,
 }: {
   areas: ProjectArea[]
-  /** null = the "All" tab is active. */
+  /** null = the "All" view. */
   activeAreaId: string | null
   onSelect: (areaId: string | null) => void
   /** Called with the new area's display name. Workspace generates the id,
    *  pushes onto `areas`, and switches activeAreaId to the new id. */
   onCreate: (name: string) => void
   onRename: (areaId: string, newName: string) => void
-  /** Optional — when omitted, the per-tab × close button is hidden. */
+  /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
 }) {
-  // Modal targets:
-  //   creating = true → New area modal
-  //   editingId = areaId → Edit area modal pre-filled with that area's name
+  // open = dropdown visible; creating = New area modal; editingId = Edit
+  // area modal pre-filled with that area's name.
+  const [open, setOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const editingArea = editingId ? areas.find((a) => a.id === editingId) ?? null : null
+  const editingArea = editingId
+    ? areas.find((a) => a.id === editingId) ?? null
+    : null
+
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  // Close on outside click + Escape — same pattern as project menus
+  // elsewhere in the workspace. Modals (rename / new) stop propagation
+  // so the menu doesn't close from under them.
+  useEffect(() => {
+    if (!open) return
+    function onPointer(e: MouseEvent) {
+      const t = e.target as Node
+      if (
+        buttonRef.current?.contains(t) ||
+        menuRef.current?.contains(t)
+      ) {
+        return
+      }
+      setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('mousedown', onPointer)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onPointer)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   const handleCreate = (name: string) => {
     const trimmed = name.trim()
     if (trimmed) onCreate(trimmed)
     setCreating(false)
+    setOpen(false)
   }
 
   const handleRename = (id: string, name: string) => {
@@ -64,52 +99,98 @@ export default function AreaTabs({
     setEditingId(null)
   }
 
-  // Existing names excluding the area being renamed (so renaming an
-  // area to its own current name isn't flagged as a duplicate).
   const existingNamesFor = (excludeId: string | null) =>
     areas
       .filter((a) => a.id !== excludeId)
       .map((a) => a.name.toLowerCase())
 
+  const activeArea = activeAreaId
+    ? areas.find((a) => a.id === activeAreaId) ?? null
+    : null
+  const activeLabel = activeArea?.name ?? 'All areas'
+
   return (
-    <div
-      className="flex items-center gap-1 px-2 py-1.5 bg-ink-800 border border-ink-600 rounded-lg overflow-x-auto select-none"
-      role="tablist"
-      aria-label="Project areas"
-    >
-      <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500 px-1 flex-shrink-0">
-        Area
-      </span>
-
-      <AreaButton
-        label="All"
-        active={activeAreaId === null}
-        onClick={() => onSelect(null)}
-      />
-
-      {areas.map((area) => (
-        <AreaButton
-          key={area.id}
-          label={area.name}
-          colorHex={area.colorHex}
-          active={activeAreaId === area.id}
-          onClick={() => onSelect(area.id)}
-          onRename={() => setEditingId(area.id)}
-          onDelete={onDelete ? () => onDelete(area.id) : undefined}
-        />
-      ))}
-
-      {/* Primary action — brand orange CTA matching the + Add buttons
-         elsewhere. Pops a focused modal so the user isn't crammed into
-         a 40-px-wide field next to existing pills. */}
+    <div className="relative inline-block">
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setCreating(true)}
-        className="flex-shrink-0 ml-auto h-7 px-3 rounded-lg text-xs font-medium bg-beme-500 text-black hover:bg-beme-400 transition-colors"
-        title="Create a new area (e.g. Balcony, Staircase, Level 1)"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex items-center gap-2 h-7 px-2.5 rounded-lg bg-ink-800 border border-ink-600 text-xs text-ink-100 hover:bg-ink-700 transition-colors min-w-[160px]"
       >
-        + New area
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">
+          Area
+        </span>
+        {activeArea?.colorHex && (
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full"
+            style={{ backgroundColor: activeArea.colorHex }}
+            aria-hidden
+          />
+        )}
+        <span className="truncate flex-1 text-left">{activeLabel}</span>
+        <span className="text-ink-500 text-[10px]">▾</span>
       </button>
+
+      {open && (
+        <div
+          ref={menuRef}
+          role="listbox"
+          aria-label="Project areas"
+          className="absolute z-40 mt-1 w-64 max-h-[60vh] overflow-y-auto rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 py-1 text-sm"
+        >
+          <AreaMenuRow
+            label="All areas"
+            active={activeAreaId === null}
+            onSelect={() => {
+              onSelect(null)
+              setOpen(false)
+            }}
+          />
+          {areas.length > 0 && (
+            <div className="border-t border-ink-700 my-1" />
+          )}
+          {areas.map((area) => (
+            <AreaMenuRow
+              key={area.id}
+              label={area.name}
+              colorHex={area.colorHex}
+              active={activeAreaId === area.id}
+              onSelect={() => {
+                onSelect(area.id)
+                setOpen(false)
+              }}
+              onRename={() => {
+                setEditingId(area.id)
+              }}
+              onDelete={
+                onDelete
+                  ? () => {
+                      if (
+                        window.confirm(
+                          `Delete area "${area.name}"? Walls in it become unassigned (still visible in All).`
+                        )
+                      ) {
+                        onDelete(area.id)
+                      }
+                    }
+                  : undefined
+              }
+            />
+          ))}
+          <div className="border-t border-ink-700 my-1" />
+          <button
+            type="button"
+            onClick={() => {
+              setCreating(true)
+            }}
+            className="w-full text-left px-3 py-1.5 text-xs font-medium text-beme-300 hover:bg-ink-700 transition-colors"
+          >
+            + New area
+          </button>
+        </div>
+      )}
 
       {creating && (
         <AreaNameModal
@@ -128,6 +209,76 @@ export default function AreaTabs({
           onSubmit={(name) => handleRename(editingArea.id, name)}
           onCancel={() => setEditingId(null)}
         />
+      )}
+    </div>
+  )
+}
+
+// ---------- Internal: dropdown row with rename / delete affordances ----
+
+function AreaMenuRow({
+  label,
+  colorHex,
+  active,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  label: string
+  colorHex?: string
+  active: boolean
+  onSelect: () => void
+  onRename?: () => void
+  onDelete?: () => void
+}) {
+  return (
+    <div
+      className={`group relative flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer ${
+        active
+          ? 'bg-beme-500/15 text-beme-300'
+          : 'text-ink-100 hover:bg-ink-700'
+      }`}
+      onClick={onSelect}
+      role="option"
+      aria-selected={active}
+    >
+      {colorHex ? (
+        <span
+          className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: colorHex }}
+          aria-hidden
+        />
+      ) : (
+        <span className="inline-block w-1.5 h-1.5 flex-shrink-0" />
+      )}
+      <span className="flex-1 truncate">{label}</span>
+      {onRename && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRename()
+          }}
+          title={`Rename ${label}`}
+          aria-label={`Rename area ${label}`}
+          className="w-5 h-5 rounded text-ink-500 hover:bg-ink-600 hover:text-beme-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
+        >
+          ✎
+        </button>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          title={`Delete ${label}`}
+          aria-label={`Delete area ${label}`}
+          className="w-5 h-5 rounded text-ink-500 hover:bg-ink-600 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
+        >
+          ×
+        </button>
       )}
     </div>
   )
@@ -260,89 +411,5 @@ function AreaNameModal({
         </footer>
       </div>
     </div>
-  )
-}
-
-/**
- * Single area chip. Active state mirrors the trade-rail chip styling so
- * the two control bars sit visually together. On hover (when handlers
- * provided), a ✎ rename button and a × delete button surface on the
- * right of the pill. Double-click on the pill body opens the rename
- * modal as a quick shortcut.
- *
- * The "All" tab is rendered without onRename / onDelete so its hover
- * surface stays bare (no rename — it has no id; no delete — it's
- * permanent).
- */
-function AreaButton({
-  label,
-  colorHex,
-  active,
-  onClick,
-  onRename,
-  onDelete,
-}: {
-  label: string
-  colorHex?: string
-  active: boolean
-  onClick: () => void
-  onRename?: () => void
-  onDelete?: () => void
-}) {
-  return (
-    <span className="relative inline-flex items-center group flex-shrink-0">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={active}
-        onClick={onClick}
-        onDoubleClick={onRename}
-        title={onRename ? `${label} · double-click to rename` : label}
-        className={`flex items-center gap-1.5 h-6 px-2 rounded-md text-xs font-medium transition-colors ${
-          active
-            ? 'bg-beme-500/20 text-beme-300 ring-1 ring-beme-400'
-            : 'text-ink-300 hover:bg-ink-700 hover:text-ink-100'
-        }`}
-      >
-        {colorHex && (
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: colorHex }}
-            aria-hidden
-          />
-        )}
-        <span className="truncate max-w-[120px]">{label}</span>
-      </button>
-      {onRename && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            onRename()
-          }}
-          title={`Rename ${label}`}
-          aria-label={`Rename area ${label}`}
-          className="ml-0.5 w-4 h-4 rounded text-ink-500 hover:bg-ink-700 hover:text-beme-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
-        >
-          ✎
-        </button>
-      )}
-      {onDelete && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation()
-            if (window.confirm(`Delete area "${label}"? Walls in it become unassigned (still visible in All).`)) {
-              onDelete()
-            }
-          }}
-          title={`Delete ${label}`}
-          aria-label={`Delete area ${label}`}
-          className="ml-0.5 w-4 h-4 rounded text-ink-500 hover:bg-ink-700 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
-        >
-          ×
-        </button>
-      )}
-    </span>
   )
 }
