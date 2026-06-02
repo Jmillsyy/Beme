@@ -129,6 +129,11 @@ function SupplyItemsPanelImpl({
   onToggle,
   onRateChange,
 }: SupplyItemsPanelProps) {
+  // onRateChange is no longer consumed in this panel — the rate is
+  // library-controlled now, not editable per-project. Prop kept in
+  // the interface so existing callers don't break; mark as used so
+  // tsc doesn't complain about the unused arg.
+  void onRateChange
   const [expanded, setExpanded] = useState(true)
   // Per-category collapse state. Keyed by category label (or
   // 'Uncategorised'). Categories default to expanded; collapsing one
@@ -246,10 +251,15 @@ function SupplyItemsPanelImpl({
                       <div className="space-y-2">
                         {categoryItems.map((item) => {
                           const included = selections[item.id] !== false
+                          // Always use the library rate — per-project
+                          // overrides have been removed from this panel
+                          // so the rate is locked to whatever the Material
+                          // library says. effectiveRate still honours any
+                          // legacy overrides in rateOverrides for
+                          // back-compat with saved projects.
                           const rate = effectiveRate(item, rateOverrides)
                           const qty = quantityFor(item, rate, metrics)
                           const rounded = Math.max(0, Math.ceil(qty))
-                          const hasOverride = rateOverrides[item.id] !== undefined
                           return (
                             <div
                               key={item.id}
@@ -285,45 +295,8 @@ function SupplyItemsPanelImpl({
                                 </span>
                               </label>
                               {included && (
-                                <div className="mt-2 ml-6 flex items-center gap-2 text-sm flex-wrap">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="0.01"
-                                    value={
-                                      hasOverride
-                                        ? rateOverrides[item.id]
-                                        : item.rate
-                                    }
-                                    onChange={(e) => {
-                                      const v = e.target.value
-                                      if (v === '') {
-                                        onRateChange(item.id, undefined)
-                                        return
-                                      }
-                                      const n = parseFloat(v)
-                                      if (Number.isFinite(n) && n >= 0) {
-                                        onRateChange(item.id, n)
-                                      }
-                                    }}
-                                    className="w-20 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 tabular-nums"
-                                    aria-label={`${item.name} rate`}
-                                  />
-                                  <span className="text-ink-300">
-                                    {UNIT_SUFFIX[item.unit]}
-                                  </span>
-                                  {hasOverride && (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        onRateChange(item.id, undefined)
-                                      }
-                                      className="text-xs text-ink-400 hover:text-beme-300 underline-offset-2 hover:underline"
-                                      title={`Reset to library default (${item.rate} ${UNIT_SUFFIX[item.unit]})`}
-                                    >
-                                      Reset
-                                    </button>
-                                  )}
+                                <div className="mt-2 ml-6 text-xs text-ink-400">
+                                  {rate} {UNIT_SUFFIX[item.unit]}
                                 </div>
                               )}
                             </div>
