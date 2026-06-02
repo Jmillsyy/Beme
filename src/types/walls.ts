@@ -166,6 +166,18 @@ export interface WallMakeup {
   bodyBlockCode: BlockCode
   /** Block used for the top course. 20.20 if a bond beam is required, otherwise 20.48. */
   topCourseBlockCode: BlockCode
+  /**
+   * Optional capping tile that sits ON TOP of the top course. Distinct
+   * from `topCourseBlockCode` — that block fills a normal 200mm course
+   * slot; the cap is an additional, typically-thinner course (e.g. a
+   * 40mm tile) appended after the wall reaches its `heightMm`.
+   *
+   * Default unset (no cap). When set, calc + 3D append one cap course
+   * per wall; the tally counts `wallLength ÷ cap.widthMm` caps per
+   * wall. Pick any block from the library tagged with role `cap` (or
+   * any block, really — the user can pick whatever they want).
+   */
+  capBlockCode?: BlockCode
 
   /**
    * Per-course overrides for any course that doesn't use the default body block.

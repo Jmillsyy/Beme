@@ -53,6 +53,7 @@ import {
   moduleHeightForBand,
   resolveCourseBlocks,
 } from '../lib/makeups'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { bandColor } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import {
@@ -172,7 +173,10 @@ function resolveWallCourses(
     typeof wall.heightMmOverride === 'number'
       ? wall.heightMmOverride
       : makeup?.heightMm ?? FALLBACK_HEIGHT_MM
-  const totalHeightM = heightMm / 1000
+  // Re-assigned below when the wall type has an optional cap tile,
+  // so that the rendered envelope includes the cap above the wall's
+  // structural height.
+  let totalHeightM = heightMm / 1000
 
   if (!makeup) {
     return { courses: [], totalHeightM, makeup: undefined }
@@ -226,7 +230,6 @@ function resolveWallCourses(
     // moduleHeightForBand returns its 200mm fallback for every band
     // — which is exactly the height-makeup-not-rendering bug.
     const bandModuleMm = moduleHeightForBand(band, library)
-    const courseHeightM = bandModuleMm / 1000
     const isHeightMakeupBand = bandModuleMm !== STD_COURSE_MODULE_MM
     for (let i = 0; i < band.count; i++) {
       const resolved = resolveCourseBlocks(scopedMakeup, courseNum)
@@ -253,6 +256,21 @@ function resolveWallCourses(
       } else {
         bodyCode = resolved.bodyBlockCode || band.blockCode
       }
+      // Course height: size by the BLOCK actually being rendered in
+      // this course, not the band's nominal blockCode. If the user
+      // sets a 40mm capping tile as topCourseBlockCode (or a base
+      // course block with a non-standard height), the course slot
+      // collapses to match — otherwise the cap rendered inside a
+      // 200mm modular slot and looked ~190mm tall.
+      //
+      // Falls back to the band module when the resolved bodyCode isn't
+      // in the library (defensive: matches the legacy uniform-course
+      // behaviour rather than zeroing out a course).
+      const courseBlock = library[bodyCode]
+      const courseModuleMm = courseBlock
+        ? courseBlock.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
+        : bandModuleMm
+      const courseHeightM = courseModuleMm / 1000
       courses.push({
         courseNumber: courseNum,
         y0: y,
@@ -278,6 +296,35 @@ function resolveWallCourses(
       cornerCode: makeup.cornerBlockCode,
       halfCode: makeup.halfBlockCode ?? '20.03',
     })
+  }
+  // Optional cap tile — sits ON TOP of the wall's structural height
+  // (totalHeightM is unchanged before this point, so openings + wall
+  // body remain anchored to the user-set wall height). The cap adds
+  // ONE course above with its own modular height (block + mortar
+  // joint). totalHeightM gets bumped so the renderer's bounding /
+  // camera fit picks up the cap.
+  //
+  // Use cornerCode = halfCode = capBlockCode so the cap renders as
+  // a single uniform strip across the wall — no end-termination
+  // alternation for the cap row, since a tile is the same shape end
+  // to end.
+  const capCode = scopedMakeup.capBlockCode
+  if (capCode) {
+    const capBlock = library[capCode]
+    const capModuleMm = capBlock
+      ? capBlock.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
+      : 50 // 40mm tile + 10mm joint as a sensible fallback
+    const capHeightM = capModuleMm / 1000
+    const y0 = totalHeightM
+    courses.push({
+      courseNumber: courses.length + 1,
+      y0,
+      y1: y0 + capHeightM,
+      bodyCode: capCode,
+      cornerCode: capCode,
+      halfCode: capCode,
+    })
+    totalHeightM = y0 + capHeightM
   }
   return { courses, totalHeightM, makeup }
 }
@@ -353,7 +400,15 @@ function segmentsFromWallLayout(
   colorMap: Map<string, string>,
   library: Record<string, Block>,
   wallsById: Record<string, Wall>,
-  wallThicknessByWallId: Record<string, number>
+  wallThicknessByWallId: Record<string, number>,
+  /**
+   * Optional makeup — used to surface the cap tile (if any). The
+   * planWallLayout path doesn't carry caps in its block list (caps are
+   * additive on top of the structural courses), so we emit the cap
+   * strip here instead. Omitted on legacy call sites that pre-date
+   * caps; pass the makeup when you want caps rendered.
+   */
+  makeup?: WallMakeup
 ): WallSegmentBox[] {
   // The data endpoints `wall.startX/Y, wall.endX/Y` represent CENTRELINE
   // positions and at corners they sit halfThickness inside the outer
@@ -439,6 +494,33 @@ function segmentsFromWallLayout(
       yRotation,
       color: colorOf(block.code),
       highlight: isHighlightedBlock(block.code, library),
+    })
+  }
+
+  // Optional cap strip — one segment running the full wall length at
+  // the cap block's modular height, sitting on TOP of the wall's
+  // structural courses. Mirrors the cap course resolveWallCourses adds
+  // for the legacy renderer; planWallLayout's block list doesn't
+  // carry caps (the cap is an additive top layer, not part of the
+  // structural fit), so we emit it explicitly here.
+  if (makeup?.capBlockCode) {
+    const capCode = makeup.capBlockCode
+    const capBlock = library[capCode]
+    const capModuleMm = capBlock
+      ? capBlock.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
+      : 50 // 40mm tile + 10mm joint fallback
+    const capHeightM = capModuleMm / 1000
+    const localCx = wallLenM / 2
+    boxes.push({
+      cx: sx + dirX * localCx,
+      cy: totalHeightM + capHeightM / 2,
+      cz: sz + dirZ * localCx,
+      length: wallLenM,
+      heightM: capHeightM,
+      thickness,
+      yRotation,
+      color: colorOf(capCode),
+      highlight: isHighlightedBlock(capCode, library),
     })
   }
 
@@ -701,20 +783,27 @@ function segmentsForStraightWall(
   //
   // Length-makeup (3/4 / cut blocks) is a separate concern handled by
   // the existing body-cell carving — not part of corner logic.
+  // Control joints behave like free ends for the corner-ownership
+  // perspective (no shared block, no alternation) BUT also force the
+  // full corner block on every course — skipping the half-block-on-
+  // even-courses rule that applies to true free / T-junction ends.
+  const leftIsControlJoint = wall.startJunction.type === 'control-joint'
+  const rightIsControlJoint = wall.endJunction.type === 'control-joint'
   const leftIsFreeEnd =
     wall.startJunction.type === 'free' ||
-    wall.startJunction.type === 't-junction'
+    wall.startJunction.type === 't-junction' ||
+    leftIsControlJoint
   const rightIsFreeEnd =
     wall.endJunction.type === 'free' ||
-    wall.endJunction.type === 't-junction'
+    wall.endJunction.type === 't-junction' ||
+    rightIsControlJoint
+  // Only true STRUCTURAL corners go through shared-corner ownership.
   const leftCornerNeighbor =
-    wall.startJunction.type === 'corner' ||
-    wall.startJunction.type === 'control-joint'
+    wall.startJunction.type === 'corner'
       ? wall.startJunction.connectedWallIds?.[0]
       : undefined
   const rightCornerNeighbor =
-    wall.endJunction.type === 'corner' ||
-    wall.endJunction.type === 'control-joint'
+    wall.endJunction.type === 'corner'
       ? wall.endJunction.connectedWallIds?.[0]
       : undefined
   // Corner phase: 'lead-odd' = this wall owns the corner on odd
@@ -743,9 +832,13 @@ function segmentsForStraightWall(
   const grid: CourseEntry[] = courses.map((course) => {
     const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
-    // Halves ONLY at free ends in stretcher bond's even courses.
-    const useHalfLeft = isEvenStretcher && leftIsFreeEnd
-    const useHalfRight = isEvenStretcher && rightIsFreeEnd
+    // Halves ONLY at TRUE free / T-junction ends in stretcher bond's
+    // even courses. Control joints (which we group with free ends for
+    // the no-shared-corner logic above) are intentionally excluded
+    // here so they always render the full corner block — giving the
+    // user the "two walls with full end terminations" look at a split.
+    const useHalfLeft = isEvenStretcher && leftIsFreeEnd && !leftIsControlJoint
+    const useHalfRight = isEvenStretcher && rightIsFreeEnd && !rightIsControlJoint
 
     // Corner-cell handling — both walls ALWAYS render a corner-
     // coloured end cell (so the visible corner column stays solid red
@@ -1205,135 +1298,336 @@ function InitialCameraAim({
   return null
 }
 
-// ---------- First-person controls ----------
+// ---------- CAD-style controls ----------
 
 /**
- * Mouse-only first-person camera. No OrbitControls, no target, no
- * pivot point.
+ * AutoCAD / Revit-style camera. The camera orbits around a TARGET
+ * point in world space, and both camera + target translate together
+ * during a pan.
  *
- *   - Drag (any button): yaw + pitch applied directly to
- *     camera.quaternion. The camera rotates around its own position,
- *     not around any external point.
- *   - Wheel: dolly along the camera's look direction. Distance-aware
- *     via a raycast — far from geometry the steps are larger, close
- *     up they get finer, so zooming in to inspect a wall stays
- *     controllable.
+ *   - Left / middle drag           → PAN (the user's "grab and drag
+ *     the view" gesture). Left + middle do the same thing so users
+ *     without a middle button still get the primary action on the
+ *     standard left button. Moves both camera and target along the
+ *     camera's local right/up axes. Pan distance scales with the
+ *     camera↔target distance so dragging across the screen always
+ *     moves the same number of "screen widths" worth of content.
+ *   - Shift + left / middle drag   → ORBIT. Camera spins around the
+ *     target on the unit sphere; target stays put. Pitch is clamped
+ *     so the camera doesn't gimbal-flip over the pole.
+ *   - Right-mouse drag             → ORBIT (matches AutoCAD's
+ *     Shift+MMB convention on a single-button drag, plus it's the
+ *     standard trackpad fallback).
+ *   - Shift + right-mouse drag     → PAN.
+ *   - Wheel                        → Zoom toward the cursor. Both
+ *     camera and target slide along the camera-to-cursor ray; the
+ *     pixel under the cursor stays put, AutoCAD-style.
  *
- * Yaw rotates around the world-Y axis (so the horizon stays level
- * no matter how far you tilt). Pitch is clamped to ±89° so you
- * don't flip upside-down when looking straight up/down.
- *
- * Internal yaw/pitch state is seeded from the camera's initial
- * quaternion on mount, so wherever the camera is aimed at startup
- * is where this controller picks up from.
+ * Target seeded from `initialTargetX`/`Z` (scene centre) on mount.
+ * Spherical coords (radius, theta, phi) derived from the camera's
+ * starting position relative to the target so the controller picks
+ * up wherever InitialCameraAim left the camera looking.
  */
-function FirstPersonControls() {
+/**
+ * Navigation conventions the user can choose between. Each name maps
+ * to a (button, shift, alt) → Mode dispatch. Persisted in localStorage
+ * so the choice survives reloads.
+ *
+ *   - autocad   — Middle/Left = pan; Shift = swap to orbit; Right = orbit.
+ *                 The construction-industry default (AutoCAD, Revit).
+ *   - sketchup  — Middle/Left = orbit; Shift = swap to pan; Right = pan.
+ *                 The 3D-modelling default (SketchUp, Blender).
+ *   - three     — Left/Middle = orbit; Right = pan. Three.js OrbitControls
+ *                 default; common in browser-based 3D viewers.
+ *   - maya      — Alt+Left = orbit, Alt+Middle = pan. No nav without Alt.
+ *                 Used by Maya, Cinema 4D, Unreal.
+ */
+export type NavStyle = 'autocad' | 'sketchup' | 'three' | 'maya'
+
+export const NAV_STYLE_LABELS: Record<NavStyle, string> = {
+  autocad: 'AutoCAD / Revit',
+  sketchup: 'SketchUp / Blender',
+  three: 'Three.js Orbit',
+  maya: 'Maya / Cinema 4D',
+}
+
+export const NAV_STYLE_HINTS: Record<NavStyle, string> = {
+  autocad: 'drag = pan · shift+drag = orbit · right-drag = orbit · scroll = zoom',
+  sketchup: 'drag = orbit · shift+drag = pan · right-drag = pan · scroll = zoom',
+  three: 'left/middle drag = orbit · right-drag = pan · scroll = zoom',
+  maya: 'alt+left = orbit · alt+middle = pan · scroll = zoom',
+}
+
+function buttonToModeFor(
+  style: NavStyle,
+  button: number,
+  shift: boolean,
+  alt: boolean
+): 'idle' | 'pan' | 'orbit' {
+  switch (style) {
+    case 'autocad':
+      if (button === 0 || button === 1) return shift ? 'orbit' : 'pan'
+      if (button === 2) return shift ? 'pan' : 'orbit'
+      return 'idle'
+    case 'sketchup':
+      if (button === 0 || button === 1) return shift ? 'pan' : 'orbit'
+      if (button === 2) return 'pan'
+      return 'idle'
+    case 'three':
+      if (button === 0 || button === 1) return 'orbit'
+      if (button === 2) return 'pan'
+      return 'idle'
+    case 'maya':
+      // Maya's hold-Alt-to-navigate convention. Without Alt the buttons
+      // do nothing — leaving room for a future click-to-select.
+      if (!alt) return 'idle'
+      if (button === 0) return 'orbit'
+      if (button === 1) return 'pan'
+      if (button === 2) return 'pan'
+      return 'idle'
+  }
+}
+
+function CADControls({
+  initialTargetX,
+  initialTargetZ,
+  sceneSizeMax,
+  navStyle,
+}: {
+  initialTargetX: number
+  initialTargetZ: number
+  /** Longer of the bounding box's width / depth in metres — used by
+   *  the Fit-view shortcut to recompute the camera distance. */
+  sceneSizeMax: number
+  navStyle: NavStyle
+}) {
   const camera = useThree((s) => s.camera)
   const gl = useThree((s) => s.gl)
   const scene = useThree((s) => s.scene)
   const invalidate = useThree((s) => s.invalidate)
 
+  // Keep the LIVE navStyle accessible inside the (long-lived) pointer
+  // handlers without rebinding the effect each time the user switches
+  // styles. Rebinding would reset the orbit target, teleporting the
+  // user back to the scene centre — not what they want.
+  const navStyleRef = useRef(navStyle)
+  useEffect(() => {
+    navStyleRef.current = navStyle
+  }, [navStyle])
+
   useEffect(() => {
     const dom = gl.domElement
 
-    // Seed yaw/pitch from current camera quaternion. Order 'YXZ' so
-    // yaw (Y) is applied before pitch (X) — matches how typical
-    // first-person cameras combine the two without roll bleed.
-    const startEuler = new THREE.Euler().setFromQuaternion(
-      camera.quaternion,
-      'YXZ'
-    )
+    // Orbit target. Initially at the scene's horizontal centre, just
+    // above the ground (1m) so we're looking at roughly where the
+    // walls are, not at the ground plane.
+    const target = new THREE.Vector3(initialTargetX, 1, initialTargetZ)
+
+    // Seed spherical coords (theta=azimuth, phi=polar) from the
+    // camera's offset from the target — so the controller picks up
+    // wherever the camera is initially aimed.
+    const offset = new THREE.Vector3().subVectors(camera.position, target)
+    const spherical = new THREE.Spherical().setFromVector3(offset)
+    const PHI_EPSILON = 0.01
+    if (spherical.phi < PHI_EPSILON) spherical.phi = PHI_EPSILON
+    if (spherical.phi > Math.PI - PHI_EPSILON) spherical.phi = Math.PI - PHI_EPSILON
+
+    type Mode = 'idle' | 'pan' | 'orbit'
     const state = {
-      dragging: false,
+      mode: 'idle' as Mode,
       pointerId: -1,
       lastX: 0,
       lastY: 0,
-      yaw: startEuler.y,
-      pitch: startEuler.x,
     }
 
-    // Mouse sensitivity: radians of rotation per pixel of drag. ~0.18°/px.
-    const LOOK_SENSITIVITY = 0.003
-    // Pitch limit — just under 90° so the up-axis doesn't gimbal flip.
-    const PITCH_LIMIT = (Math.PI / 2) * 0.99
+    // Sensitivity: radians per pixel for orbit, world units per
+    // pixel for pan (scaled per-frame by camera distance).
+    const ORBIT_SENS = 0.005
+    const PAN_SCREEN_FRACTION = 1.0 // dragging across the canvas pans by ~1 canvas worth
 
-    // Wheel zoom — distance-aware. Each tick moves a fraction of the
-    // way to whatever the camera is looking at (raycast forward).
-    // Falls back to a fixed distance if the ray hits nothing so wheel
-    // still does something in empty space.
-    const WHEEL_STEP = 0.12 // 12% of forward-hit distance per tick
+    // Wheel zoom — each tick moves the camera + target a fixed
+    // fraction of the way along the camera→cursor ray. Cursor-locked
+    // zoom means the pixel under the cursor stays under the cursor.
+    const WHEEL_STEP = 0.12 // 12% per tick
     const WHEEL_MIN_DISTANCE = 0.05 // metres — don't poke through walls
-    const WHEEL_FALLBACK_DISTANCE = 10 // metres of "phantom" forward dist
+    const WHEEL_FALLBACK_DISTANCE = 10
 
     const raycaster = new THREE.Raycaster()
-    const fwd = new THREE.Vector3()
 
-    const applyRotation = () => {
-      const e = new THREE.Euler(state.pitch, state.yaw, 0, 'YXZ')
-      camera.quaternion.setFromEuler(e)
+    /** Recompute camera.position from target + spherical offset and
+     *  point it at the target. Call after any orbit/pan/zoom. */
+    const updateCamera = () => {
+      const off = new THREE.Vector3().setFromSpherical(spherical)
+      camera.position.copy(target).add(off)
+      camera.lookAt(target)
       invalidate()
     }
 
+    /** Build a world-space ray from a screen pixel. Used for
+     *  cursor-locked zoom. */
+    const screenToRay = (clientX: number, clientY: number) => {
+      const rect = dom.getBoundingClientRect()
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1
+      const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera)
+      return raycaster
+    }
+
+    /** Defer to the nav-style-specific dispatcher so this controller
+     *  stays generic. Reads the LIVE navStyle from the ref so the
+     *  effect doesn't have to re-bind (and reset target/spherical)
+     *  every time the user picks a different style. */
+    const buttonToMode = (button: number, shift: boolean, alt: boolean): Mode =>
+      buttonToModeFor(navStyleRef.current, button, shift, alt)
+
     const onPointerDown = (e: PointerEvent) => {
-      // Any button captures drag → look. (User said mouse-only;
-      // they're not strafing or distinguishing buttons here.)
-      state.dragging = true
+      const mode = buttonToMode(e.button, e.shiftKey, e.altKey)
+      if (mode === 'idle') return
+      state.mode = mode
       state.pointerId = e.pointerId
       state.lastX = e.clientX
       state.lastY = e.clientY
       dom.setPointerCapture?.(e.pointerId)
-      // Prevent the browser's default behaviours (text selection,
-      // context menu pre-empt) while dragging.
       e.preventDefault()
     }
+
     const onPointerMove = (e: PointerEvent) => {
-      if (!state.dragging) return
+      if (state.mode === 'idle') return
       const dx = e.clientX - state.lastX
       const dy = e.clientY - state.lastY
       state.lastX = e.clientX
       state.lastY = e.clientY
-      // Negative on yaw so dragging right rotates view right (the
-      // mouse appears to "grab and pull" the scene). Negative on
-      // pitch too so dragging up looks up. Flip the sign of
-      // LOOK_SENSITIVITY here if a user later prefers inverted.
-      state.yaw -= dx * LOOK_SENSITIVITY
-      state.pitch -= dy * LOOK_SENSITIVITY
-      if (state.pitch > PITCH_LIMIT) state.pitch = PITCH_LIMIT
-      if (state.pitch < -PITCH_LIMIT) state.pitch = -PITCH_LIMIT
-      applyRotation()
+
+      if (state.mode === 'orbit') {
+        // Standard CAD orbit: dragging right spins the camera
+        // around the target to the right (so the model appears to
+        // turn left under your gaze). Flip signs if a user prefers
+        // the opposite convention.
+        spherical.theta -= dx * ORBIT_SENS
+        spherical.phi -= dy * ORBIT_SENS
+        if (spherical.phi < PHI_EPSILON) spherical.phi = PHI_EPSILON
+        if (spherical.phi > Math.PI - PHI_EPSILON) {
+          spherical.phi = Math.PI - PHI_EPSILON
+        }
+        updateCamera()
+        return
+      }
+
+      // Pan. Scale screen pixels into world units using camera FOV
+      // + canvas height, so a drag of the full canvas height moves
+      // the scene by ~PAN_SCREEN_FRACTION × the camera↔target distance
+      // along the camera's UP axis. Right/left scales analogously
+      // via aspect ratio.
+      const rect = dom.getBoundingClientRect()
+      const persp = camera as THREE.PerspectiveCamera
+      const fovRad = (persp.fov * Math.PI) / 180
+      const dist = spherical.radius
+      const worldPerPixelY = (2 * dist * Math.tan(fovRad / 2)) / rect.height
+      const worldPerPixelX = worldPerPixelY * persp.aspect
+
+      // Camera's local right + up in world space.
+      const right = new THREE.Vector3().setFromMatrixColumn(
+        camera.matrix,
+        0
+      )
+      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1)
+      const move = new THREE.Vector3()
+        .addScaledVector(right, -dx * worldPerPixelX * PAN_SCREEN_FRACTION)
+        .addScaledVector(up, dy * worldPerPixelY * PAN_SCREEN_FRACTION)
+      target.add(move)
+      // Camera moves with the target; spherical offset stays the
+      // same so the view direction is preserved.
+      updateCamera()
     }
+
     const onPointerUp = (e: PointerEvent) => {
       if (e.pointerId !== state.pointerId) return
-      state.dragging = false
+      state.mode = 'idle'
       state.pointerId = -1
       dom.releasePointerCapture?.(e.pointerId)
     }
+
     const onContextMenu = (e: MouseEvent) => {
-      // Suppress the right-click menu so right-drag-to-look works.
+      // Suppress the right-click menu so right-drag = orbit works
+      // (trackpad fallback path).
       e.preventDefault()
     }
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
-      camera.getWorldDirection(fwd) // unit vector, current look dir
+      // Cursor-locked zoom: raycast through the cursor to find
+      // either a scene hit or a phantom-distance fallback point,
+      // then move BOTH camera and target a fraction of the way
+      // toward that point. The cursor's world position stays under
+      // the cursor after the zoom — the AutoCAD "scroll to zoom in
+      // there" feel.
+      const ray = screenToRay(e.clientX, e.clientY)
+      const hits = ray.intersectObjects(scene.children, true)
+      const dir = ray.ray.direction.clone() // already normalised
+      const origin = ray.ray.origin.clone()
+      const targetWorld =
+        hits.length > 0
+          ? hits[0].point
+          : origin.clone().addScaledVector(dir, WHEEL_FALLBACK_DISTANCE)
 
-      // Raycast forward FROM THE CAMERA along its current look
-      // direction (not toward the cursor — we don't want zoom to
-      // teleport the camera off-axis; it should just travel along
-      // where the user is already looking).
-      raycaster.set(camera.position, fwd)
-      const hits = raycaster.intersectObjects(scene.children, true)
-      const distance = hits.length > 0 ? hits[0].distance : WHEEL_FALLBACK_DISTANCE
-
-      const sign = e.deltaY < 0 ? 1 : -1 // up = forward
-      let amount = sign * WHEEL_STEP * distance
-      // Clamp so a zoom-in doesn't poke through the wall.
-      if (sign === 1 && distance - amount < WHEEL_MIN_DISTANCE) {
-        amount = Math.max(0, distance - WHEEL_MIN_DISTANCE)
+      const sign = e.deltaY < 0 ? 1 : -1 // scroll up = zoom in
+      const toTarget = new THREE.Vector3().subVectors(targetWorld, camera.position)
+      let moveAmount = sign * WHEEL_STEP
+      // Clamp inward zoom so we don't overshoot through the surface.
+      if (sign === 1 && toTarget.length() * (1 - moveAmount) < WHEEL_MIN_DISTANCE) {
+        moveAmount = 1 - WHEEL_MIN_DISTANCE / Math.max(toTarget.length(), 1e-3)
       }
-      camera.position.addScaledVector(fwd, amount)
+      camera.position.addScaledVector(toTarget, moveAmount)
+      target.addScaledVector(toTarget, moveAmount)
+      // Re-derive spherical from new camera/target so subsequent
+      // orbits + pans use the updated radius.
+      const newOffset = new THREE.Vector3().subVectors(camera.position, target)
+      spherical.setFromVector3(newOffset)
+      if (spherical.phi < PHI_EPSILON) spherical.phi = PHI_EPSILON
+      if (spherical.phi > Math.PI - PHI_EPSILON) {
+        spherical.phi = Math.PI - PHI_EPSILON
+      }
+      camera.lookAt(target)
       invalidate()
     }
+
+    /** Frame the building. Re-centres the target on the scene bounds,
+     *  resets spherical radius to a true frame-to-fit distance, and
+     *  picks a 3/4 viewing angle. Bound to the F key (Blender / Maya
+     *  convention) and exposed on `window.__beme3dFit` so the overlay
+     *  button can call into it. */
+    const fitView = () => {
+      target.set(initialTargetX, 1, initialTargetZ)
+      const FIT_FOV_RAD = (45 * Math.PI) / 180
+      const dist = Math.max(
+        4,
+        (sceneSizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 1.1
+      )
+      // theta = horizontal angle (45° = corner view).
+      // phi = polar angle from world Y; ~60° gives a 3/4 elevation.
+      spherical.theta = Math.PI / 4
+      spherical.phi = (60 * Math.PI) / 180
+      spherical.radius = dist
+      updateCamera()
+    }
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Plain F only — no modifiers — so it doesn't conflict with
+      // platform shortcuts (Cmd+F, Ctrl+F find dialog). Ignore key
+      // events while the user is typing in an input/textarea
+      // anywhere on the page.
+      if (e.key !== 'f' && e.key !== 'F') return
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      e.preventDefault()
+      fitView()
+    }
+
+    // Expose fitView on the window so the overlay button outside the
+    // Canvas tree can call it. Cleanly removed on unmount.
+    type Win = Window & { __beme3dFit?: () => void }
+    ;(window as Win).__beme3dFit = fitView
 
     dom.addEventListener('pointerdown', onPointerDown)
     dom.addEventListener('pointermove', onPointerMove)
@@ -1341,6 +1635,11 @@ function FirstPersonControls() {
     dom.addEventListener('pointercancel', onPointerUp)
     dom.addEventListener('contextmenu', onContextMenu)
     dom.addEventListener('wheel', onWheel, { passive: false })
+    window.addEventListener('keydown', onKeyDown)
+
+    // Apply the initial state once on mount so the camera lookAt is
+    // immediately consistent with our spherical/target model.
+    updateCamera()
 
     return () => {
       dom.removeEventListener('pointerdown', onPointerDown)
@@ -1349,8 +1648,21 @@ function FirstPersonControls() {
       dom.removeEventListener('pointercancel', onPointerUp)
       dom.removeEventListener('contextmenu', onContextMenu)
       dom.removeEventListener('wheel', onWheel)
+      window.removeEventListener('keydown', onKeyDown)
+      type Win = Window & { __beme3dFit?: () => void }
+      if ((window as Win).__beme3dFit === fitView) {
+        delete (window as Win).__beme3dFit
+      }
     }
-  }, [camera, gl, scene, invalidate])
+  }, [
+    camera,
+    gl,
+    scene,
+    invalidate,
+    initialTargetX,
+    initialTargetZ,
+    sceneSizeMax,
+  ])
 
   return null
 }
@@ -1364,7 +1676,8 @@ function Scene({
   brickMakeupsById,
   wallThicknessByWallId,
   library,
-}: Omit<WorkspaceView3DProps, 'areas'>) {
+  navStyle,
+}: Omit<WorkspaceView3DProps, 'areas'> & { navStyle: NavStyle }) {
   const { segments, segmentBounds } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
@@ -1561,7 +1874,8 @@ function Scene({
               colorMap,
               library,
               wallsByIdMap,
-              wallThicknessByWallId
+              wallThicknessByWallId,
+              wr.makeup
             )
           )
         } else {
@@ -1601,15 +1915,35 @@ function Scene({
 
   return (
     <>
+      {/* Scene fog — fades the far ground plane into the canvas
+          clearColor so the user never sees the plane's edge. The fog
+          extends in metres, sized off the scene's overall extent. */}
+      <fog
+        attach="fog"
+        args={[
+          '#1a1d24',
+          segmentBounds.sizeMax * 2,
+          segmentBounds.sizeMax * 8,
+        ]}
+      />
       <ambientLight intensity={0.6} />
       <directionalLight position={[10, 20, 10]} intensity={0.8} />
 
+      {/* Ground plane — sized to a HUGE multiple of the scene so its
+          edge never reaches the camera, even when the user pans /
+          orbits / zooms far out. We also drop it a couple of cm
+          below the wall base so the wall meshes never z-fight with
+          the plane at the corners.
+
+          Two-sided so looking at the ground from below (e.g. an
+          underground cutaway angle the user might pan into) still
+          paints something instead of going black. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[segmentBounds.centerX, -0.001, segmentBounds.centerZ]}
+        position={[segmentBounds.centerX, -0.02, segmentBounds.centerZ]}
       >
-        <planeGeometry args={[segmentBounds.sizeMax * 4, segmentBounds.sizeMax * 4]} />
-        <meshStandardMaterial color={GROUND_COLOR} />
+        <planeGeometry args={[segmentBounds.sizeMax * 50, segmentBounds.sizeMax * 50]} />
+        <meshStandardMaterial color={GROUND_COLOR} side={THREE.DoubleSide} />
       </mesh>
 
       {/* One mesh per wall sub-box. Per-course rendering means ~5x more
@@ -1636,25 +1970,56 @@ function Scene({
         </mesh>
       ))}
 
-      {/* InitialCameraAim must render BEFORE FirstPersonControls
-          so its lookAt is applied before the controls seed their
-          yaw/pitch state from camera.quaternion. */}
+      {/* InitialCameraAim must render BEFORE CADControls so its
+          lookAt is applied before the controls seed their spherical
+          state from camera.position. */}
       <InitialCameraAim
         targetX={segmentBounds.centerX}
         targetZ={segmentBounds.centerZ}
       />
-      {/* First-person mouse camera. Drag rotates the camera around
-          its own position (no orbit target, no pivot point), wheel
-          dollies along the camera's look direction. No keyboard. */}
-      <FirstPersonControls />
+      {/* AutoCAD / Revit-style camera. Middle-mouse drag pans, shift
+          + middle orbits around the target, right-drag is a trackpad
+          fallback for orbit/pan, wheel zooms toward the cursor. */}
+      <CADControls
+        initialTargetX={segmentBounds.centerX}
+        initialTargetZ={segmentBounds.centerZ}
+        sceneSizeMax={segmentBounds.sizeMax}
+        navStyle={navStyle}
+      />
     </>
   )
 }
 
 // ---------- Top-level export ----------
 
+const NAV_STYLE_STORAGE_KEY = 'beme:3d-nav-style'
+
+/** Read the persisted nav style from localStorage, falling back to
+ *  AutoCAD-style (the construction-industry default the user picked
+ *  initially). Safe inside React rendering — localStorage reads are
+ *  synchronous and never throw on the supported browsers. */
+function loadNavStyle(): NavStyle {
+  if (typeof window === 'undefined') return 'autocad'
+  const v = window.localStorage.getItem(NAV_STYLE_STORAGE_KEY)
+  if (v === 'autocad' || v === 'sketchup' || v === 'three' || v === 'maya') {
+    return v
+  }
+  return 'autocad'
+}
+
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const { walls } = props
+  const [navStyle, setNavStyleState] = useState<NavStyle>(loadNavStyle)
+  const setNavStyle = (v: NavStyle) => {
+    setNavStyleState(v)
+    try {
+      window.localStorage.setItem(NAV_STYLE_STORAGE_KEY, v)
+    } catch {
+      // localStorage can throw in private-browsing / quota-exceeded.
+      // Persisting is a nice-to-have; ignore the failure so the user
+      // can still switch the live setting.
+    }
+  }
 
   const initialCamera = useMemo<[number, number, number]>(() => {
     if (walls.length === 0) return [10, 12, 10]
@@ -1672,9 +2037,20 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     }
     const cx = (minX + maxX) / 2
     const cz = (minZ + maxZ) / 2
-    const sizeMax = Math.max(maxX - minX, maxZ - minZ, 4)
-    const dist = sizeMax * 0.9 + 6
-    return [cx + dist * 0.7, dist * 0.8, cz + dist * 0.7]
+    // Distance derived from a true frame-to-fit: place the camera at
+    // a distance where the building's diagonal extent fits inside
+    // the vertical FOV. fov = 45°, half-fov = 22.5°, tan(22.5°) ≈ 0.414
+    // → distance ≈ diagonal × 1.21 for an edge-on view. We pull
+    // back another 1.1× for breathing room, and pull DOWN the camera
+    // angle so the building reads as a 3/4 view instead of a top-down.
+    const sizeX = Math.max(maxX - minX, 4)
+    const sizeZ = Math.max(maxZ - minZ, 4)
+    const diagonal = Math.hypot(sizeX, sizeZ)
+    const FIT_FOV_RAD = (45 * Math.PI) / 180
+    const dist = (diagonal / 2) / Math.tan(FIT_FOV_RAD / 2) * 1.1
+    // Place at 45° around the building, slightly elevated. Keeping
+    // Y proportional to dist (0.55) gives a comfortable 3/4 view.
+    return [cx + dist * 0.7, dist * 0.55, cz + dist * 0.7]
   }, [walls])
 
   if (walls.length === 0) {
@@ -1686,32 +2062,57 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   }
 
   return (
-    // Explicit pixel sizing via ResizeObserver — r3f's Canvas auto-sizing
-    // was leaving the rendered surface smaller than its container under
-    // certain initial-layout conditions (visible as wrapper bg showing
-    // around a too-small Canvas). We measure the wrapper div ourselves
-    // and pass explicit width/height pixels to Canvas's `style`, which
-    // it then uses to size the WebGL canvas exactly to our measured
-    // dimensions. ResizeObserver keeps it in sync on viewport resize.
-    <SizedCanvasShell>
-      {(width, height) => (
-        <Canvas
-          frameloop="demand"
-          dpr={[1, 1.5]}
-          camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
-          shadows={false}
-          gl={{ antialias: true, powerPreference: 'high-performance' }}
-          onCreated={({ gl }) => {
-            gl.setClearColor(new THREE.Color('#1a1d24'))
+    // Direct fill: the Canvas is absolutely positioned to inset-0 of
+    // this wrapper, which is itself absolute-inset-0 of the PdfWorkspace
+    // 3D pod (line ~6400 — `flex-1 min-w-0 min-h-0 relative`). This
+    // means the Canvas always matches the pod's CSS size, no
+    // measurement / RAF / ResizeObserver dance. r3f handles the WebGL
+    // framebuffer resize internally via its own observer.
+    //
+    // Earlier we used a SizedCanvasShell that measured the wrapper
+    // and passed explicit pixel `style={{ width, height }}` to Canvas
+    // — but if the initial measurement was taken before flex resolved,
+    // the canvas got stuck at the smaller size. Direct CSS fill is
+    // robust to that race.
+    <div className="absolute inset-0">
+      <Canvas
+        frameloop="demand"
+        dpr={[1, 1.5]}
+        camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
+        shadows={false}
+        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        onCreated={({ gl }) => {
+          gl.setClearColor(new THREE.Color('#1a1d24'))
+        }}
+        style={{ position: 'absolute', inset: 0, display: 'block' }}
+      >
+        <Suspense fallback={null}>
+          <Scene {...props} navStyle={navStyle} />
+        </Suspense>
+      </Canvas>
+
+      {/* Nav-style picker + Fit button, top-right corner. */}
+      <div className="absolute top-2 right-3 pointer-events-auto flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            type Win = Window & { __beme3dFit?: () => void }
+            ;(window as Win).__beme3dFit?.()
           }}
-          style={{ width, height, display: 'block' }}
+          title="Fit view (F)"
+          className="px-2 py-1 text-[11px] text-ink-100 bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg hover:border-beme-500/60 hover:text-beme-200 transition-colors shadow-md"
         >
-          <Suspense fallback={null}>
-            <Scene {...props} />
-          </Suspense>
-        </Canvas>
-      )}
-    </SizedCanvasShell>
+          ⤢ Fit
+        </button>
+        <NavStylePicker value={navStyle} onChange={setNavStyle} />
+      </div>
+
+      {/* Controls hint, bottom-left. Updates as the user switches nav
+          style so they always see the bindings for the active mode. */}
+      <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
+        {`${NAV_STYLE_HINTS[navStyle]} · F = fit view`}
+      </div>
+    </div>
   )
 }
 
@@ -1726,45 +2127,31 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
  * Renders nothing until the first measurement comes back (avoids a
  * 0×0 Canvas mount that then has to resize on next frame).
  */
-function SizedCanvasShell({
-  children,
+/** Compact dropdown in the 3D viewport's top-right corner. Lets the
+ *  user try each nav style without leaving the scene. Persists to
+ *  localStorage via the parent setter. */
+function NavStylePicker({
+  value,
+  onChange,
 }: {
-  children: (width: number, height: number) => React.ReactNode
+  value: NavStyle
+  onChange: (v: NavStyle) => void
 }) {
-  const ref = useRef<HTMLDivElement | null>(null)
-  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0].contentRect
-      // Round to integer pixels — sub-pixel widths/heights can confuse
-      // WebGL's framebuffer sizing.
-      const w = Math.floor(rect.width)
-      const h = Math.floor(rect.height)
-      if (w > 0 && h > 0) setSize({ w, h })
-    })
-    observer.observe(el)
-    // Initial measurement before observer fires (some browsers wait for
-    // the first layout pass).
-    const rect = el.getBoundingClientRect()
-    if (rect.width > 0 && rect.height > 0) {
-      setSize({ w: Math.floor(rect.width), h: Math.floor(rect.height) })
-    }
-    return () => observer.disconnect()
-  }, [])
-
   return (
-    <div ref={ref} className="absolute inset-0">
-      {size ? children(size.w, size.h) : null}
-      {/* Controls hint, bottom-left of the viewport. position absolute
-          relative to the SizedCanvasShell wrapper so it overlays the
-          Canvas. Faded text, non-interactive (pointer-events-none) so
-          it doesn't block orbit drags. */}
-      <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
-        drag = look around · scroll = move forward
-      </div>
-    </div>
+    <label className="flex items-center gap-2 bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg px-2 py-1 text-[11px] text-ink-200 shadow-md">
+      <span className="text-ink-400">Nav</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as NavStyle)}
+        className="bg-transparent text-ink-100 text-[11px] focus:outline-none cursor-pointer pr-1"
+        aria-label="3D navigation style"
+      >
+        {(Object.keys(NAV_STYLE_LABELS) as NavStyle[]).map((k) => (
+          <option key={k} value={k} className="bg-ink-800 text-ink-100">
+            {NAV_STYLE_LABELS[k]}
+          </option>
+        ))}
+      </select>
+    </label>
   )
 }

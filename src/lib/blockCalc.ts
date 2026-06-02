@@ -620,8 +620,17 @@ export function planEnd(
   void bodyBlockCode
   const fullEndBlock = cornerBlockCode
 
+  // Corners and control joints both get the full-corner-on-every-
+  // course treatment. Corners: shared-ownership alternation happens
+  // upstream (planWallLayout / segmentsForStraightWall); planEnd
+  // simply reports "full both courses" so the body fit accounts for
+  // a full block at each end. Control joints: each half emits its
+  // own clean vertical edge.
+  const treatAsCorner =
+    junctionType === 'corner' || junctionType === 'control-joint'
+
   if (bondType === 'stretcher') {
-    if (junctionType === 'corner') {
+    if (treatAsCorner) {
       return {
         oddBlock: fullEndBlock,
         evenBlock: fullEndBlock,
@@ -629,8 +638,7 @@ export function planEnd(
         evenModular: FULL_END_MODULE_MM,
       }
     }
-    // Free, T-junction, control-joint: alternating in stretcher — the stem has its own
-    // complete end termination at the T, treated identically to a free end.
+    // Free, T-junction: alternating in stretcher.
     // Half block: per-makeup override → library role pick → '20.03' fallback.
     const halfFromLib = pickHalfBlock()
     const resolvedHalf = halfBlockCode ?? halfFromLib?.code ?? '20.03'
@@ -994,10 +1002,12 @@ export function calculateWallTally(
     isOddCourse: boolean
   ): BlockCode {
     const blocks = resolveCourseBlocks(makeup, courseNumber)
-    // Heal so a US/UK user opening a saved AU project gets THEIR
-    // corner / half block at wall ends, not the AU code that no
-    // longer exists in their library.
-    if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
+    // Corners + control joints both report the full corner block on
+    // every course. Free / T-junction ends alternate corner/half in
+    // stretcher bond. Mirrors planEnd.
+    const treatAsCorner =
+      junctionType === 'corner' || junctionType === 'control-joint'
+    if (makeup.bondType === 'stretcher' && !treatAsCorner) {
       return isOddCourse
         ? healCode(blocks.cornerBlockCode, 'corner')
         : healCode(blocks.halfBlockCode, 'end-termination')
@@ -1111,6 +1121,23 @@ export function calculateWallTally(
 
   for (const opening of openings) {
     applyOpeningAdjustments(tally, opening, wall, makeup, courses)
+  }
+
+  // Optional capping tile — sits on top of the wall and runs along
+  // its full outer-edge length. Count `ceil(wallLength / capWidth)`
+  // tiles per wall. We DON'T apply opening deductions to the cap row:
+  // openings sit below the cap, the cap continues unbroken across
+  // them (lintel + cap is the typical detail). If the user has cap
+  // length = wall length intent, ceil() handles the partial at the
+  // end. Cap width fallback = 390mm (standard block face width) when
+  // the library can't resolve a dimension.
+  if (makeup.capBlockCode) {
+    const capBlock = BLOCK_LIBRARY[makeup.capBlockCode]
+    const capWidthMm = capBlock?.dimensions.widthMm ?? 390
+    if (capWidthMm > 0) {
+      const wallLenMm = wallLengthMm(wall, thicknessByWallId, wallsById)
+      addToTally(tally, makeup.capBlockCode, Math.ceil(wallLenMm / capWidthMm))
+    }
   }
 
   return tally
@@ -1364,13 +1391,17 @@ export function planWallLayout(
     const isOddCourse = i % 2 === 0
 
     // End block resolution — mirrors calculateWallTally exactly.
+    // Corners and control joints both return the full corner block
+    // on every course. Free / T-junction ends alternate.
     const resolveEndForCourse = (
       junctionType: JunctionType,
       cNum: number,
       odd: boolean
     ): BlockCode => {
       const blocks = resolveCourseBlocks(makeup, cNum)
-      if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
+      const treatAsCorner =
+        junctionType === 'corner' || junctionType === 'control-joint'
+      if (makeup.bondType === 'stretcher' && !treatAsCorner) {
         return odd
           ? healCode(blocks.cornerBlockCode, 'corner')
           : healCode(blocks.halfBlockCode, 'end-termination')
@@ -1499,11 +1530,15 @@ export function planWallLayout(
     // The shift between owning vs non-owning (cornerW - cubeDepth)
     // is the natural stretcher-bond offset that real corner blocks
     // produce when 200×200×400 blocks stack at 90°.
-    const startIsCornerJunction =
-      wall.startJunction.type === 'corner' ||
-      wall.startJunction.type === 'control-joint'
+    // Only structural CORNER junctions invoke the corner-ownership
+    // alternation (where two walls at a 90° join share a corner
+    // block on alternating courses). Control joints are NOT shared —
+    // they are a physical break with two independent walls on either
+    // side. Each half owns its OWN corner block on every course,
+    // producing the clean vertical edge a control joint should have.
+    const startIsSharedCorner = wall.startJunction.type === 'corner'
     const ownsStartCorner =
-      !cornerOwnership || !startIsCornerJunction
+      !cornerOwnership || !startIsSharedCorner
         ? true
         : cornerOwnership({ wallEnd: 'start', courseNumber })
     // Perpendicular wall's thickness = corner cube depth on this
@@ -1567,58 +1602,15 @@ export function planWallLayout(
       s += leadInWidth + MORTAR_MM
     }
 
-    // Body blocks. The tally counts `fit.bodyCount` of
-    // courseSpec.bodyBlock; we emit that many at the body's face
-    // width.
-    const bodyWidth = widthOf(courseSpec.bodyBlock)
-    for (let b = 0; b < fit.bodyCount; b++) {
-      layout.blocks.push({
-        code: courseSpec.bodyBlock,
-        role: 'body',
-        s0Mm: s,
-        widthMm: bodyWidth,
-        courseIdx: i,
-      })
-      s += bodyWidth + MORTAR_MM
-    }
-
-    // Fractions (gap-fillers). One positioned block per code in
-    // fit.fractions, in the order the calc returned them.
-    for (const fracCode of fit.fractions) {
-      const w = widthOf(fracCode)
-      layout.blocks.push({
-        code: fracCode,
-        role: 'fraction',
-        s0Mm: s,
-        widthMm: w,
-        courseIdx: i,
-      })
-      s += w + MORTAR_MM
-    }
-
-    // End lead-ins (between the body/fraction zone and the end corner).
-    for (let k = 0; k < endLeadInCount; k++) {
-      layout.blocks.push({
-        code: leadInCode!,
-        role: 'lead-in',
-        s0Mm: s,
-        widthMm: leadInWidth,
-        courseIdx: i,
-      })
-      s += leadInWidth + MORTAR_MM
-    }
-
-    // End block — anchored at the right end of the wall. Same
-    // ownership rule as the start: skip if another wall at this
-    // corner owns the block this course. When skipped, the corner
-    // cube boundary sits at (length - cubeDepth); body region
-    // extends to there so the gap that would otherwise sit between
-    // the last body block and the end gets filled.
-    const endIsCornerJunction =
-      wall.endJunction.type === 'corner' ||
-      wall.endJunction.type === 'control-joint'
+    // Pre-compute the end-side anchor BEFORE body emission so the
+    // body/fraction/lead-in loop can respect it. Anchoring the end
+    // block at its natural position (lengthMm - endEndWidth) and
+    // letting the body absorb any cut is the construction-correct
+    // behaviour — masons cut a body block to fit, never the end
+    // termination.
+    const endIsSharedCorner = wall.endJunction.type === 'corner'
     const ownsEndCorner =
-      !cornerOwnership || !endIsCornerJunction
+      !cornerOwnership || !endIsSharedCorner
         ? true
         : cornerOwnership({ wallEnd: 'end', courseNumber })
     const endNeighborId =
@@ -1630,24 +1622,78 @@ export function planWallLayout(
       endNeighborId !== undefined
         ? (thicknessByWallId?.[endNeighborId] ?? wallThickness)
         : wallThickness
-
-    // Gap-filler: fitCourseLength computed bodyCount for the
-    // owning-both case (body region = lengthMm - 2·cornerW). When a
-    // corner end is non-owning, the body region is actually wider
-    // by (cornerW - cubeDepth) ≈ 100-200mm because cube filler
-    // takes only cubeDepth instead of cornerW. The same bodyCount
-    // underfills the wider region, leaving a visible gap between
-    // the last body block and the cube filler.
-    //
-    // Insert a render-only body block in that gap so the visual
-    // reads as a continuous body row, with the cube filler at the
-    // wall end. renderOnly keeps the tally count unchanged — the
-    // calc engine already decided how many bodies this course gets,
-    // and the gap was a side-effect of the ownership-based
-    // ownership math.
     const endRegionStart = ownsEndCorner
       ? lengthMm - endEndWidth
       : lengthMm - endCubeDepth
+    // The last s-position bodies / fractions / lead-ins are allowed
+    // to reach — one mortar joint short of the end region's start,
+    // so the gap between the last body and the end block reads as
+    // a proper mortar line.
+    const bodyCap = endRegionStart - MORTAR_MM
+
+    // Body blocks. The tally counts `fit.bodyCount` of
+    // courseSpec.bodyBlock; we emit that many. The LAST body absorbs
+    // any leftover cut (when fitCourseLength rounded up because no
+    // fraction fit) by shrinking its rendered widthMm to whatever
+    // space remains before bodyCap. Tally is unaffected — that uses
+    // block COUNT, not widthMm.
+    const bodyWidth = widthOf(courseSpec.bodyBlock)
+    for (let b = 0; b < fit.bodyCount; b++) {
+      // Available room from the current s up to the bodyCap. If a
+      // full body would overrun, clamp it to whatever fits. If there
+      // isn't even a meaningful sliver left (≤ TINY_GAP_MM), drop
+      // the block entirely so we don't emit a near-zero-width box.
+      const room = bodyCap - s
+      if (room <= 30) break
+      const actualWidth = Math.min(bodyWidth, room)
+      layout.blocks.push({
+        code: courseSpec.bodyBlock,
+        role: 'body',
+        s0Mm: s,
+        widthMm: actualWidth,
+        courseIdx: i,
+      })
+      s += actualWidth + MORTAR_MM
+    }
+
+    // Fractions (gap-fillers). Same room-aware clamping as bodies —
+    // fractions are naturally narrow (90-290mm) so they almost never
+    // need clamping, but the safety net keeps us symmetric.
+    for (const fracCode of fit.fractions) {
+      const w = widthOf(fracCode)
+      const room = bodyCap - s
+      if (room <= 30) break
+      const actualWidth = Math.min(w, room)
+      layout.blocks.push({
+        code: fracCode,
+        role: 'fraction',
+        s0Mm: s,
+        widthMm: actualWidth,
+        courseIdx: i,
+      })
+      s += actualWidth + MORTAR_MM
+    }
+
+    // End lead-ins (between the body/fraction zone and the end corner).
+    for (let k = 0; k < endLeadInCount; k++) {
+      const room = bodyCap - s
+      if (room <= 30) break
+      const actualWidth = Math.min(leadInWidth, room)
+      layout.blocks.push({
+        code: leadInCode!,
+        role: 'lead-in',
+        s0Mm: s,
+        widthMm: actualWidth,
+        courseIdx: i,
+      })
+      s += actualWidth + MORTAR_MM
+    }
+
+    // Render-only gap filler: when the body grid leaves a visible
+    // gap before the end region (typically because corner ownership
+    // shifted the start grid by cornerW - cubeDepth on this course),
+    // insert a body-coloured filler so the visual reads as a
+    // continuous body row.
     const fillerSlotEnd = endRegionStart - MORTAR_MM
     const fillerWidth = fillerSlotEnd - s
     if (fillerWidth > 30) {
@@ -1662,13 +1708,17 @@ export function planWallLayout(
     }
 
     if (ownsEndCorner) {
+      // End block emitted at its natural anchor position with its
+      // full library face width — no Math.max(s, …) any more. With
+      // bodies now respecting bodyCap, s should be ≤ endRegionStart
+      // by construction; the end block always fits.
       layout.blocks.push({
         code: endBlock,
         role:
           BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
             ? 'corner'
             : 'end-half',
-        s0Mm: Math.max(s, lengthMm - endEndWidth),
+        s0Mm: lengthMm - endEndWidth,
         widthMm: endEndWidth,
         courseIdx: i,
       })
@@ -1765,6 +1815,14 @@ export function verifyLayoutMatchesTally(
   // ownership was applied — the layout intentionally drops corners
   // on non-owning courses, so its per-wall tally is BELOW
   // calculateWallTally by design.
+  //
+  // Note: caps (makeup.capBlockCode) also live in calculateWallTally
+  // but NOT in planWallLayout — the cap is an additive top layer,
+  // emitted separately by segmentsFromWallLayout. The 3D path always
+  // passes cornerOwnershipApplied=true, so the verifier already
+  // skips, but if a future caller runs the verifier without ownership
+  // it will need a `capPresent` skip flag (or planWallLayout should
+  // emit cap blocks too).
   if (openings.length > 0 || layout.isCurved || cornerOwnershipApplied) {
     return { ok: true, differences: [] }
   }

@@ -581,6 +581,13 @@ function WallTypeEditorModal({
   const [halfBlockCode, setHalfBlockCode] = useState<BlockCode>(
     existing?.halfBlockCode ?? pickHalfBlock()?.code ?? bodyFallback
   )
+  // Capping tile — defaults to UNSET (empty string in the picker, no
+  // cap on the wall). The user explicitly picks a cap-tagged block to
+  // add one. Storage on the makeup is `capBlockCode?: BlockCode`, so
+  // we serialise undefined when the picker is empty.
+  const [capBlockCode, setCapBlockCode] = useState<BlockCode | ''>(
+    existing?.capBlockCode ?? ''
+  )
 
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(
     existing?.courseOverrides ?? []
@@ -1001,6 +1008,9 @@ function WallTypeEditorModal({
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
       coursePattern: cleanedPattern.length > 0 ? cleanedPattern : undefined,
       curveRadiusMm: existing?.curveRadiusMm,
+      // Cap tile — undefined when the picker is empty (no cap). When
+      // set, downstream (3D + calc) appends one cap course per wall.
+      ...(capBlockCode ? { capBlockCode } : {}),
       // Preserve the area assignment across edits. The editor doesn't
       // expose an area picker, so the only correct behaviour is to keep
       // whatever area the wall type was already bound to. Without this
@@ -1199,6 +1209,8 @@ function WallTypeEditorModal({
                 setCornerBlockCode={setCornerBlockCode}
                 halfBlockCode={halfBlockCode}
                 setHalfBlockCode={setHalfBlockCode}
+                capBlockCode={capBlockCode}
+                setCapBlockCode={setCapBlockCode}
                 selectableBlocks={selectableBlocks}
               />
             )}
@@ -1501,6 +1513,9 @@ interface CompositionTabProps {
   setCornerBlockCode: (v: BlockCode) => void
   halfBlockCode: BlockCode
   setHalfBlockCode: (v: BlockCode) => void
+  /** Optional capping tile. Empty string = no cap. */
+  capBlockCode: BlockCode | ''
+  setCapBlockCode: (v: BlockCode | '') => void
   selectableBlocks: BlockCode[]
 }
 
@@ -1525,6 +1540,8 @@ function CompositionTab(props: CompositionTabProps) {
     setCornerBlockCode,
     halfBlockCode,
     setHalfBlockCode,
+    capBlockCode,
+    setCapBlockCode,
     selectableBlocks,
   } = props
 
@@ -1650,6 +1667,20 @@ function CompositionTab(props: CompositionTabProps) {
           onChange={setTopCourseBlockCode}
           options={selectableBlocks}
         />
+        <div>
+          <BlockSelect
+            label="Cap tile (optional)"
+            value={capBlockCode}
+            onChange={setCapBlockCode}
+            options={selectableBlocks}
+            allowEmpty
+          />
+          <p className="text-[11px] text-ink-500 mt-1">
+            Sits ON TOP of the top course — e.g. a 40mm capping tile.
+            Counted at one tile per cap-width of wall length. Leave as
+            "None" if the wall has no cap.
+          </p>
+        </div>
         <div>
           <BlockSelect
             label="Full end termination"

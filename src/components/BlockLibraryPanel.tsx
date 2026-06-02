@@ -29,6 +29,7 @@ const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
   { value: 'base-course', label: 'Base course' },
   { value: 'base-tile', label: 'Base tile (paired with cleanout)' },
   { value: 'top-course', label: 'Top course (bond beam)' },
+  { value: 'cap', label: 'Capping tile (sits on top of the wall)' },
   { value: 'pier', label: 'Pier' },
   { value: 'lintel', label: 'Lintel' },
   { value: 'curve-tight', label: 'Tight-curve wedge' },

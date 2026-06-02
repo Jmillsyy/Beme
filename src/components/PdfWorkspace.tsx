@@ -6804,10 +6804,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           so a tall panel stack doesn't shrink the canvas. Stacks below the
           canvas on smaller screens.
 
-          Stays visible in BOTH 2D and 3D modes — the rail's editing
-          affordances (areas, trade picker, wall types, export) are
-          still relevant when looking at the 3D mass model. The 3D
-          viewport fills the same canvas area the 2D view occupies. */}
+          Stays visible in BOTH 2D and 3D modes. */}
       <aside className="w-full mt-3 space-y-3 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
         {/* Area tabs — named subdivisions of the project ("Balcony",
