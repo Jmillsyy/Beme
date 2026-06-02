@@ -50,6 +50,37 @@ export interface BrickTally {
    * fall back to the flat `brickCount`.
    */
   bricksByType: Record<string, number>
+  /**
+   * Per wall-type (per-makeup) breakdown so the estimator can see how
+   * much brickwork sits in each wall type and price each one
+   * independently (Common @ $X/m² vs Facework @ $Y/m²).
+   *
+   * Openings on a wall deduct ONLY from that wall's makeup bucket —
+   * not pooled into a single project deduction — so if a Facework
+   * wall has two windows, the Facework net area / brick count drop
+   * while the Common bucket stays unaffected.
+   *
+   * Walls without a makeup go into the '__none__' bucket so they're
+   * still represented. Empty when no walls have been drawn.
+   */
+  byMakeup: Record<string, BrickTallyByMakeup>
+}
+
+export interface BrickTallyByMakeup {
+  /** The makeup id (or '__none__' for walls without a makeup). */
+  makeupId: string
+  /** Number of walls using this makeup. */
+  wallCount: number
+  /** Total lineal mm of wall using this makeup. */
+  totalLinealMm: number
+  /** Gross face area (before opening deductions) in mm². */
+  grossAreaSqMm: number
+  /** Sum of opening areas placed on walls of this makeup, in mm². */
+  openingAreaSqMm: number
+  /** Net face area after opening deductions, in mm². */
+  netAreaSqMm: number
+  /** Bricks needed for the net area at this makeup's rate. */
+  brickCount: number
 }
 
 function wallLengthMm(wall: Wall): number {
@@ -171,6 +202,13 @@ export function calculateBrickTally(
 
   interface WallAreaEntry {
     wallId: string
+    /** The wall's makeup id (or '__none__' for walls without one).
+     *  Drives per-wall-type aggregation in the byMakeup output so
+     *  the estimator can price each wall type independently. */
+    makeupId: string
+    /** This wall's bricksPerSquareMetre — used for the byMakeup
+     *  brick-count math when the wall has no banded segments. */
+    fallbackBricksPerSqM: number
     /** Bands top-to-bottom so opening deductions land on the topmost band first. */
     bands: Array<{
       brickTypeCode: string
@@ -223,7 +261,12 @@ export function calculateBrickTally(
       ]
     }
     for (const b of bands) totalAreaSqMm += b.areaSqMm
-    wallAreas.push({ wallId: wall.id, bands })
+    wallAreas.push({
+      wallId: wall.id,
+      makeupId: wall.makeupId || '__none__',
+      fallbackBricksPerSqM: settings.bricksPerSquareMetre,
+      bands,
+    })
   }
 
   // Index openings by their wall so we know where to deduct. Openings
@@ -301,6 +344,55 @@ export function calculateBrickTally(
       ? bricksByType
       : ({} as Record<string, number>)
 
+  // Per-makeup breakdown: walk wallAreas again, this time bucketing
+  // by makeupId so the estimator can see how much brickwork each
+  // wall type contributes. The bands inside each wallArea have
+  // already had their opening deductions applied above, so the band
+  // sum here is the NET area for that wall. Gross is recomputed
+  // from len × height; opening area is gross - net (per makeup).
+  const byMakeup: Record<string, BrickTallyByMakeup> = {}
+  // First, GROSS pass — sum the per-wall gross area (sum of bands
+  // BEFORE deduction). Bands were mutated, so we re-derive gross
+  // from openings on that wall plus the current (net) band sums.
+  // Equivalently, gross = net + opening deductions credited to the
+  // wall, which is what openingsByWall tells us.
+  for (const entry of wallAreas) {
+    const bucket = (byMakeup[entry.makeupId] ??= {
+      makeupId: entry.makeupId,
+      wallCount: 0,
+      totalLinealMm: 0,
+      grossAreaSqMm: 0,
+      openingAreaSqMm: 0,
+      netAreaSqMm: 0,
+      brickCount: 0,
+    })
+    bucket.wallCount++
+    const wall = walls.find((w) => w.id === entry.wallId)
+    bucket.totalLinealMm += wall ? wallLengthMm(wall) : 0
+    const netArea = entry.bands.reduce((s, b) => s + b.areaSqMm, 0)
+    bucket.netAreaSqMm += netArea
+    const wallOpenings = openingsByWall.get(entry.wallId) ?? []
+    const wallOpeningArea = wallOpenings.reduce(
+      (s, o) => s + o.widthMm * o.heightMm,
+      0
+    )
+    bucket.openingAreaSqMm += wallOpeningArea
+    bucket.grossAreaSqMm += netArea + wallOpeningArea
+    // Per-makeup brick count: sum across bands at each band's rate
+    // (so banded walls in the same makeup get their own rate per
+    // band). Net area for the band × rate.
+    for (const band of entry.bands) {
+      if (band.areaSqMm <= 0) continue
+      const m2 = band.areaSqMm / 1_000_000
+      bucket.brickCount += m2 * band.bricksPerSquareMetre
+    }
+  }
+  // Round each makeup's brick count up at the end so the per-makeup
+  // numbers tile cleanly to the table.
+  for (const bucket of Object.values(byMakeup)) {
+    bucket.brickCount = Math.ceil(bucket.brickCount)
+  }
+
   return {
     wallCount: walls.length,
     openingCount: openings.length,
@@ -308,6 +400,7 @@ export function calculateBrickTally(
     totalAreaSqMm,
     brickCount,
     bricksByType: finalBricksByType,
+    byMakeup,
   }
 }
 

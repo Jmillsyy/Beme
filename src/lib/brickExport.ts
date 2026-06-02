@@ -865,6 +865,77 @@ export async function buildBrickEstimateHtml(
     `
     : ''
 
+  // Per-wall-type (per-makeup) breakdown. Each wall makeup gets its
+  // own row showing gross area / openings deducted / net area /
+  // bricks needed — so the estimator can price each wall type
+  // independently (Common $X/m², Facework $Y/m², etc.) without
+  // re-doing the deduction maths by hand.
+  //
+  // Hidden when there's only ONE makeup on the project (or no
+  // makeups at all), since a one-row table just duplicates the
+  // Brick Area Summary above.
+  const makeupBuckets = Object.values(tally.byMakeup ?? {})
+    .filter((b) => b.grossAreaSqMm > 0)
+    .sort((a, b) => b.grossAreaSqMm - a.grossAreaSqMm)
+  const makeupBreakdownTable = makeupBuckets.length > 1
+    ? `
+      <h2 class="section-title">Brickwork by Wall Type</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Wall type</th>
+            <th class="right" style="width: 80px">Walls</th>
+            <th class="right" style="width: 110px">Gross (m²)</th>
+            <th class="right" style="width: 110px">Openings (m²)</th>
+            <th class="right" style="width: 110px">Net (m²)</th>
+            <th class="right" style="width: 110px">Bricks</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${makeupBuckets
+            .map((b) => {
+              const makeup =
+                b.makeupId === '__none__'
+                  ? null
+                  : brickMakeups?.find((m) => m.id === b.makeupId) ?? null
+              const label = makeup?.name ?? 'No wall type'
+              const gross = b.grossAreaSqMm / 1_000_000
+              const opening = b.openingAreaSqMm / 1_000_000
+              const net = b.netAreaSqMm / 1_000_000
+              return `<tr>
+                <td>${escapeHtml(label)}</td>
+                <td class="right">${b.wallCount}</td>
+                <td class="right">${formatNumber(gross, 3)}</td>
+                <td class="right">${opening > 0 ? `-${formatNumber(opening, 3)}` : '0'}</td>
+                <td class="right">${formatNumber(net, 3)}</td>
+                <td class="right">${b.brickCount.toLocaleString()}</td>
+              </tr>`
+            })
+            .join('')}
+          <tr class="bold">
+            <td>Total</td>
+            <td class="right">${tally.wallCount}</td>
+            <td class="right">${formatNumber(
+              makeupBuckets.reduce((s, b) => s + b.grossAreaSqMm, 0) /
+                1_000_000,
+              3
+            )}</td>
+            <td class="right">-${formatNumber(
+              makeupBuckets.reduce((s, b) => s + b.openingAreaSqMm, 0) /
+                1_000_000,
+              3
+            )}</td>
+            <td class="right">${formatNumber(
+              makeupBuckets.reduce((s, b) => s + b.netAreaSqMm, 0) / 1_000_000,
+              3
+            )}</td>
+            <td class="right">${tally.brickCount.toLocaleString()}</td>
+          </tr>
+        </tbody>
+      </table>
+    `
+    : ''
+
   // Accessories table is driven exclusively by the user's supply-item
   // catalogue (Material library). Ties + plascourse used to be governed
   // by their own per-export inclusion flags and per-project BrickSettings
@@ -913,16 +984,21 @@ export async function buildBrickEstimateHtml(
     `
   })()
 
-  const tablesPage = summaryTable || typeBreakdownTable || accessoriesTable
-    ? `
+  const tablesPage =
+    summaryTable ||
+    makeupBreakdownTable ||
+    typeBreakdownTable ||
+    accessoriesTable
+      ? `
       <section class="page">
         ${pageHeader}
         ${summaryTable}
+        ${makeupBreakdownTable}
         ${typeBreakdownTable}
         ${accessoriesTable}
       </section>
     `
-    : ''
+      : ''
 
   // Page 3: Disclaimer
   const disclaimerPage = inclusions.disclaimer
