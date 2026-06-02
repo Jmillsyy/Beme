@@ -4,9 +4,6 @@ import BrickEstimatePage from './pages/BrickEstimatePage'
 import BlockEstimatePage from './pages/BlockEstimatePage'
 import SettingsPage from './pages/SettingsPage'
 import SignInPage from './pages/SignInPage'
-import RequestsPage from './pages/RequestsPage'
-import NewRequestPage from './pages/NewRequestPage'
-import RequestDetailPage from './pages/RequestDetailPage'
 import ProjectsPage from './pages/ProjectsPage'
 import MaterialLibraryPage from './pages/MaterialLibraryPage'
 import GuidePage from './pages/GuidePage'
@@ -62,9 +59,6 @@ export default function App() {
           <Route path="/library" element={<MaterialLibraryPage />} />
           <Route path="/guide" element={<GuidePage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/requests" element={<RequestsPage />} />
-          <Route path="/requests/new" element={<NewRequestPage />} />
-          <Route path="/requests/:id" element={<RequestDetailPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/accept-invite" element={<AcceptInvitePage />} />
         </Routes>

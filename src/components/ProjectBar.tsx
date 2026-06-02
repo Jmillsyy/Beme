@@ -3,17 +3,6 @@ import { Link } from 'react-router-dom'
 import type { ProjectDetails } from '../types/walls'
 import type { ProjectStatus } from '../lib/projectStorage'
 
-/**
- * Minimal shape we need from an EstimateRequest to render the "← Request
- * from {customer}" pill on the right side of the bar. Kept local so the
- * component doesn't depend on the full EstimateRequest type / its lib chain.
- */
-interface RequestBreadcrumbInfo {
-  id: string
-  customerName: string
-  customerCompany?: string | null
-}
-
 interface ProjectBarProps {
   details: ProjectDetails
   isSaved: boolean
@@ -27,12 +16,6 @@ interface ProjectBarProps {
    * still renders for older flows that don't pass it.
    */
   mode?: 'block' | 'brick'
-  /**
-   * The originating estimate request, when the project was created from one.
-   * Rendered as a button on the right so the user can pop back to the
-   * request without losing their place in the workspace.
-   */
-  sourceRequest?: RequestBreadcrumbInfo | null
   /**
    * Display name of whoever first saved this project. Surfaced as a "Started
    * by {name}" pill on the right side of the bar so teammates can see at a
@@ -106,7 +89,6 @@ export default function ProjectBar({
   canSave,
   saveBlockedReason,
   mode,
-  sourceRequest,
   createdByDisplayName,
   referenceNumber,
   isSaving = false,
@@ -165,10 +147,10 @@ export default function ProjectBar({
     // below and the Beme logo + org/user pills in the header above. Matches
     // the estimate workspace's px-20 outer padding.
     <div className="bg-ink-800/60 border-b border-ink-600 px-20 py-2 flex items-center gap-3 flex-wrap">
-      {/* LEFT — always a back-to-dashboard pill so the user can hop out of
-          a project from anywhere. Followed by an optional request pill when
-          the project came from an estimate request, so the breadcrumb reads
-          Dashboard ← Request ← Project naturally from left to right. */}
+      {/* LEFT — back-to-dashboard pill so the user can hop out of the
+          workspace from anywhere. Request-breadcrumb is gone with the
+          inbox flow; sharing a project is now a reference-number copy
+          paste away. */}
       <Link
         to="/"
         className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
@@ -177,21 +159,6 @@ export default function ProjectBar({
         <span className="text-base leading-none">←</span>
         <span className="hidden md:inline">Dashboard</span>
       </Link>
-      {sourceRequest ? (
-        <Link
-          to={`/requests/${sourceRequest.id}`}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
-        >
-          <span className="text-base leading-none">←</span>
-          <span>
-            <span className="hidden md:inline">Request from </span>
-            <span className="font-medium text-ink-50">{sourceRequest.customerName}</span>
-            {sourceRequest.customerCompany && (
-              <span className="text-ink-400"> · {sourceRequest.customerCompany}</span>
-            )}
-          </span>
-        </Link>
-      ) : null}
 
       {/* SPACER — pushes the project identity + actions to the right. */}
       <div className="flex-1" />

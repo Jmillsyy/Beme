@@ -23,7 +23,7 @@ export default function GuidePage() {
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
-      <main className="max-w-[1600px] mx-auto px-6 py-10">
+      <main className="px-20 py-10">
         <div className="mb-8">
           <Link
             to="/"
@@ -811,26 +811,21 @@ export default function GuidePage() {
                 Beme works fine as a single-user app — most users won't
                 need this section. If you're set up as an organisation
                 (typically a masonry supplier with sales + estimating
-                staff), you'll see three roles:
+                staff), every project is visible to the whole team and
+                identified by its 6-digit reference number.
               </P>
-              <Ul>
-                <li>
-                  <strong>Admin</strong> — full control. Edits the shared
-                  material library, manages members, sets branding.
-                </li>
-                <li>
-                  <strong>Sales</strong> — creates estimate requests and
-                  hands them to estimators.
-                </li>
-                <li>
-                  <strong>Estimator</strong> — receives requests,
-                  completes the estimate, returns it to sales.
-                </li>
-              </Ul>
               <P>
-                Your dashboard splits into <em>"Needs you to pick up"</em>,{' '}
-                <em>"Currently working on"</em>, and a team inbox. Pick
-                up a request inline and it becomes yours.
+                Want a teammate to look at your estimate? Tell them the
+                reference number — they can punch it into the{' '}
+                <em>Find by reference</em> card on the dashboard sidebar
+                and land straight on the project. No inbox routing, no
+                hand-offs.
+              </P>
+              <P>
+                The dashboard's <em>"Your projects"</em> and{' '}
+                <em>"In-progress projects"</em> sections split work into
+                yours vs the rest of the team so you can spot what
+                everyone's on at a glance.
               </P>
             </Section>
 

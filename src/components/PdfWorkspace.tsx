@@ -194,10 +194,6 @@ import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions } from '../lib/junctions'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import { selectBlockLintel } from '../lib/lintels'
-import {
-  getEstimateRequestByProjectId,
-  updateEstimateRequest,
-} from '../lib/estimateRequests'
 import { getCurrentOrgId, listOrgMembers } from '../lib/organisations'
 import { useAuth } from '../lib/auth'
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
@@ -209,7 +205,6 @@ import {
   clearDraft,
   formatDraftAge,
 } from '../lib/draftStore'
-import type { EstimateRequest } from '../types/estimateRequests'
 
 // Use the matching pdf.js worker from the CDN — version pinned to react-pdf's bundled version
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
@@ -918,32 +913,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * controlled-mode UnifiedExportPanel reads it as `open`.
    */
   const [exportModalOpen, setExportModalOpen] = useState(false)
-
-  /**
-   * Source request — set when this project was created via the "pick up"
-   * flow on an estimate request. Drives the breadcrumb at the top of the
-   * workspace ("← Request from {customer}") so the estimator can flip back
-   * to the spec without losing their place. Null for personal projects or
-   * any project not originating from a request.
-   */
-  const [sourceRequest, setSourceRequest] = useState<EstimateRequest | null>(null)
-
-  // Look up the request that produced this project (if any) so we can show
-  // the breadcrumb. Best-effort: failures are silent because the breadcrumb
-  // is a nice-to-have, not load-blocking.
-  useEffect(() => {
-    if (!currentProjectId) {
-      setSourceRequest(null)
-      return
-    }
-    let cancelled = false
-    getEstimateRequestByProjectId(currentProjectId).then((req) => {
-      if (!cancelled) setSourceRequest(req)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [currentProjectId])
 
   // Load a saved project on mount if projectId was provided
   useEffect(() => {
@@ -1815,30 +1784,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setLastSavedAt(now)
       } catch (err) {
         console.error('Failed to update project status', err)
-      }
-      // If this project came from an estimate request, propagate the status
-      // change up to the request so the Recently Completed band on the
-      // dashboard (which lists completed requests) sees it. Without this,
-      // marking a project complete from the workspace left the originating
-      // request stuck at 'in_progress' forever.
-      if (sourceRequest) {
-        try {
-          // updateEstimateRequest derives completed_at from status
-          // automatically — sending the field here would just be a
-          // type-mismatch on the patch object. Keep this call status-only.
-          void now
-          await updateEstimateRequest(
-            sourceRequest.id,
-            nextStatus === 'completed'
-              ? { status: 'completed' }
-              : { status: 'in_progress' }
-          )
-        } catch (err) {
-          // Surfaced via console; not load-blocking — the project status
-          // is already saved at this point and the request can be flipped
-          // manually if the propagation fails.
-          console.error('Failed to propagate status to estimate request', err)
-        }
       }
     }
   }
@@ -4700,7 +4645,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             canSave={canSave}
             saveBlockedReason={saveBlockedReason}
             mode={mode}
-            sourceRequest={sourceRequest ?? null}
             createdByDisplayName={createdByDisplayName}
             referenceNumber={referenceNumber}
             isSaving={isSaving}
@@ -4903,7 +4847,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           canSave={canSave}
           saveBlockedReason={saveBlockedReason}
           mode={mode}
-          sourceRequest={sourceRequest ?? null}
           createdByDisplayName={createdByDisplayName}
           isSaving={isSaving}
           onSave={handleSaveProject}

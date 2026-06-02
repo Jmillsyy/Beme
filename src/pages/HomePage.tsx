@@ -22,8 +22,6 @@ import { confirm } from '../lib/confirm'
 import { ProjectRowSkeleton } from '../components/Skeleton'
 import { toast } from '../lib/toast'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
-import { listEstimateRequests } from '../lib/estimateRequests'
-import type { EstimateRequest } from '../types/estimateRequests'
 import type { OrgMember, Organisation } from '../types/organisations'
 
 type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
@@ -133,10 +131,9 @@ function nextOutcome(o: ProjectOutcome | undefined): ProjectOutcome | undefined 
 }
 
 /**
- * The dashboard branches at the top level: if the user is signed in to an
- * organisation, they get the org-aware layout (inbox first, request-centric
- * stats, secondary project access). Personal / single-user accounts keep the
- * brick-and-block-layer-focused dashboard with the win-rate donut.
+ * The dashboard branches at the top level: org users get the team layout
+ * (project lists across the org, team-wide stats); personal / single-user
+ * accounts keep the win-rate donut + per-project drill-down.
  *
  * Splitting the two layouts at the component boundary keeps each one simple —
  * trying to merge them led to a bunch of "this stat is only meaningful for
@@ -171,10 +168,12 @@ export default function HomePage() {
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
       {/* Two-column dashboard: main content on the left, a sticky sidebar
-          of quick links / shortcuts on the right (lg+ only). Bumped the
-          outer max-width to 1800px so the sidebar adds horizontal density
-          without squeezing the existing content cards. */}
-      <main className="max-w-[1800px] mx-auto px-6 py-12">
+          of quick links / shortcuts on the right (lg+ only).
+          px-20 to match the header (and the workspace below) so the
+          team-dashboard heading, project rows, and right rail all line
+          up vertically with the Beme logo on the left and the user pill
+          on the right — no inset "centred column" look on wide monitors. */}
+      <main className="px-20 py-12">
         {signedIn && <LocalMigrationBanner />}
         {stillResolving ? (
           <div className="space-y-3 py-12">
@@ -244,15 +243,26 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           Material library so it's the first thing the user's eye lands
           on. PersonalDashboard already gives these the prominent hero
           card treatment in its body, so showing the same shortcut in
-          the rail there would just duplicate the affordance. */}
+          the rail there would just duplicate the affordance.
+
+          Two actions live in this card now: "+ New estimate" (the
+          primary, beme-orange) for the estimator picking up their
+          own job, and "+ New request for a teammate" (muted) for the
+          sales / project-management case where the user is queuing a
+          job for someone else to estimate. Grouping both under one
+          "Start a new estimate" header reads more cleanly than
+          having the request-for-teammate action sitting under the
+          Material library card. */}
       {isOrgUser && (
         <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3 space-y-2">
           <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-1">
             Start a new estimate
           </div>
-          {/* One unified entry point — opens the workspace in block mode by
-              default, user can switch to brick (or work on both) via the
-              trade chip group at the top of the right rail. */}
+          {/* Opens the workspace in block mode by default; user can
+              switch to brick (or work on both) via the trade chip group
+              at the top of the right rail. Sharing a project with a
+              teammate is now just a reference-number paste-and-look-up
+              — no separate request flow. */}
           <Link
             to="/project/block"
             className="block px-3 py-2.5 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group"
@@ -273,17 +283,21 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           projects). On the org dashboard it sits below the estimate-start
           card so the create actions get the prime spot. On the personal
           dashboard it's the top-of-rail card since estimate-start is
-          already in the body. "+ New request" stays under it for org
-          users — the only org-specific creation action that doesn't
-          surface elsewhere in the rail. */}
+          already in the body.
+
+          Visual treatment: a thin orange accent bar on the left, no
+          heavy border ring / glow. Earlier it had a 2px beme-500
+          border and shadow, which made it look like a primary CTA
+          competing with "+ New estimate". The accent bar alone keeps
+          it discoverable without shouting. */}
       <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
         <Link
           to="/library"
           title={healthSummary?.tooltip}
-          className="px-3 py-3 rounded-lg bg-ink-900 border-2 border-beme-500 shadow-md shadow-beme-500/20 hover:bg-ink-800 hover:shadow-beme-500/40 transition-all group flex items-center gap-3"
+          className="px-3 py-3 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500/60 hover:bg-ink-800 transition-colors group flex items-center gap-3"
         >
           <span
-            className="inline-block w-1 h-10 rounded-full bg-beme-500 flex-shrink-0"
+            className="inline-block w-1 h-10 rounded-full bg-beme-500/80 flex-shrink-0"
             aria-hidden
           />
           <div className="flex-1 text-left min-w-0">
@@ -313,16 +327,8 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
               Blocks, bricks, supply items
             </div>
           </div>
-          <span className="text-beme-400 group-hover:text-beme-300">→</span>
+          <span className="text-ink-400 group-hover:text-beme-300 transition-colors">→</span>
         </Link>
-        {isOrgUser && (
-          <Link
-            to="/requests/new"
-            className="mt-3 block px-3 py-2 rounded-lg border border-ink-600 bg-ink-800/40 text-ink-200 text-xs hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors text-center"
-          >
-            + New request for a teammate
-          </Link>
-        )}
       </div>
 
       {/* Find by reference number — every project has a 6-digit ID stamped
@@ -350,9 +356,6 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
               to the rail's top card so the Shortcuts list stays tight and
               the library is one click away from any dashboard view. */}
           <SidebarLink to="/guide" title="Beme guide" desc="Full walkthrough + shortcuts" />
-          {isOrgUser && (
-            <SidebarLink to="/requests" title="All requests" desc="Every estimate across the team" />
-          )}
           <SidebarLink to="/settings" title="Settings" desc="Defaults, regional features, theme" />
         </nav>
       </div>
@@ -610,30 +613,24 @@ function NoOrgEmptyState() {
 // ============================================================================
 
 /**
- * Org-aware dashboard. Inbox-led: the most important thing on the page is
- * "what work has been sent to me and what is the team currently working on,"
- * not "how many of my personal estimates have I won."
+ * Org-aware dashboard. Projects-led now that the estimate-request /
+ * inbox flow has been removed — users share work by handing over a
+ * 6-digit reference number, not by routing it through an inbox.
  *
  * Layout:
- *   - Title row + actions ("+ New request" is the primary action; brick / block
- *     workspaces are secondary because in an org you usually arrive at a
- *     project via a request, not by starting one cold).
- *   - Stats row: pending / in-progress / completed this week / average
- *     turnaround. All org-scoped, all relevant to a supplier's takeoff service.
- *   - "Your inbox" — pending and in-progress requests assigned to the current
- *     user, with an empty-state nudge when there's nothing waiting.
- *   - "Team inbox" — active requests assigned to other people, so an admin
- *     can see the team's load at a glance. Hidden when nothing's there.
- *   - "Recently completed" — last few requests that have been finished, with
- *     a link through to the linked project.
+ *   - Title row + actions ("+ New estimate" is the primary action;
+ *     no request-creation surface any more).
+ *   - Stats row: in-progress + completed-this-week. Both sourced from
+ *     PROJECTS.
+ *   - "Your projects" — projects this user started.
+ *   - "Team projects" — active projects belonging to other org members,
+ *     so an admin can see the team's load at a glance.
+ *   - "Recently completed" — last few finished projects across the team.
  */
 function OrgDashboard({ org, userId }: { org: Organisation; userId: string | null }) {
-  const [requests, setRequests] = useState<EstimateRequest[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
   // All projects visible to the user — both org-scoped (everyone on the team
-  // sees them) and personal (their own). Used to surface in-progress
-  // projects on the dashboard, since direct '+ Brick / + Block' creates
-  // don't go through the estimate-request inbox.
+  // sees them) and personal (their own).
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [, setLoading] = useState(true)
 
@@ -644,16 +641,14 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     let cancelled = false
     setLoading(true)
     Promise.all([
-      listEstimateRequests(org.id),
       listOrgMembers(org.id),
       // listProjects returns every project this user can see (their own +
       // any org-scoped project where they're a member). Cloud RLS does
       // the filtering server-side so anyone in the org sees the same set.
       listProjects(),
     ])
-      .then(([reqs, mems, projs]) => {
+      .then(([mems, projs]) => {
         if (cancelled) return
-        setRequests(reqs)
         setMembers(mems)
         setProjects(projs)
         setLoading(false)
@@ -692,29 +687,17 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     }
   }, [reloadDashboard])
 
-  // Member lookup for assignee / creator name display on request rows.
+  // Member lookup for creator name display on project rows.
   const memberById = useMemo(() => {
     const m = new Map<string, OrgMember>()
     for (const x of members) m.set(x.userId, x)
     return m
   }, [members])
 
-  // Stats: pending count (from requests), in-progress + completed-this-week
-  // (from PROJECTS). The fourth tile in the row is the InboxTile, which
-  // derives its number from myActionItems below (myPending + myInProgress)
-  // — not part of the stats memo because it's user-specific rather than
-  // org-wide.
-  //
-  // Why projects, not requests, for the latter two: direct-create projects
-  // (the + Brick / + Block button on the dashboard) never have a linked
-  // estimate request. Marking one of those complete in the workspace can't
-  // propagate to a request, so a request-based 'Completed this week' tile
-  // stayed at zero forever for any org that creates work directly. Counting
-  // projects covers both code paths (project-from-request AND direct-create).
-  // Pending stays on requests because pending = unallocated request, no
-  // analogous project state.
+  // Stats: in-progress + completed-this-week, both sourced from
+  // PROJECTS. Pending / inbox tiles are gone with the request system —
+  // projects are the only thing that exists now.
   const stats = useMemo(() => {
-    const pending = requests.filter((r) => r.status === 'pending').length
     const inProgress = projects.filter((p) => p.status === 'in-progress').length
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
     const completedThisWeek = projects.filter(
@@ -723,8 +706,8 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         p.completedAt &&
         new Date(p.completedAt).getTime() >= weekAgo
     ).length
-    return { pending, inProgress, completedThisWeek }
-  }, [requests, projects])
+    return { inProgress, completedThisWeek }
+  }, [projects])
 
   // Split the in-progress projects into 'mine' (above) and 'team' (below) so
   // the user's own work is the FIRST thing they see in the project list.
@@ -735,124 +718,43 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   //          estimate request (i.e. they were allocated to work on it,
   //          regardless of who created it).
   //
-  // Two buckets exist because the project lifecycle now separates creator and
-  // worker: a sales person creates the request and stays the owner; the
-  // estimator picks it up and is the assignee. Both should see the project
-  // under 'Your projects' on their respective dashboards.
-  //
-  // Most recent first within each bucket.
+  // Split in-progress projects into 'mine' vs 'team'. With the inbox
+  // flow gone, ownership is solely creator/owner — no assignee
+  // augmentation. Most recent first within each bucket.
   const { myProjects, teamProjects } = useMemo(() => {
     const sortRecent = (a: SavedProject, b: SavedProject) =>
       new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-    // Set of project ids the current user is assigned to via an estimate
-    // request — derived from the requests list we already loaded. Includes
-    // requests in any status (the project sticks with the assignee even
-    // after the request itself is completed, until it's cleaned up).
-    const myAssignedProjectIds = new Set(
-      requests
-        .filter((r) => r.assignedToUserId === userId && r.projectId)
-        .map((r) => r.projectId as string)
-    )
     const all = projects.filter((p) => p.status === 'in-progress')
     const mine: SavedProject[] = []
     const team: SavedProject[] = []
     for (const p of all) {
       const owner = p.ownerUserId ?? p.createdByUserId ?? null
       const isOwner = !!userId && owner === userId
-      const isAssignee = myAssignedProjectIds.has(p.id)
-      if (isOwner || isAssignee) mine.push(p)
+      if (isOwner) mine.push(p)
       else team.push(p)
     }
     return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
-  }, [projects, requests, userId])
+  }, [projects, userId])
 
-  const { myPending, myInProgress, recentlyCompleted } = useMemo(() => {
-    const active = requests.filter(
-      (r) => r.status === 'pending' || r.status === 'in_progress'
-    )
-    const byOldestUpdated = (a: EstimateRequest, b: EstimateRequest) =>
-      a.updatedAt.localeCompare(b.updatedAt)
-    const myPending = active
-      .filter((r) => r.status === 'pending' && r.assignedToUserId === userId)
-      .sort(byOldestUpdated)
-    const myInProgress = active
-      .filter((r) => r.status === 'in_progress' && r.assignedToUserId === userId)
-      .sort(byOldestUpdated)
-    // Recently-completed is now TEAM-WIDE within the past 7 days — the
-    // dashboard surfaces what the whole org has shipped recently, not just
-    // what the current user finished. Older work (or work an org member
-    // wants to audit by specific person) still lives on the /requests page
-    // behind filters.
-    //
-    // Two sources merged into one list:
-    //   1. Estimate requests with status === 'completed' completed in the
-    //      past week (any assignee).
-    //   2. Projects with status === 'completed' that DON'T have a linked
-    //      request — direct '+ Block' / '+ Brick' creates the user
-    //      finished. Same 7-day window.
-    //
-    // De-duplicates by projectId: if a completed project's id appears in
-    // both lists (request flow) we keep the REQUEST entry because the
-    // CompletedCard renders the customer-name header better than the
-    // project's projectDetails.
+  // Team-wide "shipped in the last 7 days" feed — projects only.
+  const recentlyCompleted = useMemo(() => {
     const weekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000
     const withinPastWeek = (iso: string | undefined) => {
       if (!iso) return false
       const t = new Date(iso).getTime()
       return Number.isFinite(t) && t >= weekAgoMs
     }
-    const completedRequests = requests.filter(
-      (r) =>
-        r.status === 'completed' && withinPastWeek(r.completedAt ?? r.updatedAt)
-    )
-    const requestProjectIds = new Set(
-      completedRequests.map((r) => r.projectId).filter(Boolean)
-    )
-    const orphanCompletedProjects = projects.filter(
-      (p) =>
-        p.status === 'completed' &&
-        !requestProjectIds.has(p.id) &&
-        withinPastWeek(p.completedAt ?? p.updatedAt)
-    )
-    type CompletedItem =
-      | { kind: 'request'; request: EstimateRequest; completedAt: string }
-      | { kind: 'project'; project: SavedProject; completedAt: string }
-    const merged: CompletedItem[] = [
-      ...completedRequests.map((r) => ({
-        kind: 'request' as const,
-        request: r,
-        completedAt: r.completedAt ?? r.updatedAt,
-      })),
-      ...orphanCompletedProjects.map((p) => ({
-        kind: 'project' as const,
-        project: p,
-        completedAt: p.completedAt ?? p.updatedAt,
-      })),
-    ]
-    const completed = merged
+    return projects
+      .filter(
+        (p) =>
+          p.status === 'completed' && withinPastWeek(p.completedAt ?? p.updatedAt)
+      )
       .sort(
         (a, b) =>
-          new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()
+          new Date(b.completedAt ?? b.updatedAt).getTime() -
+          new Date(a.completedAt ?? a.updatedAt).getTime()
       )
-      // Cap at the 5 most-recently-completed so the band reads as a quick
-      // glance at "what just shipped", not a full archive. The 'View all
-      // →' link on the section header points at /requests?status=completed
-      // for the unbounded list.
       .slice(0, 5)
-    return {
-      myPending,
-      myInProgress,
-      recentlyCompleted: completed,
-    }
-  }, [requests, projects, userId])
-
-  // Quick lookup from request → linked project so the Recently Completed
-  // cards can show the project's reference number (and any other
-  // project-only fields) alongside the request's customer data.
-  const projectById = useMemo(() => {
-    const m = new Map<string, SavedProject>()
-    for (const p of projects) m.set(p.id, p)
-    return m
   }, [projects])
 
   // Look up the current user in the org's member list to surface a real
@@ -865,15 +767,6 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   const userDisplayName =
     currentMember?.displayName ||
     (currentMember?.email ? currentMember.email.split('@')[0] : null)
-  // "Inbox" is now strictly pending requests — things waiting on the user
-  // to pick up. Picked-up (in-progress) requests live in the In-progress
-  // projects section below, so counting them in the inbox tile too would
-  // double-surface the same work and make a finished pickup feel like
-  // nothing happened ('still 3 in my inbox after I claimed one'). Keep
-  // myInProgress around as a local so the welcome strip can still mention
-  // it if needed, but the headline tile only counts pending.
-  const myActionItems = myPending.length
-  void myInProgress
 
   return (
     <>
@@ -883,46 +776,27 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
             Team dashboard
           </h2>
           <p className="text-ink-300 text-sm mt-1">
-            Requests, in-progress jobs, and recent wins across {org.name}.
+            In-progress jobs and recent wins across {org.name}.
           </p>
         </div>
         <WelcomeStrip
           name={userDisplayName}
-          actionItems={myActionItems}
+          actionItems={myProjects.length}
           actionLabel={
-            myActionItems === 1 ? 'request waiting for you' : 'requests waiting for you'
+            myProjects.length === 1 ? 'project on the go' : 'projects on the go'
           }
         />
       </div>
 
       {/* ── Stats row ── */}
-      <section className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatTile
-          label="Pending"
-          value={stats.pending}
-          accent={stats.pending > 0 ? 'amber' : undefined}
-        />
+      <section className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
         <StatTile label="In progress" value={stats.inProgress} accent="beme" />
         <StatTile
           label="Completed this week"
           value={stats.completedThisWeek}
           accent="emerald"
         />
-        {/* Inbox jump-tile. Replaces the old 'Avg turnaround' stat — that
-            number wasn't actionable, just a vanity metric. This tile is a
-            clickable shortcut to the requests page filtered to 'assigned
-            to me + pending'. Shows the live count of PENDING requests
-            (i.e. things waiting on this user to pick up). Once a request
-            is picked up, it leaves the inbox and surfaces in the
-            In-progress projects section instead. */}
-        <InboxTile count={myActionItems} />
       </section>
-
-      {/* "Your inbox" used to live here as a two-column 'Needs you to pick
-          up' + 'Currently working on' grid. Replaced by the My Inbox tile
-          in the stats row above, which links to /requests?scope=mine —
-          one source of truth for personal queue instead of two surfaces
-          on the same page showing the same data. */}
 
       {/* ── Your projects ──
           The current user's own active projects — anything they started or
@@ -964,7 +838,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         </section>
       )}
 
-      {/* ── In-progress projects ──
+      {/* ── Your team's projects ──
           Active projects owned by other org members — the 'by Sarah'
           label calls out whose each one is so the user can spot who's
           working on what at a glance. */}
@@ -973,7 +847,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           <div className="flex items-center justify-between mb-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
               <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
-              In-progress projects
+              Your team's projects
             </h3>
             <div className="flex items-center gap-3">
               <span className="text-xs text-ink-400">
@@ -1003,18 +877,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         </section>
       )}
 
-      {/* Team inbox removed: the In-progress projects section above already
-          shows every teammate's active work (the 'by Sarah' label calls
-          out whose it is), so a separate Team inbox just duplicated the
-          same rows. The /requests page is one click from the InboxTile
-          for anyone who wants the full estimate-request audit view. */}
-
       {/* ── Recently completed (team, past 7 days) ──
-          Team-wide scope: shows every estimate the org has finished in the
-          last week so anyone walking up to the dashboard can see what's
-          shipped. Older completed work lives behind the View all link on
-          the /requests page. Always-on band — empty state placeholder
-          keeps the dashboard layout consistent week to week. */}
+          Team-wide scope: every project the org has shipped in the last
+          week. Older completed work lives behind the View all link on
+          the /projects page. */}
       <section className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
@@ -1034,7 +900,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               Nothing finished by the team this week
             </div>
             <p className="text-xs text-ink-500 mt-1 max-w-md mx-auto">
-              Completed estimates from the past 7 days show up here. Older
+              Completed projects from the past 7 days show up here. Older
               work is one click away under View all.
             </p>
           </div>
@@ -1043,29 +909,9 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           // how many there are. 1 card spans the full row, 2 split 50/50,
           // 3 split 33/33/33, 4+ wrap to a new row at the min width.
           <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
-            {recentlyCompleted.map((item) =>
-              item.kind === 'request' ? (
-                <CompletedCard
-                  key={`req-${item.request.id}`}
-                  request={item.request}
-                  assignee={
-                    item.request.assignedToUserId
-                      ? memberById.get(item.request.assignedToUserId)
-                      : undefined
-                  }
-                  referenceNumber={
-                    item.request.projectId
-                      ? projectById.get(item.request.projectId)?.referenceNumber
-                      : undefined
-                  }
-                />
-              ) : (
-                <CompletedProjectCard
-                  key={`proj-${item.project.id}`}
-                  project={item.project}
-                />
-              )
-            )}
+            {recentlyCompleted.map((p) => (
+              <CompletedProjectCard key={`proj-${p.id}`} project={p} />
+            ))}
           </div>
         )}
       </section>
@@ -1166,77 +1012,10 @@ function ProjectInProgressRow({
   )
 }
 
-function CompletedCard({
-  request,
-  assignee,
-  referenceNumber,
-}: {
-  request: EstimateRequest
-  assignee: OrgMember | undefined
-  /** Reference number of the linked project, if there is one. */
-  referenceNumber?: number | null
-}) {
-  // Turnaround = completedAt − createdAt. Defaults to updatedAt for safety
-  // if completedAt is missing (shouldn't happen on completed rows but
-  // tolerate older data).
-  const created = new Date(request.createdAt).getTime()
-  const completedIso = request.completedAt ?? request.updatedAt
-  const completed = new Date(completedIso).getTime()
-  const turnaroundDays = (completed - created) / (1000 * 60 * 60 * 24)
-  const turnaroundLabel = formatTurnaround(turnaroundDays)
-
-  return (
-    <Link
-      to={`/requests/${request.id}`}
-      className="block border border-ink-600 rounded-xl bg-ink-800 p-4 hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors group"
-    >
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
-              {request.customerName}
-            </span>
-            {typeof referenceNumber === 'number' && (
-              <span className="text-[11px] tabular-nums font-semibold text-ink-300">
-                #{formatRef(referenceNumber)}
-              </span>
-            )}
-          </div>
-          {request.customerCompany && (
-            <div className="text-xs text-ink-400 truncate">{request.customerCompany}</div>
-          )}
-        </div>
-        <span className="shrink-0 text-[10px] uppercase tracking-wider text-ink-400">
-          {request.type === 'brick' ? 'Brick' : 'Block'}
-        </span>
-      </div>
-      <div className="flex items-center justify-between text-xs text-ink-400 gap-2 flex-wrap">
-        <span className="truncate">
-          By{' '}
-          <span className="text-ink-200">
-            {assignee?.displayName || assignee?.email || 'team'}
-          </span>
-        </span>
-        <span
-          className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-medium tabular-nums"
-          title={`Turnaround: ${turnaroundLabel}`}
-        >
-          ⏱ {turnaroundLabel}
-        </span>
-      </div>
-      <div className="text-[11px] text-ink-500 mt-2">
-        Completed {formatRelative(completedIso)}
-      </div>
-    </Link>
-  )
-}
-
 /**
- * Recently-completed card for a direct project (one not created from an
- * estimate request). Same visual shape as CompletedCard but pulls the
- * customer / site fields from projectDetails instead of the request's
- * own customer columns, and links back to the project workspace rather
- * than the request page.
+ * Recently-completed card for a project. Same visual shape as the old
+ * request-flavoured CompletedCard but sources all fields off
+ * `projectDetails` and links straight back to the project workspace.
  */
 function CompletedProjectCard({ project }: { project: SavedProject }) {
   const created = new Date(project.createdAt).getTime()
@@ -1697,40 +1476,6 @@ function WelcomeStrip({
         </div>
       )}
     </div>
-  )
-}
-
-/**
- * Click-through tile for the user's own inbox. Visually consistent with
- * StatTile (border, padding, label / value typography) so the stats row
- * still reads as a four-tile grid, but the whole card is a Link that
- * lands the user on /requests filtered to 'assigned to me'. Replaces the
- * old Avg-turnaround stat because that number wasn't actionable —
- * jumping straight to your own queue is.
- *
- * Count accent: beme orange when there's something waiting, ink-50 when
- * the queue is empty.
- */
-function InboxTile({ count }: { count: number }) {
-  const accentClass = count > 0 ? 'text-beme-300' : 'text-ink-50'
-  return (
-    <Link
-      to="/requests?scope=mine&status=pending"
-      className="block border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5 hover:border-beme-500/60 hover:bg-ink-700/40 transition-colors group"
-    >
-      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 flex items-center justify-between gap-2">
-        <span>My inbox</span>
-        <span className="text-ink-500 group-hover:text-beme-300 transition-colors">→</span>
-      </div>
-      <div className={`text-2xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
-        {count}
-      </div>
-      <div className="text-xs text-ink-400 mt-0.5">
-        {count === 0
-          ? 'Nothing assigned to you'
-          : `${count === 1 ? 'request waiting' : 'requests waiting'} for you`}
-      </div>
-    </Link>
   )
 }
 

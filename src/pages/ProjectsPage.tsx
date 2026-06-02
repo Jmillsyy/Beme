@@ -7,13 +7,8 @@ import { listProjects, type ProjectStatus, type SavedProject } from '../lib/proj
 import type { OrgMember } from '../types/organisations'
 
 /**
- * /projects — master list of every project the user can see.
- *
- * Mirrors /requests structurally (scope, status, person, period filters
- * written to the URL) but operates on the PROJECTS table rather than
- * estimate requests. The user thinks of an "estimate" as the project, not
- * the inbox row that may have spawned it, so this page is the right
- * destination for "view all" links from the dashboard's project sections.
+ * /projects — master list of every project the user can see. The
+ * dashboard's "View all →" links jump here with pre-filled URL filters.
  *
  * Filters:
  *   - status:  all / in-progress / completed
@@ -204,7 +199,7 @@ export default function ProjectsPage() {
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50">
       <Header />
-      <main className="max-w-[1600px] mx-auto px-6 py-10">
+      <main className="px-20 py-10">
         <Link
           to="/"
           className="inline-flex items-center gap-1.5 text-sm text-ink-400 hover:text-beme-300 transition-colors mb-3"
@@ -222,14 +217,12 @@ export default function ProjectsPage() {
               Every estimate {currentOrg ? `for ${currentOrg.name}` : 'in your account'} — filter by status, type, person, or time.
             </p>
           </div>
-          {currentOrg && (
-            <Link
-              to="/requests/new"
-              className="px-3.5 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors"
-            >
-              + New request
-            </Link>
-          )}
+          <Link
+            to="/project/block"
+            className="px-3.5 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors"
+          >
+            + New estimate
+          </Link>
         </div>
 
         {/* Filter row */}

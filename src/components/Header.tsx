@@ -60,12 +60,12 @@ export default function Header() {
 
   return (
     <header className="bg-ink-800 border-b border-ink-600">
-      {/* Full-width row at px-20 so the Beme logo + org/user pills align with
-          the estimate workspace below (which also uses px-20). The dashboard
-          and other main pages use a centered max-w-[1600px] container, so
-          on wide monitors there's some visual asymmetry between the header
-          edges and the dashboard content edges — softened by widening the
-          dashboard content (see HomePage). */}
+      {/* Full-width row at px-20 so the Beme logo + org/user pills sit at
+          the same horizontal edges as the workspace canvas AND every
+          dashboard page below. All page `<main>` containers now use
+          `px-20` (no max-w cap) for the same reason — so the header's
+          left/right edges line up with every page's content edges on
+          monitors of any width. */}
       <div className="px-20 py-6 flex items-center justify-between gap-6">
         <Link to="/" className="flex items-center gap-3 group">
           <div className="relative w-[32px] h-[32px] rounded-[6px] bg-beme-500 group-hover:bg-beme-400 transition-colors">

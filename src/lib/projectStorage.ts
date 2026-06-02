@@ -178,8 +178,8 @@ export interface SavedProject {
   /**
    * Organisation that owns this project. Null/undefined for personal
    * (single-user) projects. When set, RLS permits any member of the org
-   * to see/edit the project, which is how estimate-request work gets
-   * shared between sales and estimators inside the same org.
+   * to see/edit the project — sharing across the team is then just a
+   * matter of giving a teammate the project's 6-digit reference number.
    */
   organisationId?: string
   /** ISO datetime — when the project was first saved. */
@@ -203,9 +203,9 @@ export interface SavedProject {
   /**
    * User id of the current "owner" — the person with edit rights on this
    * project (in addition to the org admin and anyone they explicitly
-   * shared it with). Starts equal to `createdByUserId` on new projects but
-   * TRANSFERS on estimate-request pickup so the picker becomes the editor
-   * and the original creator drops back to read-only.
+   * shared it with). Starts equal to `createdByUserId` on new projects
+   * and stays that way for the project's lifetime now that the
+   * estimate-request hand-off flow is gone.
    *
    * Optional + missing on saves predating the read-only feature — the
    * server-side migration backfills it to `coalesce(createdByUserId, user_id)`,
@@ -236,8 +236,7 @@ export interface SavedProject {
    * Extra PDFs the estimator can flip to while working on this project —
    * typically engineering specs or notes that inform wall types but aren't
    * drawn on. Walls, openings, and piers all live against the primary PDF
-   * above; reference PDFs are view-only. Ordering reflects the order they
-   * were attached to the originating estimate request.
+   * above; reference PDFs are view-only.
    *
    * Optional + defaulted-empty so projects saved before multi-file support
    * still load cleanly.
