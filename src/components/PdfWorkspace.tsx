@@ -43,6 +43,7 @@ import type {
   WallMakeup,
 } from '../types/walls'
 import {
+  createDefaultBrickMakeup,
   createDefaultBrickMakeups,
   createDefaultFreestandingPierMakeup,
   createDefaultTiedPierMakeup,
@@ -977,15 +978,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           (proj.makeups ?? []).some((m) => !m.areaId) ||
           (proj.brickMakeups ?? []).some((m) => !m.areaId)
         if (needsAreaForMigration && hydratedAreas.length === 0) {
-          // Create a Default area to receive the legacy makeups. The
-          // user can rename it after the load completes.
+          // Create a starter area to receive the legacy makeups. Named
+          // 'New Area' so it lines up with what the user sees when they
+          // click '+ New area' on a fresh project — same label, no
+          // surprise. Rename afterwards if the user wants something
+          // more specific (Front, Back, Garage, etc.).
           hydratedAreas.push({
             id:
               typeof crypto !== 'undefined' &&
               typeof crypto.randomUUID === 'function'
                 ? crypto.randomUUID()
                 : `area-${Date.now()}`,
-            name: 'Default',
+            name: 'New Area',
           })
         }
         const migrationAreaId = hydratedAreas[0]?.id
@@ -6699,11 +6703,31 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
                 const newArea: ProjectArea = { id, name }
                 setAreas((prev) => [...prev, newArea])
-                // Activate the freshly-created area so new walls flow into
-                // it. Most common workflow: "+ New area", type name, start
-                // drawing — without the activation step the user would
-                // have to click the tab manually.
+                // Seed one baseline wall type per trade so the new area
+                // opens with a working starting wall instead of an
+                // empty panel. Block and brick each get a single
+                // generic makeup scoped to this area. The user can
+                // edit / rename / add more from the panel afterwards.
+                const seededBlock = createDefaultWallMakeup({})
+                seededBlock.areaId = id
+                const seededBrick = createDefaultBrickMakeup({
+                  name: `Brickwork ${seededBlock.heightMm}mm`,
+                  heightMm: seededBlock.heightMm,
+                })
+                seededBrick.areaId = id
+                setMakeups((prev) => [...prev, seededBlock])
+                setBrickMakeups((prev) => [...prev, seededBrick])
+                // Activate the freshly-created area + its seed wall
+                // type so new walls flow into it immediately. Most
+                // common workflow: "+ New area", type name, start
+                // drawing — without these activations the user would
+                // have to pick both manually.
                 setActiveAreaId(id)
+                if (mode === 'brick') {
+                  setActiveBrickMakeupId(seededBrick.id)
+                } else {
+                  setActiveMakeupId(seededBlock.id)
+                }
               }}
               onRename={(areaId, newName) => {
                 setAreas((prev) =>
