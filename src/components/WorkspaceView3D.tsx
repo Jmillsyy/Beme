@@ -53,7 +53,7 @@ import {
   moduleHeightForBand,
   resolveCourseBlocks,
 } from '../lib/makeups'
-import { buildBlockColorMap } from '../lib/blockColors'
+import { bandColor } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import {
   planWallLayout,
@@ -66,7 +66,12 @@ import {
 // ---------- Constants ----------
 
 const FALLBACK_HEIGHT_MM = 2400
-const DEFAULT_WALL_COLOR = '#cdb697'
+// Brick walls render as a solid extrusion using this single colour
+// (per-course brick banding is a v2 feature). #a85540 is a mid
+// red-brick — sits between a fresh-from-kiln common brick and the
+// slightly weathered tone of a finished wall. Also acts as the
+// fallback when a block code isn't in the colour map (rare).
+const DEFAULT_WALL_COLOR = '#a85540'
 const GROUND_COLOR = '#3a3f48'
 const CURVE_SAMPLES = 24
 
@@ -1394,7 +1399,26 @@ function Scene({
         if (spec) allCodes.push(spec.code)
       }
     }
-    const colorMap = buildBlockColorMap(allCodes)
+    // Build the colour map via plain hash-based `bandColor` for every
+    // code. We DELIBERATELY don't use buildBlockColorMap here, even
+    // though it would dedupe slot collisions — because the
+    // WallTypesPanel preview builds its own (smaller) code set with
+    // buildBlockColorMap, and the two sets produce different slot
+    // assignments for the same code (the collision-avoidance walk
+    // depends on which other codes are sorted before it). That made
+    // the same `20.48` block look different in the panel preview vs
+    // the 3D scene — the bug the user reported.
+    //
+    // Plain bandColor() is a pure function of the code itself, so the
+    // same code always resolves to the same palette slot, regardless
+    // of which other codes are around. ~1/16 of codes will collide on
+    // a shared slot, but with the concrete-grey palette where slots
+    // differ mainly by lightness, that's acceptable in exchange for
+    // perfect cross-view consistency.
+    const colorMap = new Map<string, string>()
+    for (const code of new Set(allCodes)) {
+      colorMap.set(code, bandColor(code))
+    }
 
     const out: WallSegmentBox[] = []
     // Build wallsById ONCE outside the loop so both segmentsForStraightWall

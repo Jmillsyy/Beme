@@ -34,7 +34,7 @@ import {
   moduleHeightForBand,
   resolveCourseBlocks,
 } from '../lib/makeups'
-import { bandColor, buildBlockColorMap } from '../lib/blockColors'
+import { bandColor } from '../lib/blockColors'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -922,36 +922,39 @@ function WallTypeEditorModal({
     }
   }, [previewMakeup, previewBands, courseOverrides, library])
 
-  // ---- Distinct colour map for the preview + legend ----
-  // Collects every block code that'll appear in the preview's cells +
-  // legend rows, then assigns each one a distinct slot from the curated
-  // BAND_COLOR_PALETTE. Guarantees no two codes share a colour in the
-  // same render, so the user never sees two near-identical greens.
+  // ---- Colour map for the preview + legend ----
+  // Maps each code via plain hash-based `bandColor`. We DELIBERATELY
+  // don't use buildBlockColorMap (which dedupes slot collisions across
+  // the codes in a set) — because the 3D view builds its colour map
+  // from EVERY code across EVERY wall in the project, while this
+  // panel only sees the current makeup. With buildBlockColorMap the
+  // same `20.48` block landed on different palette slots in the two
+  // scopes (different sort orders → different collision walks), and
+  // the user saw the preview colour not match the 3D fill.
   //
-  // The standalone `bandColor(code)` is still used elsewhere (pier
-  // preview, makeup list) — those scopes don't share this map, but
-  // their code domains are smaller so collisions are less likely.
+  // bandColor() is a pure function of the code, so the same block code
+  // resolves to the same colour everywhere. Two codes can collide on
+  // a shared slot (~1/16), but the concrete-grey palette mostly
+  // varies by lightness so the cost is minor next to the consistency
+  // gain.
   const previewColorMap = useMemo<Map<string, string>>(() => {
-    const codes: string[] = []
-    // Every band's block code (drives the wall preview's primary fill
-    // colour per course).
+    const codes = new Set<string>()
     for (const band of previewBands) {
-      if (band.blockCode) codes.push(band.blockCode)
+      if (band.blockCode) codes.add(band.blockCode)
     }
-    // Every per-course resolved body/corner/half — picks up courses
-    // where a series-range override swaps the body / corner / half for
-    // a different code than the band carries.
     const totalCourses = previewBands.reduce(
       (s, b) => s + Math.max(0, b.count),
       0
     )
     for (let c = 1; c <= totalCourses; c++) {
       const r = resolveForCourse(c)
-      if (r.body) codes.push(r.body)
-      if (r.corner) codes.push(r.corner)
-      if (r.half) codes.push(r.half)
+      if (r.body) codes.add(r.body)
+      if (r.corner) codes.add(r.corner)
+      if (r.half) codes.add(r.half)
     }
-    return buildBlockColorMap(codes)
+    const map = new Map<string, string>()
+    for (const code of codes) map.set(code, bandColor(code))
+    return map
   }, [previewBands, resolveForCourse])
 
   function handleSave() {
@@ -998,6 +1001,14 @@ function WallTypeEditorModal({
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
       coursePattern: cleanedPattern.length > 0 ? cleanedPattern : undefined,
       curveRadiusMm: existing?.curveRadiusMm,
+      // Preserve the area assignment across edits. The editor doesn't
+      // expose an area picker, so the only correct behaviour is to keep
+      // whatever area the wall type was already bound to. Without this
+      // round-trip, every edit dropped areaId → handleUpdateMakeup
+      // replaced the makeup wholesale, the wall type was demoted to
+      // "All areas only", and the user's per-area scoping silently
+      // broke after each save.
+      ...(existing?.areaId ? { areaId: existing.areaId } : {}),
     }
     onSave(updated)
   }
@@ -2691,6 +2702,9 @@ function PierTypeEditorModal({ existing, seedPlacement, onSwitchToWall, onSave, 
       // Only persist heightMm for freestanding makeups — tied piers don't
       // use a type-level height (they inherit the wall).
       heightMm: placement === 'freestanding' ? heightMm : undefined,
+      // Preserve area assignment across edits — see WallTypeEditorModal
+      // handleSave for the rationale.
+      ...(existing?.areaId ? { areaId: existing.areaId } : {}),
     }
     onSave(updated)
   }

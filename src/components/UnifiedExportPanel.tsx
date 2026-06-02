@@ -42,6 +42,13 @@ interface UnifiedExportPanelProps {
   /** Project areas (named buckets). Empty → area picker hidden. */
   areas: ProjectArea[]
 
+  /** The area the workspace is currently viewing. null = the "All
+   *  areas" view. Drives the default tick state of the area picker:
+   *  when an area is active, only that area is ticked by default
+   *  (so an export from inside "First Floor" produces a First-Floor-
+   *  only PDF). When null, every area + unassigned is ticked. */
+  activeAreaId?: string | null
+
   /** Per-PDF-page metadata (without trade pre-filtering). */
   rawPagesInfo: Array<{
     pageNumber: number
@@ -100,6 +107,7 @@ export default function UnifiedExportPanel({
   brickMakeups,
   brickSettings,
   areas,
+  activeAreaId = null,
   rawPagesInfo,
 }: UnifiedExportPanelProps) {
   const [expanded, setExpanded] = useState(true)
@@ -108,25 +116,46 @@ export default function UnifiedExportPanel({
   const { settings: userSettings } = useUserSettings()
   const { currentOrg } = useOrganisations()
 
-  // Area selection. Initialised to "all areas + unassigned ticked" — the
-  // user unticks per export. Skipped entirely (no UI) when the project
-  // has no defined areas.
+  // Area selection. Default depends on whether the workspace is
+  // currently scoped to a specific area:
+  //   - activeAreaId === <id> → only that area ticked. The user is
+  //     working inside one area; exporting from there should default
+  //     to that area only (matches the workspace scope they see on
+  //     screen).
+  //   - activeAreaId === null → "All areas" view, every area +
+  //     unassigned ticked. They asked for an everything export.
+  //
+  // The user can still tick/untick freely after the panel opens —
+  // the active-area gate only seeds the initial state. We don't
+  // re-seed on activeAreaId change after mount, otherwise switching
+  // tabs while the panel is open would clobber their selection.
   const initialSelectedAreas = useMemo(() => {
     const s = new Set<string>()
-    for (const a of areas) s.add(a.id)
-    s.add(UNASSIGNED)
+    if (activeAreaId) {
+      // Active area is set → only that area in the selection. We
+      // skip UNASSIGNED here on purpose: walls without an areaId are
+      // visible under "All areas" but not under any specific one, so
+      // a "First Floor" export shouldn't include them.
+      s.add(activeAreaId)
+    } else {
+      for (const a of areas) s.add(a.id)
+      s.add(UNASSIGNED)
+    }
     return s
-  }, [areas])
+    // Only seed on mount — see comment above. The deps below are
+    // intentionally limited to the values used at mount time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [selectedAreas, setSelectedAreas] =
     useState<Set<string>>(initialSelectedAreas)
-  // If `areas` changes (user added/removed area mid-session), re-seed
-  // the selection so newly-added areas are ticked by default.
+  // If `areas` changes (user added/removed area mid-session), keep
+  // the selection in sync: drop ids that no longer exist, but DON'T
+  // automatically tick newly-added ones — the user already chose
+  // what to include, adding a new area shouldn't broaden their export.
   useMemo(() => {
     setSelectedAreas((prev) => {
-      const next = new Set(prev)
-      for (const a of areas) if (!next.has(a.id)) next.add(a.id)
-      // Drop ids that no longer exist
       const validIds = new Set([...areas.map((a) => a.id), UNASSIGNED])
+      const next = new Set(prev)
       for (const id of next) if (!validIds.has(id)) next.delete(id)
       return next
     })

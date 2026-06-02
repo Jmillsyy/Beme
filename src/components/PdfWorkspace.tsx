@@ -1,9 +1,49 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
+import type { ComponentType } from 'react'
 
 // 3D view is lazy-loaded so users who never open it pay zero bundle cost
 // (Three.js + r3f + drei add ~150 KB gzipped on top of the main bundle).
 // Only resolves on the first toggle to '3d'.
-const WorkspaceView3D = lazy(() => import('./WorkspaceView3D'))
+//
+// `lazyWithReload` wraps the dynamic import so that if Vite has redeployed
+// since this tab loaded (which is the common case — the old index.html
+// references a chunk filename that no longer exists, e.g.
+// WorkspaceView3D-Des9c_dv.js), we trigger a one-shot full page reload
+// to pick up the new asset manifest instead of surfacing
+// "Failed to fetch dynamically imported module" to the user. sessionStorage
+// flag prevents an infinite reload loop if the failure isn't actually a
+// stale chunk (e.g. user is offline).
+function lazyWithReload<T extends ComponentType<any>>(
+  factory: () => Promise<{ default: T }>
+) {
+  return lazy(async () => {
+    try {
+      return await factory()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const isStaleChunk =
+        /Failed to fetch dynamically imported module/i.test(message) ||
+        /Importing a module script failed/i.test(message) ||
+        /error loading dynamically imported module/i.test(message)
+      const RELOAD_KEY = 'beme:lazy-reload-attempted'
+      if (
+        isStaleChunk &&
+        typeof window !== 'undefined' &&
+        !sessionStorage.getItem(RELOAD_KEY)
+      ) {
+        sessionStorage.setItem(RELOAD_KEY, '1')
+        window.location.reload()
+        // Return a never-resolving promise so React's Suspense fallback
+        // stays visible during the in-flight reload instead of flashing
+        // an error boundary in the gap.
+        return new Promise<never>(() => {})
+      }
+      throw err
+    }
+  })
+}
+
+const WorkspaceView3D = lazyWithReload(() => import('./WorkspaceView3D'))
 import { PDFDocument } from 'pdf-lib'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
@@ -2341,6 +2381,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     activeMakeupId,
     activeBrickMakeupId,
     brickMakeupsById,
+    // activeAreaId is read at line ~2309 to stamp the new wall's areaId.
+    // Without it in deps, the callback captures the activeAreaId at
+    // mount (null) and never updates when the user switches to a
+    // different area — walls drawn into "Ground Floor" end up
+    // unassigned (only visible under "All areas"). That was the bug
+    // the user hit when walls disappeared from their new area.
+    activeAreaId,
   ])
 
   /**
@@ -2490,7 +2537,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const thicknesses = computeWallThicknessByWallId(newWalls, nextMakeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
     setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
-  }, [mode, wallsByPage, currentPage, makeups, makeupsById, brickSettings, newCurveHeightMm])
+  }, [
+    mode,
+    wallsByPage,
+    currentPage,
+    makeups,
+    makeupsById,
+    brickSettings,
+    newCurveHeightMm,
+    // Same reason as handleWallAdded: the curve stamps activeAreaId
+    // at line ~2477, so a stale closure here would silently drop the
+    // area assignment for any curve drawn after switching areas.
+    activeAreaId,
+  ])
 
   /**
    * Split a wall at a click point along its centreline. Replaces the original wall with
@@ -6912,6 +6971,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           brickMakeups={brickMakeups}
           brickSettings={brickSettings}
           areas={areas}
+          activeAreaId={activeAreaId}
           rawPagesInfo={Object.keys(wallsByPage)
             .map((n) => parseInt(n, 10))
             .filter((n) => (wallsByPage[n]?.length ?? 0) > 0)

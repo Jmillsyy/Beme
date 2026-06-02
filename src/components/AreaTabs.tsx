@@ -90,19 +90,49 @@ export default function AreaTabs({
           <span className="text-ink-500 group-hover:text-ink-300 text-xs flex-shrink-0">
             {expanded ? '▾' : '▸'}
           </span>
-          <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300 flex-shrink-0">
-            Area
-          </h3>
-          {activeArea?.colorHex && (
-            <span
-              className="inline-block w-2 h-2 rounded-full flex-shrink-0"
-              style={{ backgroundColor: activeArea.colorHex }}
-              aria-hidden
-            />
+          {expanded ? (
+            // Expanded — small "Area · <name>" header, since the area
+            // list below already shows the active row prominently. Keeps
+            // the chrome compact and matches Wall Types / Supply Items.
+            <>
+              <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300 flex-shrink-0">
+                Area
+              </h3>
+              {activeArea?.colorHex && (
+                <span
+                  className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: activeArea.colorHex }}
+                  aria-hidden
+                />
+              )}
+              <span className="text-xs text-ink-400 truncate min-w-0">
+                · {activeLabel}
+              </span>
+            </>
+          ) : (
+            // Collapsed — promote the area name to the title since this
+            // is the only place it's visible. Tiny "Area" eyebrow above
+            // keeps the section label without stealing weight from the
+            // name. User asked specifically for a bigger title here so
+            // they can tell at a glance which area they're working in.
+            <>
+              {activeArea?.colorHex && (
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: activeArea.colorHex }}
+                  aria-hidden
+                />
+              )}
+              <div className="flex flex-col min-w-0 leading-tight">
+                <span className="text-[10px] uppercase tracking-wider text-ink-500 group-hover:text-ink-400">
+                  Area
+                </span>
+                <span className="text-base font-semibold text-ink-100 group-hover:text-beme-300 truncate">
+                  {activeLabel}
+                </span>
+              </div>
+            </>
           )}
-          <span className="text-xs text-ink-400 truncate min-w-0">
-            · {activeLabel}
-          </span>
         </button>
       </div>
 

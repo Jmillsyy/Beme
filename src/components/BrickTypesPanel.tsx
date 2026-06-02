@@ -244,6 +244,11 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
       heightMm,
       brickTypeCode,
       ...(cleanRanges.length > 0 ? { courseRanges: cleanRanges } : {}),
+      // Preserve area assignment across edits. Same bug we hit on the
+      // block side: this editor builds the result object explicitly and
+      // never copied areaId, so every edit demoted a per-area brick wall
+      // type back to All-only.
+      ...(existing?.areaId ? { areaId: existing.areaId } : {}),
     })
   }
 

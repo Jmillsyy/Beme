@@ -12,6 +12,7 @@ import { updateUserSettings, useUserSettings } from '../lib/userSettings'
 import {
   saveOrgSupplyItem,
   deleteOrgSupplyItem,
+  refreshOrgSupplyItems,
   useOrgSupplyItems,
 } from '../lib/orgSupplyItems'
 import type { SupplyItem, SupplyItemUnit } from '../types/userSettings'
@@ -33,7 +34,7 @@ import { useEffect } from 'react'
  * everything; only the org admin can edit.
  */
 export default function MaterialLibraryPage() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const { currentOrg } = useOrganisations()
   const [members, setMembers] = useState<OrgMember[]>([])
   /**
@@ -91,15 +92,24 @@ export default function MaterialLibraryPage() {
     }
   }, [currentOrg])
 
-  // Resolve admin status. While members are still loading we OPTIMISTICALLY
-  // assume admin so the page renders editable from the first paint — a
-  // non-admin only sees the lock once we've actually confirmed their role.
-  // This trades a tiny "edit briefly visible then disappears" flicker for
-  // non-admins against admins getting permanently locked out by a slow or
-  // failed member fetch (the previous bug — admins couldn't edit because
-  // the RPC failed or hadn't resolved yet).
+  // Resolve admin status. We assume admin OPTIMISTICALLY while ANY of the
+  // gating data is still in flight so the page renders editable from the
+  // first paint — a non-admin only sees the lock once we've confirmed
+  // their role. Trades a tiny "edit briefly visible then disappears"
+  // flicker for non-admins against admins getting permanently locked
+  // out by a slow auth resolution or a failed member fetch.
+  //
+  // Three things must all be ready before we can decide:
+  //   1. authLoading === false (we know who the user is)
+  //   2. user?.id defined     (signed in at all)
+  //   3. membersLoaded === true (member list has settled, even if empty)
+  //
+  // The previous bug: members loaded before useAuth resolved `user`, so
+  // `user?.id` was undefined and the find() returned nothing → admin
+  // got locked out until something else triggered a re-render.
+  const ready = !authLoading && membersLoaded && !!user?.id
   const isAdmin = currentOrg
-    ? !membersLoaded
+    ? !ready
       ? true
       : members.find((m) => m.userId === user?.id)?.role === 'admin'
     : true
@@ -233,12 +243,39 @@ function unitLabelOf(unit: SupplyItemUnit): string {
 
 function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
   const { settings } = useUserSettings()
-  const { currentOrgId } = useOrganisations()
-  const { items: orgItems, loading: orgLoading } = useOrgSupplyItems()
-  // Org members see the synced list; personal-mode users see the
-  // legacy IndexedDB list. The form / save / delete handlers below
-  // dispatch to the right side based on the same currentOrgId check.
-  const items = currentOrgId ? orgItems : settings.supplyItems ?? []
+  const { currentOrgId, loading: orgsLoading } = useOrganisations()
+  const { items: orgItems, loading: orgLoading, orgId: orgItemsOrgId } =
+    useOrgSupplyItems()
+
+  // On mount, force-refresh the org supply items so the editor always
+  // shows fresh data — not the singleton's last cached state from a
+  // previous visit. Without this, navigating between dashboard and
+  // material library could surface stale items that were briefly
+  // shown during a load race and then committed to the cache.
+  useEffect(() => {
+    if (currentOrgId) {
+      void refreshOrgSupplyItems()
+    }
+  }, [currentOrgId])
+
+  // Pick the items source carefully. Three cases:
+  //   1. Orgs are still loading — don't render anything yet (the
+  //      loading branch below). Falling through to settings.supplyItems
+  //      would briefly show the local IndexedDB list, which often
+  //      contains a stale subset (block-only or brick-only depending on
+  //      what was last synced) — this is the "sometimes only block,
+  //      sometimes only brick" bug.
+  //   2. Org is active — use orgItems, but only after the singleton's
+  //      orgId matches the current org so we don't show items belonging
+  //      to a different org during a switch race.
+  //   3. No org (personal mode) — local IndexedDB list.
+  const itemsLoading =
+    orgsLoading || (!!currentOrgId && (orgLoading || orgItemsOrgId !== currentOrgId))
+  const items: SupplyItem[] = itemsLoading
+    ? []
+    : currentOrgId
+      ? orgItems
+      : settings.supplyItems ?? []
   const [editingId, setEditingId] = useState<string | 'new' | null>(null)
   // Per-category collapse state in the editor, keyed by category
   // label (or 'Uncategorised'). Mirrors the workspace SupplyItemsPanel
@@ -297,10 +334,10 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
 
   return (
     <div className="space-y-3">
-      {currentOrgId && orgLoading && (
+      {itemsLoading && (
         <p className="text-sm text-ink-400 italic">Loading supply items…</p>
       )}
-      {!(currentOrgId && orgLoading) && items.length === 0 && (
+      {!itemsLoading && items.length === 0 && (
         <p className="text-sm text-ink-400 italic">
           No supply items yet. Click <strong>+ Add item</strong> to add the
           first one — e.g. brick ties at 2 per m², cement at 0.3 bags per m²,

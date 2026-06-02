@@ -23,27 +23,36 @@
  * increments (16 × 22.5 = 360).
  */
 
-/** 16-slot palette. Order matters — buildBlockColorMap walks forward on
- *  collision, so visually-near hues should not be adjacent in the array.
- *  They already aren't (this palette goes red → orange → yellow → …),
- *  but if you re-order, keep that property. */
+/** 16-slot realistic-masonry palette. Order matters —
+ *  buildBlockColorMap walks forward on collision, so visually-near
+ *  lightnesses should not be adjacent.
+ *
+ *  All slots are concrete-grey tones: saturation 4–14% (essentially
+ *  neutral, with a faint warm/cool cast so adjacent codes don't blur),
+ *  lightness 38–76% (spread across the full grey range so different
+ *  block codes are still distinguishable at a glance).
+ *
+ *  Reads as actual stacked concrete blockwork rather than a
+ *  colour-coded diagram. Different wall types using the same block
+ *  code still land on the same slot via buildBlockColorMap's code-keyed
+ *  dedupe. */
 export const BAND_COLOR_PALETTE: string[] = [
-  'hsl(  6, 62%, 62%)', // 1 red
-  'hsl( 28, 70%, 56%)', // 2 orange
-  'hsl( 48, 72%, 56%)', // 3 yellow
-  'hsl( 80, 50%, 50%)', // 4 olive
-  'hsl(110, 50%, 55%)', // 5 lime
-  'hsl(150, 50%, 50%)', // 6 green
-  'hsl(170, 55%, 45%)', // 7 teal-green
-  'hsl(190, 55%, 50%)', // 8 teal
-  'hsl(210, 60%, 60%)', // 9 sky
-  'hsl(230, 60%, 65%)', // 10 azure
-  'hsl(250, 55%, 65%)', // 11 indigo
-  'hsl(270, 50%, 60%)', // 12 purple
-  'hsl(290, 50%, 60%)', // 13 violet
-  'hsl(315, 60%, 62%)', // 14 magenta
-  'hsl(335, 60%, 60%)', // 15 pink
-  'hsl(355, 65%, 55%)', // 16 rose
+  'hsl( 32,  8%, 62%)', // 1  warm mid grey   — default-ish concrete
+  'hsl(210, 10%, 50%)', // 2  cool mid grey
+  'hsl( 38,  6%, 72%)', // 3  pale buff
+  'hsl(218, 12%, 40%)', // 4  dark slate
+  'hsl( 28, 12%, 55%)', // 5  warm grey
+  'hsl(200,  8%, 68%)', // 6  light cool grey
+  'hsl( 35, 14%, 44%)', // 7  deep taupe
+  'hsl(220, 10%, 75%)', // 8  pale stone
+  'hsl( 40,  6%, 60%)', // 9  sandy grey
+  'hsl(215, 14%, 38%)', // 10 charcoal slate
+  'hsl( 30, 10%, 48%)', // 11 mushroom
+  'hsl(225,  6%, 66%)', // 12 neutral light grey
+  'hsl( 36, 12%, 52%)', // 13 sandstone
+  'hsl(208,  4%, 56%)', // 14 plain grey
+  'hsl( 42,  8%, 76%)', // 15 bone
+  'hsl(215,  8%, 46%)', // 16 graphite
 ]
 
 /** Internal: FNV-1a + xorshift-spread → 32-bit hash. Same input always
