@@ -966,37 +966,42 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         // Older projects saved makeups without an areaId — every wall
         // type was shared across all areas. The model is now per-area:
         // each makeup is exclusive to one ProjectArea (only visible in
-        // that area's panel and on All). Migrate any makeup lacking
-        // areaId to the first area, creating a 'Default' area if the
-        // project has none. After this pass every persisted makeup has
-        // a valid areaId.
+        // that area's panel and on All). Migrate any makeup whose
+        // areaId is missing OR points to an area that no longer
+        // exists (e.g. the area was deleted but the makeup's areaId
+        // was left dangling). Without the stale-id check those
+        // makeups would only ever appear in the 'All' view, never in
+        // a specific area's panel — exactly the orphan-makeup bug
+        // the user reported.
         const hydratedAreas: ProjectArea[] =
           proj.areas && proj.areas.length > 0
             ? [...proj.areas]
             : []
+        const validAreaIds = new Set(hydratedAreas.map((a) => a.id))
+        const isOrphanAreaId = (id: string | undefined) =>
+          !id || !validAreaIds.has(id)
         const needsAreaForMigration =
-          (proj.makeups ?? []).some((m) => !m.areaId) ||
-          (proj.brickMakeups ?? []).some((m) => !m.areaId)
+          (proj.makeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
+          (proj.brickMakeups ?? []).some((m) => isOrphanAreaId(m.areaId))
         if (needsAreaForMigration && hydratedAreas.length === 0) {
           // Create a starter area to receive the legacy makeups. Named
           // 'New Area' so it lines up with what the user sees when they
           // click '+ New area' on a fresh project — same label, no
           // surprise. Rename afterwards if the user wants something
           // more specific (Front, Back, Garage, etc.).
-          hydratedAreas.push({
-            id:
-              typeof crypto !== 'undefined' &&
-              typeof crypto.randomUUID === 'function'
-                ? crypto.randomUUID()
-                : `area-${Date.now()}`,
-            name: 'New Area',
-          })
+          const newAreaId =
+            typeof crypto !== 'undefined' &&
+            typeof crypto.randomUUID === 'function'
+              ? crypto.randomUUID()
+              : `area-${Date.now()}`
+          hydratedAreas.push({ id: newAreaId, name: 'New Area' })
+          validAreaIds.add(newAreaId)
         }
         const migrationAreaId = hydratedAreas[0]?.id
         const migrateMakeup = <T extends { areaId?: string }>(m: T): T =>
-          m.areaId
-            ? m
-            : ({ ...m, areaId: migrationAreaId } as T)
+          isOrphanAreaId(m.areaId)
+            ? ({ ...m, areaId: migrationAreaId } as T)
+            : m
 
         // Brick walls used to be saved with makeupId === '' because they
         // had no per-wall type. Now they reference a BrickMakeup the same way
@@ -2595,17 +2600,35 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, selectedWallId, setSelectedWallId])
 
   function handleAddMakeup(makeup: WallMakeup) {
-    // Stamp the current area on the new makeup so it shows only in
-    // that area's panel (or All). When creating from the All view
-    // (activeAreaId === null) we fall back to the first area; if no
-    // areas exist yet the makeup is created with no areaId — the
-    // user can assign one later by editing the type.
-    const stamped: WallMakeup = makeup.areaId
-      ? makeup
-      : {
-          ...makeup,
-          areaId: activeAreaId ?? areas[0]?.id,
-        }
+    // Resolve an areaId for the new makeup. Without this every
+    // makeup needs SOME area to belong to — otherwise it shows under
+    // 'All areas' but never appears in any specific area panel,
+    // which is the orphan-makeup bug the user reported.
+    //
+    // Resolution order:
+    //   1. makeup.areaId (caller provided one already — uncommon)
+    //   2. activeAreaId (we're inside a specific area)
+    //   3. areas[0]?.id (we're on All view; pick the first area)
+    //   4. auto-create a 'New Area' (no areas exist at all)
+    let stamped: WallMakeup
+    if (makeup.areaId) {
+      stamped = makeup
+    } else if (activeAreaId) {
+      stamped = { ...makeup, areaId: activeAreaId }
+    } else if (areas.length > 0) {
+      stamped = { ...makeup, areaId: areas[0].id }
+    } else {
+      // No areas yet — spawn one named 'New Area' to receive this
+      // makeup. Same pattern the project-load migration uses.
+      const newAreaId =
+        typeof crypto !== 'undefined' &&
+        typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setAreas((prev) => [...prev, { id: newAreaId, name: 'New Area' }])
+      setActiveAreaId(newAreaId)
+      stamped = { ...makeup, areaId: newAreaId }
+    }
     setMakeups((prev) => [...prev, stamped])
     setActiveMakeupId(stamped.id)
   }
@@ -2672,13 +2695,27 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // ---------- Brick makeup CRUD ----------
 
   function handleAddBrickMakeup(makeup: BrickMakeup) {
-    // Same per-area stamping as handleAddMakeup (block side).
-    const stamped: BrickMakeup = makeup.areaId
-      ? makeup
-      : {
-          ...makeup,
-          areaId: activeAreaId ?? areas[0]?.id,
-        }
+    // Same area-resolution chain as handleAddMakeup — see comment
+    // there for the reasoning. Auto-creates a 'New Area' if the
+    // project has none, so a brick wall type can never end up
+    // orphaned (areaId undefined).
+    let stamped: BrickMakeup
+    if (makeup.areaId) {
+      stamped = makeup
+    } else if (activeAreaId) {
+      stamped = { ...makeup, areaId: activeAreaId }
+    } else if (areas.length > 0) {
+      stamped = { ...makeup, areaId: areas[0].id }
+    } else {
+      const newAreaId =
+        typeof crypto !== 'undefined' &&
+        typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setAreas((prev) => [...prev, { id: newAreaId, name: 'New Area' }])
+      setActiveAreaId(newAreaId)
+      stamped = { ...makeup, areaId: newAreaId }
+    }
     setBrickMakeups((prev) => [...prev, stamped])
     setActiveBrickMakeupId(stamped.id)
   }
