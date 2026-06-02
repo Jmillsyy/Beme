@@ -54,26 +54,34 @@ function projectUrl(project: { id: string; type?: 'block' | 'brick'; trades?: ('
 }
 
 /**
- * Render the trade pills for a project row. Unified projects (both
- * block and brick) get two pills side-by-side; single-trade projects
- * get one. Subtle spacing so they sit neatly with the project name +
- * reference number.
+ * Render a single trade pill for a project row.
+ *   - Single trade (just block OR just brick) → coloured pill with
+ *     that trade's name.
+ *   - Both trades → ONE neutral-colour pill labelled "Brick and Block".
+ *
+ * Earlier this rendered two coloured pills side-by-side for unified
+ * projects, which read as visual clutter. One combined label is
+ * tidier and matches how the user thinks about the project.
  */
 function TradeBadges({ trades }: { trades: ('block' | 'brick')[] }) {
+  const isBoth = trades.includes('block') && trades.includes('brick')
+  if (isBoth) {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-ink-500/15 text-ink-200 border border-ink-500/30">
+        Brick and Block
+      </span>
+    )
+  }
+  const single = trades[0] ?? 'block'
   return (
-    <span className="inline-flex items-center gap-1">
-      {trades.map((t) => (
-        <span
-          key={t}
-          className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
-            t === 'brick'
-              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-              : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
-          }`}
-        >
-          {t === 'brick' ? 'Brick' : 'Block'}
-        </span>
-      ))}
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold ${
+        single === 'brick'
+          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+          : 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
+      }`}
+    >
+      {single === 'brick' ? 'Brick' : 'Block'}
     </span>
   )
 }
