@@ -5704,7 +5704,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const wallHeightMm =
           pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
         const computedOpeningHeightMm = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
-        const tooSmall = computedOpeningHeightMm < 100
+        // 0mm openings are explicitly allowed — lets the user place a
+        // lintel-only marker (counts toward the lintel supply item but
+        // doesn't remove any wall area). Anything negative is still
+        // invalid (sill + head exceeds the wall height).
+        const tooSmall = computedOpeningHeightMm < 0
         // Common opening presets — each spec'd as (sillMm, openingMm). Head is
         // computed at render time from the actual wall height so the same
         // preset works on a 2400 wall or a 3000 wall. Filtered to presets that
@@ -5812,13 +5816,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   </div>
                 </section>
 
-                {/* Inline error when the sill + head leave too little room
-                    for the opening — same signal that disables the Save
-                    button, surfaced here so the user knows why. */}
+                {/* Inline error when the sill + head exceed the wall
+                    height — same signal that disables the Save button.
+                    A 0mm opening is allowed (lintel-only marker) so
+                    only negative space triggers the error. */}
                 {tooSmall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Sill + Head leave less than 100mm for the opening on a {Math.round(wallHeightMm)}mm wall.
+                    Sill + Head exceed the {Math.round(wallHeightMm)}mm wall height.
                     Reduce one of them.
+                  </p>
+                )}
+                {!tooSmall && computedOpeningHeightMm === 0 && (
+                  <p className="text-[11px] text-ink-400 leading-relaxed">
+                    0mm opening — counts toward lintel supply items but no
+                    wall area is removed.
                   </p>
                 )}
               </div>
@@ -5856,7 +5867,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           pendingOpeningWall.heightMmOverride ??
           pendingMakeup?.heightMm ??
           brickSettings.defaultWallHeightMm
-        const tooSmall = brickOpeningHeightMm < 100
+        // 0mm allowed — see block-mode rationale above. Negative
+        // values are still rejected (the input clamps to min=0 but
+        // belt-and-braces guard here too).
+        const tooSmall = brickOpeningHeightMm < 0
         const tooTall = brickOpeningHeightMm > wallHeightMm
         return (
           <div
@@ -5920,7 +5934,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     <span className="block text-ink-300 text-xs mb-1">Opening height (mm)</span>
                     <input
                       type="number"
-                      min="100"
+                      min="0"
                       step="50"
                       value={brickOpeningHeightMm}
                       onChange={(e) =>
@@ -5929,12 +5943,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       className="w-40 px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                       autoFocus
                     />
+                    <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
+                      Use 0mm to place a lintel-only marker (counts the
+                      lintel supply item without removing wall area).
+                    </span>
                   </label>
                 </section>
 
                 {tooSmall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Opening height must be at least 100mm.
+                    Opening height can't be negative.
                   </p>
                 )}
                 {tooTall && (
