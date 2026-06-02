@@ -699,22 +699,32 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return m
   }, [members])
 
-  // Stats: pending count, in-progress count, completed-this-week count.
-  // The fourth tile in the row is the InboxTile, which derives its number
-  // from myActionItems below (myPending + myInProgress) — not part of the
-  // stats memo because it's user-specific rather than org-wide.
+  // Stats: pending count (from requests), in-progress + completed-this-week
+  // (from PROJECTS). The fourth tile in the row is the InboxTile, which
+  // derives its number from myActionItems below (myPending + myInProgress)
+  // — not part of the stats memo because it's user-specific rather than
+  // org-wide.
+  //
+  // Why projects, not requests, for the latter two: direct-create projects
+  // (the + Brick / + Block button on the dashboard) never have a linked
+  // estimate request. Marking one of those complete in the workspace can't
+  // propagate to a request, so a request-based 'Completed this week' tile
+  // stayed at zero forever for any org that creates work directly. Counting
+  // projects covers both code paths (project-from-request AND direct-create).
+  // Pending stays on requests because pending = unallocated request, no
+  // analogous project state.
   const stats = useMemo(() => {
     const pending = requests.filter((r) => r.status === 'pending').length
-    const inProgress = requests.filter((r) => r.status === 'in_progress').length
+    const inProgress = projects.filter((p) => p.status === 'in-progress').length
     const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-    const completedThisWeek = requests.filter(
-      (r) =>
-        r.status === 'completed' &&
-        r.completedAt &&
-        new Date(r.completedAt).getTime() >= weekAgo
+    const completedThisWeek = projects.filter(
+      (p) =>
+        p.status === 'completed' &&
+        p.completedAt &&
+        new Date(p.completedAt).getTime() >= weekAgo
     ).length
     return { pending, inProgress, completedThisWeek }
-  }, [requests])
+  }, [requests, projects])
 
   // Split the in-progress projects into 'mine' (above) and 'team' (below) so
   // the user's own work is the FIRST thing they see in the project list.
