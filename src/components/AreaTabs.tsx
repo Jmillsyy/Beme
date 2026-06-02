@@ -117,20 +117,23 @@ export default function AreaTabs({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex items-center gap-2 h-7 px-2.5 rounded-lg bg-ink-800 border border-ink-600 text-xs text-ink-100 hover:bg-ink-700 transition-colors min-w-[160px]"
+        // Match the canvas-side toolbar buttons (px-3 py-1.5 text-sm
+        // rounded-lg) so the area selector sits flush with them on the
+        // same horizontal line.
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ink-800 border border-ink-600 text-sm text-ink-100 hover:bg-ink-700 transition-colors min-w-[180px]"
       >
         <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">
           Area
         </span>
         {activeArea?.colorHex && (
           <span
-            className="inline-block w-1.5 h-1.5 rounded-full"
+            className="inline-block w-2 h-2 rounded-full"
             style={{ backgroundColor: activeArea.colorHex }}
             aria-hidden
           />
         )}
         <span className="truncate flex-1 text-left">{activeLabel}</span>
-        <span className="text-ink-500 text-[10px]">▾</span>
+        <span className="text-ink-500 text-xs">▾</span>
       </button>
 
       {open && (
