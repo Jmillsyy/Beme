@@ -1050,6 +1050,11 @@ export async function buildBlockEstimateHtml(
         // Optional opening-width range filter — used for lintels / sills /
         // any per-opening supply that depends on opening size. No range
         // means the supply applies to every opening (per-block behaviour).
+        // BOTH bounds inclusive — matches brickExport + the
+        // SupplyItem.openingWidthMinMm / Max contract. Using strict `<`
+        // on max here previously skipped openings exactly at the upper
+        // boundary value (e.g. a 1200mm opening fell into the 1500-mm
+        // Galintel row instead of the 1200-mm row).
         const min = item.openingWidthMinMm
         const max = item.openingWidthMaxMm
         const inScope =
@@ -1058,7 +1063,7 @@ export async function buildBlockEstimateHtml(
             : openings.filter(
                 (o) =>
                   (min === undefined || o.widthMm >= min) &&
-                  (max === undefined || o.widthMm < max)
+                  (max === undefined || o.widthMm <= max)
               ).length
         qty = rate * inScope
         const rangeLabel =

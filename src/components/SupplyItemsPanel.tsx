@@ -151,8 +151,19 @@ function SupplyItemsPanelImpl({
   const items = currentOrgId ? orgItems : settings.supplyItems ?? []
 
   const applicableItems = useMemo(
-    () => items.filter((i) => i.appliesTo.includes(metrics.mode)),
-    [items, metrics.mode]
+    () =>
+      items
+        .filter((i) => i.appliesTo.includes(metrics.mode))
+        // Hide rows that compute to 0 quantity — they aren't used on
+        // this estimate so they'd just be visual noise. A width-ranged
+        // Galintel whose range no opening falls into vanishes;
+        // per-m² / per-block items show only when there's actual
+        // wall area / block count.
+        .filter((i) => {
+          const r = effectiveRate(i, rateOverrides)
+          return quantityFor(i, r, metrics) > 0
+        }),
+    [items, metrics, rateOverrides]
   )
 
   // Group items by category, preserving the user's order within each
