@@ -37,6 +37,8 @@ import { rasterisePdfPage } from './pdfRaster'
 import { downloadPdfFromHtml } from './pdfExport'
 import { getMakeupHeightMm } from './makeups'
 import { getUserSettings } from './userSettings'
+import { getOrgSupplyItems } from './orgSupplyItems'
+import { getCurrentOrgId } from './organisations'
 
 interface ExportParams {
   projectDetails: ProjectDetails
@@ -1010,15 +1012,25 @@ export async function buildBlockEstimateHtml(
   }
   if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
 
-  // User-defined supply items applicable to block estimates. Same model as
-  // the brick export: each item resolves to a whole-unit count from its
-  // rate × unit basis; zero-qty rows drop out. per-brick items skipped.
-  // supplyRows feeds both the Accessories table below and a matching
-  // assumption note so the document stays self-explanatory.
-  const supplyItems = getUserSettings().supplyItems ?? []
+  // User-defined supply items applicable to block estimates. Source
+  // of truth: when an org is active, use the org-synced Supabase
+  // list; otherwise fall back to the local IndexedDB (personal /
+  // offline mode). Same model as the brick export: each item
+  // resolves to a whole-unit count from its rate × unit basis; zero-
+  // qty rows drop out. per-brick items skipped. supplyRows feeds
+  // both the Accessories table below and a matching assumption note
+  // so the document stays self-explanatory.
+  const supplyItems = getCurrentOrgId()
+    ? getOrgSupplyItems()
+    : getUserSettings().supplyItems ?? []
   const blockArea_m2 = totalAreaSqMm_supply / 1_000_000
   const blockRun_m = totalLengthMm_supply / 1000
-  const supplyRows: { name: string; qty: number; noteRate: string }[] = []
+  const supplyRows: {
+    name: string
+    qty: number
+    noteRate: string
+    category: string
+  }[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('block')) continue
     if (supplyItemSelections?.[item.id] === false) continue
@@ -1079,7 +1091,12 @@ export async function buildBlockEstimateHtml(
     }
     const rounded = Math.ceil(qty)
     if (rounded <= 0) continue
-    supplyRows.push({ name: item.name, qty: rounded, noteRate })
+    supplyRows.push({
+      name: item.name,
+      qty: rounded,
+      noteRate,
+      category: item.category?.trim() || 'Uncategorised',
+    })
   }
 
   // Per-wall thickness + lookup so wallLengthMm returns outer-edge length consistently
@@ -1306,8 +1323,45 @@ export async function buildBlockEstimateHtml(
   // Total so the customer sees the full material list in one page. Hidden
   // entirely when no supply items applied to this estimate so the page
   // doesn't end with an empty 'Accessories' heading.
-  const accessoriesTable = supplyRows.length > 0
-    ? `
+  //
+  // Grouped by category — items sharing the same category render as a
+  // sub-header row, with their entries listed below. Uncategorised
+  // items render last under an 'Other' heading. Within each category
+  // rows stay in the order they were declared (so e.g. Galintel sizes
+  // appear small-to-large as the user entered them).
+  const accessoriesTable = (() => {
+    if (supplyRows.length === 0) return ''
+    const UNCAT = 'Uncategorised'
+    const groups = new Map<string, typeof supplyRows>()
+    for (const r of supplyRows) {
+      const key = r.category || UNCAT
+      const arr = groups.get(key)
+      if (arr) arr.push(r)
+      else groups.set(key, [r])
+    }
+    // Named groups alphabetically first, Uncategorised pinned last.
+    const ordered = Array.from(groups.entries()).sort(([a], [b]) => {
+      if (a === UNCAT) return 1
+      if (b === UNCAT) return -1
+      return a.localeCompare(b)
+    })
+    const renderGroup = (label: string, rows: typeof supplyRows) => {
+      // Only render a category header when there's more than one
+      // group (or the one group isn't Uncategorised) — single
+      // uncategorised lists keep the original flat appearance.
+      const showHeader = ordered.length > 1 || label !== UNCAT
+      const headerRow = showHeader
+        ? `<tr class="category-row"><td colspan="2" style="font-weight: 600; padding-top: 12px;">${escapeHtml(label)}</td></tr>`
+        : ''
+      const itemRows = rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${formatNumber(r.qty)}</td></tr>`
+        )
+        .join('')
+      return headerRow + itemRows
+    }
+    return `
       <h2 class="section-title">Accessories</h2>
       <table>
         <thead>
@@ -1317,16 +1371,11 @@ export async function buildBlockEstimateHtml(
           </tr>
         </thead>
         <tbody>
-          ${supplyRows
-            .map(
-              (r) =>
-                `<tr><td>${escapeHtml(r.name)}</td><td class="right">${formatNumber(r.qty)}</td></tr>`
-            )
-            .join('')}
+          ${ordered.map(([cat, rows]) => renderGroup(cat, rows)).join('')}
         </tbody>
       </table>
     `
-    : ''
+  })()
 
   const schedulePage = scheduleTable || accessoriesTable
     ? `

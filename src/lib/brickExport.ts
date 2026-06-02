@@ -20,6 +20,8 @@ import { calculateBrickTally } from './brickCalc'
 import { downloadPdfFromHtml } from './pdfExport'
 import { rasterisePdfPage } from './pdfRaster'
 import { getUserSettings } from './userSettings'
+import { getOrgSupplyItems } from './orgSupplyItems'
+import { getCurrentOrgId } from './organisations'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
 
 /** Single-skin default — same value PdfWorkspace uses for wall thickness
@@ -533,10 +535,19 @@ export async function buildBrickEstimateHtml(
   // Compute supply-item rows + assumption notes in a single pass so the
   // Accessories table below and the Assumptions section above stay in
   // lockstep — the user-defined items show up in both places consistently.
-  const supplyItems = getUserSettings().supplyItems ?? []
+  // Source of truth: org-synced list when an org is active; falls back
+  // to local IndexedDB for personal mode.
+  const supplyItems = getCurrentOrgId()
+    ? getOrgSupplyItems()
+    : getUserSettings().supplyItems ?? []
   const brickArea_m2 = tally.totalAreaSqMm / 1_000_000
   const brickRun_m = tally.totalLinealMm / 1000
-  type SupplyRow = { name: string; qty: number; noteRate: string }
+  type SupplyRow = {
+    name: string
+    qty: number
+    noteRate: string
+    category: string
+  }
   const supplyRows: SupplyRow[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('brick')) continue
@@ -601,7 +612,12 @@ export async function buildBrickEstimateHtml(
     }
     const rounded = Math.ceil(qty)
     if (rounded <= 0) continue
-    supplyRows.push({ name: item.name, qty: rounded, noteRate })
+    supplyRows.push({
+      name: item.name,
+      qty: rounded,
+      noteRate,
+      category: item.category?.trim() || 'Uncategorised',
+    })
   }
   const supplyItemNotes = supplyRows.map(
     (r) => `${r.name} allowance at ${r.noteRate} — ${r.qty.toLocaleString()} included.`
@@ -852,22 +868,47 @@ export async function buildBrickEstimateHtml(
   // toggles, but both layers have been retired — the user enables /
   // disables a supply item from one place (the Material library entry)
   // and overrides it per-project via supplyItemSelections.
-  const accessoriesRows: string[] = []
-  for (const row of supplyRows) {
-    accessoriesRows.push(
-      `<tr><td>${escapeHtml(row.name)}</td><td class="right">${row.qty.toLocaleString()}</td></tr>`
-    )
-  }
-
-  const accessoriesTable = accessoriesRows.length > 0
-    ? `
+  //
+  // Rendered grouped by category: items sharing a category appear
+  // under one bold sub-header row. Uncategorised group pinned last
+  // (rendered without a header when it's the only group, so projects
+  // without any categories keep the flat-list look).
+  const accessoriesTable = (() => {
+    if (supplyRows.length === 0) return ''
+    const UNCAT = 'Uncategorised'
+    const groups = new Map<string, typeof supplyRows>()
+    for (const r of supplyRows) {
+      const key = r.category || UNCAT
+      const arr = groups.get(key)
+      if (arr) arr.push(r)
+      else groups.set(key, [r])
+    }
+    const ordered = Array.from(groups.entries()).sort(([a], [b]) => {
+      if (a === UNCAT) return 1
+      if (b === UNCAT) return -1
+      return a.localeCompare(b)
+    })
+    const renderGroup = (label: string, rows: typeof supplyRows) => {
+      const showHeader = ordered.length > 1 || label !== UNCAT
+      const headerRow = showHeader
+        ? `<tr class="category-row"><td colspan="2" style="font-weight: 600; padding-top: 12px;">${escapeHtml(label)}</td></tr>`
+        : ''
+      const itemRows = rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${r.qty.toLocaleString()}</td></tr>`
+        )
+        .join('')
+      return headerRow + itemRows
+    }
+    return `
       <h2 class="section-title">Accessories</h2>
       <table>
         <thead><tr><th>Item</th><th class="right">Quantity</th></tr></thead>
-        <tbody>${accessoriesRows.join('')}</tbody>
+        <tbody>${ordered.map(([cat, rows]) => renderGroup(cat, rows)).join('')}</tbody>
       </table>
     `
-    : ''
+  })()
 
   const tablesPage = summaryTable || typeBreakdownTable || accessoriesTable
     ? `
