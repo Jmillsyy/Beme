@@ -15,7 +15,6 @@ import AreaTabs from './AreaTabs'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
-import BrickLibraryPanel from './BrickLibraryPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickTypesPanel from './BrickTypesPanel'
 import BrickTallyPanel from './BrickTallyPanel'
@@ -4593,18 +4592,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </>
               )}
               {mode === 'brick' && (
-                <>
-                  <BrickTypesPanel
-                    makeups={brickMakeups}
-                    activeMakeupId={activeBrickMakeupId}
-                    wallCountsByMakeupId={wallCountsByMakeupId}
-                    onSetActive={handleActivateBrickMakeup}
-                    onAddMakeup={handleAddBrickMakeup}
-                    onUpdateMakeup={handleUpdateBrickMakeup}
-                    onDeleteMakeup={handleDeleteBrickMakeup}
-                  />
-                  <BrickLibraryPanel />
-                </>
+                <BrickTypesPanel
+                  makeups={brickMakeups}
+                  activeMakeupId={activeBrickMakeupId}
+                  wallCountsByMakeupId={wallCountsByMakeupId}
+                  onSetActive={handleActivateBrickMakeup}
+                  onAddMakeup={handleAddBrickMakeup}
+                  onUpdateMakeup={handleUpdateBrickMakeup}
+                  onDeleteMakeup={handleDeleteBrickMakeup}
+                />
               )}
             </aside>
           </div>
@@ -6707,20 +6703,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-        {/* Brick wall types + settings + library (brick mode) */}
+        {/* Brick wall types (brick mode). Brick library is edited
+            from the Material library page; we don't show it in the
+            workspace right-rail any more. */}
         {mode === 'brick' && (
-          <>
-            <BrickTypesPanel
-              makeups={brickMakeups}
-              activeMakeupId={activeBrickMakeupId}
-              wallCountsByMakeupId={wallCountsByMakeupId}
-              onSetActive={handleActivateBrickMakeup}
-              onAddMakeup={handleAddBrickMakeup}
-              onUpdateMakeup={handleUpdateBrickMakeup}
-              onDeleteMakeup={handleDeleteBrickMakeup}
-            />
-            <BrickLibraryPanel />
-          </>
+          <BrickTypesPanel
+            makeups={brickMakeups}
+            activeMakeupId={activeBrickMakeupId}
+            wallCountsByMakeupId={wallCountsByMakeupId}
+            onSetActive={handleActivateBrickMakeup}
+            onAddMakeup={handleAddBrickMakeup}
+            onUpdateMakeup={handleUpdateBrickMakeup}
+            onDeleteMakeup={handleDeleteBrickMakeup}
+          />
         )}
 
         {/* Supply items panel — same component in both modes. Lists the
