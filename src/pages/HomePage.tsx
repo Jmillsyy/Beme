@@ -637,7 +637,10 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [, setLoading] = useState(true)
 
-  useEffect(() => {
+  // Wrapped in useCallback so the focus / visibility listeners below
+  // can reuse the same loader without re-creating it on every render.
+  // The org id is the only dependency that determines what to fetch.
+  const reloadDashboard = useCallback(() => {
     let cancelled = false
     setLoading(true)
     Promise.all([
@@ -662,6 +665,32 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       cancelled = true
     }
   }, [org.id])
+
+  useEffect(() => {
+    const cancel = reloadDashboard()
+    return cancel
+  }, [reloadDashboard])
+
+  // Refresh whenever the window regains focus or the tab becomes
+  // visible. Catches the common workflow where the user marks a
+  // project complete in the workspace and navigates back to the
+  // dashboard — without this, the stats stayed stale until a hard
+  // reload. Same handler covers the multi-device case: tab away to
+  // a different machine, come back, see the up-to-date numbers.
+  useEffect(() => {
+    const refresh = () => {
+      // Skip when the tab is hidden — no point fetching if the user
+      // isn't looking. The next visibility change will pick it up.
+      if (document.visibilityState !== 'visible') return
+      reloadDashboard()
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [reloadDashboard])
 
   // Member lookup for assignee / creator name display on request rows.
   const memberById = useMemo(() => {
