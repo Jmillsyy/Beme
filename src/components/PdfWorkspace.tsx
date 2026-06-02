@@ -2633,6 +2633,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const firstId = newId()
     const secondId = newId()
 
+    // Inner ends tagged 'control-joint' — that marker is the ONLY
+    // way the junction survives recomputeAllJunctions intact. If we
+    // used 'free' here, the junction recompute pass would see the
+    // two halves' coincident endpoints and re-derive them as a
+    // CORNER (corners = endpoints coincide). That collapses the
+    // seam into a single full-corner column, no alternation.
+    //
+    // The 'control-joint' marker keeps recomputeAllJunctions away
+    // from it. Downstream, planEnd / resolveEndForCourse /
+    // segmentsForStraightWall treat 'control-joint' the same as
+    // 'free' — alternating full/half stretcher pattern — so each
+    // half emits its own end termination at the seam.
+    //
+    // connectedWallIds keeps the relationship so future operations
+    // (delete one half, drag endpoints, etc.) can find the partner.
     const firstHalf: Wall = {
       ...wall,
       id: firstId,
@@ -2655,8 +2670,45 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       endJunction: { ...wall.endJunction },
     }
 
-    // The two halves replace the original wall in the page's wall list.
-    const remainingWalls = existing.filter((w) => w.id !== wallId)
+    // Repoint any OTHER wall's connectedWallIds that reference the wall
+    // we're about to split. Without this, an existing control-joint
+    // partner (or future corner partner) still references the OLD
+    // wallId — recomputeAllJunctions sees the dangling ref and
+    // downgrades that endpoint to 'free', breaking symmetry on the
+    // partner's side of an already-placed control joint.
+    //
+    // Geographically: if the partner wall's junction sits NEAR the
+    // original wall's START point, it belongs with firstHalf. If
+    // near the END point, with secondHalf.
+    const startPt = { x: wall.startX, y: wall.startY }
+    const endPt = { x: wall.endX, y: wall.endY }
+    const sqDist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+      (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)
+    const repointJunction = (j: { type: string; connectedWallIds?: string[] }, jx: number, jy: number) => {
+      const ids = j.connectedWallIds
+      if (!ids || !ids.includes(wallId)) return j
+      const at = { x: jx, y: jy }
+      const replacement = sqDist(at, startPt) <= sqDist(at, endPt) ? firstId : secondId
+      return {
+        ...j,
+        connectedWallIds: ids.map((id) => (id === wallId ? replacement : id)),
+      }
+    }
+    const remainingWalls = existing
+      .filter((w) => w.id !== wallId)
+      .map((w) => ({
+        ...w,
+        startJunction: repointJunction(
+          w.startJunction as unknown as { type: string; connectedWallIds?: string[] },
+          w.startX,
+          w.startY,
+        ) as typeof w.startJunction,
+        endJunction: repointJunction(
+          w.endJunction as unknown as { type: string; connectedWallIds?: string[] },
+          w.endX,
+          w.endY,
+        ) as typeof w.endJunction,
+      }))
     const newWalls = [...remainingWalls, firstHalf, secondHalf]
     const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
     const recomputed = recomputeAllJunctions(newWalls, thicknesses)
@@ -3885,7 +3937,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // work for both: a click without movement falls through to Konva (draw a point, select a
   // wall, place a calibration mark), while a click+drag pans the view.
   useEffect(() => {
-    if (!pdfFile) return
+    // Pan / wheel handlers attach for both PDF mode AND empty-workspace
+    // mode — the latter has no pdfFile but still has a pannable virtual
+    // page inside the same container. Without this, empty workspace was
+    // mountable but the page wouldn't move on drag.
+    if (!pdfFile && !isEmptyWorkspace) return
 
     const PAN_DRAG_THRESHOLD_PX = 4
     const container = containerRef.current
@@ -3959,7 +4015,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       container.removeEventListener('click', handleContainerClickCapture, { capture: true })
       container.removeEventListener('contextmenu', handleContextMenu)
     }
-  }, [pdfFile])
+  }, [pdfFile, isEmptyWorkspace])
 
   function handlePanMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     // Left-click pans only when no draw tool is grabbing it — we record the

@@ -620,17 +620,8 @@ export function planEnd(
   void bodyBlockCode
   const fullEndBlock = cornerBlockCode
 
-  // Corners and control joints both get the full-corner-on-every-
-  // course treatment. Corners: shared-ownership alternation happens
-  // upstream (planWallLayout / segmentsForStraightWall); planEnd
-  // simply reports "full both courses" so the body fit accounts for
-  // a full block at each end. Control joints: each half emits its
-  // own clean vertical edge.
-  const treatAsCorner =
-    junctionType === 'corner' || junctionType === 'control-joint'
-
   if (bondType === 'stretcher') {
-    if (treatAsCorner) {
+    if (junctionType === 'corner') {
       return {
         oddBlock: fullEndBlock,
         evenBlock: fullEndBlock,
@@ -638,7 +629,10 @@ export function planEnd(
         evenModular: FULL_END_MODULE_MM,
       }
     }
-    // Free, T-junction: alternating in stretcher.
+    // Free, T-junction, control-joint: alternating in stretcher.
+    // Control joints are treated as free ends so each half of a
+    // split renders its own end termination at the seam (two
+    // independent walls with stretcher alternation).
     // Half block: per-makeup override → library role pick → '20.03' fallback.
     const halfFromLib = pickHalfBlock()
     const resolvedHalf = halfBlockCode ?? halfFromLib?.code ?? '20.03'
@@ -649,17 +643,7 @@ export function planEnd(
       evenModular: HALF_END_MODULE_MM,
     }
   }
-  // Stack bond
-  if (junctionType === 'corner') {
-    return {
-      oddBlock: fullEndBlock,
-      evenBlock: fullEndBlock,
-      oddModular: FULL_END_MODULE_MM,
-      evenModular: FULL_END_MODULE_MM,
-    }
-  }
-  // Stack bond free / T-junction / control-joint: same full block all courses.
-  // TODO: implement best-fit picker that considers both ends together.
+  // Stack bond — same full block all courses regardless of junction.
   return {
     oddBlock: fullEndBlock,
     evenBlock: fullEndBlock,
@@ -1002,12 +986,11 @@ export function calculateWallTally(
     isOddCourse: boolean
   ): BlockCode {
     const blocks = resolveCourseBlocks(makeup, courseNumber)
-    // Corners + control joints both report the full corner block on
-    // every course. Free / T-junction ends alternate corner/half in
-    // stretcher bond. Mirrors planEnd.
-    const treatAsCorner =
-      junctionType === 'corner' || junctionType === 'control-joint'
-    if (makeup.bondType === 'stretcher' && !treatAsCorner) {
+    // Only structural CORNER junctions get the full-block-every-course
+    // treatment. Control joints are treated as free ends so each half
+    // of a split emits its own alternating end termination at the
+    // seam. Mirrors planEnd.
+    if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
       return isOddCourse
         ? healCode(blocks.cornerBlockCode, 'corner')
         : healCode(blocks.halfBlockCode, 'end-termination')
@@ -1391,17 +1374,16 @@ export function planWallLayout(
     const isOddCourse = i % 2 === 0
 
     // End block resolution — mirrors calculateWallTally exactly.
-    // Corners and control joints both return the full corner block
-    // on every course. Free / T-junction ends alternate.
+    // Only structural CORNER junctions get full-block-every-course.
+    // Control joints alternate like free ends so each half emits
+    // its own end termination at the seam.
     const resolveEndForCourse = (
       junctionType: JunctionType,
       cNum: number,
       odd: boolean
     ): BlockCode => {
       const blocks = resolveCourseBlocks(makeup, cNum)
-      const treatAsCorner =
-        junctionType === 'corner' || junctionType === 'control-joint'
-      if (makeup.bondType === 'stretcher' && !treatAsCorner) {
+      if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
         return odd
           ? healCode(blocks.cornerBlockCode, 'corner')
           : healCode(blocks.halfBlockCode, 'end-termination')

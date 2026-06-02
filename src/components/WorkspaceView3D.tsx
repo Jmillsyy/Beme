@@ -43,6 +43,7 @@
  */
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
+import { Grid } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Wall, Opening, WallMakeup, BrickMakeup, CourseBand } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
@@ -464,6 +465,20 @@ function segmentsFromWallLayout(
   const halfGap = MORTAR_GAP_M / 2
   const totalHeightM = layout.heightMm / 1000
 
+  // Control-joint sealant gap — when this wall has a 'control-joint'
+  // junction at either end, pull the rendered geometry back from
+  // that end by SEALANT_GAP_M so the two halves of a split show a
+  // visible vertical seam between them. Tally is unchanged; only
+  // the visible box shrinks. ~6mm each side gives a ~12mm visible
+  // gap between the two halves, matching real-world sealant joints.
+  const SEALANT_GAP_M = 0.02
+  const startSealantInset =
+    wall.startJunction.type === 'control-joint' ? SEALANT_GAP_M : 0
+  const endSealantInset =
+    wall.endJunction.type === 'control-joint' ? SEALANT_GAP_M : 0
+  const effectiveStartM = startSealantInset
+  const effectiveEndM = wallLenM - endSealantInset
+
   const boxes: WallSegmentBox[] = []
   const colorOf = (code: BlockCode) =>
     colorMap.get(code) ?? DEFAULT_WALL_COLOR
@@ -485,15 +500,18 @@ function segmentsFromWallLayout(
 
     // Clamp s to wall length so cut blocks don't overhang the model
     // (the tally still counts the full block; here we just trim the
-    // visible face).
-    const cs0 = Math.max(0, Math.min(wallLenM, s0))
-    const cs1 = Math.max(0, Math.min(wallLenM, s1))
+    // visible face). The clamp uses effectiveStart/End so control-
+    // joint ends get pulled back by the sealant gap.
+    const cs0 = Math.max(effectiveStartM, Math.min(effectiveEndM, s0))
+    const cs1 = Math.max(effectiveStartM, Math.min(effectiveEndM, s1))
     if (cs1 - cs0 < 0.001) continue
 
     // Mortar-style inset on edges that face a neighbour. Edges
-    // touching the wall envelope stay flush.
-    const leftInset = cs0 < 0.001 ? 0 : halfGap
-    const rightInset = cs1 > wallLenM - 0.001 ? 0 : halfGap
+    // touching the wall envelope (true outer edges OR a control-
+    // joint sealant boundary) stay flush — at those edges, the
+    // existing wall-end gap / sealant gap IS the visible joint.
+    const leftInset = cs0 < effectiveStartM + 0.001 ? 0 : halfGap
+    const rightInset = cs1 > effectiveEndM - 0.001 ? 0 : halfGap
     const bottomInset = y0 < 0.001 ? 0 : halfGap
     const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
 
@@ -630,6 +648,17 @@ function segmentsForStraightWall(
    *  (s0=0 left end, s1=length right end, y0=0 wall base, y1=total
    *  wall top) get no inset so the wall has a clean outer face
    *  without visible mortar at the corners or sill. */
+  // Control-joint sealant gap — pulls the rendered wall back from
+  // any control-joint end so the seam between two halves shows a
+  // visible vertical gap (real-world sealant joint). Render-only.
+  const SEALANT_GAP_M = 0.02
+  const startSealant =
+    wall.startJunction.type === 'control-joint' ? SEALANT_GAP_M : 0
+  const endSealant =
+    wall.endJunction.type === 'control-joint' ? SEALANT_GAP_M : 0
+  const effectiveLeftM = startSealant
+  const effectiveRightM = length - endSealant
+
   const buildBox = (
     s0: number,
     s1: number,
@@ -639,12 +668,17 @@ function segmentsForStraightWall(
     code: BlockCode
   ): WallSegmentBox => {
     const halfGap = MORTAR_GAP_M / 2
-    const leftInset = s0 < 0.001 ? 0 : halfGap
-    const rightInset = s1 > length - 0.001 ? 0 : halfGap
+    // Clamp to effective wall extent (= wall length minus any control-
+    // joint sealant gap), so blocks at a control-joint end render
+    // inset by SEALANT_GAP_M.
+    const clampedS0 = Math.max(effectiveLeftM, Math.min(effectiveRightM, s0))
+    const clampedS1 = Math.max(effectiveLeftM, Math.min(effectiveRightM, s1))
+    const leftInset = clampedS0 < effectiveLeftM + 0.001 ? 0 : halfGap
+    const rightInset = clampedS1 > effectiveRightM - 0.001 ? 0 : halfGap
     const bottomInset = y0 < 0.001 ? 0 : halfGap
     const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
-    const aS0 = s0 + leftInset
-    const aS1 = s1 - rightInset
+    const aS0 = clampedS0 + leftInset
+    const aS1 = clampedS1 - rightInset
     const aY0 = y0 + bottomInset
     const aY1 = y1 - topInset
     const localCx = (aS0 + aS1) / 2
@@ -852,13 +886,12 @@ function segmentsForStraightWall(
   const grid: CourseEntry[] = courses.map((course) => {
     const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
-    // Halves ONLY at TRUE free / T-junction ends in stretcher bond's
-    // even courses. Control joints (which we group with free ends for
-    // the no-shared-corner logic above) are intentionally excluded
-    // here so they always render the full corner block — giving the
-    // user the "two walls with full end terminations" look at a split.
-    const useHalfLeft = isEvenStretcher && leftIsFreeEnd && !leftIsControlJoint
-    const useHalfRight = isEvenStretcher && rightIsFreeEnd && !rightIsControlJoint
+    // Half blocks alternate at every non-corner end in stretcher
+    // bond — including control joints. The seam between two split
+    // halves should show two free-end terminations meeting (full
+    // corner on odd courses, half block on even on each side).
+    const useHalfLeft = isEvenStretcher && leftIsFreeEnd
+    const useHalfRight = isEvenStretcher && rightIsFreeEnd
 
     // Corner-cell handling — both walls ALWAYS render a corner-
     // coloured end cell (so the visible corner column stays solid red
@@ -1701,6 +1734,9 @@ function Scene({
   library,
   navStyle,
   planTexture,
+  pageWidthMm,
+  pageHeightMm,
+  pageScaleRatio,
 }: Omit<WorkspaceView3DProps, 'areas'> & {
   navStyle: NavStyle
   planTexture: { texture: THREE.Texture; widthM: number; heightM: number } | null
@@ -2369,20 +2405,62 @@ function Scene({
           Two-sided so looking at the ground from below (e.g. an
           underground cutaway angle the user might pan into) still
           paints something instead of going black. */}
-      {/* Dark ground plane — only when no plan texture is in play.
-          When the plan-as-floor is mounted (just below), this would
-          z-fight with it (5mm apart) AND be visually identical
-          underneath the plan texture's matching background colour, so
-          we skip it entirely. */}
-      {!planTexture && (
-        <mesh
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[segmentBounds.centerX, -0.02, segmentBounds.centerZ]}
-        >
-          <planeGeometry args={[segmentBounds.sizeMax * 50, segmentBounds.sizeMax * 50]} />
-          <meshStandardMaterial color={GROUND_COLOR} side={THREE.DoubleSide} />
-        </mesh>
-      )}
+      {/* No-PDF mode: render the empty-workspace page footprint as a
+          grid "plan" floor. The 2D view shows an A1 sheet at the
+          project's scale ratio as a grid-paper backdrop; mirror that
+          in 3D by sizing the grid to the same real-world dimensions
+          (pageWidthMm × pageScaleRatio).
+          - cellSize: 1m, light line
+          - sectionSize: 5m, brighter / thicker line
+          followCamera=false so the grid stays anchored to the page
+          footprint instead of dragging with the camera. */}
+      {!planTexture && (() => {
+        // Real-world page dimensions in metres. Default to A1 at 1:100
+        // (84.1 × 59.4 m) if the props aren't passed — same fallback the
+        // empty-workspace seed uses, so a 3D view opened before the
+        // first calibration still gets a sensible-looking floor.
+        const pageW = pageWidthMm && pageScaleRatio
+          ? (pageWidthMm * pageScaleRatio) / 1000
+          : 84.1
+        const pageH = pageHeightMm && pageScaleRatio
+          ? (pageHeightMm * pageScaleRatio) / 1000
+          : 59.4
+        return (
+          <>
+            {/* Dark backing fills the page footprint so a low-angle
+                camera doesn't see through to the void underneath the
+                grid lines. Slightly larger than the grid so the page
+                edge reads as a clean rectangle. */}
+            <mesh
+              rotation={[-Math.PI / 2, 0, 0]}
+              position={[-pageW / 2, -0.02, -pageH / 2]}
+            >
+              <planeGeometry args={[pageW, pageH]} />
+              <meshStandardMaterial color={GROUND_COLOR} side={THREE.DoubleSide} />
+            </mesh>
+            <Grid
+              position={[-pageW / 2, -0.01, -pageH / 2]}
+              args={[pageW, pageH]}
+              cellSize={1}
+              cellThickness={0.6}
+              // Blueprint feel: navy floor + cool light-grey grid.
+              // Cells are visible-but-not-shouty (~Tailwind slate-500
+              // tone) so 1m divisions read as a regular grid.
+              cellColor="#64748b"
+              sectionSize={5}
+              sectionThickness={1.2}
+              // Section lines (every 5m) brighter — almost white —
+              // so the bigger divisions clearly stand out, matching
+              // the heavy / light line pattern of a real CAD plan.
+              sectionColor="#cbd5e1"
+              fadeDistance={Math.max(pageW, pageH) * 2}
+              fadeStrength={1.2}
+              followCamera={false}
+              infiniteGrid={false}
+            />
+          </>
+        )
+      })()}
 
       {/* Plan-as-floor: when the host has rasterised the current PDF
           page, render it as a horizontal plane sized to its real-world
