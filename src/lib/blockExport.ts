@@ -1143,8 +1143,11 @@ export async function buildBlockEstimateHtml(
     projectDetails.siteAddress.trim() ||
     projectDetails.projectName.trim() ||
     'Block Takeoff'
+  // Filename + document title — prefer site address so the saved
+  // PDF is named by site (matches how the estimator files them).
+  // Falls back to project name, then a generic 'Block Takeoff'.
   const docTitle =
-    `${projectDetails.projectName.trim() || projectDetails.siteAddress.trim() || 'Block Takeoff'} — Block Takeoff`
+    `${projectDetails.siteAddress.trim() || projectDetails.projectName.trim() || 'Block Takeoff'} — Block Takeoff`
 
   const tiedPierCount = piers.filter((p) => p.type === 'tied').length
   const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length

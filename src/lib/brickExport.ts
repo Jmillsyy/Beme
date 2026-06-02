@@ -532,8 +532,10 @@ export async function buildBrickEstimateHtml(
     projectDetails.siteAddress.trim() ||
     projectDetails.projectName.trim() ||
     'Brickwork Takeoff'
+  // Filename + document title — prefer site address so the saved
+  // PDF is named by site. Falls back to project name, then generic.
   const docTitle =
-    `${projectDetails.projectName.trim() || projectDetails.siteAddress.trim() || 'Brickwork Takeoff'} — Brickwork Takeoff`
+    `${projectDetails.siteAddress.trim() || projectDetails.projectName.trim() || 'Brickwork Takeoff'} — Brickwork Takeoff`
 
   // Compute supply-item rows + assumption notes in a single pass so the
   // Accessories table below and the Assumptions section above stay in

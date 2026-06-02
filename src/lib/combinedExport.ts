@@ -189,11 +189,12 @@ export async function exportCombinedEstimate(
     </section>
   `
 
-  // Filename — combine project name with a hint so combined exports
-  // are distinguishable from single-trade ones in the downloads folder.
+  // Filename — prefer site address (estimators file PDFs by site)
+  // with a hint so combined exports are distinguishable from
+  // single-trade ones in the downloads folder.
   const baseName =
-    projectDetails.projectName.trim() ||
     projectDetails.siteAddress.trim() ||
+    projectDetails.projectName.trim() ||
     'Combined Takeoff'
   const filename = `${baseName} — Combined Block + Brick Takeoff`
 
