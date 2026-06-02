@@ -110,7 +110,10 @@ export default function AreaTabs({
   const activeLabel = activeArea?.name ?? 'All areas'
 
   return (
-    <div className="relative inline-block">
+    // Wrapper width matches the right-rail panel width (lg:w-[340px])
+    // so the Area dropdown lines up with the Wall types panel and the
+    // Trade row below it instead of floating as a narrow button.
+    <div className="relative w-full lg:w-[340px]">
       <button
         ref={buttonRef}
         type="button"
@@ -119,8 +122,9 @@ export default function AreaTabs({
         aria-expanded={open}
         // Match the canvas-side toolbar buttons (px-3 py-1.5 text-sm
         // rounded-lg) so the area selector sits flush with them on the
-        // same horizontal line.
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ink-800 border border-ink-600 text-sm text-ink-100 hover:bg-ink-700 transition-colors min-w-[180px]"
+        // same horizontal line. w-full so the button fills the wrapper
+        // (and therefore lines up with the right-rail panel width).
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ink-800 border border-ink-600 text-sm text-ink-100 hover:bg-ink-700 transition-colors w-full"
       >
         <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">
           Area
