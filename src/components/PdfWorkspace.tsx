@@ -274,6 +274,40 @@ const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 const MAX_RENDERED_ZOOM = 3.5
 
 /**
+ * Raster "stops" — the PDF + Konva canvases only rasterise at these zoom
+ * levels. When the user's zoom settles, we pick the smallest stop ≥ the
+ * target and rasterise at that. Anything in between snaps to the higher
+ * stop and gets visually scaled by the GPU via `transform: scale(...)`.
+ *
+ * Why this exists — mipmap-style caching, the way Bluebeam / PlanSwift
+ * do it. Without stops, every distinct settled zoom triggers a re-raster
+ * of the whole page. With stops, a user pinching back and forth between
+ * (say) 1.1× and 1.6× only re-rasters once (crossing 1→2) instead of on
+ * every gesture, because both values quantise to the same 2× stop. The
+ * GPU's downscale from 2× canvas to 1.1× visual is essentially lossless
+ * on modern displays so there's no perceptible softness.
+ *
+ * Stop choice:
+ *   1.0  — covers fit-page through ~1.5× detail work
+ *   2.0  — covers ~1.5× through 2.5× (the "looking at a wall" range)
+ *   3.5  — covers 2.5× through MAX_ZOOM (extreme detail; same as the
+ *          existing cap, so behaviour above MAX_RENDERED_ZOOM is
+ *          unchanged — GPU stretches the 3.5× canvas further).
+ *
+ * Trade-off: a single zoom that crosses two stops in one gesture (e.g.
+ * 1× → 3×) will re-raster twice instead of once. We accept this because
+ * continuous-pinch traffic between two CLOSE values is by far the more
+ * common pattern in takeoff work (pinpointing dimensions, hovering walls).
+ */
+const RENDER_ZOOM_STOPS = [1, 2, MAX_RENDERED_ZOOM]
+function quantiseRenderZoom(target: number): number {
+  for (const stop of RENDER_ZOOM_STOPS) {
+    if (stop >= target) return stop
+  }
+  return RENDER_ZOOM_STOPS[RENDER_ZOOM_STOPS.length - 1]
+}
+
+/**
  * Scale-ratio presets covering the common Australian / metric architectural
  * + engineering set. Ordered ascending so the dropdown reads naturally.
  * "Custom…" at the bottom (handled in the dropdown's onChange) prompts the
@@ -4024,7 +4058,31 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * threshold, which caused the cursor to drift mid-zoom.
    */
   const pageWrapperRef = useRef<HTMLDivElement>(null)
+  /**
+   * Ref on the INNER (transformed) page wrapper — the div whose CSS
+   * `transform: scale(visualScale)` provides the smooth visual zoom
+   * between PDF re-rasters. The wheel handler mutates its style.transform
+   * directly so the visual zoom updates without waiting for React to
+   * re-render the (very large) PdfWorkspace tree. Keep in sync with the
+   * JSX site at the bottom of this file.
+   */
+  const innerPageWrapperRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
+  /**
+   * Refs the wheel handler reads to compute the new visual size +
+   * transform without going through React state. Updated by an effect
+   * whenever the source values change so they're always current.
+   */
+  const renderedZoomRef = useRef(1)
+  const renderedPageWidthRef = useRef(0)
+  const renderedPageHeightRef = useRef<number | null>(null)
+  /**
+   * Debounced React commit timer for zoom. The wheel handler updates
+   * the DOM immediately on every rAF tick and queues a setZoom() that
+   * fires once the user pauses, so the rest of the React tree only
+   * re-renders at the END of the gesture instead of on every frame.
+   */
+  const zoomCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
    * Cursor anchor for wheel zoom — stores the world-space (zoom-independent)
    * coordinates of the cursor at wheel time and the cursor's viewport
@@ -4179,6 +4237,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     zoomRef.current = zoom
   }, [zoom])
 
+  // Keep the rendered-zoom / rendered-page-size refs in sync so the
+  // wheel handler can compute the new visual transform + width/height
+  // without going through React state. These are written on every
+  // commit but read on every wheel tick.
+  useEffect(() => {
+    renderedZoomRef.current = renderedZoom
+    renderedPageWidthRef.current = renderedPageWidth
+    renderedPageHeightRef.current = renderedPageHeight
+  }, [renderedZoom, renderedPageWidth, renderedPageHeight])
+
   // Keep calibratingRef in sync so pan handler can read it
   useEffect(() => {
     calibratingRef.current = calibrating
@@ -4228,7 +4296,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // causes a visible snap (blurry transformed canvas → crisp native canvas). We'd rather
   // keep the canvas in CSS-transform mode for the whole gesture and snap once at the end.
   useEffect(() => {
-    const target = Math.min(zoom, MAX_RENDERED_ZOOM)
+    // Quantise to the nearest raster STOP (mipmap-style) so we only
+    // re-raster when crossing a stop boundary, not on every settled
+    // zoom value. See RENDER_ZOOM_STOPS for the rationale.
+    const target = quantiseRenderZoom(Math.min(zoom, MAX_RENDERED_ZOOM))
     if (target === renderedZoom) return
     const timer = setTimeout(() => {
       setRenderedZoom(target)
@@ -4273,28 +4344,30 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM)
       if (newZoom === oldZoom) return
 
-      // Zoom-to-cursor: anchor the page point under the cursor so it stays
-      // there after the zoom. We do this by reading the page wrapper's
-      // ACTUAL DOM position (via getBoundingClientRect) instead of trying
-      // to derive it from flex / padding / min-width math. Layout
-      // interactions across the centring threshold (small page vs large
-      // page) were causing the previous closed-form math to drift; reading
-      // the DOM is robust to any layout the browser actually computed.
+      // ── Zoom-to-cursor anchor ──────────────────────────────────
+      // Read the page wrapper's actual DOM position via
+      // getBoundingClientRect so the anchor is robust against any
+      // flex / padding / centring layout the browser computed.
       //
       // Steps:
       //   1. Capture the cursor's WORLD position over the page (in the
       //      zoom-independent baseWidth units) at the current zoom.
-      //   2. Stash that anchor plus the cursor's viewport position.
-      //   3. Bump zoom state.
-      //   4. After the new zoom commits and the page wrapper resizes
-      //      (handled in the layout effect on [zoom]), measure where the
-      //      same world point is now and shift scroll so the cursor and
-      //      that point realign.
+      //   2. Mutate the page wrapper's DOM dimensions + inner transform
+      //      DIRECTLY (no React) so the visual update lands this rAF
+      //      tick instead of waiting for a full PdfWorkspace re-render.
+      //   3. Re-read the page rect after mutation and shift scroll so
+      //      the same world point lands back under the cursor.
+      //   4. Debounce a setZoom() commit so the rest of the React tree
+      //      (sidebars, toolbar zoom %, etc.) updates ONCE when the
+      //      gesture pauses instead of on every frame.
       const pageEl = pageWrapperRef.current
-      if (!pageEl) {
-        // Page wrapper not mounted (upload zone, etc.) — just apply zoom
-        // without anchoring.
+      const innerEl = innerPageWrapperRef.current
+      const container = containerRef.current
+      if (!pageEl || !innerEl || !container) {
+        // Page wrapper not mounted (upload zone, etc.) — just apply
+        // zoom through React state and skip the DOM-mutation path.
         zoomRef.current = newZoom
+        if (zoomCommitTimerRef.current) clearTimeout(zoomCommitTimerRef.current)
         setZoom(newZoom)
         return
       }
@@ -4307,18 +4380,59 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const worldX = cursorOnPageVisualX / oldZoom
       const worldY = cursorOnPageVisualY / oldZoom
 
+      // 1) Synchronously bump the zoom ref so the NEXT wheel tick reads
+      //    our new zoom, not the (still-stale) React state.
+      zoomRef.current = newZoom
+
+      // 2) Direct DOM mutation for the wrapper sizes + inner transform.
+      //    Bypasses React so each rAF tick gets a visual update in <1ms
+      //    instead of waiting for the (large) PdfWorkspace tree to
+      //    reconcile.
+      const renderedZ = renderedZoomRef.current || 1
+      const renderedW = renderedPageWidthRef.current
+      const renderedH = renderedPageHeightRef.current
+      const visualScaleNow = newZoom / renderedZ
+      const visualWidthNow = renderedW * visualScaleNow
+      const visualHeightNow = renderedH != null ? renderedH * visualScaleNow : null
+      pageEl.style.width = `${visualWidthNow}px`
+      if (visualHeightNow != null) {
+        pageEl.style.height = `${visualHeightNow}px`
+      }
+      innerEl.style.transform = `scale(${visualScaleNow})`
+
+      // 3) Reconcile scroll so the cursor's world point stays put.
+      //    Re-reading the rect after the DOM mutation gives us the
+      //    actual new position (which depends on flex centring etc.).
+      const newPageRect = pageEl.getBoundingClientRect()
+      const currentWorldVisualLeft = newPageRect.left + worldX * newZoom
+      const currentWorldVisualTop = newPageRect.top + worldY * newZoom
+      const deltaX = currentWorldVisualLeft - pendingClientX
+      const deltaY = currentWorldVisualTop - pendingClientY
+      const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
+      container.scrollLeft = Math.max(0, Math.min(maxLeft, container.scrollLeft + deltaX))
+      container.scrollTop = Math.max(0, Math.min(maxTop, container.scrollTop + deltaY))
+
+      // 4) Debounce the React state commit so consumers that depend on
+      //    `zoom` (toolbar %, layout effects, render of giant subtrees)
+      //    only re-run once the user pauses. 80 ms is short enough to
+      //    feel instantaneous when the gesture ends and long enough to
+      //    coalesce a continuous trackpad pinch into a single render.
+      //
+      //    Also stash the anchor for the post-commit useLayoutEffect to
+      //    consume — it re-anchors after the PDF re-rasters at 300 ms,
+      //    keeping the cursor pinned through the canvas swap.
       zoomAnchorRef.current = {
         cursorClientX: pendingClientX,
         cursorClientY: pendingClientY,
         worldX,
         worldY,
       }
-
-      // Synchronously bump the zoom ref so the NEXT wheel tick (which might
-      // fire before React commits this update) reads our new zoom, not the
-      // stale committed one.
-      zoomRef.current = newZoom
-      setZoom(newZoom)
+      if (zoomCommitTimerRef.current) clearTimeout(zoomCommitTimerRef.current)
+      zoomCommitTimerRef.current = setTimeout(() => {
+        zoomCommitTimerRef.current = null
+        setZoom(newZoom)
+      }, 80)
     }
 
     const handler = (e: WheelEvent) => {
@@ -4334,6 +4448,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     return () => {
       container.removeEventListener('wheel', handler)
       if (rafId !== null) cancelAnimationFrame(rafId)
+      if (zoomCommitTimerRef.current) {
+        clearTimeout(zoomCommitTimerRef.current)
+        zoomCommitTimerRef.current = null
+      }
     }
   }, [pdfFile, baseWidth, aspectRatio])
 
@@ -4499,6 +4617,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const container = containerRef.current
     const pageEl = pageWrapperRef.current
     if (!anchor || !container || !pageEl) return
+    // Only re-anchor after the FINAL pass (renderedZoom has caught up
+    // to the clamped target). The interactive wheel handler already
+    // anchored on every rAF tick via direct DOM mutation, so running
+    // again here on every intermediate `zoom` commit would double-
+    // shift the scroll and yank the page sideways. We only need this
+    // effect to handle the PDF re-raster snap that happens 300 ms
+    // after the gesture ends — the canvas swap can nudge the wrapper
+    // a sub-pixel amount and the anchor pulls the cursor back onto its
+    // world point.
+    // Compare against the QUANTISED target — renderedZoom now snaps to
+    // discrete RENDER_ZOOM_STOPS, not the raw clamped zoom, so a raw
+    // comparison would never agree once stops are in play.
+    if (renderedZoom !== quantiseRenderZoom(Math.min(zoom, MAX_RENDERED_ZOOM))) return
     const pageRect = pageEl.getBoundingClientRect()
     const currentWorldVisualLeft = pageRect.left + anchor.worldX * zoom
     const currentWorldVisualTop = pageRect.top + anchor.worldY * zoom
@@ -4510,11 +4641,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
     container.scrollLeft = Math.max(0, Math.min(maxLeft, targetLeft))
     container.scrollTop = Math.max(0, Math.min(maxTop, targetTop))
-    // Only consume the anchor once renderedZoom has caught up — until then
-    // a follow-up effect run can re-anchor against the PDF re-raster.
-    if (renderedZoom === Math.min(zoom, MAX_RENDERED_ZOOM)) {
-      zoomAnchorRef.current = null
-    }
+    zoomAnchorRef.current = null
   }, [zoom, renderedZoom])
 
   // Centre the page horizontally and vertically in the viewport on
@@ -7043,8 +7170,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 Konva layer is sized at renderedPageWidth × renderedPageHeight (a stable size
                 across interactive zoom), so its props don't change on every wheel tick and
                 React skips re-rendering it. The CSS transform handles the visual scaling
-                "for free" between rasterisations. */}
+                "for free" between rasterisations.
+
+                The ref gives the wheel handler a direct DOM target to mutate
+                `style.transform` between rAF ticks WITHOUT going through React,
+                so smoothness doesn't depend on how fast the (large) workspace
+                tree reconciles. React still owns the committed value once the
+                gesture ends. */}
             <div
+              ref={innerPageWrapperRef}
               style={{
                 width: renderedPageWidth,
                 height: renderedPageHeight ?? undefined,
@@ -7221,15 +7355,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   // zoom. The wall layer uses this to suppress hover state
                   // updates that would otherwise stutter the gesture.
                   //
-                  // IMPORTANT: compare against the CLAMPED target, not raw
-                  // `zoom`. `renderedZoom` caps at MAX_RENDERED_ZOOM, so a
-                  // raw `zoom !== renderedZoom` comparison stays true forever
-                  // whenever the user is zoomed in past the cap — which would
-                  // permanently disable hit-testing on the stage and silently
-                  // break wall selection / delete. Using the clamped target
-                  // means the flag resets to false the moment the re-raster
-                  // debounce completes, regardless of how high zoom goes.
-                  isZooming={Math.min(zoom, MAX_RENDERED_ZOOM) !== renderedZoom}
+                  // IMPORTANT: compare against the QUANTISED target.
+                  // renderedZoom now snaps to discrete RENDER_ZOOM_STOPS,
+                  // so a raw `zoom !== renderedZoom` comparison would stay
+                  // true permanently for any zoom not exactly at a stop —
+                  // which would disable hit-testing on the stage and
+                  // silently break wall selection / delete. The quantised
+                  // form returns false the moment the re-raster debounce
+                  // completes, regardless of where between stops the user
+                  // settled.
+                  isZooming={quantiseRenderZoom(Math.min(zoom, MAX_RENDERED_ZOOM)) !== renderedZoom}
                   drawingMode={drawingMode}
                   drawingCurveMode={drawingCurveMode}
                   placingOpening={placingOpening}
