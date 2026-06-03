@@ -428,6 +428,13 @@ export interface PierMakeup {
   name: string
   /** Block code per course, cycling. Length ≥ 1. */
   coursePattern: BlockCode[]
+  /**
+   * Optional per-area scope so the same project can carry one set of
+   * pier types for "Garage", another for "Carport". Mirrors
+   * WallMakeup.areaId — missing means the makeup is global to the
+   * project (back-compat with pre-area saves).
+   */
+  areaId?: string
   /** Hint for which placement button picks this makeup as the default. */
   suggestedPlacement: 'tied' | 'freestanding'
   /**

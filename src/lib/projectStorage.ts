@@ -97,10 +97,47 @@ export type ProjectOutcome = 'won' | 'lost'
  * path not yet known) round-trips through saveProject() cleanly.
  */
 export interface ReferencePdf {
+  /**
+   * Stable id allocated client-side when the reference is first attached.
+   * Used to key per-doc state (scale, measurements, selected pages) in
+   * the workspace so removing a reference earlier in the list doesn't
+   * shuffle everyone else's data. Optional on load for back-compat with
+   * pre-id projects — the workspace fills one in on first load.
+   */
+  id?: string
   fileName: string
   blob?: Blob
   /** Storage path inside the project-pdfs bucket. Populated by saveProject. */
   path?: string
+  /**
+   * Subset of the PDF's pages that the user wants to show inside the
+   * project. Pages are 1-indexed and the array is sorted ascending.
+   * Undefined OR empty → all pages are visible (back-compat). The
+   * reference's page-nav cycles through this list rather than the
+   * raw PDF page count.
+   */
+  selectedPages?: number[]
+  /**
+   * Scale calibration per visible page of this reference. Keyed by
+   * page number (1-indexed against the SOURCE PDF, not the position
+   * inside selectedPages). Empty when no page on this reference has
+   * been calibrated yet — the workspace falls back to the default
+   * scale display in that case.
+   */
+  pagesData?: Record<number, SavedPageData>
+  /**
+   * Ruler measurements per visible page. Same keying as `pagesData`.
+   * Persisted so a measurement dropped on the reference's page 3
+   * survives switching back to the primary and reopening.
+   */
+  measurementsByPage?: Record<
+    number,
+    Array<{
+      id: string
+      startMm: { x: number; y: number }
+      endMm: { x: number; y: number }
+    }>
+  >
 }
 
 /** What we save per page about the PDF (e.g. scale calibration). */

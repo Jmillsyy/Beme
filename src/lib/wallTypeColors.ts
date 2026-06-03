@@ -45,6 +45,39 @@ export function wallTypeColor(
 }
 
 /**
+ * Resolve a unique colour for ANY masonry-type id (wall makeup OR pier
+ * makeup) across the project. Walls and piers share one colour
+ * namespace — without this, a wall at index 0 and a pier at index 0
+ * would both render orange, making them indistinguishable on the 2D
+ * plan. We concatenate (walls, piers) into one ordered id list and
+ * index the palette by the id's position in that combined list.
+ *
+ * Ordering rule: walls come first, then piers, both in their existing
+ * panel order. So adding a new pier never re-paints existing walls,
+ * and adding a new wall never re-paints existing piers (it just
+ * shifts piers up by one palette slot).
+ *
+ * Returns palette[0] when the id is unknown, same defensive fallback
+ * as wallTypeColor — safe to call mid-state-update.
+ */
+export function masonryTypeColor(
+  typeId: string,
+  wallMakeups: ReadonlyArray<{ id: string }>,
+  pierMakeups: ReadonlyArray<{ id: string }>
+): string {
+  const inWalls = wallMakeups.findIndex((m) => m.id === typeId)
+  if (inWalls >= 0) {
+    return WALL_TYPE_PALETTE[inWalls % WALL_TYPE_PALETTE.length]
+  }
+  const inPiers = pierMakeups.findIndex((m) => m.id === typeId)
+  if (inPiers >= 0) {
+    const offset = wallMakeups.length + inPiers
+    return WALL_TYPE_PALETTE[offset % WALL_TYPE_PALETTE.length]
+  }
+  return WALL_TYPE_PALETTE[0]
+}
+
+/**
  * Convert a `#RRGGBB` (or `#RGB`) hex colour to an rgba() string with the
  * given alpha. Used by the selection-highlight renderer to fade a wall
  * type's own colour into the selected-state fill — so a green-coded wall

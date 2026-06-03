@@ -61,6 +61,7 @@ import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
 import UnifiedExportPanel from './UnifiedExportPanel'
+import ReferencePagePickerModal from './ReferencePagePickerModal'
 import {
   type ProjectArea,
   type ProjectStatus,
@@ -192,7 +193,7 @@ import {
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions } from '../lib/junctions'
-import { wallTypeColor } from '../lib/wallTypeColors'
+import { masonryTypeColor, wallTypeColor } from '../lib/wallTypeColors'
 import { selectBlockLintel } from '../lib/lintels'
 import { getCurrentOrgId, listOrgMembers } from '../lib/organisations'
 import { useAuth } from '../lib/auth'
@@ -459,6 +460,67 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // project is loaded from cloud; undefined entries mean "freshly attached,
   // upload on next save". Always the same length as referencePdfFiles.
   const [referencePdfPaths, setReferencePdfPaths] = useState<(string | undefined)[]>([])
+  /**
+   * Stable per-doc id used to key the per-reference scale + measurement
+   * maps below. Parallel to referencePdfFiles. Allocated client-side
+   * on import (or seeded from the cloud row's id on load) so removing
+   * a reference earlier in the list doesn't shuffle the slices.
+   */
+  const [referencePdfIds, setReferencePdfIds] = useState<string[]>([])
+  /**
+   * Per-reference page-scale calibration. Outer key is the doc id from
+   * referencePdfIds; inner is the SOURCE PDF's page number. Each entry
+   * has the same shape the primary's pagesData uses (pageScaleRatio +
+   * intrinsic page dims) so the canvas can swap between primary and
+   * reference slices transparently.
+   */
+  const [referencePdfPagesDataById, setReferencePdfPagesDataById] = useState<
+    Record<string, Record<number, PageData>>
+  >({})
+  /**
+   * Per-reference ruler measurements, persisted across sessions (the
+   * primary's measurements stay session-only by design — the user's
+   * looking at quick checks, not permanent annotations). Same keying
+   * as `referencePdfPagesDataById`.
+   */
+  const [referencePdfMeasurementsByPageById, setReferencePdfMeasurementsByPageById] =
+    useState<
+      Record<
+        string,
+        Record<
+          number,
+          Array<{
+            id: string
+            startMm: { x: number; y: number }
+            endMm: { x: number; y: number }
+          }>
+        >
+      >
+    >({})
+  /**
+   * Per-reference subset of page numbers the user picked at import time
+   * via {@link ReferencePagePickerModal}. Parallel to referencePdfFiles
+   * + referencePdfPaths. Undefined or empty means "show all pages" —
+   * the back-compat fallback for older projects predating the picker.
+   */
+  const [referencePdfSelectedPages, setReferencePdfSelectedPages] = useState<
+    (number[] | undefined)[]
+  >([])
+  /**
+   * Drag-and-drop visual state. True only while a real file (not text /
+   * an internal element) is being dragged over the reference tab strip.
+   * Used to glow the drop zone — switching off the moment the drag
+   * leaves the strip's bounds or the file is dropped.
+   */
+  const [isDraggingReferenceFile, setIsDraggingReferenceFile] = useState(false)
+  /**
+   * Files queued for the page-picker modal. Each entry shows the
+   * picker in sequence; pressing Import on one advances to the next.
+   * Cancel pops the rest of the queue (a "Cancel All" semantic — we
+   * could let users page through individually, but a multi-file drop
+   * is rare and queueing modals is good enough.)
+   */
+  const [pendingReferenceFiles, setPendingReferenceFiles] = useState<File[]>([])
   const [activeReferenceIndex, setActiveReferenceIndex] = useState<number | null>(null)
   // When the user flips to a reference PDF we save the primary's current page
   // here so we can drop them back on that page when they switch back. Without
@@ -469,6 +531,118 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const displayedPdfFile: File | null = isReferenceView
     ? referencePdfFiles[activeReferenceIndex!] ?? null
     : pdfFile
+  /**
+   * Stable id of the reference doc currently being viewed (null when
+   * the primary is showing). Used to key the per-doc scale + ruler
+   * slices below — without it, the activeX helpers wouldn't know
+   * which slot to write to.
+   */
+  const activeReferenceDocId: string | null = isReferenceView
+    ? referencePdfIds[activeReferenceIndex!] ?? null
+    : null
+
+  /**
+   * Effective pages-data slice for the currently-displayed PDF. The
+   * canvas, scale-calibration UI, and page rail all read scale +
+   * intrinsic-dims from here without caring whether the user's on
+   * the primary or a reference. Falls back to an empty record when
+   * a reference has no slice yet (first scale write creates it via
+   * setActivePagesData).
+   */
+  const activePagesData: Record<number, PageData> = activeReferenceDocId
+    ? referencePdfPagesDataById[activeReferenceDocId] ?? {}
+    : pagesData
+  /**
+   * View-aware setter for the active doc's pages-data. Routes writes
+   * to the primary's pagesData when in primary view, and to the
+   * matching slice under referencePdfPagesDataById when in reference
+   * view. Mirrors React's setState shape so existing call sites
+   * (functional + replacement updates) keep working unchanged.
+   */
+  const setActivePagesData: React.Dispatch<
+    React.SetStateAction<Record<number, PageData>>
+  > = (updater) => {
+    if (activeReferenceDocId) {
+      setReferencePdfPagesDataById((prev) => {
+        const current = prev[activeReferenceDocId] ?? {}
+        const next =
+          typeof updater === 'function'
+            ? (updater as (p: Record<number, PageData>) => Record<number, PageData>)(
+                current
+              )
+            : updater
+        return { ...prev, [activeReferenceDocId]: next }
+      })
+    } else {
+      setPagesData(updater)
+    }
+  }
+  /**
+   * The picked-pages subset for the active reference (undefined for
+   * primary or for a reference where the user didn't restrict).
+   * Drives the page-nav filtering so the user only steps through
+   * the pages they care about.
+   */
+  const activeReferenceSelectedPages: number[] | undefined = isReferenceView
+    ? referencePdfSelectedPages[activeReferenceIndex!]
+    : undefined
+  // `activeMeasurementsByPage` + `setActiveMeasurementsByPage` are
+  // declared further down, AFTER the `measurementsByPage` state, so
+  // they can read/fall-back to it without a temporal-dead-zone error.
+
+  /**
+   * Enqueue one or more freshly-acquired PDFs for the page-picker
+   * modal. Files arrive here from three places: the drag-and-drop
+   * handler on the tab strip, the "+ Add reference" button's file
+   * input, and (potentially in future) a paste / share-target intent.
+   *
+   * Non-PDF files are silently dropped so a mixed multi-file drop
+   * (e.g. a folder pulled in from Finder) doesn't pop a modal for
+   * the wrong content type.
+   */
+  function queueReferenceFiles(files: File[]) {
+    // Empty drop → silent no-op (the browser sometimes fires drop
+    // with no files for a stray gesture; nothing to surface).
+    if (files.length === 0) return
+    const pdfs = files.filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    )
+    // Non-PDF drop → tell the user instead of swallowing it silently.
+    // Common cause: someone drops a .docx or .png and wonders why
+    // nothing happened.
+    if (pdfs.length === 0) {
+      toast.info(
+        `Only PDF files can be added as references — dropped ${files.length} file(s) of a different type.`
+      )
+      return
+    }
+    setPendingReferenceFiles((prev) => [...prev, ...pdfs])
+  }
+
+  /**
+   * Commit a reference file to the project with the user-picked subset
+   * of pages. Pops the first entry off the picker queue so the next
+   * file (if any) shows its picker.
+   */
+  function commitReferenceFile(file: File, selectedPages: number[]) {
+    const id =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    setReferencePdfFiles((prev) => [...prev, file])
+    setReferencePdfPaths((prev) => [...prev, undefined])
+    setReferencePdfIds((prev) => [...prev, id])
+    setReferencePdfSelectedPages((prev) => [...prev, selectedPages])
+    // No need to seed pagesDataByDocId / measurementsByDocId entries —
+    // the wrappers fall back to `{}` when a doc id has no slice yet,
+    // and the setters create the entry on first write.
+    setPendingReferenceFiles((prev) => prev.slice(1))
+  }
+
+  /** Cancel the currently-shown picker AND any queued behind it. */
+  function cancelReferenceImport() {
+    setPendingReferenceFiles([])
+  }
 
   /**
    * Switch the workspace's displayed PDF. `index === null` means flip back to
@@ -498,18 +672,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     }
     // Clear ruler anchor whenever the file changes — leftover anchor mm
     // values are interpreted in the new file's coordinate space, which
-    // is meaningless. Measurements themselves (transient, per-page in
-    // state) also get cleared so the new file starts fresh.
+    // is meaningless. Measurements themselves are NOT wiped any more
+    // because each doc keeps its own slice (per-doc storage on
+    // references; session-only on the primary), so switching back to
+    // a doc still shows the rulers the user dropped on it before.
     setRulerAnchorMm(null)
-    setMeasurementsByPage({})
 
-    // Re-entering primary → restore its page.
+    // Re-entering primary → restore its page. Entering a reference:
+    // jump to the first visible page (the user's first picked page,
+    // or page 1 when nothing was picked).
     if (index === null) {
       setCurrentPage(primaryCurrentPage)
     } else {
-      // Reference PDFs start on page 1 — the user is flipping in to look at
-      // something, not resuming a deep dive.
-      setCurrentPage(1)
+      const picked = referencePdfSelectedPages[index]
+      const firstVisible = picked && picked.length > 0 ? picked[0] : 1
+      setCurrentPage(firstVisible)
     }
   }
 
@@ -641,6 +818,50 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const [measurementsByPage, setMeasurementsByPage] = useState<
     Record<number, Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }>>
   >({})
+  /**
+   * View-aware measurement selectors — declared here (not next to
+   * `isReferenceView` and the other reference helpers) so they can
+   * fall back to `measurementsByPage` / `setMeasurementsByPage`
+   * without a temporal-dead-zone reference error. Primary view reads
+   * from the session-only `measurementsByPage` state above; reference
+   * view reads from the persistent per-doc slice keyed by the active
+   * reference's id.
+   */
+  const activeMeasurementsByPage: Record<
+    number,
+    Array<{
+      id: string
+      startMm: { x: number; y: number }
+      endMm: { x: number; y: number }
+    }>
+  > = activeReferenceDocId
+    ? referencePdfMeasurementsByPageById[activeReferenceDocId] ?? {}
+    : measurementsByPage
+  const setActiveMeasurementsByPage: React.Dispatch<
+    React.SetStateAction<
+      Record<
+        number,
+        Array<{
+          id: string
+          startMm: { x: number; y: number }
+          endMm: { x: number; y: number }
+        }>
+      >
+    >
+  > = (updater) => {
+    if (activeReferenceDocId) {
+      setReferencePdfMeasurementsByPageById((prev) => {
+        const current = prev[activeReferenceDocId] ?? {}
+        const next =
+          typeof updater === 'function'
+            ? (updater as (p: typeof current) => typeof current)(current)
+            : updater
+        return { ...prev, [activeReferenceDocId]: next }
+      })
+    } else {
+      setMeasurementsByPage(updater)
+    }
+  }
   const [rulerAnchorMm, setRulerAnchorMm] = useState<{ x: number; y: number } | null>(null)
   /**
    * Which persistent measurement is currently selected. Clicking a
@@ -765,6 +986,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     }),
   ])
   const [activeMakeupId, setActiveMakeupId] = useState<string>(() => makeups[0].id)
+  /**
+   * Which kind of type the user most recently activated — drives the
+   * shared toolbar's behaviour. When 'wall', Draw wall toggles
+   * two-click wall draw mode (the historical default). When 'pier',
+   * the same Draw wall button toggles single-click pier placement
+   * using `activePierMakeupId`. Selecting a card in WallTypesPanel
+   * is the only thing that flips this; clicking on the canvas or
+   * pressing Esc never changes it.
+   */
+  const [activeTypeKind, setActiveTypeKind] = useState<'wall' | 'pier'>('wall')
 
   const makeupsById = useMemo(
     () => Object.fromEntries(makeups.map((m) => [m.id, m])),
@@ -956,6 +1187,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         if (proj.referencePdfs && proj.referencePdfs.length > 0) {
           const files: File[] = []
           const paths: (string | undefined)[] = []
+          const ids: string[] = []
+          const selectedPagesList: (number[] | undefined)[] = []
+          const pagesDataById: Record<string, Record<number, PageData>> = {}
+          const measurementsById: Record<
+            string,
+            Record<
+              number,
+              Array<{
+                id: string
+                startMm: { x: number; y: number }
+                endMm: { x: number; y: number }
+              }>
+            >
+          > = {}
           for (const ref of proj.referencePdfs) {
             if (!ref.blob) continue
             files.push(
@@ -964,9 +1209,36 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               })
             )
             paths.push(ref.path)
+            // Generate an id for legacy references that pre-date the
+            // id field — once allocated client-side, the next save
+            // will persist it so the slice keys stay stable across
+            // reloads.
+            const refId =
+              ref.id ??
+              (typeof crypto !== 'undefined' &&
+              typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID()
+                : `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+            ids.push(refId)
+            // Empty array round-trips as "show all pages" so legacy
+            // projects predating the picker keep their existing
+            // behaviour (every page visible). selectedPages from a
+            // post-picker save is honoured verbatim.
+            selectedPagesList.push(
+              ref.selectedPages && ref.selectedPages.length > 0
+                ? ref.selectedPages
+                : undefined
+            )
+            if (ref.pagesData) pagesDataById[refId] = ref.pagesData
+            if (ref.measurementsByPage)
+              measurementsById[refId] = ref.measurementsByPage
           }
           setReferencePdfFiles(files)
           setReferencePdfPaths(paths)
+          setReferencePdfIds(ids)
+          setReferencePdfSelectedPages(selectedPagesList)
+          setReferencePdfPagesDataById(pagesDataById)
+          setReferencePdfMeasurementsByPageById(measurementsById)
         }
         setProjectDetails(proj.projectDetails)
         // Loading a saved project bypasses the startup gate — the details
@@ -1326,6 +1598,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     pagesData: typeof pagesData
     referencePdfFiles: typeof referencePdfFiles
     referencePdfPaths: typeof referencePdfPaths
+    referencePdfIds: typeof referencePdfIds
+    referencePdfSelectedPages: typeof referencePdfSelectedPages
+    referencePdfPagesDataById: typeof referencePdfPagesDataById
+    referencePdfMeasurementsByPageById: typeof referencePdfMeasurementsByPageById
     isEmptyWorkspace: typeof isEmptyWorkspace
   } | null>(null)
 
@@ -1363,6 +1639,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       pagesData,
       referencePdfFiles,
       referencePdfPaths,
+      referencePdfIds,
+      referencePdfSelectedPages,
+      referencePdfPagesDataById,
+      referencePdfMeasurementsByPageById,
       isEmptyWorkspace,
     }
     if (!savedSnapshotRef.current) {
@@ -1387,6 +1667,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       current.pagesData !== snap.pagesData ||
       current.referencePdfFiles !== snap.referencePdfFiles ||
       current.referencePdfPaths !== snap.referencePdfPaths ||
+      current.referencePdfIds !== snap.referencePdfIds ||
+      current.referencePdfSelectedPages !== snap.referencePdfSelectedPages ||
+      current.referencePdfPagesDataById !== snap.referencePdfPagesDataById ||
+      current.referencePdfMeasurementsByPageById !==
+        snap.referencePdfMeasurementsByPageById ||
       current.isEmptyWorkspace !== snap.isEmptyWorkspace
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
@@ -1404,6 +1689,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     pagesData,
     referencePdfFiles,
     referencePdfPaths,
+    referencePdfIds,
+    referencePdfSelectedPages,
+    referencePdfPagesDataById,
+    referencePdfMeasurementsByPageById,
     isEmptyWorkspace,
     hasUnsavedChanges,
   ])
@@ -1554,11 +1843,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // ones that haven't changed (path already set).
       ...(referencePdfFiles.length > 0
         ? {
-            referencePdfs: referencePdfFiles.map((f, i) => ({
-              fileName: f.name,
-              blob: f,
-              path: referencePdfPaths[i],
-            })),
+            referencePdfs: referencePdfFiles.map((f, i) => {
+              const id = referencePdfIds[i]
+              return {
+                id,
+                fileName: f.name,
+                blob: f,
+                path: referencePdfPaths[i],
+                // Persist the user's page pick so the reference reopens
+                // with the same visible-pages set. Undefined / empty
+                // round-trips as "show all pages" via the loader's
+                // back-compat fallback.
+                selectedPages: referencePdfSelectedPages[i],
+                // Per-doc scale + measurements travel inside their
+                // owning reference so a project with many references
+                // doesn't bloat the top-level pagesData / measurements
+                // fields (which stay primary-only).
+                pagesData: id ? referencePdfPagesDataById[id] : undefined,
+                measurementsByPage: id
+                  ? referencePdfMeasurementsByPageById[id]
+                  : undefined,
+              }
+            }),
           }
         : {}),
       pagesData,
@@ -1727,7 +2033,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     }
   })
   useEffect(() => {
-    const AUTOSAVE_INTERVAL_MS = 30 * 1000
+    // 2-minute autosave tick. Local crash-recovery draft still
+    // snapshots on every dirty tick (see saveDraft below), so the
+    // user-recoverable window stays small; the longer cadence just
+    // cuts the cloud write rate. Was 30s — felt chatty for an
+    // estimator who's drawing for an hour straight.
+    const AUTOSAVE_INTERVAL_MS = 2 * 60 * 1000
     const id = window.setInterval(() => {
       // Belt-and-braces: dirty + canSave guard each tick. If the project
       // has no unsaved changes (idle workspace) we skip, so we don't grind
@@ -1790,11 +2101,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // ones that haven't changed (path already set).
       ...(referencePdfFiles.length > 0
         ? {
-            referencePdfs: referencePdfFiles.map((f, i) => ({
-              fileName: f.name,
-              blob: f,
-              path: referencePdfPaths[i],
-            })),
+            referencePdfs: referencePdfFiles.map((f, i) => {
+              const id = referencePdfIds[i]
+              return {
+                id,
+                fileName: f.name,
+                blob: f,
+                path: referencePdfPaths[i],
+                // Persist the user's page pick so the reference reopens
+                // with the same visible-pages set. Undefined / empty
+                // round-trips as "show all pages" via the loader's
+                // back-compat fallback.
+                selectedPages: referencePdfSelectedPages[i],
+                // Per-doc scale + measurements travel inside their
+                // owning reference so a project with many references
+                // doesn't bloat the top-level pagesData / measurements
+                // fields (which stay primary-only).
+                pagesData: id ? referencePdfPagesDataById[id] : undefined,
+                measurementsByPage: id
+                  ? referencePdfMeasurementsByPageById[id]
+                  : undefined,
+              }
+            }),
           }
         : {}),
         pagesData,
@@ -2278,6 +2606,44 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     }
     return map
   }, [allWalls, makeups, brickMakeups, mode])
+
+  // Per-pier colour from the shared wall+pier palette. Uses
+  // masonryTypeColor so a pier's colour can never collide with a
+  // wall's — the engine offsets pier indices by wall count, so
+  // walls own slots 0..N-1 and piers own N..N+M-1. The canvas reads
+  // this to fill each pier in its type's distinctive shade so the
+  // 2D plan reads as colour-coded across both kinds.
+  const pierColorByPierId = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const p of allPiers) {
+      const id = p.pierMakeupId
+      if (!id) continue
+      map[p.id] = masonryTypeColor(id, makeups, pierMakeups)
+    }
+    return map
+  }, [allPiers, makeups, pierMakeups])
+
+  // Per-pier dimensions (width × depth) derived from each pier's OWN
+  // makeup's first-course block. Without this, the canvas reads a
+  // single pierFootprintMm prop and every placed pier reflects the
+  // active type — so activating a second pier type after placing the
+  // first re-renders the first at the wrong size.
+  const pierSizeByPierId = useMemo(() => {
+    const map: Record<string, { widthMm: number; depthMm: number }> = {}
+    const pierMakeupsById = new Map(pierMakeups.map((pm) => [pm.id, pm]))
+    for (const p of allPiers) {
+      const pm = p.pierMakeupId ? pierMakeupsById.get(p.pierMakeupId) : null
+      const firstCode = pm?.coursePattern?.[0]
+      const block = firstCode ? BLOCK_LIBRARY[firstCode] : undefined
+      if (block?.dimensions.widthMm && block?.dimensions.depthMm) {
+        map[p.id] = {
+          widthMm: block.dimensions.widthMm,
+          depthMm: block.dimensions.depthMm,
+        }
+      }
+    }
+    return map
+  }, [allPiers, pierMakeups])
 
   // useCallback wrappers around the wall-layer event handlers. During a zoom
   // gesture none of the dependency values change, so the callback references
@@ -2831,9 +3197,27 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    */
   function handleActivateMakeup(id: string) {
     setActiveMakeupId(id)
+    // Flip the kind tracker so the shared toolbar's Draw wall button
+    // returns to wall-draw mode after the user previously had a pier
+    // type active.
+    setActiveTypeKind('wall')
     // Picking a type in the panel is an explicit signal of intent to work
     // with it — light up the matching walls again even if the user had
     // pressed Esc earlier to dismiss the highlight.
+    setShowActiveMakeupHighlight(true)
+  }
+  /**
+   * Companion to handleActivateMakeup for pier types. Setting the
+   * active pier on its own would leave activeTypeKind stuck on
+   * 'wall', so the shared toolbar Draw wall button wouldn't know the
+   * user wanted to drop a pier next. Wrapped here so every pier-card
+   * click goes through the same kind-flip.
+   */
+  function handleActivatePierMakeup(id: string) {
+    setActivePierMakeupId(id)
+    setActiveTypeKind('pier')
+    // Same UX nicety as the wall path — turn the highlight back on
+    // so the user can spot any existing piers of this type.
     setShowActiveMakeupHighlight(true)
   }
 
@@ -3029,21 +3413,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const len = Math.sqrt(dx * dx + dy * dy)
     if (len === 0) return
     const clamped = Math.max(200, Math.min(len - 200, alongMm))
-    // Use the active pier makeup. If the active one is for the wrong placement
-    // kind (or undefined), fall back to the first tied makeup in the list, or
-    // create a fresh one as a last resort. Drawing another tied pier without
-    // changing types reuses the same makeup → schedule shows ONE pier type
-    // with count N, not N separate types. We pick the "default tied" pattern
-    // as the dedup template — if a makeup with that exact pattern + placement
-    // already exists, reuse it before creating a fresh row.
+    // Use whatever pier makeup the user has active — even if its
+    // `suggestedPlacement` is 'freestanding'. The hint controls the
+    // unified-placement default at the toolbar, but if the user has
+    // explicitly activated this type and clicked inside a wall body
+    // we use ITS block, not a generic AU 40.925 fallback that
+    // discarded their choice and made the placed pier render at the
+    // wrong size.
+    //
+    // The legacy fallback path (find a tied-default makeup or create
+    // one) only fires when there's no active pier at all — every
+    // other case respects the user's pick.
     let makeupId = activePierMakeupId
     const active = makeupId
       ? pierMakeups.find((m) => m.id === makeupId)
       : null
-    if (!active || active.suggestedPlacement !== 'tied') {
-      // Both the dedup pattern + the fresh creation use the user's
-      // DefaultsByRole map so the pier block + corner tie-back come from
-      // their library, not the AU SEQ literals.
+    if (!active) {
       const us = getUserSettings()
       const defaultPattern = createDefaultTiedPierMakeup(undefined, us).coursePattern
       const dedup = pierMakeups.find(
@@ -3089,8 +3474,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     let makeup = makeupId
       ? pierMakeups.find((m) => m.id === makeupId) ?? null
       : null
-    if (!makeup || makeup.suggestedPlacement !== 'freestanding') {
-      // Same DefaultsByRole pattern as the tied-pier branch above.
+    // Respect the user's explicit active pier type regardless of its
+    // suggestedPlacement hint — see the matching note in
+    // handleTiedPierPlaced. The fallback only runs when no pier
+    // makeup is active at all.
+    if (!makeup) {
       const us = getUserSettings()
       const defaultPattern = createDefaultFreestandingPierMakeup(undefined, us).coursePattern
       const dedup = pierMakeups.find(
@@ -3152,33 +3540,56 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   // ---------- Ruler / measurement handlers ----------
 
+  // Ref mirror of the current anchor so handleRulerClick can read it
+  // WITHOUT being inside a state updater. Critical: React 19 + Strict
+  // Mode dev-invokes state updaters twice to detect impurity, and the
+  // old version of this handler triggered setActiveMeasurementsByPage
+  // INSIDE setRulerAnchorMm's updater — so every ruler got added
+  // twice on a single placement. That manifested as a "Delete only
+  // works on the second press" symptom (first press removed one
+  // copy, second press removed the duplicate).
+  const rulerAnchorRef = useRef(rulerAnchorMm)
+  useLayoutEffect(() => {
+    rulerAnchorRef.current = rulerAnchorMm
+  }, [rulerAnchorMm])
+
   /**
    * Called by the canvas on a measurement click. First call sets the anchor;
    * second call commits a measurement and clears the anchor (ready for the
    * next one). Stays in ruler mode after each commit so the user can drop
    * multiple measurements in a row without re-clicking the tool button.
+   *
+   * Reads the previous anchor from a REF (not the closure) so the
+   * function can call setRulerAnchorMm and setActiveMeasurementsByPage
+   * as two independent, side-effect-free state setters — Strict Mode's
+   * double-invoke pass would otherwise duplicate the measurement.
    */
   const handleRulerClick = useCallback(function handleRulerClick(posMm: { x: number; y: number }) {
-    setRulerAnchorMm((prev) => {
-      if (prev === null) return posMm
-      // Commit a new measurement and clear the anchor.
-      const newId =
-        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-          ? crypto.randomUUID()
-          : `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      setMeasurementsByPage((all) => {
-        const page = all[currentPage] ?? []
-        return {
-          ...all,
-          [currentPage]: [...page, { id: newId, startMm: prev, endMm: posMm }],
-        }
-      })
-      return null
+    const prevAnchor = rulerAnchorRef.current
+    if (prevAnchor === null) {
+      setRulerAnchorMm(posMm)
+      return
+    }
+    // Commit a new measurement and clear the anchor.
+    const newId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    // Route to whichever doc is active. References get persisted
+    // measurements via setActiveMeasurementsByPage; primary stays
+    // session-only as designed.
+    setActiveMeasurementsByPage((all) => {
+      const page = all[currentPage] ?? []
+      return {
+        ...all,
+        [currentPage]: [...page, { id: newId, startMm: prevAnchor, endMm: posMm }],
+      }
     })
+    setRulerAnchorMm(null)
   }, [currentPage])
 
   function handleClearMeasurements() {
-    setMeasurementsByPage((all) => ({ ...all, [currentPage]: [] }))
+    setActiveMeasurementsByPage((all) => ({ ...all, [currentPage]: [] }))
     setRulerAnchorMm(null)
   }
 
@@ -3486,6 +3897,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   handleWallDeleteRef.current = handleWallDelete
   handleOpeningDeleteRef.current = handleOpeningDelete
   handleDeletePierRef.current = handleDeletePier
+  // Same trick for the view-aware measurement setter. Without the
+  // ref, the always-registered keydown listener captured render 1's
+  // closure (activeReferenceDocId=null) and routed every Delete to
+  // the primary's session-only measurementsByPage — so deleting a
+  // ruler dropped on a reference page silently filtered the wrong
+  // slice on the first press, only working once the user pressed
+  // Delete a second time after reselecting.
+  const setActiveMeasurementsByPageRef = useRef(setActiveMeasurementsByPage)
+  setActiveMeasurementsByPageRef.current = setActiveMeasurementsByPage
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -3515,7 +3935,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       for (const id of openingIds) handleOpeningDeleteRef.current(id)
       for (const id of wallIds) handleWallDeleteRef.current(id)
       if (measurementId) {
-        setMeasurementsByPage((all) => {
+        // Route through the ref so the setter reflects the CURRENT
+        // active doc — primary's measurementsByPage when on primary,
+        // the right reference's per-doc slice when on a reference.
+        setActiveMeasurementsByPageRef.current((all) => {
           const page = sel.currentPage
           const pageMs = all[page] ?? []
           const remaining = pageMs.filter((m) => m.id !== measurementId)
@@ -3626,7 +4049,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const didPanDuringPressRef = useRef(false)
   const calibratingRef = useRef(calibrating)
 
-  const pageData = pagesData[currentPage]
+  // Swap to the active-doc slice so reference-page scale + intrinsic
+  // dims show up correctly when the user has flipped to a reference;
+  // primary view falls back to the primary's pagesData via the
+  // selector.
+  const pageData = activePagesData[currentPage]
   /**
    * Canvas-pixels per real-world-mm at zoom = 1.
    *
@@ -4401,14 +4828,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // `mm` mm in the *real world*, so the ratio (real-world mm per page mm)
     // is straightforward to derive — and it's window-independent, which is
     // the whole point of storing the ratio instead of px/mm.
-    const pageWidthMm = pagesData[currentPage]?.pageWidthMm
+    // Route the read + write through the active-doc slice so
+    // calibrating a reference page writes into that reference's
+    // pagesDataByDocId slot, not the primary's pagesData.
+    const pageWidthMm = activePagesData[currentPage]?.pageWidthMm
     if (!pageWidthMm) return
     const pxAtRenderedZoom = distance(calPoint1, calPoint2)
     if (pxAtRenderedZoom < 2) return
     const pageMmBetweenClicks =
       (pxAtRenderedZoom * pageWidthMm) / (baseWidth * renderedZoom)
     const ratio = mm / pageMmBetweenClicks
-    setPagesData((prev) => ({
+    setActivePagesData((prev) => ({
       ...prev,
       [currentPage]: {
         ...prev[currentPage],
@@ -4425,12 +4855,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   function applyRatioScale(ratio: number) {
     if (!Number.isFinite(ratio) || ratio <= 0) return
-    const data = pagesData[currentPage]
+    const data = activePagesData[currentPage]
     if (!data?.pageWidthMm) return
     // Ratio (e.g. 100 for 1:100) IS the canonical scale invariant — write it
     // straight through. The canvas-pixel scale is derived at render time
     // from this ratio + pageWidthMm + the current `baseWidth`.
-    setPagesData((prev) => ({
+    setActivePagesData((prev) => ({
       ...prev,
       [currentPage]: {
         ...prev[currentPage],
@@ -4831,7 +5261,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   pierMakeups={pierMakeups}
                   pierCountsByMakeupId={pierCountsByMakeupId}
                   activePierMakeupId={activePierMakeupId}
-                  onSetActivePier={setActivePierMakeupId}
+                  onSetActivePier={handleActivatePierMakeup}
+            activeTypeKind={activeTypeKind}
                   onAddPierMakeup={handleAddPierMakeup}
                   onUpdatePierMakeup={handleUpdatePierMakeup}
                   onDeletePierMakeup={handleDeletePierMakeup}
@@ -4906,6 +5337,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         onClose={() => setDetailsDrawerOpen(false)}
       />
 
+      {/* Reference-PDF page picker. Renders the first file in the
+          pending queue; importing or cancelling pops it. Multi-file
+          drops process one at a time so the user sees a separate
+          picker per PDF (rare in practice — usually one file at a
+          time). */}
+      {pendingReferenceFiles.length > 0 && (
+        <ReferencePagePickerModal
+          file={pendingReferenceFiles[0]}
+          onImport={(selectedPages) =>
+            commitReferenceFile(pendingReferenceFiles[0], selectedPages)
+          }
+          onCancel={cancelReferenceImport}
+        />
+      )}
+
       {/* Workspace area — `position: sticky top-0` so it stays pinned to
           the top of the viewport while the Beme header + ProjectBar
           scroll OFF when the user scrolls down. Explicit height = one
@@ -4918,8 +5364,43 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       {/* Unified toolbar — file tabs · page nav · zoom · scale · replace in
           one row. The old separate file-switcher row was redundant because
           its PRIMARY tab already shows the active file name; merging into
-          this row saves ~40px of vertical space above the canvas. */}
-      <div className="flex items-center mb-2 px-3 py-1.5 bg-ink-800 border border-ink-600 rounded-lg gap-3 flex-wrap">
+          this row saves ~40px of vertical space above the canvas.
+
+          Doubles as the reference-PDF drop zone — drop a file anywhere on
+          the bar and the page-picker fires. The drop handler lives at the
+          OUTER toolbar (not just on the file-tab strip) because the inner
+          strip's overflow-x-auto and narrow flex-children make it a
+          finicky drop target; the whole row is a more forgiving hit area.
+          Non-PDFs are filtered inside queueReferenceFiles so dropping the
+          wrong type is a silent no-op. */}
+      <div
+        onDragEnter={(e) => {
+          // Files come over from outside the page; internal drags (text,
+          // an element) don't carry a `Files` type, so check effectiveAllowed
+          // / items defensively before lighting up the visual feedback.
+          e.preventDefault()
+          if (!isDraggingReferenceFile) setIsDraggingReferenceFile(true)
+        }}
+        onDragOver={(e) => {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+          if (!isDraggingReferenceFile) setIsDraggingReferenceFile(true)
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return
+          setIsDraggingReferenceFile(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setIsDraggingReferenceFile(false)
+          queueReferenceFiles(Array.from(e.dataTransfer.files))
+        }}
+        className={`flex items-center mb-2 px-3 py-1.5 bg-ink-800 border rounded-lg gap-3 flex-wrap transition-colors ${
+          isDraggingReferenceFile
+            ? 'border-beme-500 bg-beme-500/10'
+            : 'border-ink-600'
+        }`}
+      >
 
         {/* File tabs OR empty-workspace label */}
         {isEmptyWorkspace ? (
@@ -4948,23 +5429,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-2 min-w-0 overflow-x-auto">
-            <span className="text-[10px] uppercase tracking-wider text-ink-400 shrink-0">
-              File
-            </span>
+          // Drop handlers moved up to the outer toolbar wrapper so
+          // the whole bar is a forgiving drop target; here we just
+          // keep the inner strip's flex/overflow layout.
+          // File tabs row. Streamlined for screen widths that have
+          // every other toolbar group (page nav, zoom, scale, 2D/3D)
+          // competing for the same horizontal space:
+          //   - dropped the standalone "FILE" eyebrow (decorative)
+          //   - dropped the per-tab "PRIMARY" / "REF" inline labels
+          //     (the active-state styling already differentiates)
+          //   - tightened filename truncation max-w to 9rem
+          // Hovering any tab still shows the full filename via title.
+          <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto">
             <button
               onClick={() => switchPdf(null)}
-              className={`px-3 py-1 rounded-md text-sm border whitespace-nowrap transition-colors ${
+              className={`px-2.5 py-1 rounded-md text-sm border whitespace-nowrap transition-colors ${
                 !isReferenceView
                   ? 'bg-beme-500/15 border-beme-500/40 text-beme-300 font-medium'
                   : 'border-ink-600 text-ink-200 hover:bg-ink-700'
               }`}
               title={pdfFile?.name ?? 'Primary plan'}
             >
-              <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
-                Primary
-              </span>
-              <span className="truncate max-w-[12rem] inline-block align-middle">
+              <span className="truncate max-w-[9rem] inline-block align-middle">
                 {pdfFile?.name ?? '(no primary)'}
               </span>
             </button>
@@ -4981,13 +5467,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 >
                   <button
                     onClick={() => switchPdf(i)}
-                    className={`pl-3 pr-1.5 py-1 text-sm ${active ? 'font-medium' : ''}`}
+                    className={`pl-2.5 pr-1 py-1 text-sm ${active ? 'font-medium' : ''}`}
                     title={f.name}
                   >
-                    <span className="text-[10px] uppercase tracking-wider mr-1.5 opacity-60">
-                      Ref
-                    </span>
-                    <span className="truncate max-w-[12rem] inline-block align-middle">
+                    <span className="truncate max-w-[9rem] inline-block align-middle">
                       {f.name}
                     </span>
                   </button>
@@ -5003,8 +5486,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                         // the displayed PDF stable across the change.
                         setActiveReferenceIndex(activeReferenceIndex - 1)
                       }
+                      const removedId = referencePdfIds[i]
                       setReferencePdfFiles((prev) => prev.filter((_, idx) => idx !== i))
                       setReferencePdfPaths((prev) => prev.filter((_, idx) => idx !== i))
+                      setReferencePdfIds((prev) => prev.filter((_, idx) => idx !== i))
+                      setReferencePdfSelectedPages((prev) =>
+                        prev.filter((_, idx) => idx !== i)
+                      )
+                      // Drop the removed doc's per-doc slices so we
+                      // don't leak stale scale / measurement data into
+                      // future saves.
+                      if (removedId) {
+                        setReferencePdfPagesDataById((prev) => {
+                          const { [removedId]: _drop, ...rest } = prev
+                          void _drop
+                          return rest
+                        })
+                        setReferencePdfMeasurementsByPageById((prev) => {
+                          const { [removedId]: _drop, ...rest } = prev
+                          void _drop
+                          return rest
+                        })
+                      }
                     }}
                     title={`Remove ${f.name}`}
                     className="px-2 py-1 text-ink-400 hover:text-rose-300 text-sm"
@@ -5024,15 +5527,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               multiple
               style={{ display: 'none' }}
               onChange={(e) => {
-                const picked = Array.from(e.target.files ?? []).filter(
-                  (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-                )
-                if (picked.length === 0) return
-                setReferencePdfFiles((prev) => [...prev, ...picked])
-                setReferencePdfPaths((prev) => [
-                  ...prev,
-                  ...picked.map(() => undefined as string | undefined),
-                ])
+                // Route through the page-picker queue rather than
+                // adding files directly — the picker decides which
+                // pages of each PDF land in the project.
+                queueReferenceFiles(Array.from(e.target.files ?? []))
                 // Reset the input so picking the same file again still fires change.
                 e.target.value = ''
               }}
@@ -5041,52 +5539,81 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               onClick={() =>
                 document.getElementById('reference-pdf-input')?.click()
               }
-              className="px-3 py-1 rounded-md text-sm border border-dashed border-ink-600 text-ink-300 hover:border-beme-500/60 hover:text-beme-300 transition-colors whitespace-nowrap shrink-0"
-              title="Attach another PDF — engineering, architectural, etc."
+              className="px-2.5 py-1 rounded-md text-sm border border-dashed border-ink-600 text-ink-300 hover:border-beme-500/60 hover:text-beme-300 transition-colors whitespace-nowrap shrink-0"
+              title="Attach another PDF — engineering, architectural, etc. (also accepts drag-and-drop)"
             >
-              + Add reference
+              + Reference
             </button>
             {isReferenceView && activeReferenceIndex !== null && (
-              <>
-                {/* Promote: take the active reference and make it the new
-                    primary. Wipes drawn quantities tied to the old primary
-                    (new plan = new scale = walls in wrong places). The old
-                    primary moves into references so it's not lost. */}
-                <button
-                  onClick={() => promoteReferenceToPrimary(activeReferenceIndex)}
-                  className="px-3 py-1 rounded-md text-sm border border-beme-500/40 bg-beme-500/[0.08] text-beme-200 hover:bg-beme-500/[0.15] hover:border-beme-500/70 transition-colors whitespace-nowrap shrink-0"
-                  title="Promote this reference to the primary plan (clears all drawn walls / openings / piers)"
-                >
-                  ↑ Make primary
-                </button>
-                <span className="text-xs text-ink-400 italic shrink-0 ml-1">
-                  view-only
-                </span>
-              </>
+              // Promote: take the active reference and make it the new
+              // primary. Wipes drawn quantities tied to the old primary
+              // (new plan = new scale = walls in wrong places). The old
+              // primary moves into references so it's not lost. The
+              // "scale + rulers only" hint that used to live alongside
+              // has been folded into this button's tooltip — the row
+              // was getting cluttered on narrow viewports.
+              <button
+                onClick={() => promoteReferenceToPrimary(activeReferenceIndex)}
+                className="px-2.5 py-1 rounded-md text-sm border border-beme-500/40 bg-beme-500/[0.08] text-beme-200 hover:bg-beme-500/[0.15] hover:border-beme-500/70 transition-colors whitespace-nowrap shrink-0"
+                title="Promote this reference to the primary plan (clears all drawn walls). Until then, only scale + rulers are editable on references — drawing tools stay on the primary."
+              >
+                Make primary
+              </button>
             )}
           </div>
         )}
 
         <div className="h-5 w-px bg-ink-600" />
 
-        {/* Page nav — hidden in empty-workspace mode (single virtual page). */}
-        {!isEmptyWorkspace && (
+        {/* Page nav — hidden in empty-workspace mode (single virtual page).
+            In reference view with a picked-pages subset, the < > buttons
+            step through only the picked pages, and the counter reads
+            "Page 2 of 3 picked" instead of the raw PDF page count. */}
+        {!isEmptyWorkspace && (() => {
+          // Build the visible-pages list once per render. In primary
+          // view (or a reference with no pick) it's the full [1..N];
+          // otherwise it's the picked subset. The page-nav math
+          // collapses to identical behaviour for the unfiltered case.
+          const visiblePages: number[] =
+            activeReferenceSelectedPages && activeReferenceSelectedPages.length > 0
+              ? activeReferenceSelectedPages
+              : Array.from({ length: numPages }, (_, i) => i + 1)
+          const visibleIndex = visiblePages.indexOf(currentPage)
+          const safeIndex = visibleIndex >= 0 ? visibleIndex : 0
+          const atStart = safeIndex <= 0
+          const atEnd = safeIndex >= visiblePages.length - 1
+          const goPrev = () => {
+            if (atStart) return
+            setCurrentPage(visiblePages[safeIndex - 1])
+          }
+          const goNext = () => {
+            if (atEnd) return
+            setCurrentPage(visiblePages[safeIndex + 1])
+          }
+          return (
           <>
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage <= 1}
+                onClick={goPrev}
+                disabled={atStart}
                 className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 aria-label="Previous page"
               >
                 ←
               </button>
-              <span className="text-sm text-ink-300 tabular-nums px-1 min-w-[5.5rem] text-center">
-                Page {currentPage} / {numPages || '…'}
+              <span
+                className="text-sm text-ink-300 tabular-nums px-1 min-w-[3.5rem] text-center"
+                title={
+                  numPages
+                    ? `Page ${currentPage} of ${visiblePages.length}`
+                    : undefined
+                }
+              >
+                {numPages ? `${currentPage} / ${visiblePages.length}` : '…'}
               </span>
               <button
-                onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
-                disabled={currentPage >= numPages}
+                onClick={goNext}
+                disabled={atEnd}
                 className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 aria-label="Next page"
               >
@@ -5096,7 +5623,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
             <div className="h-5 w-px bg-ink-600" />
           </>
-        )}
+          )
+        })()}
 
         {/* Zoom */}
         <div className="flex items-center gap-1">
@@ -5377,7 +5905,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </div>
                 <div>
                   <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">J</kbd>
-                  <span className="ml-2">Control joint</span>
+                  <span className="ml-2">Cut wall</span>
                 </div>
                 <div>
                   <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">P</kbd>
@@ -5544,21 +6072,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 to remove all, or Shift+click to add/remove items.
               </span>
             ) : drawingMode ? (
-              <span className="text-beme-200">
+              <span className="text-ink-50">
                 Click two points on the plan to draw a wall. Press{' '}
-                <kbd className="px-1.5 py-0.5 rounded border border-beme-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
                   Esc
                 </kbd>{' '}
                 to cancel.
               </span>
             ) : drawingCurveMode ? (
-              <span className="text-violet-200 inline-flex items-center gap-2 flex-wrap">
+              <span className="text-ink-50 inline-flex items-center gap-2 flex-wrap">
                 <span>
                   Curved wall: click the <strong>first wall</strong>, then the{' '}
                   <strong>second wall</strong>, then a <strong>midpoint</strong> on the arc.
                 </span>
                 <label className="inline-flex items-center gap-1.5 text-xs">
-                  <span className="text-violet-300">Height</span>
+                  <span className="text-ink-400">Height</span>
                   <input
                     type="number"
                     min={200}
@@ -5569,49 +6097,49 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       if (Number.isFinite(n) && n > 0) setNewCurveHeightMm(n)
                     }}
                     title="Height for newly-created curved-wall types. Existing types keep their own height."
-                    className="w-20 px-1.5 py-0.5 rounded border border-violet-500/40 bg-ink-900 text-ink-50 text-xs font-mono"
+                    className="w-20 px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-50 text-xs font-mono"
                   />
-                  <span className="text-violet-300">mm</span>
+                  <span className="text-ink-400">mm</span>
                 </label>
                 <span>
                   Press{' '}
-                  <kbd className="px-1.5 py-0.5 rounded border border-violet-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
                     Esc
                   </kbd>{' '}
                   to cancel.
                 </span>
               </span>
             ) : placingOpening ? (
-              <span className="text-amber-200">
+              <span className="text-ink-50">
                 Click two points along the same wall to define the opening. Press{' '}
-                <kbd className="px-1.5 py-0.5 rounded border border-amber-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
                   Esc
                 </kbd>{' '}
                 to cancel.
               </span>
             ) : placingControlJoint ? (
-              <span className="text-rose-200">
-                Click a wall where you want a <strong>control joint</strong>. The wall splits in
-                two there, each with its own end termination. Press{' '}
-                <kbd className="px-1.5 py-0.5 rounded border border-rose-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+              <span className="text-ink-50">
+                Click a wall where you want to <strong>cut</strong> it. The wall splits
+                in two at that point, each side ending with its own termination. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
                   Esc
                 </kbd>{' '}
                 to cancel.
               </span>
             ) : placingFreestandingPier ? (
-              <span className="text-teal-200">
+              <span className="text-ink-50">
                 Click on a wall for a <strong>tied pier</strong> (height inherits
                 the wall) or anywhere else for a <strong>freestanding pier</strong>
                 {' '}(edit its height in the inspector after placing). Press{' '}
-                <kbd className="px-1.5 py-0.5 rounded border border-teal-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
                   Esc
                 </kbd>{' '}
                 to cancel.
               </span>
             ) : placingRuler ? (
-              <span className="text-fuchsia-200">
+              <span className="text-ink-50">
                 Click two points on the plan to measure the distance between them. Press{' '}
-                <kbd className="px-1.5 py-0.5 rounded border border-fuchsia-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
                   Esc
                 </kbd>{' '}
                 to cancel.
@@ -5726,14 +6254,29 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </>
             ) : (
               <>
+            {/* Unified placement button. When a wall type is active
+                (activeTypeKind === 'wall'), this toggles two-click
+                wall-draw mode. When a pier type is active, it
+                toggles single-click pier-placement mode using the
+                active pier makeup. Same button, same colour, same
+                spot — the panel decides which mode you're in by
+                which card you clicked. Disabled gates apply to
+                both modes (need a scale, can't be on a reference,
+                etc.). */}
             <button
               onClick={() => {
-                setDrawingMode((v) => !v)
+                if (activeTypeKind === 'pier') {
+                  setPlacingFreestandingPier((v) => !v)
+                  setPlacingTiedPier(false)
+                  setDrawingMode(false)
+                } else {
+                  setDrawingMode((v) => !v)
+                  setPlacingFreestandingPier(false)
+                  setPlacingTiedPier(false)
+                }
                 setPlacingOpening(false)
                 setDrawingCurveMode(false)
                 setPlacingControlJoint(false)
-                setPlacingTiedPier(false)
-                setPlacingFreestandingPier(false)
                 setSelectedWallId(null)
                 setSelectedOpeningId(null)
                 setSelectedPierId(null)
@@ -5741,13 +6284,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               disabled={
                 !currentScale ||
                 calibrating ||
-                missingActiveType ||
-                activeIsCurveMakeup ||
-                isReferenceView
+                isReferenceView ||
+                (activeTypeKind === 'wall' &&
+                  (missingActiveType || activeIsCurveMakeup)) ||
+                (activeTypeKind === 'pier' && !activePierMakeupId)
               }
               title={
                 isReferenceView
                   ? 'Drawing is disabled on reference PDFs — only the ruler is available. Switch back to the primary plan to draw.'
+                  : activeTypeKind === 'pier'
+                  ? 'Click on a wall for a tied pier; anywhere else for a freestanding pier. Uses the active pier type from the panel.'
                   : missingActiveType
                   ? 'Pick a wall type in the Wall types panel before drawing.'
                   : activeIsCurveMakeup
@@ -5755,45 +6301,24 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   : undefined
               }
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                drawingMode
+                drawingMode || placingFreestandingPier || placingTiedPier
                   ? 'bg-beme-400 text-black hover:bg-beme-300'
                   : 'bg-beme-500 text-black hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed'
               }`}
             >
-              {drawingMode ? 'Stop drawing' : 'Draw wall'}
+              {activeTypeKind === 'pier'
+                ? placingFreestandingPier || placingTiedPier
+                  ? 'Cancel pier'
+                  : 'Place pier'
+                : drawingMode
+                ? 'Stop drawing'
+                : 'Draw wall'}
             </button>
-            {mode === 'block' && (
-              <button
-                onClick={() => {
-                  setDrawingCurveMode((v) => !v)
-                  setDrawingMode(false)
-                  setPlacingOpening(false)
-                  setPlacingControlJoint(false)
-                  setPlacingTiedPier(false)
-                  setPlacingFreestandingPier(false)
-                  setSelectedWallId(null)
-                  setSelectedOpeningId(null)
-                  setSelectedPierId(null)
-                }}
-                disabled={
-                  !currentScale || calibrating || missingActiveType || isReferenceView
-                }
-                title={
-                  isReferenceView
-                    ? 'Reference PDFs are read-only — switch to the primary plan to draw curves.'
-                    : missingActiveType
-                    ? 'Pick a wall type in the Wall types panel before drawing.'
-                    : undefined
-                }
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  drawingCurveMode
-                    ? 'bg-violet-700 text-white hover:bg-violet-800'
-                    : 'bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed'
-                }`}
-              >
-                {drawingCurveMode ? 'Cancel curve' : '↷ Curved wall'}
-              </button>
-            )}
+            {/* Curved wall + Pier triggers moved into the Wall types
+                panel — see WallTypesPanel's onToggleCurvedWall and
+                onTogglePierPlacement props. Keeps the toolbar focused
+                on the two universal actions (Draw wall, Add opening)
+                plus the situational tools (Cut wall, Ruler). */}
             <button
               onClick={() => {
                 setPlacingOpening((v) => !v)
@@ -5846,8 +6371,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 }
                 title={
                   isReferenceView
-                    ? 'Reference PDFs are read-only — switch to the primary plan to add control joints.'
-                    : 'Click on a wall to split it at that point with a control joint'
+                    ? 'Reference PDFs are read-only — switch to the primary plan to split walls.'
+                    : 'Click on a wall to cut it at that point (creates two independent walls with a sealant gap).'
                 }
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   placingControlJoint
@@ -5855,42 +6380,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     : 'bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed'
                 }`}
               >
-                {placingControlJoint ? 'Cancel control joint' : '+ Control joint'}
-              </button>
-            )}
-            {mode === 'block' && (
-              <button
-                onClick={() => {
-                  // Unified pier placement: the same mode covers both tied (on a
-                  // wall) and freestanding (off any wall). The decision is made at
-                  // click time in WallDrawingLayer based on whether the click lands
-                  // inside a wall's body. We reuse the existing
-                  // placingFreestandingPier state as the carrier flag so the rest
-                  // of the component (hover preview, banner visibility, etc.) can
-                  // continue to key off it.
-                  setPlacingFreestandingPier((v) => !v)
-                  setPlacingTiedPier(false)
-                  setDrawingMode(false)
-                  setDrawingCurveMode(false)
-                  setPlacingOpening(false)
-                  setPlacingControlJoint(false)
-                  setSelectedWallId(null)
-                  setSelectedOpeningId(null)
-                  setSelectedPierId(null)
-                }}
-                disabled={!currentScale || calibrating || isReferenceView}
-                title={
-                  isReferenceView
-                    ? 'Reference PDFs are read-only — switch to the primary plan to add piers.'
-                    : 'Click on a wall for a tied pier; anywhere else for a freestanding pier.'
-                }
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  placingFreestandingPier
-                    ? 'bg-teal-800 text-white hover:bg-teal-900'
-                    : 'bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-40 disabled:cursor-not-allowed'
-                }`}
-              >
-                {placingFreestandingPier ? 'Cancel pier' : '+ Pier'}
+                {placingControlJoint ? 'Cancel cut' : '+ Cut wall'}
               </button>
             )}
             {/* Ruler — transient on-canvas measurement tool. Works in both
@@ -5920,7 +6410,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             >
               {placingRuler ? 'Stop measuring' : 'Ruler'}
             </button>
-            {((measurementsByPage[currentPage] ?? []).length > 0) && (
+            {((activeMeasurementsByPage[currentPage] ?? []).length > 0) && (
               <button
                 onClick={handleClearMeasurements}
                 className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
@@ -6465,11 +6955,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               wallThicknessByWallId={wallThicknessByWallId}
               areas={areas}
               library={BLOCK_LIBRARY}
+              piers={currentPagePiers}
+              pierMakeupsById={pierMakeupsById}
+              pierColorByPierId={pierColorByPierId}
               pdfFile={pdfFile}
               currentPageNumber={currentPage}
-              pageWidthMm={pagesData[currentPage]?.pageWidthMm}
-              pageHeightMm={pagesData[currentPage]?.pageHeightMm}
-              pageScaleRatio={pagesData[currentPage]?.pageScaleRatio}
+              pageWidthMm={activePagesData[currentPage]?.pageWidthMm}
+              pageHeightMm={activePagesData[currentPage]?.pageHeightMm}
+              pageScaleRatio={activePagesData[currentPage]?.pageScaleRatio}
             />
           </Suspense>
         </div>
@@ -6588,19 +7081,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     renderAnnotationLayer={false}
                     renderTextLayer={false}
                     onLoadSuccess={(page) => {
-                      // Reference PDFs are view-only — they don't carry their
-                      // own calibration, and pagesData is keyed by page number
-                      // (which collides between the primary and a reference's
-                      // page 1). Writing the reference's dimensions into
-                      // pagesData would wipe the primary's calibration when
-                      // the user switches back. Skip the write entirely on
-                      // references; the ruler reuses whatever scale the
-                      // primary had, which is an OK approximation when both
-                      // plans are at the same paper size.
-                      if (isReferenceView) return
+                      // Write intrinsic page dimensions + any legacy
+                      // migration into the ACTIVE doc's pages-data
+                      // slice — primary in primary view, reference's
+                      // own slice in reference view. The per-doc
+                      // slices are keyed by doc id so reference page
+                      // 1 no longer collides with the primary's page
+                      // 1 (the bug the old "view-only" comment was
+                      // working around).
                       const widthMm = (page.originalWidth / POINTS_PER_INCH) * MM_PER_INCH
                       const heightMm = (page.originalHeight / POINTS_PER_INCH) * MM_PER_INCH
-                      setPagesData((prev) => {
+                      setActivePagesData((prev) => {
                         const existing = prev[currentPage] ?? {}
                         // Migration for projects saved before the page-ratio
                         // refactor: convert the legacy canvas-pixel-relative
@@ -6675,13 +7166,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   })()}
                   // Pier footprint for on-canvas pier tiles — read from
                   // the library's pier-tagged block (or the user's
-                  // DefaultsByRole.pier override). Falls back to the AU
-                  // 40.925 footprint (390mm) when nothing resolves. The
-                  // resolver picks once at render — pier-rendering cost
-                  // is tiny so this is fine without memoisation.
+                  // Cursor footprint follows the ACTIVE pier type's first
+                  // course block — so swapping the modal to a 290 mm
+                  // pier block immediately shrinks the hover preview.
+                  // Width and depth resolved independently so non-cubic
+                  // blocks (e.g. 20.01 = 390 × 190) render as their
+                  // real long-and-thin shape, not a square.
                   pierFootprintMm={(() => {
+                    const activePier = activePierMakeupId
+                      ? pierMakeups.find((p) => p.id === activePierMakeupId)
+                      : null
+                    const firstCode = activePier?.coursePattern?.[0]
+                    const firstBlock = firstCode
+                      ? BLOCK_LIBRARY[firstCode]
+                      : undefined
+                    if (firstBlock?.dimensions.widthMm) {
+                      return firstBlock.dimensions.widthMm
+                    }
                     const pierBlock = pickPierBlock({ settings: getUserSettings() })
                     return pierBlock?.dimensions.widthMm ?? 390
+                  })()}
+                  pierFootprintDepthMm={(() => {
+                    const activePier = activePierMakeupId
+                      ? pierMakeups.find((p) => p.id === activePierMakeupId)
+                      : null
+                    const firstCode = activePier?.coursePattern?.[0]
+                    const firstBlock = firstCode
+                      ? BLOCK_LIBRARY[firstCode]
+                      : undefined
+                    if (firstBlock?.dimensions.depthMm) {
+                      return firstBlock.dimensions.depthMm
+                    }
+                    const pierBlock = pickPierBlock({ settings: getUserSettings() })
+                    return pierBlock?.dimensions.depthMm ?? 190
                   })()}
                   visualWidth={renderedPageWidth}
                   visualHeight={renderedPageHeight}
@@ -6708,7 +7225,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   placingFreestandingPier={placingFreestandingPier}
                   placingRuler={placingRuler}
                   rulerAnchorMm={rulerAnchorMm}
-                  measurements={measurementsByPage[currentPage] ?? []}
+                  measurements={activeMeasurementsByPage[currentPage] ?? []}
                   onRulerClick={handleRulerClick}
                   selectedMeasurementId={selectedMeasurementId}
                   onMeasurementSelect={(id) => {
@@ -6730,6 +7247,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   selectedOpeningIds={selectedOpeningIds}
                   selectedPierIds={selectedPierIds}
                   wallColorByWallId={wallColorByWallId}
+                  pierColorByPierId={pierColorByPierId}
+                  pierSizeByPierId={pierSizeByPierId}
                   activeWallColor={
                     mode === 'block' && activeMakeupId
                       ? wallTypeColor(activeMakeupId, makeups)
@@ -6972,7 +7491,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             pierMakeups={pierMakeups}
             pierCountsByMakeupId={pierCountsByMakeupId}
             activePierMakeupId={activePierMakeupId}
-            onSetActivePier={setActivePierMakeupId}
+            onSetActivePier={handleActivatePierMakeup}
+            activeTypeKind={activeTypeKind}
             onAddPierMakeup={handleAddPierMakeup}
             onUpdatePierMakeup={handleUpdatePierMakeup}
             onDeletePierMakeup={handleDeletePierMakeup}
@@ -6980,6 +7500,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onReassignPierMakeup={handleReassignPierMakeup}
             onDeletePier={handleDeletePier}
             onDeselectPier={() => setSelectedPierId(null)}
+            // Curved-wall trigger lives in the editor modal's TYPE
+            // picker. Only wire in block mode (brick has no curves).
+            onToggleCurvedWall={
+              mode === 'block'
+                ? () => {
+                    setDrawingCurveMode((v) => !v)
+                    setDrawingMode(false)
+                    setPlacingOpening(false)
+                    setPlacingControlJoint(false)
+                    setPlacingTiedPier(false)
+                    setPlacingFreestandingPier(false)
+                    setSelectedWallId(null)
+                    setSelectedOpeningId(null)
+                    setSelectedPierId(null)
+                  }
+                : undefined
+            }
           />
         )}
 

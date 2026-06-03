@@ -45,7 +45,15 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import { Grid } from '@react-three/drei'
 import * as THREE from 'three'
-import type { Wall, Opening, WallMakeup, BrickMakeup, CourseBand } from '../types/walls'
+import type {
+  Wall,
+  Opening,
+  WallMakeup,
+  BrickMakeup,
+  CourseBand,
+  Pier,
+  PierMakeup,
+} from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { Block, BlockCode } from '../types/blocks'
 import { arcFromThreePoints, sampleArc, isCurvedWall } from '../lib/curveGeom'
@@ -124,6 +132,20 @@ export interface WorkspaceView3DProps {
   wallThicknessByWallId: Record<string, number>
   areas: ProjectArea[]
   library: Record<string, Block>
+  /**
+   * Piers placed on the active page — both tied (on a wall) and
+   * freestanding. Stacked as columns of boxes per coursePattern,
+   * coloured per pierColorByPierId. Default-empty so callers that
+   * predate pier rendering still work.
+   */
+  piers?: Pier[]
+  pierMakeupsById?: Record<string, PierMakeup>
+  /**
+   * Pre-resolved fill colour per pier id — set upstream from the
+   * shared wall+pier palette (masonryTypeColor). Missing → falls
+   * back to the brand orange so legacy callers still render.
+   */
+  pierColorByPierId?: Record<string, string>
   /**
    * Optional plan-as-floor texture inputs. When all four are present, the
    * 3D scene replaces its dark ground plane with the current PDF page
@@ -1732,6 +1754,9 @@ function Scene({
   brickMakeupsById,
   wallThicknessByWallId,
   library,
+  piers = [],
+  pierMakeupsById = {},
+  pierColorByPierId = {},
   navStyle,
   planTexture,
   pageWidthMm,
@@ -2356,11 +2381,150 @@ function Scene({
       }
     })
 
+    // ── Pier segments ──
+    // Each pier becomes a vertical stack of boxes — one per course in
+    // the makeup's coursePattern (cycling). Block dims drive the
+    // footprint: widthMm × depthMm × heightMm.
+    //
+    // CRITICAL: world coords are the NEGATED mm coords (see the wall
+    // renderer's `-ext.startX / 1000` lines). Without the negation
+    // piers land in a mirrored position off in the distance and the
+    // user thinks the pier didn't draw.
+    const COURSE_FALLBACK_MM = 200
+    const wallsByIdForPiers = new Map(walls.map((w) => [w.id, w]))
+    for (const pier of piers) {
+      const pm = pier.pierMakeupId
+        ? pierMakeupsById[pier.pierMakeupId]
+        : undefined
+      const pattern =
+        pm?.coursePattern && pm.coursePattern.length > 0
+          ? pm.coursePattern
+          : []
+      if (pattern.length === 0) continue
+
+      // Total height — tied inherits wall, freestanding uses its own.
+      let totalHeightMm: number
+      let cxM = 0
+      let czM = 0
+      let yRotation = 0
+      if (pier.type === 'tied') {
+        const wall = wallsByIdForPiers.get(pier.wallId)
+        if (!wall || isCurvedWall(wall)) continue
+        totalHeightMm = resolveWallHeightMm(
+          wall,
+          makeupsById,
+          brickMakeupsById
+        )
+        // Same negate-then-divide convention as the wall renderer
+        // (see WorkspaceView3D.tsx ~line 470). Walk from the negated
+        // start to the negated end so the pier lands ON the wall.
+        const sxW = -wall.startX / 1000
+        const szW = -wall.startY / 1000
+        const exW = -wall.endX / 1000
+        const ezW = -wall.endY / 1000
+        const dxW = exW - sxW
+        const dzW = ezW - szW
+        const wallLenM = Math.hypot(dxW, dzW)
+        if (wallLenM === 0) continue
+        const t = Math.max(0, Math.min(1, pier.alongMm / 1000 / wallLenM))
+        cxM = sxW + dxW * t
+        czM = szW + dzW * t
+        yRotation = Math.atan2(-dzW, dxW)
+      } else {
+        totalHeightMm = pier.heightMm
+        cxM = -pier.x / 1000
+        czM = -pier.y / 1000
+      }
+
+      // Course module = block height + mortar joint. Masonry convention
+      // is that a 190 mm block carries a 10 mm bed joint above it, so
+      // each course occupies 200 mm vertically. Total pier height =
+      // courseCount × courseModule, which lines up with how walls
+      // count courses (e.g. a 2000 mm pier is exactly 10 courses of
+      // 200 mm).
+      //
+      // Mortar render strategy matches the wall's emitMortarForWall:
+      // a single column of MORTAR_COLOR runs the pier's full height,
+      // recessed inward (cross-section × MORTAR_THICKNESS_FRAC) so the
+      // block faces sit proud of the mortar plane. The 10 mm gap
+      // between each course's block reveals the mortar column behind,
+      // reading as a true joint line rather than the empty dark
+      // scene bg.
+      const MORTAR_MM = 10
+      const mortarM = MORTAR_MM / 1000
+      const firstBlock = library[pattern[0]]
+      const firstBlockHeightMm =
+        firstBlock?.dimensions.heightMm ?? 190
+      const firstBlockWidthMm = firstBlock?.dimensions.widthMm ?? 390
+      const firstBlockDepthMm = firstBlock?.dimensions.depthMm ?? 190
+      const courseModuleMm = firstBlockHeightMm + MORTAR_MM
+      const courseCount = Math.max(
+        1,
+        Math.floor(totalHeightMm / courseModuleMm)
+      )
+      const totalPierHeightM = (courseCount * courseModuleMm) / 1000
+
+      // Mortar column — sits behind the block faces, recessed inward
+      // on both width + depth so it's hidden by the blocks where
+      // they overlap, visible only through the joint gaps.
+      out.push({
+        cx: cxM,
+        cy: totalPierHeightM / 2,
+        cz: czM,
+        length: (firstBlockWidthMm / 1000) * MORTAR_THICKNESS_FRAC,
+        thickness: (firstBlockDepthMm / 1000) * MORTAR_THICKNESS_FRAC,
+        heightM: totalPierHeightM,
+        yRotation,
+        color: MORTAR_COLOR,
+        highlight: false,
+      })
+
+      let yCursorM = 0
+      for (let i = 0; i < courseCount; i++) {
+        const code = pattern[i % pattern.length]
+        const block = library[code]
+        const widthMm = block?.dimensions.widthMm ?? 390
+        const depthMm = block?.dimensions.depthMm ?? 190
+        const blockHeightMm = block?.dimensions.heightMm ?? 190
+        // Block renders at FULL face dimensions (width × depth ×
+        // block-height). No inset on width/depth — piers are one
+        // block wide per course, so there's no neighbour to leave a
+        // visual gap against. The mortar joint is the gap above the
+        // block (next course bottom sits at yCursor + blockHeight +
+        // MORTAR_MM), and the recessed mortar column above shows
+        // through it.
+        const widthM = widthMm / 1000
+        const depthM = depthMm / 1000
+        const blockHeightM = blockHeightMm / 1000
+        out.push({
+          cx: cxM,
+          cy: yCursorM + blockHeightM / 2,
+          cz: czM,
+          length: widthM,
+          heightM: blockHeightM,
+          thickness: depthM,
+          yRotation,
+          color: bandColor(code),
+          highlight: false,
+        })
+        yCursorM += blockHeightM + mortarM
+      }
+    }
+
     // Bounds for ground plane + orbit target.
+    // The plan-as-floor (when present) is also factored into the
+    // sizeMax — otherwise a pier-only scene gets a tiny ~0.4m
+    // bounds, the fog (sizeMax * 2..*8) crushes everything around
+    // the pier into the clear-colour, and the pan multiplier
+    // (proportional to sceneSize) feels glacial. Plan footprint
+    // gives the camera + fog a sensible extent to work with.
+    const planExtentM = planTexture
+      ? Math.max(planTexture.widthM, planTexture.heightM)
+      : 0
     let bounds: { centerX: number; centerZ: number; sizeMax: number } = {
       centerX: 0,
       centerZ: 0,
-      sizeMax: 20,
+      sizeMax: Math.max(20, planExtentM),
     }
     if (out.length > 0) {
       let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
@@ -2374,11 +2538,25 @@ function Scene({
       bounds = {
         centerX: (minX + maxX) / 2,
         centerZ: (minZ + maxZ) / 2,
-        sizeMax: Math.max(maxX - minX, maxZ - minZ, 4),
+        // 4 m absolute floor, plus the plan extent if a plan-as-floor
+        // is mounted, so a lone pier inherits the plan's room instead
+        // of collapsing to a 0.4m frustum.
+        sizeMax: Math.max(maxX - minX, maxZ - minZ, planExtentM, 4),
       }
     }
     return { segments: out, segmentBounds: bounds }
-  }, [walls, openings, makeupsById, brickMakeupsById, wallThicknessByWallId, library])
+  }, [
+    walls,
+    openings,
+    makeupsById,
+    brickMakeupsById,
+    wallThicknessByWallId,
+    library,
+    piers,
+    pierMakeupsById,
+    pierColorByPierId,
+    planTexture,
+  ])
 
   return (
     <>
@@ -2705,10 +2883,15 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     return [cx + dist * 0.7, dist * 0.55, cz + dist * 0.7]
   }, [walls])
 
-  if (walls.length === 0) {
+  // Empty-state gate: only block the 3D scene when there's neither
+  // walls NOR piers on the current page. Pier-only pages still render
+  // (the scene's segment builder happily emits a stack of pier boxes
+  // alone), and the camera-fit memo below tolerates an empty walls
+  // list — sizeMax just falls back to the default 20m frustum.
+  if (walls.length === 0 && (props.piers ?? []).length === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center text-ink-400 text-sm">
-        Draw a wall on the 2D view to see it here.
+        Draw a wall or place a pier on the 2D view to see it here.
       </div>
     )
   }

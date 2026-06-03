@@ -21,7 +21,7 @@ import {
   pickTopCourse,
   useBlockLibrary,
 } from '../data/blockLibrary'
-import { wallTypeColor } from '../lib/wallTypeColors'
+import { masonryTypeColor, wallTypeColor } from '../lib/wallTypeColors'
 import {
   CURVED_WALL_WEDGE_RADIUS_MM,
   CURVED_WALL_MIN_FEASIBLE_RADIUS_MM,
@@ -61,6 +61,24 @@ interface WallTypesPanelProps {
   onReassignPierMakeup?: (pierId: string, pierMakeupId: string) => void
   onDeletePier?: (pierId: string) => void
   onDeselectPier?: () => void
+
+  /**
+   * Curved-wall mode toggle. Used by the modal's TYPE picker (Curved
+   * is the 2nd option) — picking Curved closes the wall editor and
+   * activates curve-draw mode for the currently-active wall type.
+   * Optional; brick / pre-block contexts omit it and the picker
+   * simply hides the Curved option.
+   */
+  onToggleCurvedWall?: () => void
+  /**
+   * Which kind of card is currently the "live" type — `'wall'` lights
+   * up the active wall card and dims any pier card with a matching
+   * activePierMakeupId, and vice versa for `'pier'`. Defaults to
+   * 'wall' so older callers that don't thread the prop keep their
+   * existing behaviour (wall is the default active kind on every
+   * project load).
+   */
+  activeTypeKind?: 'wall' | 'pier'
 }
 
 function generateMakeupId(): string {
@@ -98,6 +116,8 @@ export default function WallTypesPanel({
   onReassignPierMakeup,
   onDeletePier,
   onDeselectPier,
+  onToggleCurvedWall,
+  activeTypeKind = 'wall',
 }: WallTypesPanelProps) {
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -166,7 +186,12 @@ export default function WallTypesPanel({
       {expanded && (
         <div className="flex flex-col gap-2 pb-1">
           {orderedMakeups.map((m) => {
-            const isActive = m.id === activeMakeupId
+            // Wall card only lights up when the live kind is 'wall'.
+            // Without this gate, switching to a pier left the last
+            // wall card glowing in parallel and the user couldn't
+            // tell which type the toolbar's Draw / Place button
+            // was actually going to use.
+            const isActive = m.id === activeMakeupId && activeTypeKind === 'wall'
             const wallCount = wallCountsByMakeupId[m.id] ?? 0
             const canDelete = makeups.length > 1 && wallCount === 0
             return (
@@ -185,13 +210,24 @@ export default function WallTypesPanel({
                   </span>
                 )}
                 <div className="flex items-start gap-2 mb-1 pr-12">
-                  {/* Swatch that matches the colour walls of this type are drawn in
-                      on the plan. Picked deterministically from a palette by index. */}
+                  {/* "Wall" chip painted with the type's own plan
+                      colour so the chip itself doubles as the
+                      colour-id swatch — no separate swatch needed.
+                      White text + black/30 ring keeps the label
+                      readable on any palette colour. */}
                   <span
-                    className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
-                    style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
-                    aria-hidden
-                  />
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30"
+                    style={{
+                      backgroundColor: masonryTypeColor(
+                        m.id,
+                        makeups,
+                        pierMakeups
+                      ),
+                    }}
+                    title="Wall colour shown on the plan"
+                  >
+                    Wall
+                  </span>
                   <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
                     {m.name}
                   </div>
@@ -272,15 +308,19 @@ export default function WallTypesPanel({
             )
           })}
 
-          {/* Pier types rendered inline with wall types — they're a kind
-              of wall type now, not a separate concept. Each pier card
-              carries a Tied / Free chip so the user can tell it apart
-              from a regular wall at a glance. The activation state and
-              the "X piers using this" counter are per-pier; the unified
-              "+ Add" dropdown at the top of the panel covers all three
-              kinds (wall / tied pier / freestanding pier). */}
+          {/* Pier types render inline with wall types — a pier is just
+              another card in this list. Selecting one and pressing
+              Draw wall on the toolbar drops the pier (single-click
+              placement); selecting a wall card behaves exactly the
+              same (two-click draw). The Tied / Free chip is the
+              only visual hint that this card is a pier. */}
           {pierMakeups.map((pm) => {
-            const isActive = pm.id === activePierMakeupId
+            // Pier card only lights up when the live kind is 'pier'.
+            // Mirror of the wall-card guard a few lines above —
+            // exactly one card across both kinds reads as Active at
+            // any time, matching what Draw / Place will do next.
+            const isActive =
+              pm.id === activePierMakeupId && activeTypeKind === 'pier'
             const pierCount = pierCountsByMakeupId[pm.id] ?? 0
             const canDelete = pierMakeups.length > 1 && pierCount === 0
             const selectionBelongsHere =
@@ -301,12 +341,23 @@ export default function WallTypesPanel({
                     </span>
                   )}
                   <div className="flex items-start gap-2 mb-1 pr-12">
+                    {/* Pier chip painted with the pier's own colour-id
+                        (palette indexed by position within the
+                        pierMakeups list — same WALL_TYPE_PALETTE the
+                        wall chips draw from). Doubles as the colour
+                        swatch and the kind chip in one element. */}
                     <span
-                      className={`inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 ${
-                        pm.suggestedPlacement === 'tied'
-                          ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
-                          : 'bg-purple-500/15 text-purple-300 border border-purple-500/30'
-                      }`}
+                      className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30"
+                      style={{
+                        backgroundColor: masonryTypeColor(
+                          pm.id,
+                          makeups,
+                          pierMakeups
+                        ),
+                      }}
+                      title={`${
+                        pm.suggestedPlacement === 'tied' ? 'Tied' : 'Free'
+                      } pier`}
                     >
                       {pm.suggestedPlacement === 'tied' ? 'Tied pier' : 'Free pier'}
                     </span>
@@ -320,7 +371,12 @@ export default function WallTypesPanel({
                   <div className="text-xs text-ink-500 mt-2">
                     {pierCount} pier{pierCount === 1 ? '' : 's'} using this
                   </div>
-                  <div className="flex gap-3 mt-2">
+                  {/* Placement happens via the unified toolbar "Draw
+                      wall" button now — when this pier card is the
+                      active type, that button drops a pier instead
+                      of drawing a wall. Removes the separate "+
+                      Place" pill that used to live here. */}
+                  <div className="flex gap-3 mt-2 items-center">
                     <span
                       role="button"
                       tabIndex={0}
@@ -381,6 +437,17 @@ export default function WallTypesPanel({
                 }
               : undefined
           }
+          // Curved kind in the picker → close this modal and activate
+          // curve-draw mode on the canvas. Same toggle the panel's
+          // parent (PdfWorkspace) wires for the in-panel hot path.
+          onSwitchToCurved={
+            editingId === 'new' && onToggleCurvedWall
+              ? () => {
+                  setEditingId(null)
+                  onToggleCurvedWall()
+                }
+              : undefined
+          }
           onCancel={() => setEditingId(null)}
           onSave={(m) => {
             if (editingId === 'new') onAddMakeup(m)
@@ -403,6 +470,17 @@ export default function WallTypesPanel({
                   setPierEditingId(null)
                   setPierEditingSeedPlacement(undefined)
                   setEditingId('new')
+                }
+              : undefined
+          }
+          // Same Curved route as the wall modal — close this pier
+          // editor and activate curve mode for the active wall type.
+          onSwitchToCurved={
+            pierEditingId === 'new' && onToggleCurvedWall
+              ? () => {
+                  setPierEditingId(null)
+                  setPierEditingSeedPlacement(undefined)
+                  onToggleCurvedWall()
                 }
               : undefined
           }
@@ -446,7 +524,7 @@ type TabKey = 'basics' | 'composition' | 'pattern' | 'advanced'
  * Lives at file scope (above the editors that consume it) so both modals
  * can render the same component.
  */
-type MakeupKind = 'wall' | 'tied-pier' | 'freestanding-pier'
+type MakeupKind = 'wall' | 'curved' | 'tied-pier' | 'freestanding-pier'
 function KindPicker({
   current,
   onChange,
@@ -454,8 +532,13 @@ function KindPicker({
   current: MakeupKind
   onChange: (kind: MakeupKind) => void
 }) {
+  // Curved sits between Wall and the two pier kinds because it's a
+  // wall-flavoured action — picking it activates curve-draw mode
+  // using whatever wall type is currently active (see the parent's
+  // onSwitchToCurved handler).
   const options: { value: MakeupKind; label: string }[] = [
     { value: 'wall', label: 'Wall' },
+    { value: 'curved', label: 'Curved' },
     { value: 'tied-pier', label: 'Tied pier' },
     { value: 'freestanding-pier', label: 'Freestanding pier' },
   ]
@@ -500,6 +583,12 @@ interface WallTypeEditorModalProps {
    *  the pier editor with the right seed placement — handled in the
    *  parent via `onSwitchToPier`. Ignored when editing existing. */
   onSwitchToPier?: (placement: 'tied' | 'freestanding') => void
+  /** When provided, picking "Curved" in the kind picker closes the
+   *  modal and activates curve-draw mode on the canvas (parent does
+   *  the actual setDrawingCurveMode toggle). Optional — brick or
+   *  pre-block contexts can omit it and the picker simply hides the
+   *  Curved option. */
+  onSwitchToCurved?: () => void
   onSave: (makeup: WallMakeup) => void
   onCancel: () => void
 }
@@ -524,6 +613,7 @@ interface WallTypeEditorModalProps {
 function WallTypeEditorModal({
   existing,
   onSwitchToPier,
+  onSwitchToCurved,
   onSave,
   onCancel,
 }: WallTypeEditorModalProps) {
@@ -1125,12 +1215,14 @@ function WallTypeEditorModal({
             panel. Hidden when editing existing (the kind is fixed by
             which makeup you opened — to convert a wall to a pier you'd
             delete and recreate). */}
-        {!existing && onSwitchToPier && (
+        {!existing && (onSwitchToPier || onSwitchToCurved) && (
           <KindPicker
             current="wall"
             onChange={(kind) => {
-              if (kind === 'tied-pier') onSwitchToPier('tied')
-              else if (kind === 'freestanding-pier') onSwitchToPier('freestanding')
+              if (kind === 'tied-pier') onSwitchToPier?.('tied')
+              else if (kind === 'freestanding-pier')
+                onSwitchToPier?.('freestanding')
+              else if (kind === 'curved') onSwitchToCurved?.()
             }}
           />
         )}
@@ -2628,6 +2720,9 @@ interface PierTypeEditorModalProps {
    *  the kind picker back to "Wall" — closes this modal and opens the
    *  wall editor. Hidden when editing existing. */
   onSwitchToWall?: () => void
+  /** Mirror of WallTypeEditorModal.onSwitchToCurved — picking Curved in
+   *  this pier modal also closes it and activates curve mode. */
+  onSwitchToCurved?: () => void
   onSave: (makeup: PierMakeup) => void
   onCancel: () => void
 }
@@ -2643,7 +2738,14 @@ interface PierTypeEditorModalProps {
  * pattern repeating to fill a representative pier height so the user can
  * see what they'll get.
  */
-function PierTypeEditorModal({ existing, seedPlacement, onSwitchToWall, onSave, onCancel }: PierTypeEditorModalProps) {
+function PierTypeEditorModal({
+  existing,
+  seedPlacement,
+  onSwitchToWall,
+  onSwitchToCurved,
+  onSave,
+  onCancel,
+}: PierTypeEditorModalProps) {
   const { library } = useBlockLibrary()
 
   // Block options for the pier-pattern dropdowns. Pier-tagged blocks
@@ -2801,11 +2903,12 @@ function PierTypeEditorModal({ existing, seedPlacement, onSwitchToWall, onSave, 
             panel. Picking "Wall" closes this modal and opens the wall
             editor; picking the other pier kind just updates the
             placement state in-place. */}
-        {!existing && onSwitchToWall && (
+        {!existing && (onSwitchToWall || onSwitchToCurved) && (
           <KindPicker
             current={placement === 'tied' ? 'tied-pier' : 'freestanding-pier'}
             onChange={(kind) => {
-              if (kind === 'wall') onSwitchToWall()
+              if (kind === 'wall') onSwitchToWall?.()
+              else if (kind === 'curved') onSwitchToCurved?.()
               else if (kind === 'tied-pier') setPlacement('tied')
               else if (kind === 'freestanding-pier') setPlacement('freestanding')
             }}

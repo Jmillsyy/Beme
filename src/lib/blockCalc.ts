@@ -2221,6 +2221,7 @@ function tallyFromCoursePattern(pattern: BlockCode[], courseCount: number): Bloc
   return tally
 }
 
+
 /**
  * Block tally for a single tied pier (built into a wall).
  *
@@ -2370,10 +2371,9 @@ export function calculateProjectTally(
       makeup.coursePattern && makeup.coursePattern.length > 0
         ? getCourseCount(makeup)
         : stack.totalCourses
-    const pattern =
-      pierMakeup?.coursePattern?.length
-        ? pierMakeup.coursePattern
-        : defaultTiedPierPattern()
+    const pattern = pierMakeup?.coursePattern?.length
+      ? pierMakeup.coursePattern
+      : defaultTiedPierPattern()
     const wallBodyDepth =
       BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ?? 190
 

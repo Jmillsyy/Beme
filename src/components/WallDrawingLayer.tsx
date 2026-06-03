@@ -13,17 +13,53 @@ interface Point {
 }
 
 /**
- * Shared measurement label — bare colored text, no background.
- * Centralised so font + sizing stay consistent across every drawing
- * (wall lengths, opening dimensions, ruler distances, in-progress
- * previews). Pass `bg` (kept as the parameter name for back-compat
- * with the chip era) to colour the text per-context.
+ * Sharp crosshair-style ruler endpoint marker.
+ *
+ * The earlier solid-circle marker (radius 4–5 with a thick white
+ * stroke) read as a fat dot, which made it hard to tell exactly
+ * where the user clicked when measuring tight features (door
+ * jambs, head clearances, lintel widths). This renders a precise
+ * "+" target made of two thin lines through a tiny solid dot,
+ * with a faint white halo behind each arm so the marker reads on
+ * both pale and dark plan backgrounds.
+ *
+ * Selected state nudges the size up slightly so the user can still
+ * spot which committed measurement is active without losing the
+ * pinpoint feel.
+ */
+function renderRulerMarker(pos: { x: number; y: number }, isSelected: boolean) {
+  const arm = isSelected ? 8 : 7
+  const dot = isSelected ? 1.5 : 1.25
+  const stroke = isSelected ? '#a21caf' : '#d946ef'
+  return (
+    <Group x={pos.x} y={pos.y} listening={false}>
+      {/* White halo arms for contrast against dark plan content. */}
+      <Line points={[-arm, 0, arm, 0]} stroke="white" strokeWidth={2.5} lineCap="round" />
+      <Line points={[0, -arm, 0, arm]} stroke="white" strokeWidth={2.5} lineCap="round" />
+      {/* Sharp coloured cross over the halo. */}
+      <Line points={[-arm, 0, arm, 0]} stroke={stroke} strokeWidth={1} lineCap="round" />
+      <Line points={[0, -arm, 0, arm]} stroke={stroke} strokeWidth={1} lineCap="round" />
+      {/* Centre dot anchors the user's eye on the exact click point. */}
+      <Circle radius={dot} fill={stroke} listening={false} />
+    </Group>
+  )
+}
+
+/**
+ * Shared measurement label — bare black text with a thin white halo
+ * for legibility against any PDF background. Centralised so font +
+ * sizing stay consistent across every drawing (wall lengths, opening
+ * dimensions, ruler distances, in-progress previews).
+ *
+ * The `bg` prop is retained on the signature for back-compat with
+ * call sites that still pass a colour, but it's now ignored — the
+ * design call is "always black, always readable" rather than
+ * per-tool tinting that washed out on light plans.
  */
 function MeasurementChip({
   x,
   y,
   text,
-  bg = '#0f172a',
   fontSize = 13,
   align = 'left',
   rotation,
@@ -32,6 +68,7 @@ function MeasurementChip({
   x: number
   y: number
   text: string
+  /** @deprecated retained for caller back-compat; ignored. */
   bg?: string
   fontSize?: number
   align?: 'left' | 'center' | 'right'
@@ -47,20 +84,23 @@ function MeasurementChip({
       : align === 'right'
       ? -text.length * fontSize * 0.55
       : 0
-  // Drop the alpha if the colour came in as rgba — bare text wants
-  // the solid hue so the readout pops against the PDF.
-  const textFill = bg.startsWith('rgba')
-    ? bg.replace(/rgba\((\d+),\s*(\d+),\s*(\d+),.*\)/, 'rgb($1, $2, $3)')
-    : bg
+  // White stroke painted under the black fill so the label reads on
+  // dark engineering plans without being obviously haloed on white
+  // architectural plans. Konva's `fillAfterStrokeEnabled` keeps the
+  // black glyph crisp on top — without it the stroke would also
+  // paint over the fill and the text would look bold-and-blurry.
   return (
     <Text
       x={x + dx}
       y={y}
       text={text}
       fontSize={fontSize}
-      fill={textFill}
-      fontStyle="600"
-      fontFamily="system-ui, -apple-system, 'Segoe UI', sans-serif"
+      fill="#000000"
+      fontStyle="700"
+      fontFamily="'Helvetica Neue', 'Arial', 'system-ui', sans-serif"
+      stroke="#ffffff"
+      strokeWidth={3}
+      fillAfterStrokeEnabled
       listening={listening}
       rotation={rotation}
     />
@@ -93,6 +133,14 @@ interface WallDrawingLayerProps {
    * at their actual size instead of the AU square.
    */
   pierFootprintMm?: number
+  /**
+   * Pier depth (the axis PERPENDICULAR to the wall, or the y-axis for
+   * freestanding piers). Splitting width vs depth lets non-cubic
+   * blocks render their actual proportions — a 20.01 pier is 390 long
+   * × 190 deep, not a 390 square. Optional + defaults to
+   * `pierFootprintMm` so legacy callers keep their old square shape.
+   */
+  pierFootprintDepthMm?: number
   /**
    * Colour used for the live wall-draw preview (silhouette fill,
    * centreline, measurement chip, cursor box). Lets the in-flight
@@ -170,6 +218,24 @@ interface WallDrawingLayerProps {
    * wall type's palette colour. Falls back to the brand orange if missing.
    */
   wallColorByWallId?: Record<string, string>
+  /**
+   * Per-pier fill colour, keyed by pier id. Set by the parent from
+   * the shared wall+pier palette via masonryTypeColor so a pier's
+   * colour never collides with a wall's. Missing → falls back to
+   * the historical tied / freestanding green-tone fills.
+   */
+  pierColorByPierId?: Record<string, string>
+  /**
+   * Per-pier dimensions, keyed by pier id. Each pier has its OWN
+   * width × depth derived from its makeup's first-course block, so
+   * placing a 290 mm pier and then activating a 390 mm pier type
+   * doesn't re-render the 290 as a 390. `pierFootprintMm` /
+   * `pierFootprintDepthMm` are still used for the hover preview
+   * (driven by the currently active type) and as a fallback when
+   * a pier's id isn't in this map (e.g. legacy rows without a
+   * matching makeup).
+   */
+  pierSizeByPierId?: Record<string, { widthMm: number; depthMm: number }>
   /**
    * Currently-active wall makeup id. Walls whose `makeupId` matches this get
    * the same visual halo as a selected wall, so the user sees "these are the
@@ -720,6 +786,7 @@ function WallDrawingLayerInner({
   wallThicknessByWallId,
   activeWallThicknessMm = 190,
   pierFootprintMm = 390,
+  pierFootprintDepthMm,
   activeWallColor = '#ED7D31',
   visualWidth,
   visualHeight,
@@ -739,6 +806,8 @@ function WallDrawingLayerInner({
   selectedOpeningIds,
   selectedPierIds,
   wallColorByWallId,
+  pierColorByPierId,
+  pierSizeByPierId,
   activeMakeupIdForHighlight = null,
   placingRuler = false,
   rulerAnchorMm = null,
@@ -2697,7 +2766,14 @@ function WallDrawingLayerInner({
         {piers.map((pier) => {
           const isSelected =
             (selectedPierIds && selectedPierIds.has(pier.id)) || pier.id === selectedPierId
-          const sizeMm = pierFootprintMm
+          // Per-pier dimensions when available — without these,
+          // every placed pier reflected the CURRENTLY active type's
+          // footprint, so activating pier type B made every pier
+          // from type A re-render at B's size.
+          const perPierSize = pierSizeByPierId?.[pier.id]
+          const sizeMm = perPierSize?.widthMm ?? pierFootprintMm
+          const sizeDepthMm =
+            perPierSize?.depthMm ?? pierFootprintDepthMm ?? sizeMm
           let cxPx = 0
           let cyPx = 0
           let rotationDeg = 0
@@ -2716,11 +2792,25 @@ function WallDrawingLayerInner({
             cyPx = mmToPx(pier.y)
           }
 
-          const sizePx = mmToPx(sizeMm)
-          const fillColor = pier.type === 'tied'
-            ? (isSelected ? 'rgba(5, 150, 105, 0.45)' : 'rgba(16, 185, 129, 0.35)')
-            : (isSelected ? 'rgba(13, 148, 136, 0.45)' : 'rgba(20, 184, 166, 0.35)')
-          const strokeColor = pier.type === 'tied' ? '#065f46' : '#0f766e'
+          const widthPx = mmToPx(sizeMm)
+          const depthPx = mmToPx(sizeDepthMm)
+          // Pier fill comes from the shared palette via the parent's
+          // pierColorByPierId map, so a Tied vs Free pier of the same
+          // makeup id renders in its TYPE's distinctive colour rather
+          // than a generic green/teal. Falls back to the historical
+          // green-tone fills when no palette colour is wired (older
+          // calls or pier rows missing a pierMakeupId).
+          const paletteColor = pierColorByPierId?.[pier.id]
+          const fillColor = paletteColor
+            ? hexToRgba(paletteColor, isSelected ? 0.55 : 0.35)
+            : pier.type === 'tied'
+              ? (isSelected ? 'rgba(5, 150, 105, 0.45)' : 'rgba(16, 185, 129, 0.35)')
+              : (isSelected ? 'rgba(13, 148, 136, 0.45)' : 'rgba(20, 184, 166, 0.35)')
+          const strokeColor = paletteColor
+            ? paletteColor
+            : pier.type === 'tied'
+              ? '#065f46'
+              : '#0f766e'
 
           return (
             <Group
@@ -2757,10 +2847,10 @@ function WallDrawingLayerInner({
               <Rect
                 x={cxPx}
                 y={cyPx}
-                width={sizePx}
-                height={sizePx}
-                offsetX={sizePx / 2}
-                offsetY={sizePx / 2}
+                width={widthPx}
+                height={depthPx}
+                offsetX={widthPx / 2}
+                offsetY={depthPx / 2}
                 rotation={rotationDeg}
                 fill={fillColor}
                 stroke={strokeColor}
@@ -2790,15 +2880,21 @@ function WallDrawingLayerInner({
           const dx = wall.endX - wall.startX
           const dy = wall.endY - wall.startY
           const rotationDeg = (Math.atan2(dy, dx) * 180) / Math.PI
-          const sizePx = mmToPx(390)
+          // Honour the active pier type's footprint instead of a
+          // literal 390. Width = along the wall, depth = perpendicular,
+          // so non-cubic blocks (e.g. 20.01 = 390 × 190) render as a
+          // long-and-thin rectangle hugging the wall rather than a
+          // misleading 390 square.
+          const widthPx = mmToPx(pierFootprintMm)
+          const depthPx = mmToPx(pierFootprintDepthMm ?? pierFootprintMm)
           return (
             <Rect
               x={tiedPierHover.px.x}
               y={tiedPierHover.px.y}
-              width={sizePx}
-              height={sizePx}
-              offsetX={sizePx / 2}
-              offsetY={sizePx / 2}
+              width={widthPx}
+              height={depthPx}
+              offsetX={widthPx / 2}
+              offsetY={depthPx / 2}
               rotation={rotationDeg}
               fill="rgba(16, 185, 129, 0.25)"
               stroke="#065f46"
@@ -2813,15 +2909,20 @@ function WallDrawingLayerInner({
         {placingFreestandingPier && freestandingPierHoverMm && (() => {
           const cxPx = mmToPx(freestandingPierHoverMm.x)
           const cyPx = mmToPx(freestandingPierHoverMm.y)
-          const sizePx = mmToPx(390)
+          // Match the active pier type's footprint (width × depth),
+          // same shape as the tied-pier hover above. Freestanding
+          // piers don't snap to a wall direction so the rectangle
+          // sits axis-aligned at the cursor.
+          const widthPx = mmToPx(pierFootprintMm)
+          const depthPx = mmToPx(pierFootprintDepthMm ?? pierFootprintMm)
           return (
             <Rect
               x={cxPx}
               y={cyPx}
-              width={sizePx}
-              height={sizePx}
-              offsetX={sizePx / 2}
-              offsetY={sizePx / 2}
+              width={widthPx}
+              height={depthPx}
+              offsetX={widthPx / 2}
+              offsetY={depthPx / 2}
               fill="rgba(20, 184, 166, 0.25)"
               stroke="#0f766e"
               strokeWidth={2}
@@ -3164,9 +3265,9 @@ function WallDrawingLayerInner({
               <Line
                 points={[startPx.x, startPx.y, endPx.x, endPx.y]}
                 stroke={isSelected ? '#a21caf' : '#d946ef'}
-                strokeWidth={isSelected ? 3 : 2}
-                dash={[6, 4]}
-                hitStrokeWidth={12}
+                strokeWidth={isSelected ? 2 : 1.25}
+                dash={[4, 3]}
+                hitStrokeWidth={14}
                 shadowColor={isSelected ? '#d946ef' : undefined}
                 shadowBlur={isSelected ? 8 : 0}
                 shadowOpacity={isSelected ? 0.5 : 0}
@@ -3186,24 +3287,8 @@ function WallDrawingLayerInner({
                   if (stage) stage.container().style.cursor = containerCursor
                 }}
               />
-              <Circle
-                x={startPx.x}
-                y={startPx.y}
-                radius={isSelected ? 5 : 4}
-                fill="#d946ef"
-                stroke="white"
-                strokeWidth={1.5}
-                listening={false}
-              />
-              <Circle
-                x={endPx.x}
-                y={endPx.y}
-                radius={isSelected ? 5 : 4}
-                fill="#d946ef"
-                stroke="white"
-                strokeWidth={1.5}
-                listening={false}
-              />
+              {renderRulerMarker(startPx, isSelected)}
+              {renderRulerMarker(endPx, isSelected)}
               <MeasurementChip
                 x={midPx.x + 8}
                 y={midPx.y - 20}
@@ -3226,11 +3311,12 @@ function WallDrawingLayerInner({
               <Line
                 points={[startPx.x, startPx.y, endPx.x, endPx.y]}
                 stroke="#d946ef"
-                strokeWidth={2}
-                dash={[6, 4]}
-                opacity={0.85}
+                strokeWidth={1.25}
+                dash={[4, 3]}
+                opacity={0.95}
               />
-              <Circle x={startPx.x} y={startPx.y} radius={5} fill="#d946ef" stroke="white" strokeWidth={2} />
+              {renderRulerMarker(startPx, false)}
+              {renderRulerMarker(endPx, false)}
               <MeasurementChip
                 x={(startPx.x + endPx.x) / 2 + 8}
                 y={(startPx.y + endPx.y) / 2 - 20}
