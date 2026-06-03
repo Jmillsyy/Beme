@@ -3086,7 +3086,12 @@ function Scene({
           // course). The cumulative count across both walls matches
           // calculateProjectTally's deduplicated total — and gives
           // visible stretcher-bond alternation at corners in 3D.
-          const ownership = cornerOwnershipFor(wall)
+          //
+          // Passing wallsByIdMap activates the corner-count-aware
+          // sort, so a corner-to-corner wall takes priority over its
+          // corner+free neighbours at both ends and gets a symmetric
+          // Course 1 (owns both corners or neither, never one).
+          const ownership = cornerOwnershipFor(wall, wallsByIdMap)
           // Auto-detect lead-in: when the wall's body width vs cube
           // depth math doesn't naturally land on stretcher bond (e.g.
           // 300-series corners are 100mm off), search the library for

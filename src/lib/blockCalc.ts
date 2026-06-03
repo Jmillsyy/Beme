@@ -525,6 +525,102 @@ export function fitCourseLength(
     }
   }
 
+  // ── Step 3b' — multi-fraction rescue ─────────────────────────────
+  //
+  // The single-fraction substitution above only fires when ONE fraction
+  // fits the gap. But many walls have a clean fit using TWO fractions
+  // instead of (one body + one cut). Canonical case: a 990 mm
+  // corner+corner wall non-owning course — ends contribute 400 mm
+  // modular, interior needs 600. The bodies-only path picks 1 body
+  // (400) and rounds up to a cut (200 mm wide). But two 20.02
+  // fractions (300 modular each = 600 modular total) fit EXACTLY,
+  // and crucially produce joints at different positions to the cut
+  // body — so the wall's bond breaks between courses instead of
+  // sharing a vertical seam up the middle.
+  //
+  // We enumerate combinations of (k bodies, m fractions) for k in
+  // [0..nFloor], m in [1..3]. For each combo, check if the total
+  // modular lands within TINY_GAP_MM of the wall length. If any do,
+  // pick the one with the smallest |gap| (preferring exact fits),
+  // breaking ties by fewer fractions / fewer bodies so the simpler
+  // layouts win when multiple combos tie.
+  if (useFractions) {
+    const fracOpts = getFractionOptions()
+    if (fracOpts.length > 0) {
+      type RescueCandidate = {
+        bodyCount: number
+        fractions: BlockCode[]
+        actualLengthMm: number
+        absGap: number
+      }
+      let best: RescueCandidate | null = null
+      const evaluateCombo = (bodyCount: number, fracs: FractionOption[]) => {
+        const totalModular =
+          endsTotal +
+          bodyCount * BODY_BLOCK_MODULE_MM +
+          fracs.reduce((s, f) => s + f.modular, 0)
+        const actualLength = totalModular - MORTAR_MM
+        const absGap = Math.abs(wallLengthMm - actualLength)
+        if (absGap > TINY_GAP_MM) return
+        if (best === null) {
+          best = {
+            bodyCount,
+            fractions: fracs.map((f) => f.code),
+            actualLengthMm: actualLength,
+            absGap,
+          }
+          return
+        }
+        // Tie-breakers: smaller |gap|, then fewer fractions, then fewer bodies.
+        if (
+          absGap < best.absGap ||
+          (absGap === best.absGap && fracs.length < best.fractions.length) ||
+          (absGap === best.absGap &&
+            fracs.length === best.fractions.length &&
+            bodyCount < best.bodyCount)
+        ) {
+          best = {
+            bodyCount,
+            fractions: fracs.map((f) => f.code),
+            actualLengthMm: actualLength,
+            absGap,
+          }
+        }
+      }
+      // Enumerate 0..3 fractions × 0..nFloor bodies. 3 is a sensible
+      // cap — more than that is rare in practice and the search blows
+      // up combinatorially. nFloor as upper body bound keeps us in
+      // sensible territory (we already proved nFloor+1 overshoots).
+      const maxFractions = 3
+      for (let bodyCount = 0; bodyCount <= nFloor; bodyCount++) {
+        // 1 fraction
+        for (const f1 of fracOpts) {
+          evaluateCombo(bodyCount, [f1])
+          // 2 fractions
+          if (maxFractions >= 2) {
+            for (const f2 of fracOpts) {
+              evaluateCombo(bodyCount, [f1, f2])
+              // 3 fractions
+              if (maxFractions >= 3) {
+                for (const f3 of fracOpts) {
+                  evaluateCombo(bodyCount, [f1, f2, f3])
+                }
+              }
+            }
+          }
+        }
+      }
+      if (best !== null) {
+        return {
+          bodyCount: (best as RescueCandidate).bodyCount,
+          fractions: (best as RescueCandidate).fractions,
+          actualLengthMm: (best as RescueCandidate).actualLengthMm,
+          cutBlocks: 0,
+        }
+      }
+    }
+  }
+
   // Step 3c — no fraction fits, gap isn't tiny → round up to N+1 bodies
   // and mark one as cut. Identical to the fractions-OFF behaviour for
   // this branch.
@@ -633,6 +729,15 @@ export function planEnd(
     // Control joints are treated as free ends so each half of a
     // split renders its own end termination at the seam (two
     // independent walls with stretcher alternation).
+    //
+    // Default parity: Course 1 (odd) full, Course 2 (even) half.
+    // Course 1 lays [full][body…][full] on a modular 790 / 1190 / …
+    // mm wall, with [half][body+1][half] on Course 2 for the bond
+    // break. Rule 4 (parity inversion when sync gives a cleaner fit)
+    // takes over in planWall when the wall length needs an asymmetric
+    // [full][body…][half] layout (e.g. 990 mm) — the inversion always
+    // swaps the START side so the FULL lands on the LEFT of Course 1.
+    //
     // Half block: per-makeup override → library role pick → '20.03' fallback.
     const halfFromLib = pickHalfBlock()
     const resolvedHalf = halfBlockCode ?? halfFromLib?.code ?? '20.03'
@@ -667,17 +772,25 @@ export interface WallPlan {
    */
   noEndBlocks?: boolean
   /**
-   * Rule 4 (running bond): when true, the end-side parity has been inverted
-   * relative to the start so the half-end alternates between the two ends
-   * across courses (full+half on Course 1, half+full on Course 2). Downstream
-   * consumers that re-derive end blocks from `isOddCourse` (planWallLayout's
-   * resolveEndForCourse, calculateWallTally's resolveEndForCourse) must flip
-   * the `odd` argument they pass for the END side when this flag is set so
-   * the tally matches the layout. planEnd / planWall do the actual swap on
-   * `endEnd.{odd,even}{Block,Modular}` so any consumer that reads those
-   * fields directly already sees the post-flip values.
+   * Rule 4 (running bond): the end-side parity was inverted to land a
+   * cleaner course fit. Downstream consumers that re-derive end blocks
+   * from `isOddCourse` (resolveEndForCourse) must flip the `odd` arg
+   * for the END side when this is set.
+   *
+   * Only one of startParityInverted / endParityInverted will ever be
+   * true on the same plan — planWall picks the FREE end as the flip
+   * target, preferring `start` when both ends are free so Course 1
+   * lays its FULL block on the LEFT (the bricklayer's convention for
+   * asymmetric walls).
    */
   endParityInverted?: boolean
+  /**
+   * Rule 4 (running bond): the START-side parity was inverted to land
+   * a cleaner course fit. Same rules as endParityInverted — flip the
+   * `odd` arg for the START side in resolveEndForCourse so the layout
+   * matches the tally.
+   */
+  startParityInverted?: boolean
 }
 
 /**
@@ -793,11 +906,67 @@ export function planWall(
   let oddCourseFit = syncOddFit
   let evenCourseFit = syncEvenFit
   let endParityInverted = false
+  let startParityInverted = false
 
-  const endIsBondFlippable =
-    makeup.bondType === 'stretcher' && wall.endJunction.type !== 'corner'
-  if (endIsBondFlippable) {
+  // Which side can Rule 4 flip? Corners always stay full both courses
+  // (we can't make a corner a half), so the flip target is whichever
+  // end ISN'T a corner. When both ends are non-corner we prefer to
+  // flip the END so Course 1 lands as [full(start)][body][half(end)] —
+  // the bricklayer's convention for asymmetric walls. (Start-swap
+  // would put the half on the LEFT instead, which reads as wrong.)
+  // For walls with corner+free, the free end is the only swappable
+  // side; for free+corner the start is. Falls back to null for
+  // corner+corner (handled via opposite cornerOwnership phasing
+  // further down).
+  const startIsCornerJunction = wall.startJunction.type === 'corner'
+  const endIsCornerJunction = wall.endJunction.type === 'corner'
+  const flipTarget: 'start' | 'end' | null =
+    makeup.bondType !== 'stretcher'
+      ? null
+      : !endIsCornerJunction
+        ? 'end'
+        : !startIsCornerJunction
+          ? 'start'
+          : null
+
+  // ── Ownership-aware Rule 4 (per-wall decision) ───────────────────
+  //
+  // The Rule 4 swap (turning one of the wall's ends into a half on
+  // Course 1) only produces a clean Course 1 if THIS wall OWNS its
+  // corner on Course 1 — i.e. this wall is the one placing the corner
+  // block, not the perpendicular wall whose corner extends into this
+  // wall's footprint. When this wall doesn't own its Course 1 corner,
+  // its start (or end) already shrinks to a cube extension (~200 mm)
+  // via the corner-ownership refit, and the OPPOSITE rule applies:
+  //   - Owns Course 1 corner → INV swap → c1 lays clean
+  //     [corner-full][body…][half-end] (the user's preferred pattern).
+  //   - Does NOT own Course 1 corner → SYNC (no swap) → c1 lays clean
+  //     [cube-ext][body…][full-end].
+  // Both walls at a shared corner end up with mirror layouts on each
+  // course — clean fit, bond breaks naturally between courses.
+  //
+  // For walls with no corner end (two-free), there's no ownership to
+  // consult and we fall back to the length-based Course-1 tiebreak
+  // below. Same for callers that don't pass wallsById (so we can't
+  // compute ownership).
+  const internalOwnership = wallsById
+    ? cornerOwnershipFor(wall, wallsById)
+    : null
+  let wallC1OwnsItsCorner: boolean | null = null
+  if (
+    internalOwnership !== null &&
+    (startIsCornerJunction || endIsCornerJunction)
+  ) {
+    wallC1OwnsItsCorner = startIsCornerJunction
+      ? internalOwnership({ wallEnd: 'start', courseNumber: 1 })
+      : internalOwnership({ wallEnd: 'end', courseNumber: 1 })
+  }
+
+  if (flipTarget !== null) {
     // Inverted: pair startEnd.odd with endEnd.even, and vice versa.
+    // This is what the math sees regardless of which side we actually
+    // swap to commit it — the wall-length fit only cares about the
+    // SUM of the two ends' modulars per course.
     const invOddFit = fitCourseLength(
       lengthMm,
       startEnd.oddModular + endEnd.evenModular,
@@ -808,35 +977,116 @@ export function planWall(
       startEnd.evenModular + endEnd.oddModular,
       makeup.useFractions
     )
-    // "Worst-course gap" = max gap across both courses. The cleaner
-    // arrangement is the one with the smaller worst-course gap. Ties
-    // (e.g. both schemes fit perfectly with gap=0) keep the sync
-    // arrangement to preserve historical layouts on modular walls.
-    const syncWorstGap = Math.max(
-      Math.abs(lengthMm - syncOddFit.actualLengthMm),
-      Math.abs(lengthMm - syncEvenFit.actualLengthMm)
-    )
-    const invWorstGap = Math.max(
-      Math.abs(lengthMm - invOddFit.actualLengthMm),
-      Math.abs(lengthMm - invEvenFit.actualLengthMm)
-    )
-    if (invWorstGap < syncWorstGap) {
-      // Inverted wins — commit by swapping endEnd's odd/even pair so
-      // downstream consumers (planWallLayout, calculateWallTally) read
-      // the right parity off plan.endEnd.{odd,even}{Block,Modular}.
-      const tmpBlock = endEnd.oddBlock
-      endEnd.oddBlock = endEnd.evenBlock
-      endEnd.evenBlock = tmpBlock
-      const tmpMod = endEnd.oddModular
-      endEnd.oddModular = endEnd.evenModular
-      endEnd.evenModular = tmpMod
+    // Decide whether to commit the swap. Two paths:
+    //
+    //  1. Ownership-aware (when this wall has a corner end AND we
+    //     know who owns it on Course 1): the swap only helps walls
+    //     that OWN their c1 corner. The wall that DOESN'T own (whose
+    //     corner shrinks to a cube-extension) gets clean fits from
+    //     SYNC instead, because the cube refit + full-end pair lands
+    //     on a 600 mm interior that 1 body fills perfectly.
+    //
+    //  2. Length-based (no corner ends, or no ownership info): pick
+    //     whichever arrangement gives the smaller Course 1 gap; ties
+    //     tiebreak on Course 2 gap; full ties keep SYNC.
+    //
+    // The first path is what fixes the "fixes one side, breaks the
+    // other" issue at shared corners — both walls now resolve their
+    // own Rule 4 decision based on whether they personally own the
+    // shared corner on Course 1.
+    const syncC1Gap = Math.abs(lengthMm - syncOddFit.actualLengthMm)
+    const invC1Gap = Math.abs(lengthMm - invOddFit.actualLengthMm)
+    const syncC2Gap = Math.abs(lengthMm - syncEvenFit.actualLengthMm)
+    const invC2Gap = Math.abs(lengthMm - invEvenFit.actualLengthMm)
+    let invWins: boolean
+    if (wallC1OwnsItsCorner !== null) {
+      // Ownership-aware decision. The choice between SYNC and INV
+      // depends BOTH on which course owns the corner AND the wall's
+      // length, because the corner end's effective modular shrinks
+      // from full (400) to cube (~200) on non-owning courses — that
+      // changes which Rule 4 arrangement gives Course 1 a clean fit.
+      //
+      // Examples (corner+free wall):
+      //   990 mm owns c1:    SYNC=800, INV=600 → INV clean (1 body)
+      //   990 mm doesn't:    SYNC=600 (cube+full), INV=400 → SYNC clean
+      //   1190 mm owns c1:   SYNC=800 → clean, INV=600 → cut
+      //   1190 mm doesn't:   SYNC=600 → cut, INV=400 (cube+half) → clean
+      //
+      // So we compute the actual c1 ends total for SYNC and INV under
+      // this wall's ownership and pick the smaller-gap option.
+      const cornerSide: 'start' | 'end' = flipTarget === 'start' ? 'end' : 'start'
+      const wallThicknessForCube =
+        thicknessByWallId?.[wall.id] ??
+        BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ??
+        190
+      const cornerJunction =
+        cornerSide === 'start' ? wall.startJunction : wall.endJunction
+      const cornerNeighborId = cornerJunction.connectedWallIds?.[0]
+      const cubeDepth =
+        cornerNeighborId !== undefined
+          ? (thicknessByWallId?.[cornerNeighborId] ?? wallThicknessForCube)
+          : wallThicknessForCube
+      const cubeModular = cubeDepth + MORTAR_MM
+      // Corner-side modular on c1: full corner if owning, cube if not.
+      const cornerC1Mod = wallC1OwnsItsCorner
+        ? (cornerSide === 'start' ? startEnd.oddModular : endEnd.oddModular)
+        : cubeModular
+      // Free-side modular on c1: SYNC reads end.odd (default full);
+      // INV reads end.even (default half), which becomes the post-swap
+      // odd value once we commit.
+      const freeC1ModSync =
+        cornerSide === 'start' ? endEnd.oddModular : startEnd.oddModular
+      const freeC1ModInv =
+        cornerSide === 'start' ? endEnd.evenModular : startEnd.evenModular
+      const syncOwnC1 = fitCourseLength(
+        lengthMm,
+        cornerC1Mod + freeC1ModSync,
+        makeup.useFractions
+      )
+      const invOwnC1 = fitCourseLength(
+        lengthMm,
+        cornerC1Mod + freeC1ModInv,
+        makeup.useFractions
+      )
+      const syncOwnC1Gap = Math.abs(lengthMm - syncOwnC1.actualLengthMm)
+      const invOwnC1Gap = Math.abs(lengthMm - invOwnC1.actualLengthMm)
+      invWins = invOwnC1Gap < syncOwnC1Gap
+    } else {
+      // Length-based fallback (no corner end, or no wallsById).
+      invWins =
+        invC1Gap < syncC1Gap ||
+        (invC1Gap === syncC1Gap && invC2Gap < syncC2Gap)
+    }
+    if (invWins) {
+      // Commit the inversion on the chosen side. Swap odd↔even on
+      // that EndPlan so downstream consumers (planWallLayout,
+      // calculateWallTally) read the right parity by reading the
+      // post-swap {odd,even}{Block,Modular} fields.
+      const target = flipTarget === 'start' ? startEnd : endEnd
+      const tmpBlock = target.oddBlock
+      target.oddBlock = target.evenBlock
+      target.evenBlock = tmpBlock
+      const tmpMod = target.oddModular
+      target.oddModular = target.evenModular
+      target.evenModular = tmpMod
       oddCourseFit = invOddFit
       evenCourseFit = invEvenFit
-      endParityInverted = true
+      if (flipTarget === 'start') {
+        startParityInverted = true
+      } else {
+        endParityInverted = true
+      }
     }
   }
 
-  return { startEnd, endEnd, oddCourseFit, evenCourseFit, endParityInverted }
+  return {
+    startEnd,
+    endEnd,
+    oddCourseFit,
+    evenCourseFit,
+    startParityInverted,
+    endParityInverted,
+  }
 }
 
 // ---------- Per-course composition ----------
@@ -1078,10 +1328,10 @@ export function calculateWallTally(
     isOddCourse: boolean
   ): BlockCode {
     const blocks = resolveCourseBlocks(makeup, courseNumber)
-    // Only structural CORNER junctions get the full-block-every-course
-    // treatment. Control joints are treated as free ends so each half
-    // of a split emits its own alternating end termination at the
-    // seam. Mirrors planEnd.
+    // Mirrors planEnd's default parity: stretcher non-corner ends get
+    // FULL on Course 1 (odd) and HALF on Course 2 (even). Rule 4
+    // inversion is applied at the call site by flipping the `odd`
+    // arg when plan.{start,end}ParityInverted is set for that side.
     if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
       return isOddCourse
         ? healCode(blocks.cornerBlockCode, 'corner')
@@ -1105,13 +1355,16 @@ export function calculateWallTally(
     // wall. planWall's block codes are only consulted for short-wall and
     // single-block-stub fallback modes (which both set startEnd/endEnd to
     // the makeup defaults uniformly).
+    // Rule 4 (running bond): planWall sets {start,end}ParityInverted
+    // when an asymmetric end pairing produces a cleaner fit than the
+    // sync arrangement. Flipping the `odd` arg on the affected side
+    // keeps the tally in step with the layout — exactly one of the
+    // two flags will be true (never both).
+    const startParityOdd = plan.startParityInverted ? !isOddCourse : isOddCourse
+    const endParityOdd = plan.endParityInverted ? !isOddCourse : isOddCourse
     const startBlock = plan.noEndBlocks
       ? (isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock)
-      : resolveEndForCourse(wall.startJunction.type, courseNumber, isOddCourse)
-    // Rule 4 (running bond) — see planWall + planWallLayout. The flag
-    // carries planWall's per-wall decision so this tally counts the
-    // same end blocks the layout will place.
-    const endParityOdd = plan.endParityInverted ? !isOddCourse : isOddCourse
+      : resolveEndForCourse(wall.startJunction.type, courseNumber, startParityOdd)
     const endBlock = plan.noEndBlocks
       ? (isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock)
       : resolveEndForCourse(wall.endJunction.type, courseNumber, endParityOdd)
@@ -1344,23 +1597,101 @@ export type CornerOwnership = (args: {
  * the higher-id wall. That's the natural stretcher-bond alternation
  * a real corner block produces when 200×200×400 blocks stack at 90°.
  */
-export function cornerOwnershipFor(wall: Wall): CornerOwnership {
+export function cornerOwnershipFor(
+  wall: Wall,
+  /**
+   * Optional wallsById lookup. When provided:
+   *   1. Participants at each corner are sorted by (corner-count DESC,
+   *      id ASC), so a corner-to-corner wall always leads the rotation
+   *      ahead of corner+free neighbours. Both walls at any shared
+   *      corner compute the same sort, so deduplication stays correct.
+   *   2. The lead's preferred PHASING at each corner determines who
+   *      owns Course 1. Corner-to-corner leads use OPPOSITE phasing
+   *      (own start corner on Course 1, own end corner on Course 2)
+   *      so the wall's bottom course reads as the asymmetric
+   *      [corner-full][bodies][cube-ext] pattern — matching the
+   *      bricklayer's [full][body][half] / [half][body][full]
+   *      alternation. Aligned phasing produced [corner-full][cut][corner-full]
+   *      on non-modular walls, which forced a visible vertical seam
+   *      up the middle.
+   *
+   * Without wallsById the function falls back to pure alphabetical
+   * and phase=0 at every corner (the original behaviour) so callers
+   * without the lookup still get a deterministic ownership function.
+   */
+  wallsById?: Record<string, Wall>
+): CornerOwnership {
+  const cornerCountFor = (id: string): number => {
+    const w = wallsById?.[id]
+    if (!w) return 0
+    return (
+      (w.startJunction.type === 'corner' ? 1 : 0) +
+      (w.endJunction.type === 'corner' ? 1 : 0)
+    )
+  }
   const partySortedAt = (junction: Wall['startJunction']) => {
     if (junction.type !== 'corner' && junction.type !== 'control-joint') {
       return null
     }
     const others = junction.connectedWallIds ?? []
     if (others.length === 0) return null
-    const all = [...others, wall.id].sort()
+    const all = [...others, wall.id]
+    if (wallsById) {
+      all.sort((a, b) => {
+        const ca = cornerCountFor(a)
+        const cb = cornerCountFor(b)
+        if (ca !== cb) return cb - ca
+        return a < b ? -1 : a > b ? 1 : 0
+      })
+    } else {
+      all.sort()
+    }
     const myIdx = all.indexOf(wall.id)
     return { all, myIdx, n: all.length }
   }
   const startInfo = partySortedAt(wall.startJunction)
   const endInfo = partySortedAt(wall.endJunction)
+
+  // Phase at a corner: 0 = lead owns Course 1, 1 = lead owns Course 2.
+  // For corner-to-corner leads we shift phase=1 at the lead's END
+  // corner so the lead owns its two corners on DIFFERENT courses
+  // (opposite phasing). Every participant at a shared corner reads the
+  // same phase because they all identify the same lead wall via the
+  // priority sort and look at the same lead.startJunction /
+  // lead.endJunction membership — keeping deduplication consistent.
+  const phaseAt = (info: { all: string[] }): number => {
+    if (!wallsById) return 0
+    const leadId = info.all[0]
+    const lead = wallsById[leadId]
+    if (!lead) return 0
+    const leadIsCornerCorner =
+      lead.startJunction.type === 'corner' && lead.endJunction.type === 'corner'
+    if (!leadIsCornerCorner) return 0
+    // Identify whether THIS corner is the lead's END corner by checking
+    // membership against the lead's two junction connectedWallIds sets.
+    // A corner is identified by its participant set (sorted matches),
+    // not by name — so we compare set membership rather than indices.
+    const leadEndOthers = lead.endJunction.connectedWallIds ?? []
+    const sameSet = (a: string[], b: string[]): boolean => {
+      if (a.length !== b.length) return false
+      const sa = [...a].sort()
+      const sb = [...b].sort()
+      for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false
+      return true
+    }
+    const leadEndParticipants = [leadId, ...leadEndOthers]
+    if (sameSet(info.all, leadEndParticipants)) return 1
+    return 0
+  }
+
+  const startPhase = startInfo ? phaseAt(startInfo) : 0
+  const endPhase = endInfo ? phaseAt(endInfo) : 0
+
   return ({ wallEnd, courseNumber }) => {
     const info = wallEnd === 'start' ? startInfo : endInfo
     if (!info) return true // Not a shared corner — caller owns it.
-    return (courseNumber - 1) % info.n === info.myIdx
+    const phase = wallEnd === 'start' ? startPhase : endPhase
+    return (courseNumber - 1 + phase) % info.n === info.myIdx
   }
 }
 
@@ -1472,7 +1803,10 @@ export function planWallLayout(
     // End block resolution — mirrors calculateWallTally exactly.
     // Only structural CORNER junctions get full-block-every-course.
     // Control joints alternate like free ends so each half emits
-    // its own end termination at the seam.
+    // its own end termination at the seam. Mirrors planEnd's default
+    // parity — Rule 4 inversion (when planWall picks an asymmetric
+    // pairing for a cleaner fit) is applied at the call site by
+    // flipping the `odd` argument on whichever side was inverted.
     const resolveEndForCourse = (
       junctionType: JunctionType,
       cNum: number,
@@ -1486,16 +1820,14 @@ export function planWallLayout(
       }
       return healCode(blocks.cornerBlockCode, 'corner')
     }
+    // Rule 4 (running bond): apply whichever side planWall flipped to
+    // commit the inversion. Exactly one of the two flags can be true,
+    // so the side that wasn't flipped stays in sync with isOddCourse.
+    const startParityOdd = plan.startParityInverted ? !isOddCourse : isOddCourse
+    const endParityOdd = plan.endParityInverted ? !isOddCourse : isOddCourse
     const startBlock: BlockCode = plan.noEndBlocks
       ? (isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock)
-      : resolveEndForCourse(wall.startJunction.type, courseNumber, isOddCourse)
-    // Rule 4 (running bond): when planWall inverted the end-side
-    // parity (smaller worst-course gap that way), resolveEndForCourse
-    // needs to see the FLIPPED `odd` arg for the END side so it picks
-    // the half-end when isOddCourse is true and the full-end when
-    // false. plan.endParityInverted carries planWall's decision so we
-    // don't re-evaluate the rule here.
-    const endParityOdd = plan.endParityInverted ? !isOddCourse : isOddCourse
+      : resolveEndForCourse(wall.startJunction.type, courseNumber, startParityOdd)
     const endBlock: BlockCode = plan.noEndBlocks
       ? (isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock)
       : resolveEndForCourse(wall.endJunction.type, courseNumber, endParityOdd)
