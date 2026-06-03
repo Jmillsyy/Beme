@@ -22,3 +22,15 @@ re-run any of them.
   per-organisation supply items, RLS policies for org members,
   `updated_at` trigger, and `created_by` / `updated_by` audit columns.
   Required for cross-device supply-item sync.
+- `2026_06_seed_galintel_supply_items.sql` — seeds a starter set of
+  Galintel supply items for new organisations.
+- `2026_06_reset_project_owner_to_creator.sql` — one-shot repair for
+  projects whose `owner_user_id` drifted from the original creator
+  because of the pre-fix save bug. Reads `data->>'createdByUserId'`
+  and writes it back to `owner_user_id` when the two differ.
+- `2026_06_open_project_update_to_org_members.sql` — replaces the
+  restrictive UPDATE policy (owner / admin / collaborator only) with
+  an open one: any active member of the project's org can save. Now
+  that ownership is sticky for display, edit rights need to stay open
+  so staff can keep helping on each other's takeoffs without an
+  explicit share step. DELETE remains owner-or-admin.

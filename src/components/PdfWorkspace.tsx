@@ -889,6 +889,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    */
   const [createdByUserId, setCreatedByUserId] = useState<string | null>(null)
   /**
+   * Owner user id — the person whose dashboard the project shows up
+   * under in "Your projects". Set once on first save (defaults to the
+   * creator) and preserved through every later save so a teammate
+   * opening the project, tweaking something, and saving doesn't
+   * "steal" ownership.
+   *
+   * The old estimate-request flow used to transfer ownership on
+   * pickup; with that gone, owner is now sticky for the project's
+   * lifetime (an admin transfer UI can flip it later if needed).
+   * Null until the first save / project load.
+   */
+  const [ownerUserId, setOwnerUserId] = useState<string | null>(null)
+  /**
    * Six-digit human-readable reference number. Allocated server-side by a
    * Postgres sequence on the project's first INSERT and returned on the
    * upsert response, so the workspace shows the real number from the
@@ -1097,6 +1110,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setProjectOutcome(proj.outcome)
         setProjectCreatedAt(proj.createdAt)
         setCreatedByUserId(proj.createdByUserId ?? null)
+        // Hydrate ownerUserId from the cloud row. Without this, a
+        // later save would have no in-state value to send, the
+        // projectStorage save layer would fall back to the current
+        // user as owner, and the project would migrate out of the
+        // team's column into the saver's "Your projects" — the bug
+        // the user reported.
+        setOwnerUserId(proj.ownerUserId ?? proj.createdByUserId ?? null)
         setReferenceNumber(proj.referenceNumber ?? null)
         setSupplyItemSelections(proj.supplyItemSelections ?? {})
         setSupplyItemRateOverrides(proj.supplyItemRateOverrides ?? {})
@@ -1491,6 +1511,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // save by reading the in-state value first. Even when another org
     // member edits this project, the original author stays.
     const authorUserId = createdByUserId ?? currentUser?.id
+    // Owner stamp — same sticky semantics. Hydrated from the cloud
+    // row on project load (see setOwnerUserId in the loader above);
+    // on first save it falls back to the saving user. Sending it on
+    // every save prevents projectStorage's `owner_user_id: ownerUserId
+    // ?? userId` default from re-assigning the project to whoever
+    // happened to save it last.
+    const persistedOwnerUserId = ownerUserId ?? authorUserId
     // Derive `trades` from "which trades have walls in this project".
     // This reflects what the user has actually drawn; a fresh project
     // that's only been opened in block mode but hasn't been drawn on
@@ -1515,6 +1542,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       completedAt: projectCompletedAt ?? undefined,
       outcome: projectOutcome,
       createdByUserId: authorUserId,
+      ownerUserId: persistedOwnerUserId,
       projectDetails,
       // pdfBlob + pdfFileName are optional now — a project can be saved without a PDF
       ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
@@ -1565,6 +1593,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       setProjectOrganisationId(organisationId ?? null)
       setProjectCreatedAt(project.createdAt)
       if (authorUserId && !createdByUserId) setCreatedByUserId(authorUserId)
+      // Same one-shot seed for ownerUserId — first save sets it; later
+      // saves are no-ops because the state already matches.
+      if (persistedOwnerUserId && !ownerUserId) setOwnerUserId(persistedOwnerUserId)
       // Capture the DB-allocated reference number on first save so the
       // project bar + exports show the real value immediately. Subsequent
       // saves preserve the number (cloud upsert returns the same row).
@@ -1733,6 +1764,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // or stamp the current org for brand-new projects flipping status.
       const organisationId = projectOrganisationId ?? getCurrentOrgId() ?? undefined
       const authorUserId = createdByUserId ?? currentUser?.id
+      // Same ownership-preservation as the main save — without
+      // ownerUserId on the patch, projectStorage would default-assign
+      // the project to whoever toggled status. Status flips happen
+      // from the project bar so a teammate marking someone else's
+      // project complete would otherwise migrate it into their
+      // "Your projects".
+      const persistedOwnerUserId = ownerUserId ?? authorUserId
       const project: SavedProject = {
         id: currentProjectId,
         type: mode,
@@ -1743,6 +1781,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         completedAt: nextStatus === 'completed' ? now : projectCompletedAt ?? undefined,
         outcome: projectOutcome,
         createdByUserId: authorUserId,
+        ownerUserId: persistedOwnerUserId,
         projectDetails,
         ...(pdfFile ? { pdfBlob: pdfFile, pdfFileName: pdfFile.name } : {}),
         ...(isEmptyWorkspace ? { emptyWorkspace: true } : {}),
@@ -1877,6 +1916,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       setProjectOutcome(undefined)
       setProjectCreatedAt(null)
       setCreatedByUserId(null)
+      setOwnerUserId(null)
       setCreatedByDisplayName(null)
       setProjectCompletedAt(null)
       setLastSavedAt(null)
