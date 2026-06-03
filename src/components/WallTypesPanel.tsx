@@ -121,6 +121,14 @@ export default function WallTypesPanel({
 }: WallTypesPanelProps) {
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** When the pier editor swaps over to the wall modal via the Curved
+   *  kind option, this carries the intent — the wall modal opens with
+   *  Curved already selected so the user goes straight into curved-
+   *  wall configuration instead of seeing the modal default to Wall
+   *  and having to click Curved again. Cleared on close. */
+  const [editingSeedKind, setEditingSeedKind] = useState<
+    'wall' | 'curved'
+  >('wall')
   /** Outer-level pier editor state — drives the "+ Add pier" / "Edit pier"
    *  flow from the panel directly so the user path mirrors wall types. */
   const [pierEditingId, setPierEditingId] = useState<string | null>(null)
@@ -226,7 +234,10 @@ export default function WallTypesPanel({
                     }}
                     title="Wall colour shown on the plan"
                   >
-                    Wall
+                    {m.kind === 'curved' ||
+                    typeof m.curveRadiusMm === 'number'
+                      ? 'Curved'
+                      : 'Wall'}
                   </span>
                   <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
                     {m.name}
@@ -437,22 +448,31 @@ export default function WallTypesPanel({
                 }
               : undefined
           }
-          // Curved kind in the picker → close this modal and activate
-          // curve-draw mode on the canvas. Same toggle the panel's
-          // parent (PdfWorkspace) wires for the in-panel hot path.
-          onSwitchToCurved={
-            editingId === 'new' && onToggleCurvedWall
-              ? () => {
-                  setEditingId(null)
-                  onToggleCurvedWall()
-                }
-              : undefined
+          // Curved option is available whenever the host has wired a
+          // curve-draw toggle. Picking Curved no longer closes the
+          // modal — the builder stays open with the same fields as a
+          // straight wall, and on Save the parent uses the kind hint
+          // (below) to activate curve-draw with the freshly saved
+          // wall type.
+          curvedAvailable={
+            editingId === 'new' && Boolean(onToggleCurvedWall)
           }
-          onCancel={() => setEditingId(null)}
+          initialKind={editingSeedKind}
+          onCancel={() => {
+            setEditingId(null)
+            setEditingSeedKind('wall')
+          }}
           onSave={(m) => {
             if (editingId === 'new') onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
+            setEditingSeedKind('wall')
+            // No auto curve-draw activation here. The saved wall type
+            // sits in the panel labelled "Curved" (kind flag on the
+            // makeup); the user selects it like any other type and
+            // then hits Draw — the toolbar's draw routing checks the
+            // active makeup's kind and routes to curve-draw or
+            // straight-draw accordingly. Same flow as a normal wall.
           }}
         />
       )}
@@ -473,14 +493,20 @@ export default function WallTypesPanel({
                 }
               : undefined
           }
-          // Same Curved route as the wall modal — close this pier
-          // editor and activate curve mode for the active wall type.
+          // Curved option in the pier modal now hands control to the
+          // WALL editor with Curved already selected, instead of
+          // dismissing both modals and dropping the user straight
+          // into curve-draw mode. The user fills out the wall
+          // builder, saves, then curve-draw activates on the new
+          // makeup — same flow as picking Curved directly from the
+          // wall modal.
           onSwitchToCurved={
             pierEditingId === 'new' && onToggleCurvedWall
               ? () => {
                   setPierEditingId(null)
                   setPierEditingSeedPlacement(undefined)
-                  onToggleCurvedWall()
+                  setEditingSeedKind('curved')
+                  setEditingId('new')
                 }
               : undefined
           }
@@ -528,17 +554,23 @@ type MakeupKind = 'wall' | 'curved' | 'tied-pier' | 'freestanding-pier'
 function KindPicker({
   current,
   onChange,
+  hideCurved,
 }: {
   current: MakeupKind
   onChange: (kind: MakeupKind) => void
+  /** Hide the Curved option entirely (e.g. brick contexts where the
+   *  curved-block math hasn't been built out). When false/undefined,
+   *  Curved sits between Wall and the two pier kinds. */
+  hideCurved?: boolean
 }) {
   // Curved sits between Wall and the two pier kinds because it's a
-  // wall-flavoured action — picking it activates curve-draw mode
-  // using whatever wall type is currently active (see the parent's
-  // onSwitchToCurved handler).
+  // wall-flavoured action — picking it tags the modal session as a
+  // curved-wall configure so on Save the parent activates curve-
+  // draw with the new makeup. The builder fields are otherwise
+  // identical to Wall.
   const options: { value: MakeupKind; label: string }[] = [
     { value: 'wall', label: 'Wall' },
-    { value: 'curved', label: 'Curved' },
+    ...(!hideCurved ? [{ value: 'curved' as const, label: 'Curved' }] : []),
     { value: 'tied-pier', label: 'Tied pier' },
     { value: 'freestanding-pier', label: 'Freestanding pier' },
   ]
@@ -583,13 +615,21 @@ interface WallTypeEditorModalProps {
    *  the pier editor with the right seed placement — handled in the
    *  parent via `onSwitchToPier`. Ignored when editing existing. */
   onSwitchToPier?: (placement: 'tied' | 'freestanding') => void
-  /** When provided, picking "Curved" in the kind picker closes the
-   *  modal and activates curve-draw mode on the canvas (parent does
-   *  the actual setDrawingCurveMode toggle). Optional — brick or
-   *  pre-block contexts can omit it and the picker simply hides the
-   *  Curved option. */
-  onSwitchToCurved?: () => void
-  onSave: (makeup: WallMakeup) => void
+  /** Whether the host context supports the Curved option in the kind
+   *  picker at all. When `true`, picking Curved keeps the builder
+   *  open (same tabs / same fields as Wall) and `onSave` fires with
+   *  `kind: 'curved'` so the parent can activate curve-draw mode for
+   *  the just-saved wall type. When falsy/undefined, the Curved
+   *  option is hidden entirely. The legacy "close-and-toggle" flow
+   *  (a separate `onSwitchToCurved` callback) was retired — curved
+   *  walls now use the same wall type configuration as straight ones
+   *  and the parent picks how to draw them. */
+  curvedAvailable?: boolean
+  /** Pre-seed the kind picker so the modal opens with Curved already
+   *  selected (e.g. when the pier modal hands control back via its
+   *  own Curved option). Defaults to 'wall'. */
+  initialKind?: 'wall' | 'curved'
+  onSave: (makeup: WallMakeup, opts?: { kind?: 'wall' | 'curved' }) => void
   onCancel: () => void
 }
 
@@ -613,10 +653,19 @@ interface WallTypeEditorModalProps {
 function WallTypeEditorModal({
   existing,
   onSwitchToPier,
-  onSwitchToCurved,
+  curvedAvailable,
+  initialKind,
   onSave,
   onCancel,
 }: WallTypeEditorModalProps) {
+  // Wall vs curved kind for THIS configure pass. Curved is just an
+  // intent flag now — the builder shows the same tabs / fields as a
+  // straight wall, and the calc engine adapts the chosen blocks to
+  // the curve geometry on draw. On Save the parent reads this flag
+  // and picks straight-draw or curve-draw mode with the new makeup.
+  const [selectedKind, setSelectedKind] = useState<'wall' | 'curved'>(
+    initialKind ?? 'wall'
+  )
   const { library } = useBlockLibrary()
   // Selectable blocks for the wall composition dropdowns. Filter out
   // anything tagged 'base-tile' — tiles are paired with their cleanout
@@ -1085,6 +1134,13 @@ function WallTypeEditorModal({
     const updated: WallMakeup = {
       id: existing?.id ?? generateMakeupId(),
       name: name.trim() || 'New wall type',
+      // Stamp the kind so the panel labels this row as Curved and the
+      // drawing handler defaults to curve-draw when this type becomes
+      // active. Existing makeups keep their previous kind (existing
+      // wall types stay 'wall', existing curve makeups stay 'curved').
+      kind:
+        existing?.kind ??
+        (selectedKind === 'curved' ? 'curved' : 'wall'),
       bondType,
       heightMm: finalHeightMm,
       baseCourseBlockCode,
@@ -1110,7 +1166,7 @@ function WallTypeEditorModal({
       // broke after each save.
       ...(existing?.areaId ? { areaId: existing.areaId } : {}),
     }
-    onSave(updated)
+    onSave(updated, { kind: selectedKind })
   }
 
   const canSave =
@@ -1215,15 +1271,17 @@ function WallTypeEditorModal({
             panel. Hidden when editing existing (the kind is fixed by
             which makeup you opened — to convert a wall to a pier you'd
             delete and recreate). */}
-        {!existing && (onSwitchToPier || onSwitchToCurved) && (
+        {!existing && (onSwitchToPier || curvedAvailable) && (
           <KindPicker
-            current="wall"
+            current={selectedKind === 'curved' ? 'curved' : 'wall'}
             onChange={(kind) => {
               if (kind === 'tied-pier') onSwitchToPier?.('tied')
               else if (kind === 'freestanding-pier')
                 onSwitchToPier?.('freestanding')
-              else if (kind === 'curved') onSwitchToCurved?.()
+              else if (kind === 'curved' && curvedAvailable) setSelectedKind('curved')
+              else if (kind === 'wall') setSelectedKind('wall')
             }}
+            hideCurved={!curvedAvailable}
           />
         )}
 

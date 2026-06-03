@@ -33,8 +33,12 @@
  * fills behind partially-crossing openings use the body colour at the
  * course's y-position.
  *
- * Curved walls sample the arc into N straight segments and run each
- * through the per-course renderer. No openings on curved walls in v1.
+ * Curved walls reuse the straight-wall layout — laid out flat on a
+ * virtual straight wall whose length equals the OUTER arc length —
+ * then each block is bent into a trapezoidal wedge along the arc
+ * (front face full block width, rear face cut), matching how a
+ * bricklayer cuts the back of each unit to follow a real curve.
+ * No openings on curved walls in v1.
  *
  * Battery-friendly defaults:
  *   - frameloop="demand" — frames only render on camera interaction.
@@ -56,14 +60,14 @@ import type {
 } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { Block, BlockCode } from '../types/blocks'
-import { arcFromThreePoints, sampleArc, isCurvedWall } from '../lib/curveGeom'
+import { arcFromThreePoints, isCurvedWall } from '../lib/curveGeom'
 import {
   convertMakeupToBands,
   moduleHeightForBand,
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
-import { bandColor } from '../lib/blockColors'
+import { bandColor, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import { rasterisePdfPage } from '../lib/pdfRaster'
 import { useTheme, type Theme } from '../lib/theme'
@@ -114,8 +118,6 @@ const GROUND_COLOR_LIGHT = SCENE_BG_LIGHT
 function groundColorFor(theme: Theme): string {
   return theme === 'light' ? GROUND_COLOR_LIGHT : GROUND_COLOR_DARK
 }
-const CURVE_SAMPLES = 24
-
 /** Fallback widths (mm) when the library doesn't carry the block. AU
  *  defaults — full end 20.01 ≈ 390mm, half end 20.03 ≈ 190mm. */
 const FALLBACK_CORNER_WIDTH_MM = 390
@@ -413,6 +415,33 @@ interface WallSegmentBox {
 }
 
 /**
+ * Trapezoidal prism — the shape of a single masonry unit cut to follow
+ * a curved wall. In real-world curved masonry, the bricklayer cuts the
+ * REAR of each block on an angle so its front face stays full block
+ * width and the two side faces meet the neighbouring blocks along
+ * radial lines. The result is a block that's wider on the convex
+ * (outer) face than on the concave (inner / rear) face.
+ *
+ * The four ground-plane corners are stored explicitly so the renderer
+ * can build a custom BufferGeometry with the exact trapezoid footprint
+ * extruded up by (y1 − y0). Corners are listed in the order:
+ *   outerStart → outerEnd → innerEnd → innerStart
+ * — i.e. CCW when viewed from above, with `outer*` on the convex side
+ * of the arc (away from the arc centre) and `inner*` on the concave
+ * side (the "cut at the rear" side).
+ */
+interface WallSegmentWedge {
+  outerStart: { x: number; z: number }
+  outerEnd: { x: number; z: number }
+  innerEnd: { x: number; z: number }
+  innerStart: { x: number; z: number }
+  y0: number
+  y1: number
+  color: string
+  highlight: boolean
+}
+
+/**
  * Decide whether a given block code should be visually highlighted in
  * the 3D view. Used to make specialty blocks (the ones with a specific
  * structural purpose — cleanouts, knockouts, lintels, bond-beam tops,
@@ -637,7 +666,16 @@ function segmentsForStraightWall(
   colorMap: Map<string, string>,
   library: Record<string, Block>,
   wallThicknessByWallId: Record<string, number>,
-  wallsById?: Record<string, Wall>
+  wallsById?: Record<string, Wall>,
+  /**
+   * When true, skip the block-lintel emission at opening heads. Brick
+   * walls run through this function for layout but don't get concrete
+   * block lintels — brick openings are bridged by per-opening steel
+   * angle / catnic supply items the user defines separately, not
+   * masonry block lintels. With this flag the head course just
+   * continues as bricks like the rest of the wall.
+   */
+  disableBlockLintels = false
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -800,26 +838,28 @@ function segmentsForStraightWall(
    *  range overlaps the lintel footprint must exclude the lintel's
    *  span — not just the single "lintel course". */
   const wallHeightMm = totalHeightM * 1000
-  const lintelFootprints = wallOpenings
-    .map((op) => {
-      const headHeightMm = wallHeightMm - op.sill * 1000 - (op.head - op.sill) * 1000
-      if (headHeightMm <= 0) return null
-      const spec = selectBlockLintel(headHeightMm)
-      if (!spec) return null
-      const block = library[spec.code]
-      if (!block) return null
-      const lintelHeightM = block.dimensions.heightMm / 1000
-      const lintelBlockW = block.dimensions.widthMm / 1000
-      return {
-        code: spec.code as BlockCode,
-        spanStart: op.start,
-        spanEnd: op.end,
-        y0: op.head,
-        y1: op.head + lintelHeightM,
-        blockWidthM: lintelBlockW,
-      }
-    })
-    .filter((l): l is NonNullable<typeof l> => l !== null)
+  const lintelFootprints = disableBlockLintels
+    ? []
+    : wallOpenings
+        .map((op) => {
+          const headHeightMm = wallHeightMm - op.sill * 1000 - (op.head - op.sill) * 1000
+          if (headHeightMm <= 0) return null
+          const spec = selectBlockLintel(headHeightMm)
+          if (!spec) return null
+          const block = library[spec.code]
+          if (!block) return null
+          const lintelHeightM = block.dimensions.heightMm / 1000
+          const lintelBlockW = block.dimensions.widthMm / 1000
+          return {
+            code: spec.code as BlockCode,
+            spanStart: op.start,
+            spanEnd: op.end,
+            y0: op.head,
+            y1: op.head + lintelHeightM,
+            blockWidthM: lintelBlockW,
+          }
+        })
+        .filter((l): l is NonNullable<typeof l> => l !== null)
 
   /** Push a mortar fill box at the requested span. Bypasses buildBox so
    *  it doesn't get the MORTAR_GAP_M inset (mortar should fill the gaps
@@ -998,10 +1038,23 @@ function segmentsForStraightWall(
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
     const leftEndColor = colorOf(leftEndCode)
     const rightEndColor = colorOf(rightEndCode)
-    // Always render end cells (overlap with the perpendicular wall's
-    // cell is invisible because both are the same corner colour).
-    const renderLeftEnd = true
-    const renderRightEnd = true
+    // Corner-junction non-ownership: the shared corner cube is ONE
+    // physical block, owned by exactly one of the two walls per course.
+    // The owning wall's corner block fills the cube + extends into its
+    // body region; the non-owning wall must NOT render its own end
+    // cell at the cube area (the cube position is in the other wall's
+    // geometry already). Without this suppression, both walls draw an
+    // orange end block at the same world position with the same colour
+    // — they merge visually into one block with no joint between them,
+    // which is what makes short corner extensions look like the two
+    // walls are morphing into each other at the corner.
+    //
+    // The end WIDTH (cubeDepth) is still used below for body-region
+    // alignment so the stretcher half-offset between owning/non-owning
+    // courses still emerges naturally — body cells just start AT the
+    // cube boundary instead of past an end cell.
+    const renderLeftEnd = !leftHasCornerJunction || ownsLeftThisCourse
+    const renderRightEnd = !rightHasCornerJunction || ownsRightThisCourse
     // End-cell widths per junction state:
     //   - corner junction + this wall owns this course: cornerW.
     //   - corner junction + other wall owns this course: corner cube
@@ -1024,48 +1077,142 @@ function segmentsForStraightWall(
     const cells: Cell[] = []
     if (length <= leftEndWidth + 0.001) {
       // Wall is shorter than (or equal to) one left end block. Emit a
-      // single cell at the wall length. If length < natural block
-      // width this is a physically "cut" block — unavoidable when the
-      // wall is shorter than the chosen block. The cell's BOX width
-      // matches the wall length (not the block's natural width)
-      // because the geometry has to fit the wall.
+      // single BODY cell at the wall length. Real masons cut a body
+      // block to fit rather than chopping down a corner/half — corner
+      // blocks have finished end faces you don't want to waste, and
+      // body blocks are cheaper. The cell's BOX width matches the
+      // wall length (not the block's natural width) because the
+      // geometry has to fit the wall.
       cells.push({
-        role: 'END',
-        code: leftEndCode,
-        color: leftEndColor,
+        role: 'BODY',
+        code: course.bodyCode,
+        color: bodyColor,
         s0: 0,
         s1: length,
       })
     } else if (length < leftEndWidth + rightEndWidth) {
-      // Wall fits left end at its natural width but not both ends.
-      // Render left at natural width, then right gets the remainder
-      // (right cell is physically a cut block, but at least the LEFT
-      // block stays at its natural width — the most common case where
-      // the user notices stretching).
-      cells.push({
-        role: 'END',
-        code: leftEndCode,
-        color: leftEndColor,
-        s0: 0,
-        s1: leftEndWidth,
-      })
-      if (length - leftEndWidth > 0.02) {
-        cells.push({
-          role: 'END',
-          code: rightEndCode,
-          color: rightEndColor,
-          s0: leftEndWidth,
-          s1: length,
-        })
+      // Wall too short for both end blocks at their natural widths.
+      // Cutting priority: keep the FREE-END half / corner block at
+      // its natural width (its finished short face IS the visible
+      // end of the wall — chopping it down wastes the finish) and
+      // cut whichever end is the CORNER-JUNCTION end (its block
+      // extends into a corner cube that the perpendicular wall is
+      // also building around, so trimming its body-facing edge
+      // doesn't waste anything).
+      //
+      // When both ends are corner junctions (rare on short walls)
+      // or both are free, neither has clear priority — fall back to
+      // "left natural + body fill" so at least one end stays at full
+      // width and the leftover sliver is a body cut, matching the
+      // standard layout's rule that body cells absorb length cuts.
+      if (leftHasCornerJunction && !rightHasCornerJunction) {
+        // Cut LEFT (corner junction), keep RIGHT (free end half /
+        // corner) at natural width. But if the LEFT is a non-owning
+        // cube (perpendicular wall covers [0, leftEndWidth]), the
+        // RIGHT end can't extend into the cube — it has to start at
+        // the cube boundary, which means cutting the right end too
+        // when the wall is shorter than cube + naturalRightEnd.
+        const idealRightStart = length - rightEndWidth
+        const rightStart = !renderLeftEnd
+          ? Math.max(leftEndWidth, idealRightStart)
+          : idealRightStart
+        if (renderLeftEnd && rightStart > 0.02) {
+          cells.push({
+            role: 'END',
+            code: leftEndCode,
+            color: leftEndColor,
+            s0: 0,
+            s1: rightStart,
+          })
+        } else if (!renderLeftEnd && rightStart > leftEndWidth + 0.02) {
+          // Non-owning cube: perpendicular wall covers [0, leftEndWidth].
+          // Fill the gap between cube boundary and right end with body.
+          cells.push({
+            role: 'BODY',
+            code: course.bodyCode,
+            color: bodyColor,
+            s0: leftEndWidth,
+            s1: rightStart,
+          })
+        }
+        if (renderRightEnd && length - rightStart > 0.02) {
+          cells.push({
+            role: 'END',
+            code: rightEndCode,
+            color: rightEndColor,
+            s0: rightStart,
+            s1: length,
+          })
+        }
+      } else if (rightHasCornerJunction && !leftHasCornerJunction) {
+        // Mirror of above — cut RIGHT, keep LEFT at natural. If
+        // RIGHT is non-owning cube, LEFT end can't extend past the
+        // (length - rightEndWidth) cube boundary.
+        const idealLeftEnd = leftEndWidth
+        const leftEnd = !renderRightEnd
+          ? Math.min(length - rightEndWidth, idealLeftEnd)
+          : idealLeftEnd
+        if (renderLeftEnd && leftEnd > 0.02) {
+          cells.push({
+            role: 'END',
+            code: leftEndCode,
+            color: leftEndColor,
+            s0: 0,
+            s1: leftEnd,
+          })
+        }
+        const rightCellStart = leftEnd
+        if (renderRightEnd && length - rightCellStart > 0.02) {
+          cells.push({
+            role: 'END',
+            code: rightEndCode,
+            color: rightEndColor,
+            s0: rightCellStart,
+            s1: length,
+          })
+        } else if (!renderRightEnd && (length - rightEndWidth) - leftEnd > 0.02) {
+          // Non-owning right cube: perpendicular wall covers [length-rightEndWidth, length].
+          // Fill the gap between left end and cube boundary with body.
+          cells.push({
+            role: 'BODY',
+            code: course.bodyCode,
+            color: bodyColor,
+            s0: leftEnd,
+            s1: length - rightEndWidth,
+          })
+        }
+      } else {
+        // Both corner OR both free — no clear priority. Left at
+        // natural width, body cell fills the leftover.
+        if (renderLeftEnd) {
+          cells.push({
+            role: 'END',
+            code: leftEndCode,
+            color: leftEndColor,
+            s0: 0,
+            s1: leftEndWidth,
+          })
+        }
+        if (length - leftEndWidth > 0.02) {
+          cells.push({
+            role: 'BODY',
+            code: course.bodyCode,
+            color: bodyColor,
+            s0: leftEndWidth,
+            s1: length,
+          })
+        }
       }
     } else {
-      cells.push({
-        role: 'END',
-        code: leftEndCode,
-        color: leftEndColor,
-        s0: 0,
-        s1: leftEndWidth,
-      })
+      if (renderLeftEnd) {
+        cells.push({
+          role: 'END',
+          code: leftEndCode,
+          color: leftEndColor,
+          s0: 0,
+          s1: leftEndWidth,
+        })
+      }
       let c = leftEndWidth
       const bodyEnd = length - rightEndWidth
       while (c < bodyEnd) {
@@ -1081,13 +1228,15 @@ function segmentsForStraightWall(
         }
         c += bodyW
       }
-      cells.push({
-        role: 'END',
-        code: rightEndCode,
-        color: rightEndColor,
-        s0: length - rightEndWidth,
-        s1: length,
-      })
+      if (renderRightEnd) {
+        cells.push({
+          role: 'END',
+          code: rightEndCode,
+          color: rightEndColor,
+          s0: length - rightEndWidth,
+          s1: length,
+        })
+      }
     }
     return { course, cells, endCode, endColor, endWidth, bodyW }
   })
@@ -1323,8 +1472,31 @@ function segmentsForStraightWall(
 
 
 /**
- * Curved-wall variant. Samples the arc into N straight segments and
- * runs each through the straight-wall builder with no openings.
+ * Curved-wall renderer. Produces the SAME bond / block layout as a
+ * straight wall (corners, halves on even stretcher courses, body
+ * blocks at their library widths), then bends each block into a
+ * trapezoidal wedge along the arc — matching how a bricklayer cuts the
+ * REAR of each block to follow a curve while keeping the visible front
+ * face at full block width.
+ *
+ * Two-pass approach:
+ *   1. Build a virtual STRAIGHT wall with length = arc length on the
+ *      OUTER (convex) face. We measure on the outer face because that
+ *      face stays at full block width in real masonry — the inner
+ *      (rear) face is where the angled cut shortens each block, so
+ *      laying out by outer arc length is what makes the visible front
+ *      look correct.
+ *   2. Run the straight-wall pipeline on that virtual wall (no
+ *      openings, no junctions — v1 limitation). Take every emitted
+ *      WallSegmentBox, back-compute its (s0, s1) along the virtual
+ *      wall from its centre + length, map those parameters to arc
+ *      angles, and produce a WallSegmentWedge with the four
+ *      ground-plane corners on the arc's outer / inner radii.
+ *
+ * Junctions are forced to 'free' on the virtual wall so corner
+ * ownership doesn't fire — curved walls don't currently participate
+ * in shared-corner block ownership with neighbours. Same for
+ * openings — curved walls can't host doors / windows in v1.
  */
 function segmentsForCurvedWall(
   wall: Wall,
@@ -1335,37 +1507,210 @@ function segmentsForCurvedWall(
   colorMap: Map<string, string>,
   library: Record<string, Block>,
   wallThicknessByWallId: Record<string, number>
-): WallSegmentBox[] {
+): WallSegmentWedge[] {
   if (wall.midX === undefined || wall.midY === undefined) return []
   const geom = arcFromThreePoints(
     { x: wall.startX, y: wall.startY },
     { x: wall.midX, y: wall.midY },
     { x: wall.endX, y: wall.endY }
   )
-  if (!geom) {
-    return segmentsForStraightWall(
-      wall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library, wallThicknessByWallId
-    )
+  if (!geom) return []
+
+  const centreX_mm = geom.centerX
+  const centreY_mm = geom.centerY
+  const R_mm = geom.radiusMm
+  const t_mm = thicknessMm
+  const outerR_mm = R_mm + t_mm / 2
+  const innerR_mm = R_mm - t_mm / 2
+
+  // OUTER arc length drives the virtual straight wall's length — this
+  // is the line the visible front face follows, so blocks laid out at
+  // their natural library widths fill the outer face exactly.
+  const outerArcLenM = (outerR_mm / 1000) * Math.abs(geom.sweepAngle)
+  if (outerArcLenM < 0.05) return []
+
+  // Virtual straight wall — same id (so per-wall lookups still work)
+  // but free junctions so corner-ownership phases don't run, and no
+  // mid* fields so isCurvedWall returns false inside the recursive
+  // call.
+  const virtualWall: Wall = {
+    ...wall,
+    startX: 0,
+    startY: 0,
+    endX: outerArcLenM * 1000,
+    endY: 0,
+    startJunction: { type: 'free' },
+    endJunction: { type: 'free' },
+    kind: 'straight',
+    midX: undefined,
+    midY: undefined,
   }
-  const samples = sampleArc(geom, CURVE_SAMPLES + 1)
-  const boxes: WallSegmentBox[] = []
-  for (let i = 0; i < samples.length - 1; i++) {
-    const a = samples[i]
-    const b = samples[i + 1]
-    const fakeWall: Wall = {
-      ...wall,
-      startX: a.x,
-      startY: a.y,
-      endX: b.x,
-      endY: b.y,
-    }
-    boxes.push(
-      ...segmentsForStraightWall(
-        fakeWall, [], thicknessMm, courses, totalHeightM, bondType, colorMap, library, wallThicknessByWallId
-      )
-    )
+
+  const boxes = segmentsForStraightWall(
+    virtualWall, [], thicknessMm, courses, totalHeightM,
+    bondType, colorMap, library, wallThicknessByWallId
+  )
+
+  // The virtual wall goes from (planX=0, planY=0) to
+  // (planX=outerArcLenM*1000, planY=0). After segmentsForStraightWall's
+  // X / Y negation:
+  //   sx = 0,  sz = 0
+  //   ex = -outerArcLenM,  ez = 0
+  //   dirX = -1, dirZ = 0
+  // So a box at centre (cx, cz=0) sits at local-s = -cx along the
+  // virtual wall (m from the start), and extends ±length/2 around
+  // that.
+  //
+  // Winding normalisation: the wedge renderer expects the four corners
+  // (outerStart, outerEnd, innerEnd, innerStart) to trace a CCW loop
+  // viewed from above, so its hardcoded triangle indices give outward-
+  // facing normals (three.js FrontSide). For CCW sweeps (sweepAngle
+  // > 0) the natural (theta0=start, theta1=end) labelling already
+  // gives CCW corners. For CW sweeps we swap start/end so the corner
+  // ordering stays CCW for the renderer — the spatial positions are
+  // identical, only the labels move.
+  const isCW = geom.sweepAngle < 0
+  const wedges: WallSegmentWedge[] = []
+  for (const box of boxes) {
+    const localCentre = -box.cx
+    const localS0 = Math.max(0, localCentre - box.length / 2)
+    const localS1 = Math.min(outerArcLenM, localCentre + box.length / 2)
+    if (localS1 - localS0 < 0.005) continue
+
+    const t0 = localS0 / outerArcLenM
+    const t1 = localS1 / outerArcLenM
+    const theta0 = geom.startAngle + geom.sweepAngle * t0
+    const theta1 = geom.startAngle + geom.sweepAngle * t1
+
+    // Plan → world: 3D X = -planX/1000, 3D Z = -planY/1000 (same
+    // negation segmentsForStraightWall uses so the curved wall lines
+    // up with adjacent straight walls).
+    const toWorld = (radiusMm: number, theta: number) => ({
+      x: -(centreX_mm + radiusMm * Math.cos(theta)) / 1000,
+      z: -(centreY_mm + radiusMm * Math.sin(theta)) / 1000,
+    })
+
+    const tA = isCW ? theta1 : theta0
+    const tB = isCW ? theta0 : theta1
+    wedges.push({
+      outerStart: toWorld(outerR_mm, tA),
+      outerEnd: toWorld(outerR_mm, tB),
+      innerEnd: toWorld(innerR_mm, tB),
+      innerStart: toWorld(innerR_mm, tA),
+      y0: box.cy - box.heightM / 2,
+      y1: box.cy + box.heightM / 2,
+      color: box.color,
+      highlight: box.highlight,
+    })
   }
-  return boxes
+
+  return wedges
+}
+
+/**
+ * Curved-wall mortar shell config. Resolved by collectCurvedMortarShell
+ * during the segments useMemo, then rendered by CurvedMortarShells as
+ * a single smooth BufferGeometry per shell (shared seam vertices →
+ * computeVertexNormals smooths across the seams, eliminating the
+ * facet bands you get from independent per-micro-wedge meshes).
+ */
+interface CurvedMortarShell {
+  centreXMm: number
+  centreYMm: number
+  innerRMm: number
+  outerRMm: number
+  startAngle: number
+  sweepAngle: number
+  y0: number
+  y1: number
+}
+
+/**
+ * Curved-wall mortar shell. Mirrors emitMortarForWall but produces a
+ * smooth curved sweep instead of a single straight box.
+ *
+ * Each block wedge from segmentsForCurvedWall already has the same
+ * MORTAR_GAP_M edge insets the straight-wall builder bakes into
+ * buildBox — those insets become tiny angular gaps between adjacent
+ * wedges. This shell sits at reduced thickness behind those gaps so
+ * the recessed mortar reads as a real joint, exactly the way it
+ * does on straight walls.
+ *
+ * Collected per-wall here and rendered later (one mesh per shell)
+ * with shared seam vertices so the curved outer / inner faces shade
+ * smoothly along the arc.
+ */
+function collectCurvedMortarShell(
+  wall: Wall,
+  thicknessMm: number,
+  totalHeightM: number,
+  maxBlockWidthMm: number,
+  shells: CurvedMortarShell[]
+): void {
+  if (wall.midX === undefined || wall.midY === undefined) return
+  const geom = arcFromThreePoints(
+    { x: wall.startX, y: wall.startY },
+    { x: wall.midX, y: wall.midY },
+    { x: wall.endX, y: wall.endY }
+  )
+  if (!geom) return
+
+  // Block-sagitta-aware recess: each block's outer face is a FLAT chord
+  // spanning angle (blockWidth / outerR). The chord's midpoint dips
+  // inward from the true arc by sagitta = outerR * (1 - cos(angle/2)).
+  // On tight curves with wide blocks the sagitta can be tens of mm —
+  // big enough that a mortar shell at the usual ~12 mm recess pokes
+  // OUT in front of the block midpoints, showing up as a dark spot on
+  // every block. Recessing the shell by sagitta + the desired visible
+  // depth guarantees the shell stays behind the chord at every angle,
+  // for any block size, on any radius. On wide curves the sagitta is
+  // ~0 and behaviour matches the straight-wall shell.
+  const outerArcR_mm = geom.radiusMm + thicknessMm / 2
+  const innerArcR_mm = geom.radiusMm - thicknessMm / 2
+  const blockAngle = maxBlockWidthMm / outerArcR_mm
+  const sagittaMm = outerArcR_mm * (1 - Math.cos(blockAngle / 2))
+  const visibleRecessMm = 12
+  const totalRecessMm = sagittaMm + visibleRecessMm
+  const mortarOuterR_mm = outerArcR_mm - totalRecessMm
+  const mortarInnerR_mm = innerArcR_mm + totalRecessMm
+  // Degenerate guard — if the recesses collapse the shell to zero or
+  // negative thickness (wall too thin for both sides to recess), drop
+  // the shell. Visually a wall this proportion (curve so tight relative
+  // to thickness that the inner mortar passes the outer) doesn't have
+  // a sensible recessed mortar plane anyway — straight walls would be
+  // the right choice.
+  if (mortarOuterR_mm - mortarInnerR_mm < 2) return
+
+  // Centreline arc length is the right yardstick for the side inset —
+  // it matches the envelopeInset metres → arc-length conversion that
+  // the straight-wall builder uses on the wall's centreline length.
+  const centreArcLenM = (geom.radiusMm / 1000) * Math.abs(geom.sweepAngle)
+  const envelopeInsetM = MORTAR_GAP_M
+  if (centreArcLenM < envelopeInsetM * 2 + 0.01) return
+
+  const y0 = MORTAR_GAP_M
+  const y1 = totalHeightM - MORTAR_GAP_M
+  if (y1 - y0 < 0.01) return
+
+  // Pull the angular sweep in slightly at both ends so the shell tucks
+  // behind the start / end block faces instead of poking past them
+  // (same role as the side envelopeInset on the straight builder).
+  const insetFracStart = envelopeInsetM / centreArcLenM
+  const insetFracEnd = 1 - insetFracStart
+  const startAngle = geom.startAngle + geom.sweepAngle * insetFracStart
+  const endAngle = geom.startAngle + geom.sweepAngle * insetFracEnd
+  const sweepAngle = endAngle - startAngle
+
+  shells.push({
+    centreXMm: geom.centerX,
+    centreYMm: geom.centerY,
+    innerRMm: mortarInnerR_mm,
+    outerRMm: mortarOuterR_mm,
+    startAngle,
+    sweepAngle,
+    y0,
+    y1,
+  })
 }
 
 // ---------- Initial camera aim ----------
@@ -1394,6 +1739,468 @@ function InitialCameraAim({
     invalidate()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  return null
+}
+
+/**
+ * Render all wall sub-boxes as a small set of InstancedMeshes — one
+ * per (colour, highlight) group — instead of one <mesh> per box.
+ * Cuts thousands of draw calls + React reconciliations down to a
+ * handful, keeping interactive orbit / pan / zoom fluid even on
+ * brick projects with tens of thousands of unit-sized bricks.
+ *
+ * Per-instance scale is baked into the matrix so every group can
+ * share a single unit BoxGeometry (1×1×1) and still render each
+ * box at its own length × heightM × thickness. Position and Y
+ * rotation are baked in the same matrix.
+ *
+ * Materials are NOT shared between groups — each instanced mesh
+ * carries its own meshStandardMaterial so colours stay distinct
+ * and three.js can dispose them cleanly when the segments change.
+ */
+function InstancedSegments({
+  segments,
+}: {
+  segments: WallSegmentBox[]
+}) {
+  // Group segments by (colour + highlight flag) so each group can be
+  // a single InstancedMesh sharing one material. Same colour without
+  // and with the highlight emissive glow go to separate groups so
+  // they don't share a draw call (the materials genuinely differ).
+  const groups = useMemo(() => {
+    const map = new Map<string, WallSegmentBox[]>()
+    for (const s of segments) {
+      const key = `${s.color}|${s.highlight ? 1 : 0}`
+      const arr = map.get(key)
+      if (arr) arr.push(s)
+      else map.set(key, [s])
+    }
+    return Array.from(map.entries()).map(([key, items]) => {
+      const [color, hi] = key.split('|')
+      return { color, highlight: hi === '1', items }
+    })
+  }, [segments])
+
+  return (
+    <>
+      {groups.map((g) => (
+        <InstancedSegmentGroup
+          key={`${g.color}|${g.highlight ? 1 : 0}`}
+          color={g.color}
+          highlight={g.highlight}
+          items={g.items}
+        />
+      ))}
+    </>
+  )
+}
+
+function InstancedSegmentGroup({
+  color,
+  highlight,
+  items,
+}: {
+  color: string
+  highlight: boolean
+  items: WallSegmentBox[]
+}) {
+  const meshRef = useRef<THREE.InstancedMesh>(null)
+  useEffect(() => {
+    const mesh = meshRef.current
+    if (!mesh) return
+    const matrix = new THREE.Matrix4()
+    const position = new THREE.Vector3()
+    const quaternion = new THREE.Quaternion()
+    const scale = new THREE.Vector3()
+    const euler = new THREE.Euler()
+    for (let i = 0; i < items.length; i++) {
+      const s = items[i]
+      position.set(s.cx, s.cy, s.cz)
+      euler.set(0, s.yRotation, 0)
+      quaternion.setFromEuler(euler)
+      scale.set(s.length, s.heightM, s.thickness)
+      matrix.compose(position, quaternion, scale)
+      mesh.setMatrixAt(i, matrix)
+    }
+    mesh.instanceMatrix.needsUpdate = true
+    mesh.computeBoundingSphere()
+  }, [items])
+
+  // args: [geometry, material, count] — passing nulls lets r3f wire
+  // in the <boxGeometry> + <meshStandardMaterial> children below.
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[undefined as unknown as THREE.BufferGeometry, undefined as unknown as THREE.Material, items.length]}
+      frustumCulled={false}
+    >
+      <boxGeometry args={[1, 1, 1]} />
+      {highlight ? (
+        <meshStandardMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={0.45}
+        />
+      ) : (
+        <meshStandardMaterial color={color} />
+      )}
+    </instancedMesh>
+  )
+}
+
+/**
+ * Wedge renderer for curved walls. Each WallSegmentWedge is a
+ * trapezoidal prism (4 ground-plane corners extruded vertically by
+ * y1 − y0) so blocks following an arc look correctly cut at the rear.
+ *
+ * Wedges can't share a single InstancedMesh geometry the way axis-
+ * aligned cuboids can — every wedge has its own per-instance shape —
+ * so we merge every wedge in a (colour, highlight) group into ONE
+ * BufferGeometry. Result: one draw call per palette colour, same as
+ * the straight-wall InstancedSegments path.
+ */
+function WedgeSegments({ wedges }: { wedges: WallSegmentWedge[] }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, WallSegmentWedge[]>()
+    for (const w of wedges) {
+      const key = `${w.color}|${w.highlight ? 1 : 0}`
+      const arr = map.get(key)
+      if (arr) arr.push(w)
+      else map.set(key, [w])
+    }
+    return Array.from(map.entries()).map(([key, items]) => {
+      const [color, hi] = key.split('|')
+      return { color, highlight: hi === '1', items }
+    })
+  }, [wedges])
+
+  return (
+    <>
+      {groups.map((g) => (
+        <WedgeGroupMesh
+          key={`${g.color}|${g.highlight ? 1 : 0}`}
+          color={g.color}
+          highlight={g.highlight}
+          items={g.items}
+        />
+      ))}
+    </>
+  )
+}
+
+function WedgeGroupMesh({
+  color,
+  highlight,
+  items,
+}: {
+  color: string
+  highlight: boolean
+  items: WallSegmentWedge[]
+}) {
+  // Build one merged BufferGeometry holding every wedge in the group.
+  //
+  // 24 vertices + 12 triangles (36 indices) per wedge, organised as
+  // 6 faces × 4 dedicated corners (same layout three.js BoxGeometry
+  // uses). Per-face vertices means no normal averaging across edges,
+  // so each face shades FLAT — matching the hard-edged look of
+  // straight-wall InstancedMesh boxes. Sharing vertices across faces
+  // would smooth the corners into a "pillow" and the curved walls
+  // would visibly read different from the straight ones.
+  //
+  // Recomputed whenever the item list reference changes — happens
+  // once per segments useMemo recompute, NOT per camera frame.
+  const geometry = useMemo(() => {
+    const VERTS_PER_WEDGE = 24
+    const positions = new Float32Array(items.length * VERTS_PER_WEDGE * 3)
+    const indices = new Uint32Array(items.length * 36)
+
+    for (let i = 0; i < items.length; i++) {
+      const w = items[i]
+      const vOff = i * VERTS_PER_WEDGE * 3
+      const iOff = i * 36
+      const base = i * VERTS_PER_WEDGE
+
+      // Each face owns 4 vertices laid out as: face f, corner c → slot f*4 + c.
+      // Corners are in perimeter-CCW order viewed from OUTSIDE each face,
+      // so the (v0,v1,v2) + (v0,v2,v3) split — same triangulation used by
+      // three.js BoxGeometry — gives outward-facing normals under
+      // FrontSide. Verified by cross-product on the canonical (+X, +Z)
+      // wedge.
+      //
+      //   0 = TOP     (out +Y)  outerStart, innerStart, innerEnd, outerEnd
+      //   1 = BOTTOM  (out −Y)  outerStart, outerEnd, innerEnd, innerStart
+      //   2 = OUTER   (front)   outerStart_bot, outerStart_top,
+      //                          outerEnd_top,  outerEnd_bot
+      //   3 = END   (theta1)    outerEnd_bot,   outerEnd_top,
+      //                          innerEnd_top,  innerEnd_bot
+      //   4 = INNER   (rear)    innerEnd_bot,   innerEnd_top,
+      //                          innerStart_top, innerStart_bot
+      //   5 = START (theta0)    outerStart_bot, innerStart_bot,
+      //                          innerStart_top, outerStart_top
+      const setVert = (n: number, x: number, y: number, z: number) => {
+        const p = vOff + n * 3
+        positions[p] = x
+        positions[p + 1] = y
+        positions[p + 2] = z
+      }
+      // TOP
+      setVert(0, w.outerStart.x, w.y1, w.outerStart.z)
+      setVert(1, w.innerStart.x, w.y1, w.innerStart.z)
+      setVert(2, w.innerEnd.x, w.y1, w.innerEnd.z)
+      setVert(3, w.outerEnd.x, w.y1, w.outerEnd.z)
+      // BOTTOM
+      setVert(4, w.outerStart.x, w.y0, w.outerStart.z)
+      setVert(5, w.outerEnd.x, w.y0, w.outerEnd.z)
+      setVert(6, w.innerEnd.x, w.y0, w.innerEnd.z)
+      setVert(7, w.innerStart.x, w.y0, w.innerStart.z)
+      // OUTER (front face) — perimeter CCW from +X+Z view
+      setVert(8, w.outerStart.x, w.y0, w.outerStart.z)
+      setVert(9, w.outerStart.x, w.y1, w.outerStart.z)
+      setVert(10, w.outerEnd.x, w.y1, w.outerEnd.z)
+      setVert(11, w.outerEnd.x, w.y0, w.outerEnd.z)
+      // END (theta1) — perimeter CCW from -tangent view
+      setVert(12, w.outerEnd.x, w.y0, w.outerEnd.z)
+      setVert(13, w.outerEnd.x, w.y1, w.outerEnd.z)
+      setVert(14, w.innerEnd.x, w.y1, w.innerEnd.z)
+      setVert(15, w.innerEnd.x, w.y0, w.innerEnd.z)
+      // INNER (rear face) — perimeter CCW viewed from arc centre
+      setVert(16, w.innerEnd.x, w.y0, w.innerEnd.z)
+      setVert(17, w.innerEnd.x, w.y1, w.innerEnd.z)
+      setVert(18, w.innerStart.x, w.y1, w.innerStart.z)
+      setVert(19, w.innerStart.x, w.y0, w.innerStart.z)
+      // START (theta0) — perimeter CCW from +tangent view
+      setVert(20, w.outerStart.x, w.y0, w.outerStart.z)
+      setVert(21, w.innerStart.x, w.y0, w.innerStart.z)
+      setVert(22, w.innerStart.x, w.y1, w.innerStart.z)
+      setVert(23, w.outerStart.x, w.y1, w.outerStart.z)
+
+      // Each face: 2 triangles using its own 4 vertices, split along
+      // the v0-v2 diagonal. Vertex layout above has each face's corners
+      // in CCW order viewed from OUTSIDE the prism, so the canonical
+      // (v0, v1, v2) + (v0, v2, v3) triangulation gives outward normals
+      // under three.js FrontSide. Indices are absolute (base + slot).
+      let p = iOff
+      for (let f = 0; f < 6; f++) {
+        const v0 = base + f * 4
+        indices[p++] = v0
+        indices[p++] = v0 + 1
+        indices[p++] = v0 + 2
+        indices[p++] = v0
+        indices[p++] = v0 + 2
+        indices[p++] = v0 + 3
+      }
+    }
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setIndex(new THREE.BufferAttribute(indices, 1))
+    geo.computeVertexNormals()
+    geo.computeBoundingSphere()
+    return geo
+  }, [items])
+
+  // Dispose the geometry when the items reference changes (next
+  // useMemo) or the mesh unmounts — avoids the GPU buffer leak the
+  // straight-wall InstancedMesh side handles automatically via r3f.
+  useEffect(() => {
+    return () => {
+      geometry.dispose()
+    }
+  }, [geometry])
+
+  return (
+    <mesh geometry={geometry} frustumCulled={false}>
+      {highlight ? (
+        <meshStandardMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={0.45}
+        />
+      ) : (
+        <meshStandardMaterial color={color} />
+      )}
+    </mesh>
+  )
+}
+
+/**
+ * Renders the recessed mortar shell behind every curved wall as a
+ * smooth ring-section BufferGeometry per wall. Shared seam vertices
+ * mean computeVertexNormals averages adjacent face normals across
+ * each radial seam — the curve shades smoothly instead of breaking
+ * into N visible facet bands like independent micro-wedges do.
+ *
+ * One mesh per shell; mortar colour is uniform so each mesh is one
+ * draw call. Cheaper than the equivalent number of micro-wedges
+ * because vertices are deduplicated at every seam.
+ */
+function CurvedMortarShells({ shells }: { shells: CurvedMortarShell[] }) {
+  return (
+    <>
+      {shells.map((shell, i) => (
+        <CurvedMortarShellMesh key={i} shell={shell} />
+      ))}
+    </>
+  )
+}
+
+function CurvedMortarShellMesh({ shell }: { shell: CurvedMortarShell }) {
+  const geometry = useMemo(() => {
+    // N angular segments → N+1 angle samples; 4 vertices per sample
+    // (outer-bot, inner-bot, outer-top, inner-top). 96 segments keeps
+    // the curve smooth at typical viewport zoom.
+    const N = 96
+    const samples = N + 1
+    const positions = new Float32Array(samples * 4 * 3)
+    // Per segment: 2 tris × 4 side faces (outer / inner / top / bot)
+    //            = 8 tris per segment.
+    // Plus 2 end caps × 2 tris each = 4 tris.
+    // Total tris = 8N + 4, indices = 24N + 12.
+    const indices = new Uint32Array(N * 24 + 12)
+
+    const { centreXMm, centreYMm, innerRMm, outerRMm, startAngle, sweepAngle, y0, y1 } = shell
+    const isCW = sweepAngle < 0
+
+    for (let i = 0; i < samples; i++) {
+      const t = i / N
+      const theta = startAngle + sweepAngle * t
+      const cos = Math.cos(theta)
+      const sin = Math.sin(theta)
+      const ox = -(centreXMm + outerRMm * cos) / 1000
+      const oz = -(centreYMm + outerRMm * sin) / 1000
+      const ix = -(centreXMm + innerRMm * cos) / 1000
+      const iz = -(centreYMm + innerRMm * sin) / 1000
+      const base = i * 4 * 3
+      // 0: outer-bot, 1: inner-bot, 2: outer-top, 3: inner-top
+      positions[base + 0] = ox
+      positions[base + 1] = y0
+      positions[base + 2] = oz
+      positions[base + 3] = ix
+      positions[base + 4] = y0
+      positions[base + 5] = iz
+      positions[base + 6] = ox
+      positions[base + 7] = y1
+      positions[base + 8] = oz
+      positions[base + 9] = ix
+      positions[base + 10] = y1
+      positions[base + 11] = iz
+    }
+
+    // Triangle winding — chosen so outward normals point correctly for
+    // a CCW sweep (sweepAngle > 0). For a CW sweep the natural
+    // ordering flips inward/outward, so we swap each pair when isCW.
+    let p = 0
+    for (let i = 0; i < N; i++) {
+      const a = i * 4 // start sample base index
+      const b = (i + 1) * 4 // next sample base index
+      // Per-sample vertex slot offsets: 0=ob, 1=ib, 2=ot, 3=it
+      const aOB = a + 0, aIB = a + 1, aOT = a + 2, aIT = a + 3
+      const bOB = b + 0, bIB = b + 1, bOT = b + 2, bIT = b + 3
+
+      const push = (x: number, y: number, z: number) => {
+        if (isCW) {
+          indices[p++] = x
+          indices[p++] = z
+          indices[p++] = y
+        } else {
+          indices[p++] = x
+          indices[p++] = y
+          indices[p++] = z
+        }
+      }
+
+      // Outer face (between samples i and i+1, on the outer radius)
+      push(aOB, bOT, bOB)
+      push(aOB, aOT, bOT)
+      // Inner face (between samples i and i+1, on the inner radius)
+      push(aIB, bIB, bIT)
+      push(aIB, bIT, aIT)
+      // Top face
+      push(aOT, aIT, bIT)
+      push(aOT, bIT, bOT)
+      // Bottom face
+      push(aOB, bOB, bIB)
+      push(aOB, bIB, aIB)
+    }
+    // End caps — close the ring at the start (sample 0) and end
+    // (sample N) so the shell isn't a hollow tube.
+    const sOB = 0, sIB = 1, sOT = 2, sIT = 3
+    const eOB = N * 4 + 0, eIB = N * 4 + 1, eOT = N * 4 + 2, eIT = N * 4 + 3
+    const pushCap = (x: number, y: number, z: number) => {
+      if (isCW) {
+        indices[p++] = x
+        indices[p++] = z
+        indices[p++] = y
+      } else {
+        indices[p++] = x
+        indices[p++] = y
+        indices[p++] = z
+      }
+    }
+    // Start cap — outward normal points back toward the wall start
+    pushCap(sOB, sIB, sIT)
+    pushCap(sOB, sIT, sOT)
+    // End cap — outward normal points forward past the wall end
+    pushCap(eOB, eOT, eIT)
+    pushCap(eOB, eIT, eIB)
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setIndex(new THREE.BufferAttribute(indices, 1))
+    geo.computeVertexNormals()
+    geo.computeBoundingSphere()
+    return geo
+  }, [shell])
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose()
+    }
+  }, [geometry])
+
+  return (
+    <mesh geometry={geometry} frustumCulled={false}>
+      <meshStandardMaterial color={MORTAR_COLOR} />
+    </mesh>
+  )
+}
+
+/**
+ * Exposes `window.__beme3dCapture()` to take a PNG snapshot of the
+ * current 3D viewport (camera angle, palette, plan floor, walls — all
+ * of it). Returns a data URL the export pipeline can embed in the
+ * PDF.
+ *
+ * Forces a synchronous render via `gl.render(scene, camera)` before
+ * grabbing `gl.domElement.toDataURL()` so the buffer is up-to-date with
+ * the current camera even if r3f's frameloop is on 'demand'. Requires
+ * `preserveDrawingBuffer: true` in the Canvas gl config; without it
+ * the browser clears the buffer immediately after each draw and
+ * toDataURL returns a blank PNG.
+ */
+function CaptureExposer() {
+  const gl = useThree((s) => s.gl)
+  const scene = useThree((s) => s.scene)
+  const camera = useThree((s) => s.camera)
+  useEffect(() => {
+    type Win = Window & { __beme3dCapture?: () => string | null }
+    const capture = (): string | null => {
+      try {
+        gl.render(scene, camera)
+        return gl.domElement.toDataURL('image/png')
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[3D capture] failed:', e)
+        return null
+      }
+    }
+    ;(window as Win).__beme3dCapture = capture
+    return () => {
+      if ((window as Win).__beme3dCapture === capture) {
+        delete (window as Win).__beme3dCapture
+      }
+    }
+  }, [gl, scene, camera])
   return null
 }
 
@@ -1787,12 +2594,16 @@ function Scene({
   pageHeightMm,
   pageScaleRatio,
   theme,
+  palette,
+  onResolvedCodes,
 }: Omit<WorkspaceView3DProps, 'areas'> & {
   navStyle: NavStyle
   planTexture: { texture: THREE.Texture; widthM: number; heightM: number } | null
   theme: Theme
+  palette: PaletteName
+  onResolvedCodes: (codes: Map<string, string>) => void
 }) {
-  const { segments, segmentBounds } = useMemo(() => {
+  const { segments, wedges, mortarShells, segmentBounds, resolvedCodes } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
     // view. Pass the complete set to buildBlockColorMap so every code
@@ -1844,10 +2655,12 @@ function Scene({
     // perfect cross-view consistency.
     const colorMap = new Map<string, string>()
     for (const code of new Set(allCodes)) {
-      colorMap.set(code, bandColor(code))
+      colorMap.set(code, bandColor(code, palette))
     }
 
     const out: WallSegmentBox[] = []
+    const outWedges: WallSegmentWedge[] = []
+    const outMortarShells: CurvedMortarShell[] = []
     // Build wallsById ONCE outside the loop so both segmentsForStraightWall
     // (for outer-edge endpoint extension) and segmentsFromWallLayout
     // (for the same, plus corner ownership) can use it without
@@ -2062,23 +2875,12 @@ function Scene({
         const courseModularMm = brickHeightMm + BRICK_MORTAR_MM
 
         // Synthetic library entries so widthOf/heightOf calls inside
-        // segmentsForStraightWall return brick dimensions rather than
-        // block fallbacks (390mm wide etc.). Three entries:
+        // segmentsForStraightWall return THIS WALL'S brick dimensions
+        // rather than block fallbacks (390mm wide etc.):
         //   __brick__       — full brick (body + owning-corner end)
         //   __brick_half__  — half brick (free-end even courses in
         //                     stretcher bond, creating the half-unit
         //                     offset between alternating courses)
-        //   __brick_cube__  — cut brick the width of the corner cube
-        //                     depth (= wall thickness). Used at the
-        //                     wall end on courses where another wall
-        //                     OWNS the corner this course; sits flush
-        //                     with the cube boundary so the body grid
-        //                     starts at (cube + mortar) instead of
-        //                     (full brick + mortar). Difference =
-        //                     230 − 110 = 120mm = half-body modular,
-        //                     which is the stretcher offset needed
-        //                     between alternating courses. End result:
-        //                     bricks interlock cleanly at corners.
         const brickLibrary: Record<string, Block> = {
           ...library,
           ['__brick__']: {
@@ -2103,24 +2905,13 @@ function Scene({
             },
             roles: ['end-termination'],
           } as Block,
-          ['__brick_cube__']: {
-            code: '__brick_cube__',
-            name: `${brickType?.name ?? 'Brick'} (corner cut)`,
-            description: 'Cut brick at non-owning corner — width = cube depth',
-            dimensions: {
-              widthMm: thicknessMm,
-              heightMm: brickHeightMm,
-              depthMm: brickDepthMm,
-            },
-            roles: ['end-termination'],
-          } as Block,
         }
 
         // Colour: same concrete-grey palette as blocks (bandColor)
         // keyed on the brick type code so each brick type gets a
         // consistent palette slot project-wide.
         const brickPaletteKey = brickMakeup?.brickTypeCode ?? wall.makeupId
-        const brickColorMap = new Map([['__brick__', bandColor(brickPaletteKey)]])
+        const brickColorMap = new Map([['__brick__', bandColor(brickPaletteKey, palette)]])
 
         // Default opening position: head sits HEAD_DROP_FROM_TOP_MM
         // (= 300mm) below the wall top, with the opening height
@@ -2140,22 +2931,13 @@ function Scene({
         // top edge stays flush (last course may be a partial-height
         // cut, like real masonry trimming the last course to fit).
         //
-        // Corner ownership: at every shared corner, only ONE wall
-        // owns it per course (alternating). On non-owning courses
-        // this wall's end should be the CUT BRICK (__brick_cube__,
-        // width = wall thickness), not a full brick — that flush-to-
-        // the-cube end shifts the body grid by half a body modular
-        // between owning and non-owning courses, restoring stretcher
-        // bond at corners. Only applied when BOTH ends are corner
-        // junctions so we don't disturb the free-end stretcher
-        // alternation (which uses cornerCode on odd courses).
-        const bothEndsCorner =
-          wall.startJunction.type === 'corner' &&
-          wall.endJunction.type === 'corner'
-        const brickCornerOwnership = bothEndsCorner
-          ? cornerOwnershipFor(wall)
-          : null
-
+        // Bond alignment: corner-end widths come from the fudged
+        // thickness map below (not from cornerCode). All courses can
+        // share a single set of codes — segmentsForStraightWall
+        // internally alternates ownership per course at corner
+        // junctions, swapping end widths between cornerWidth (owning)
+        // and the fudged neighbour thickness (non-owning) to produce
+        // the half-brick offset stretcher bond needs.
         const brickCourses: ResolvedCourse[] = []
         let cursorMm = 0
         let courseIdx = 0
@@ -2163,16 +2945,12 @@ function Scene({
           const y0Mm = cursorMm
           const y1Mm = Math.min(heightMm, cursorMm + brickHeightMm)
           if (y1Mm - y0Mm > 0.5) {
-            const courseNumber = courseIdx + 1
-            const ownsThisCourse = brickCornerOwnership
-              ? brickCornerOwnership({ wallEnd: 'start', courseNumber })
-              : true
             brickCourses.push({
-              courseNumber,
+              courseNumber: courseIdx + 1,
               y0: y0Mm / 1000,
               y1: y1Mm / 1000,
               bodyCode: '__brick__',
-              cornerCode: ownsThisCourse ? '__brick__' : '__brick_cube__',
+              cornerCode: '__brick__',
               halfCode: '__brick_half__',
             })
           }
@@ -2218,46 +2996,43 @@ function Scene({
           brickCourses.splice(0, brickCourses.length, ...split.map((c, i) => ({ ...c, courseNumber: i + 1 })))
         }
 
-        // Add half-brick AND cube-cut brick to the colour map so
-        // every brick variant renders the same colour — the
-        // stretcher offset / corner-ownership swap is a geometric
-        // pattern, not a visual distinction.
-        brickColorMap.set('__brick_half__', bandColor(brickPaletteKey))
-        brickColorMap.set('__brick_cube__', bandColor(brickPaletteKey))
+        // Half-brick uses the same colour as the full brick — the
+        // stretcher offset is geometric, not a visual distinction.
+        brickColorMap.set('__brick_half__', bandColor(brickPaletteKey, palette))
 
         // Fudged thickness map for brick corners.
         //
-        // segmentsForStraightWall uses
-        // wallThicknessByWallId[neighbor] as the corner CUBE DEPTH —
-        // i.e. the width of the end cell on non-owning courses. With
-        // real brick depth (110mm) and brick width 230mm, that puts
-        // the body grid offset at 230 − 110 = 120mm. But proper
-        // stretcher bond needs an offset of EXACTLY half a brick
-        // width = 115mm. The 5mm error compounds at every corner
-        // column, sliding the bond out of alignment.
+        // segmentsForStraightWall reads
+        // `wallThicknessByWallId[neighbour]` as the corner CUBE DEPTH
+        // (the end-cell width on courses where the neighbour owns
+        // the corner). Stretcher bond needs that to equal half THIS
+        // wall's brick width — so we override the entry for EVERY
+        // neighbour of this wall to be `brickWidthMm / 2`. The
+        // neighbour's own rendering pass builds its own map from its
+        // own perspective. Result: each brick wall sees a cube
+        // depth that's exactly half its OWN brick width, so the bond
+        // lines up perfectly regardless of whether the two walls at
+        // the corner use the same brick type or different ones.
         //
-        // Fix: tell the function each brick neighbour is 115mm thick
-        // (= brickW/2). It then uses 115mm as the cube depth, giving
-        // a perfect half-brick offset. Real box geometry stays at
-        // 110mm (passed via `thicknessMm`), so the wall's physical
-        // depth is unchanged — only the corner CUT BRICK extends a
-        // hidden 5mm into the perpendicular wall's cube zone. Both
-        // walls are the same colour at the corner, so the overlap
-        // reads as one continuous brick.
+        // Real box geometry stays at the actual wall thickness
+        // (passed separately as `thicknessMm`), so the wall's
+        // physical depth is unchanged.
         const brickCubeThicknessMap: Record<string, number> = { ...wallThicknessByWallId }
-        for (const w of walls) {
-          if (w.trade === 'brick') {
-            const m = brickMakeupsById[w.makeupId]
-            const t = m?.brickTypeCode ? BRICK_LIBRARY[m.brickTypeCode] : undefined
-            const wBrickWidth = t?.widthMm ?? 230
-            brickCubeThicknessMap[w.id] = wBrickWidth / 2
-          }
+        const cubeHalfBrick = brickWidthMm / 2
+        const startNeighbourIds = wall.startJunction.connectedWallIds ?? []
+        const endNeighbourIds = wall.endJunction.connectedWallIds ?? []
+        for (const nId of [...startNeighbourIds, ...endNeighbourIds]) {
+          if (typeof nId === 'string') brickCubeThicknessMap[nId] = cubeHalfBrick
         }
+        // Also override this wall's own entry so any internal
+        // lookups (e.g. fallback paths) see the same value.
+        brickCubeThicknessMap[wall.id] = cubeHalfBrick
 
         out.push(
           ...segmentsForStraightWall(
             wall, brickOpenings, thicknessMm, brickCourses, totalHeightM,
-            'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap
+            'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap,
+            /* disableBlockLintels */ true
           )
         )
         emitMortarForWall(wall, thicknessMm, totalHeightM, brickOpenings)
@@ -2268,11 +3043,32 @@ function Scene({
       if (!wr || !wr.makeup) return
       const bondType = wr.makeup.bondType
       if (isCurvedWall(wall)) {
-        out.push(
+        outWedges.push(
           ...segmentsForCurvedWall(
             wall, thicknessMm, wr.courses, wr.totalHeightM,
             bondType, colorMap, library, wallThicknessByWallId
           )
+        )
+        // Curved-wall mortar shell — recessed curved sweep behind the
+        // block faces so the per-block edge insets read as real mortar
+        // joints. Rendered later as a smooth BufferGeometry (shared
+        // seam vertices) so the curve doesn't break into facet bands.
+        //
+        // Max block width drives the sagitta-aware recess so the shell
+        // stays behind the worst-case block chord midpoint on tight
+        // curves. Body / corner / half codes across every course in
+        // this wall's makeup, fall back to 390 mm (standard AU body)
+        // if no library entry resolves.
+        let maxBlockWidthMm = 0
+        for (const c of wr.courses) {
+          for (const code of [c.bodyCode, c.cornerCode, c.halfCode]) {
+            const w = library[code]?.dimensions.widthMm ?? 0
+            if (w > maxBlockWidthMm) maxBlockWidthMm = w
+          }
+        }
+        if (maxBlockWidthMm <= 0) maxBlockWidthMm = 390
+        collectCurvedMortarShell(
+          wall, thicknessMm, wr.totalHeightM, maxBlockWidthMm, outMortarShells
         )
       } else {
         // Use the tally-aligned layout path when the wall has no
@@ -2530,7 +3326,7 @@ function Scene({
           heightM: blockHeightM,
           thickness: depthM,
           yRotation,
-          color: bandColor(code),
+          color: bandColor(code, palette),
           highlight: false,
         })
         yCursorM += blockHeightM + mortarM
@@ -2552,7 +3348,7 @@ function Scene({
       centerZ: 0,
       sizeMax: Math.max(20, planExtentM),
     }
-    if (out.length > 0) {
+    if (out.length > 0 || outWedges.length > 0) {
       let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
       for (const s of out) {
         const r = Math.max(s.length, s.thickness) / 2
@@ -2560,6 +3356,20 @@ function Scene({
         maxX = Math.max(maxX, s.cx + r)
         minZ = Math.min(minZ, s.cz - r)
         maxZ = Math.max(maxZ, s.cz + r)
+      }
+      // Wedges contribute their four ground-plane corners — same min /
+      // max sweep used for boxes, just with the explicit corner list.
+      for (const w of outWedges) {
+        const xs = [w.outerStart.x, w.outerEnd.x, w.innerEnd.x, w.innerStart.x]
+        const zs = [w.outerStart.z, w.outerEnd.z, w.innerEnd.z, w.innerStart.z]
+        for (const x of xs) {
+          if (x < minX) minX = x
+          if (x > maxX) maxX = x
+        }
+        for (const z of zs) {
+          if (z < minZ) minZ = z
+          if (z > maxZ) maxZ = z
+        }
       }
       bounds = {
         centerX: (minX + maxX) / 2,
@@ -2570,7 +3380,46 @@ function Scene({
         sizeMax: Math.max(maxX - minX, maxZ - minZ, planExtentM, 4),
       }
     }
-    return { segments: out, segmentBounds: bounds }
+    // Gather every code → colour pair that actually ends up rendered
+    // (includes makeup-declared codes, per-course resolved fractions
+    // and lintels via the block colorMap, plus per-makeup brick TYPE
+    // codes for brick walls — synthetic placeholders like __brick__
+    // are skipped because they're not meaningful in a legend).
+    const codes = new Map<string, string>()
+    for (const [code, color] of colorMap) {
+      if (code.startsWith('__')) continue
+      codes.set(code, color)
+    }
+    for (const wall of walls) {
+      if (wall.trade !== 'brick') continue
+      const m = brickMakeupsById[wall.makeupId]
+      if (!m?.brickTypeCode) continue
+      if (!codes.has(m.brickTypeCode)) {
+        codes.set(m.brickTypeCode, bandColor(m.brickTypeCode, palette))
+      }
+    }
+    // Pier block codes — piers render via bandColor directly without
+    // going through the wall-side colorMap, so without this loop the
+    // legend would miss every block code that ONLY appears in pier
+    // course patterns. Walks each pier's makeup pattern and adds any
+    // codes not already in the wall side.
+    for (const pier of piers) {
+      const pm = pier.pierMakeupId ? pierMakeupsById[pier.pierMakeupId] : undefined
+      const pattern = pm?.coursePattern ?? []
+      for (const code of pattern) {
+        if (!code || code.startsWith('__')) continue
+        if (!codes.has(code)) {
+          codes.set(code, bandColor(code, palette))
+        }
+      }
+    }
+    return {
+      segments: out,
+      wedges: outWedges,
+      mortarShells: outMortarShells,
+      segmentBounds: bounds,
+      resolvedCodes: codes,
+    }
   }, [
     walls,
     openings,
@@ -2582,7 +3431,14 @@ function Scene({
     pierMakeupsById,
     pierColorByPierId,
     planTexture,
+    palette,
   ])
+
+  // Bubble the resolved code/colour map up to the parent so it can
+  // render the legend overlay matching exactly what's in the scene.
+  useEffect(() => {
+    onResolvedCodes(resolvedCodes)
+  }, [resolvedCodes, onResolvedCodes])
 
   return (
     <>
@@ -2694,29 +3550,25 @@ function Scene({
         </mesh>
       )}
 
-      {/* One mesh per wall sub-box. Per-course rendering means ~5x more
-          meshes than band rendering, but with ~30 walls × 13 courses ×
-          ~3 cells = ~1200 meshes the cost is still fine on integrated
-          GPUs. InstancedMesh by colour collapses this to ~16 draw calls
-          if a busier project warrants. */}
-      {segments.map((s, i) => (
-        <mesh key={i} position={[s.cx, s.cy, s.cz]} rotation={[0, s.yRotation, 0]}>
-          <boxGeometry args={[s.length, s.heightM, s.thickness]} />
-          {/* Highlighted specialty blocks (cleanout / knockout / lintel /
-              curve wedge / bond beam) emit a glow of their own colour so
-              they stand out from the body / corner blocks around them.
-              Regular blocks render with a flat standard material. */}
-          {s.highlight ? (
-            <meshStandardMaterial
-              color={s.color}
-              emissive={s.color}
-              emissiveIntensity={0.45}
-            />
-          ) : (
-            <meshStandardMaterial color={s.color} />
-          )}
-        </mesh>
-      ))}
+      {/* Boxes batched as InstancedMesh per (colour, highlight) group.
+          With brick walls now emitting ~300 unit-sized bricks per wall
+          plus per-cell mortar strips, a 30-wall project balloons past
+          15k individual meshes — each its own draw call + React
+          reconciliation. Grouping by colour means one instanced draw
+          call per palette slot (16-ish total) regardless of brick
+          count, which is what keeps interactive orbit / pan / zoom
+          smooth on integrated GPUs. */}
+      <InstancedSegments segments={segments} />
+
+      {/* Curved-wall blocks — trapezoidal wedges merged per colour into
+          a single BufferGeometry so each palette colour is one draw
+          call, mirroring the InstancedSegments batching above. */}
+      <WedgeSegments wedges={wedges} />
+
+      {/* Curved-wall mortar shell — one smooth ring-section mesh per
+          curved wall, recessed behind the block faces so the per-block
+          edge insets read as real mortar joints. */}
+      <CurvedMortarShells shells={mortarShells} />
 
       {/* InitialCameraAim must render BEFORE CADControls so its
           lookAt is applied before the controls seed their spherical
@@ -2725,6 +3577,7 @@ function Scene({
         targetX={segmentBounds.centerX}
         targetZ={segmentBounds.centerZ}
       />
+      <CaptureExposer />
       {/* AutoCAD / Revit-style camera. Middle-mouse drag pans, shift
           + middle orbits around the target, right-drag is a trackpad
           fallback for orbit/pan, wheel zooms toward the cursor. */}
@@ -2755,6 +3608,26 @@ function loadNavStyle(): NavStyle {
   return 'autocad'
 }
 
+const PALETTE_STORAGE_KEY = 'beme:3d-palette'
+const SNAPSHOTS_STORAGE_KEY = 'beme:3d-export-snapshots'
+
+/** Read the persisted block-colour palette from localStorage, falling
+ *  back to 'concrete' (the original masonry-grey set). */
+function loadPalette(): PaletteName {
+  if (typeof window === 'undefined') return 'concrete'
+  const v = window.localStorage.getItem(PALETTE_STORAGE_KEY)
+  if (
+    v === 'concrete' ||
+    v === 'brick' ||
+    v === 'sandstone' ||
+    v === 'slate' ||
+    v === 'vibrant'
+  ) {
+    return v
+  }
+  return 'concrete'
+}
+
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio } = props
   // Theme drives the scene clearColor + the PDF threshold pass colour
@@ -2771,6 +3644,110 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
       // Persisting is a nice-to-have; ignore the failure so the user
       // can still switch the live setting.
     }
+  }
+  // Block-colour palette state. Re-running the segments useMemo on
+  // change re-keys every block/brick colour to the new palette.
+  const [palette, setPaletteState] = useState<PaletteName>(loadPalette)
+  const setPalette = (v: PaletteName) => {
+    setPaletteState(v)
+    try {
+      window.localStorage.setItem(PALETTE_STORAGE_KEY, v)
+    } catch {
+      // ignore — same rationale as the nav-style setter
+    }
+  }
+
+  // Legend items for the in-scene block-/brick-colour legend (rendered
+  // beneath the picker row, top-right). Codes are reported up by
+  // Scene's onResolvedCodes callback so the legend reflects EVERY
+  // code that actually ends up in the rendered scene — makeup-declared
+  // codes (body / corner / half / cap), per-course resolved fractions
+  // emitted by the calc engine (e.g. 20.03 halves), per-opening
+  // lintels (selectBlockLintel by head height), auto-detected lead-in
+  // blocks (30.02 etc.), and brick TYPE codes for brick walls. Each
+  // code's label resolves through `library[code]?.name` (block library)
+  // then `BRICK_LIBRARY[code]?.name` (brick library) before falling
+  // back to the raw code string.
+  const [resolvedCodes, setResolvedCodes] = useState<Map<string, string>>(
+    () => new Map()
+  )
+  const legendItems = useMemo(() => {
+    return Array.from(resolvedCodes.entries())
+      .map(([code, color]) => ({
+        code,
+        label:
+          props.library[code]?.name ??
+          BRICK_LIBRARY[code]?.name ??
+          code,
+        color,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+  }, [resolvedCodes, props.library])
+
+  // Snapshots: list of captured 3D viewport PNGs the user queued for
+  // the export. Persisted to localStorage as a JSON array so the
+  // queue survives a page reload. Each entry has its own id + ISO
+  // timestamp so the UI can render distinct delete buttons. The
+  // export pipeline reads the same key and embeds each snapshot as a
+  // separate page in the PDF.
+  type SnapshotLegendItem = { code: string; label: string; color: string }
+  type Snapshot = {
+    id: string
+    dataUrl: string
+    createdAt: number
+    /** The legend items visible in the 3D view at the moment of
+     *  capture — saved alongside the image so the export PDF can
+     *  render them as a key next to the screenshot. The set is
+     *  frozen at capture time so deleting wall types later doesn't
+     *  invalidate older snapshots. */
+    legend?: SnapshotLegendItem[]
+  }
+  const [snapshots, setSnapshots] = useState<Snapshot[]>(() => {
+    try {
+      const raw = window.localStorage.getItem(SNAPSHOTS_STORAGE_KEY)
+      if (!raw) return []
+      const parsed = JSON.parse(raw) as Snapshot[]
+      return Array.isArray(parsed)
+        ? parsed.filter(
+            (s) =>
+              s &&
+              typeof s.id === 'string' &&
+              typeof s.dataUrl === 'string' &&
+              s.dataUrl.startsWith('data:image/')
+          )
+        : []
+    } catch {
+      return []
+    }
+  })
+  const persistSnapshots = (next: Snapshot[]) => {
+    setSnapshots(next)
+    try {
+      window.localStorage.setItem(SNAPSHOTS_STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      // localStorage can throw in private-browsing / quota issues;
+      // queue stays in React state so the current session works.
+    }
+  }
+  // Visual feedback for the Capture button: short-lived "Saved" state
+  // that flips back automatically. Avoids a toast dep here.
+  const [captureFlash, setCaptureFlash] = useState(false)
+  const handleCapture = () => {
+    type Win = Window & { __beme3dCapture?: () => string | null }
+    const dataUrl = (window as Win).__beme3dCapture?.()
+    if (!dataUrl) return
+    const snap: Snapshot = {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      dataUrl,
+      createdAt: Date.now(),
+      legend: legendItems.map(({ code, label, color }) => ({ code, label, color })),
+    }
+    persistSnapshots([...snapshots, snap])
+    setCaptureFlash(true)
+    window.setTimeout(() => setCaptureFlash(false), 900)
+  }
+  const handleDeleteSnapshot = (id: string) => {
+    persistSnapshots(snapshots.filter((s) => s.id !== id))
   }
 
   // ── Plan-as-floor texture ───────────────────────────────────────
@@ -2951,7 +3928,7 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         dpr={[1, 1.5]}
         camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
         shadows={false}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        gl={{ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
         onCreated={({ gl }) => {
           gl.setClearColor(new THREE.Color(sceneBgFor(theme)))
         }}
@@ -2963,7 +3940,14 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         key={theme}
       >
         <Suspense fallback={null}>
-          <Scene {...props} navStyle={navStyle} planTexture={planTexture} theme={theme} />
+          <Scene
+            {...props}
+            navStyle={navStyle}
+            planTexture={planTexture}
+            theme={theme}
+            palette={palette}
+            onResolvedCodes={setResolvedCodes}
+          />
         </Suspense>
       </Canvas>
 
@@ -2980,7 +3964,34 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         >
           ⤢ Fit
         </button>
+        <button
+          type="button"
+          onClick={handleCapture}
+          title="Capture this view for export"
+          className={`px-2 py-1 text-[11px] rounded-lg shadow-md border transition-colors backdrop-blur-sm ${
+            captureFlash
+              ? 'bg-emerald-500/30 border-emerald-400/60 text-emerald-100'
+              : 'bg-ink-800/85 border-ink-600/70 text-ink-100 hover:border-beme-500/60 hover:text-beme-200'
+          }`}
+        >
+          {captureFlash ? '✓ Saved' : '▣ Capture'}
+        </button>
+        <PalettePicker value={palette} onChange={setPalette} />
         <NavStylePicker value={navStyle} onChange={setNavStyle} />
+      </div>
+
+      {/* Legend + captured snapshots column, sits under the picker row
+          (top-12 ≈ 48px = ~one picker height + padding). Same dark
+          translucent chrome as the pickers; flex column so snapshots
+          stack directly under the legend. Both hide when empty. */}
+      <div className="absolute top-12 right-3 pointer-events-auto flex flex-col gap-2 max-w-[260px]">
+        {legendItems.length > 0 && <BlockLegend items={legendItems} />}
+        {snapshots.length > 0 && (
+          <SnapshotsPanel
+            snapshots={snapshots}
+            onDelete={handleDeleteSnapshot}
+          />
+        )}
       </div>
 
       {/* Controls hint, bottom-left. Updates as the user switches nav
@@ -3025,6 +4036,119 @@ function NavStylePicker({
         {(Object.keys(NAV_STYLE_LABELS) as NavStyle[]).map((k) => (
           <option key={k} value={k} className="bg-ink-800 text-ink-100">
             {NAV_STYLE_LABELS[k]}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+/** Block / brick colour legend — one row per unique code in use,
+ *  showing a colour swatch and the block/brick name. Same dark
+ *  translucent chrome as the picker chips; max-height so it scrolls
+ *  internally if the project has many wall types. */
+function BlockLegend({
+  items,
+}: {
+  items: Array<{ code: string; label: string; color: string }>
+}) {
+  return (
+    <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[60vh] overflow-y-auto min-w-[120px]">
+      <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm">
+        Legend
+      </div>
+      <ul className="py-1">
+        {items.map((it) => (
+          <li
+            key={it.code}
+            className="flex items-center gap-2 px-2 py-1 leading-tight"
+            title={it.code}
+          >
+            <span
+              className="inline-block w-3 h-3 rounded-sm border border-ink-600/60 flex-shrink-0"
+              style={{ backgroundColor: it.color }}
+            />
+            <span className="text-ink-100 truncate">{it.label}</span>
+            <span className="text-ink-500 text-[10px] ml-auto pl-1 flex-shrink-0">
+              {it.code}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** List of captured 3D viewport snapshots queued for the export.
+ *  Each row shows a thumbnail (clipped to a fixed aspect) and a
+ *  delete (×) button. Rendered immediately below the BlockLegend in
+ *  the same column so they share the top-right overlay strip. */
+function SnapshotsPanel({
+  snapshots,
+  onDelete,
+}: {
+  snapshots: Array<{ id: string; dataUrl: string; createdAt: number }>
+  onDelete: (id: string) => void
+}) {
+  return (
+    <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[40vh] overflow-y-auto min-w-[140px]">
+      <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between">
+        <span>Snapshots</span>
+        <span className="text-ink-500 text-[10px]">{snapshots.length}</span>
+      </div>
+      <ul className="p-1.5 space-y-1.5">
+        {snapshots.map((s, i) => (
+          <li
+            key={s.id}
+            className="relative group rounded overflow-hidden border border-ink-600/50 bg-ink-900/60"
+          >
+            <img
+              src={s.dataUrl}
+              alt={`Snapshot ${i + 1}`}
+              className="block w-full h-auto"
+            />
+            <div className="absolute top-1 left-1 text-[10px] text-ink-200 bg-ink-900/70 px-1 py-0.5 rounded">
+              {`#${i + 1}`}
+            </div>
+            <button
+              type="button"
+              onClick={() => onDelete(s.id)}
+              title="Remove snapshot"
+              className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-ink-900/70 hover:bg-rose-500/80 text-ink-100 text-[12px] leading-none transition-colors"
+              aria-label="Remove snapshot"
+            >
+              ×
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** Compact dropdown in the 3D viewport's top-right corner letting the
+ *  user pick the block / brick colour palette (concrete, brick,
+ *  sandstone, slate, vibrant). Persists to localStorage via the
+ *  parent setter. */
+function PalettePicker({
+  value,
+  onChange,
+}: {
+  value: PaletteName
+  onChange: (v: PaletteName) => void
+}) {
+  return (
+    <label className="flex items-center gap-2 bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg px-2 py-1 text-[11px] text-ink-200 shadow-md">
+      <span className="text-ink-400">Palette</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as PaletteName)}
+        className="bg-transparent text-ink-100 text-[11px] focus:outline-none cursor-pointer pr-1"
+        aria-label="3D block colour palette"
+      >
+        {(Object.keys(PALETTE_LABELS) as PaletteName[]).map((k) => (
+          <option key={k} value={k} className="bg-ink-800 text-ink-100">
+            {PALETTE_LABELS[k]}
           </option>
         ))}
       </select>

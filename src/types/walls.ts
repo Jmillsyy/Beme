@@ -153,6 +153,17 @@ export interface WallMakeup {
    */
   areaId?: string
 
+  /**
+   * Configured-for kind, set when the user picked Curved (vs Wall) in
+   * the wall type modal's kind picker. Pure label / intent — both
+   * kinds use the same composition fields below; the kind flag just
+   * tells the panel to badge this row as "Curved" and tells the
+   * drawing handler to default to curve-draw when this type becomes
+   * active. Undefined → treat as 'wall' (covers every wall type made
+   * before this field existed).
+   */
+  kind?: 'wall' | 'curved'
+
   bondType: BondType
   /** Wall height in mm. */
   heightMm: number
@@ -513,6 +524,10 @@ export interface BrickExportInclusions {
    */
   measurements: boolean
   brickAreaSummary: boolean
+  /** Embed 3D viewport snapshots (captured via the ▣ Capture button)
+   *  as a dedicated page in the export. Same semantics as the block
+   *  inclusion. Off when no snapshot exists. */
+  view3d: boolean
   disclaimer: boolean
 }
 
@@ -542,6 +557,13 @@ export interface BlockExportInclusions {
    * drawn on a given page appear on that page's overview.
    */
   measurements: boolean
+  /**
+   * Embed a 3D view snapshot of the project (the one the user captured
+   * via the ▣ Capture button in the 3D viewport) as a dedicated page
+   * in the export. Off when no snapshot has been taken; reading the
+   * snapshot from localStorage is the export panel's responsibility.
+   */
+  view3d: boolean
   disclaimer: boolean
 }
 

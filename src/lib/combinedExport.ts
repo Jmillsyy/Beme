@@ -75,6 +75,17 @@ export interface CombinedExportParams {
   brickPagesInfo?: PageInfo[]
   /** Per-brick-type quantity adjustments — see brickExport ExportParams. */
   brickAdjustments?: Record<string, number>
+
+  /**
+   * Optional 3D viewport snapshots shared across BOTH trade sections.
+   * Embedded as "3D View" pages after each side's plan overview
+   * (block section first, brick section second). Same shape as the
+   * single-trade exports.
+   */
+  view3dSnapshots?: Array<{
+    dataUrl: string
+    legend: Array<{ code: string; label: string; color: string }>
+  }>
 }
 
 /**
@@ -123,6 +134,7 @@ export async function exportCombinedEstimate(
     brickSettings,
     brickPagesInfo,
     brickAdjustments,
+    view3dSnapshots,
   } = params
 
   // Strip both trades' disclaimers — we emit one shared disclaimer at
@@ -152,6 +164,7 @@ export async function exportCombinedEstimate(
     pdfFile,
     pagesInfo: blockPagesInfo,
     blockAdjustments,
+    view3dSnapshots,
   })
 
   const brickBuilt = await buildBrickEstimateHtml({
@@ -169,6 +182,7 @@ export async function exportCombinedEstimate(
     pdfFile,
     pagesInfo: brickPagesInfo,
     brickAdjustments,
+    view3dSnapshots,
   })
 
   // Divider sheet between the two trade sections — a single page with a

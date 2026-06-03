@@ -44,6 +44,18 @@ interface ExportParams {
   projectDetails: ProjectDetails
   inclusions: BlockExportInclusions
   /**
+   * Optional list of 3D viewport snapshots captured via the ▣
+   * Capture button. Each entry pairs the PNG image with the legend
+   * items visible at the moment of capture (block code, label,
+   * colour swatch). When non-empty and `inclusions.view3d` is true,
+   * the export renders one "3D view" page per snapshot with the
+   * image as the hero and the legend as a key column on the right.
+   */
+  view3dSnapshots?: Array<{
+    dataUrl: string
+    legend: Array<{ code: string; label: string; color: string }>
+  }>
+  /**
    * Server-allocated reference number for this project. Surfaces in the
    * cover/header of the exported document so the reader can quote it
    * back when looking the job up. Optional so projects predating the
@@ -520,6 +532,57 @@ function buildPlanOverviewPage(
     }
   }
 
+  // Opening markers — drawn ON TOP of the wall line as a cream
+  // segment that visually breaks the wall colour at each opening's
+  // along-wall position. Two short perpendicular jamb ticks bracket
+  // the break so it reads as a window / door rather than a missing
+  // chunk of wall. Cream + dark-grey jambs reads clearly against
+  // every wall colour in the palette without competing with the
+  // wall body for visual weight.
+  const openingShapes: string[] = []
+  for (const op of openings) {
+    const w = walls.find((ww) => ww.id === op.wallId)
+    if (!w) continue
+    if (isCurvedWall(w)) continue // curve openings not supported on this overlay yet
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    const wallLen = Math.sqrt(dx * dx + dy * dy)
+    if (wallLen === 0) continue
+    const ux = dx / wallLen
+    const uy = dy / wallLen
+    // Perpendicular unit vector (rotated 90° CCW).
+    const px = -uy
+    const py = ux
+    const s0 = Math.max(0, op.startAlongWallMm)
+    const s1 = Math.min(wallLen, op.startAlongWallMm + op.widthMm)
+    if (s1 - s0 < 1) continue
+    const ox0 = w.startX + ux * s0
+    const oy0 = w.startY + uy * s0
+    const ox1 = w.startX + ux * s1
+    const oy1 = w.startY + uy * s1
+    const thickness = thicknessByWallId[w.id] || 190
+    // Jamb tick: short perpendicular line across the wall body at
+    // each end of the opening. Half-thickness past the wall on each
+    // side so the tick visibly clears the wall colour.
+    const tickHalf = thickness * 0.65
+    const t0x = ox0 + px * tickHalf
+    const t0y = oy0 + py * tickHalf
+    const t0xN = ox0 - px * tickHalf
+    const t0yN = oy0 - py * tickHalf
+    const t1x = ox1 + px * tickHalf
+    const t1y = oy1 + py * tickHalf
+    const t1xN = ox1 - px * tickHalf
+    const t1yN = oy1 - py * tickHalf
+    openingShapes.push(
+      // Break in the wall body — opaque cream that masks the wall
+      // colour beneath, exactly opening-width wide.
+      `<line x1="${ox0.toFixed(1)}" y1="${oy0.toFixed(1)}" x2="${ox1.toFixed(1)}" y2="${oy1.toFixed(1)}" stroke="#fef3c7" stroke-opacity="0.96" stroke-width="${(thickness * 0.92).toFixed(1)}" stroke-linecap="butt"/>`,
+      // Jamb ticks at each end.
+      `<line x1="${t0x.toFixed(1)}" y1="${t0y.toFixed(1)}" x2="${t0xN.toFixed(1)}" y2="${t0yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(thickness * 0.18).toFixed(1)}" stroke-linecap="round"/>`,
+      `<line x1="${t1x.toFixed(1)}" y1="${t1y.toFixed(1)}" x2="${t1xN.toFixed(1)}" y2="${t1yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(thickness * 0.18).toFixed(1)}" stroke-linecap="round"/>`
+    )
+  }
+
   // Pier squares — 400 × 400 mm centred on the pier position. For tied piers
   // we resolve the (along-wall mm) into an x/y from the host wall's geometry.
   const pierShapes: string[] = []
@@ -657,6 +720,7 @@ function buildPlanOverviewPage(
         <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
           ${backgroundSvgElement}
           ${wallShapes.join('\n          ')}
+          ${openingShapes.join('\n          ')}
           ${pierShapes.join('\n          ')}
           ${measurementShapes}
           ${wallLabels.join('\n          ')}
@@ -993,6 +1057,7 @@ export async function buildBlockEstimateHtml(
     business,
     pdfFile,
     pagesInfo,
+    view3dSnapshots,
   } = params
 
   // 6-digit zero-padded reference string for inline use in the document.
@@ -1611,6 +1676,89 @@ export async function buildBlockEstimateHtml(
   // walls. The wall-type breakdown above (and per-wall lintel rows)
   // covers any per-opening detail an estimator needs.
 
+  // 3D view snapshots — one PDF page per queued snapshot, in queue
+  // order. Sits with the plan-overview pages so the visual context
+  // flows from "the plan + walls" to "the same walls in 3D". Each
+  // page is laid out like a hero shot: orange accent bar across the
+  // top, a large title, the image as the dominant element with a
+  // soft drop shadow, and a project-metadata footer in a single
+  // line. No dark frame on the image so it sits naturally on the
+  // sheet.
+  const formattedDate = projectDetails.date
+    ? new Date(projectDetails.date).toLocaleDateString('en-AU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : ''
+  const view3dPages =
+    inclusions.view3d && view3dSnapshots && view3dSnapshots.length > 0
+      ? view3dSnapshots
+          .map((snap, i) => {
+            const legendHtml =
+              snap.legend.length > 0
+                ? `
+              <aside class="view3d-legend">
+                <div class="view3d-legend-title">Legend</div>
+                <ul class="view3d-legend-list">
+                  ${snap.legend
+                    .map(
+                      (item) => `
+                    <li class="view3d-legend-row">
+                      <span class="view3d-legend-swatch" style="background:${item.color};"></span>
+                      <span class="view3d-legend-label">${escapeHtml(item.label)}</span>
+                      <span class="view3d-legend-code">${escapeHtml(item.code)}</span>
+                    </li>
+                  `
+                    )
+                    .join('')}
+                </ul>
+              </aside>
+            `
+                : ''
+            return `
+      <section class="page view3d-page">
+        ${pageHeader}
+        <div class="view3d-accent"></div>
+        <header class="view3d-header">
+          <div class="view3d-eyebrow">3D Visualisation${view3dSnapshots.length > 1 ? ` &middot; View ${i + 1} of ${view3dSnapshots.length}` : ''}</div>
+          <h1 class="view3d-title">${escapeHtml(projectDetails.projectName || 'Project preview')}</h1>
+          ${
+            projectDetails.siteAddress
+              ? `<div class="view3d-subtitle">${escapeHtml(projectDetails.siteAddress)}</div>`
+              : ''
+          }
+        </header>
+        <div class="view3d-body${legendHtml ? ' has-legend' : ''}">
+          <figure class="view3d-figure">
+            <img
+              src="${snap.dataUrl}"
+              alt="3D view of the project"
+              class="view3d-image"
+            />
+          </figure>
+          ${legendHtml}
+        </div>
+        <footer class="view3d-meta">
+          <div class="view3d-meta-block">
+            <div class="view3d-meta-label">Reference</div>
+            <div class="view3d-meta-value">${referenceText || '—'}</div>
+          </div>
+          <div class="view3d-meta-block">
+            <div class="view3d-meta-label">Client</div>
+            <div class="view3d-meta-value">${escapeHtml(projectDetails.clientName || '—')}</div>
+          </div>
+          <div class="view3d-meta-block">
+            <div class="view3d-meta-label">Date</div>
+            <div class="view3d-meta-value">${escapeHtml(formattedDate || '—')}</div>
+          </div>
+        </footer>
+      </section>
+    `
+          })
+          .join('')
+      : ''
+
   // Page 5: Disclaimer
   const disclaimerPage = inclusions.disclaimer
     ? `
@@ -1636,6 +1784,11 @@ export async function buildBlockEstimateHtml(
   ${assumptionsPage}
   ${wallSpecsPage}
   ${planOverviewPage}
+  ${/* 3D view snapshots flow directly after the 2D plan overview —
+       same visual subject (the walls), different view. Reader gets
+       the plan as drawn, then the project rendered in 3D, before
+       diving into the data tables. */ ''}
+  ${view3dPages}
   ${breakdownPages}
   ${/* Grand Total sits just before the disclaimer so the customer's
        last data-bearing page is the actual order quantities — the page
@@ -1707,21 +1860,25 @@ export async function buildBlockEstimateHtml(
     margin-bottom: 6px;
   }
 
-  /* "Built with Beme" credit footer that appears on every page. */
+  /* "Built with Beme" credit footer that appears on every page.
+     Pulled tight against the bottom margin (was 1cm, now 0.3cm) so
+     it doesn't crowd page footers like the 3D-view metadata row.
+     Also rendered slimmer (smaller font, less padding) so a thinner
+     credit line gives more breathing room above it. */
   .page { position: relative; padding-bottom: 50px; }
   .beme-credit {
     position: absolute;
     left: 1.5cm;
     right: 1.5cm;
-    bottom: 1cm;
+    bottom: 0.3cm;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    font-size: 10px;
+    gap: 5px;
+    font-size: 9px;
     color: #9CA3AF;
     border-top: 1px solid #E5E7EB;
-    padding-top: 6px;
+    padding-top: 4px;
   }
   .beme-credit .beme-mark {
     display: inline-block;
@@ -2023,6 +2180,166 @@ export async function buildBlockEstimateHtml(
   .tabular { font-variant-numeric: tabular-nums; }
   tr.bold td { font-weight: 700; background: #fafafa; }
 
+  /* 3D view pages — magazine-style hero shot. Print engines ignore
+     flex grow on landscape A4, so every block has an EXPLICIT mm
+     height and the image is capped at a fixed value that leaves
+     room for the chrome above and below. Available vertical on a
+     landscape A4 page is roughly 170mm (210mm sheet − 11mm @page
+     top margin − ~14mm page-header − ~15mm bottom credit). Chrome
+     here ≈ 55mm; image gets the remaining ~110mm. */
+  .view3d-page {
+    position: relative;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .view3d-accent {
+    width: 32mm;
+    height: 3px;
+    background: linear-gradient(90deg, #ED7D31 0%, #F59E0B 100%);
+    border-radius: 2px;
+    margin-bottom: 3mm;
+  }
+  .view3d-header {
+    margin-bottom: 3mm;
+  }
+  .view3d-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 9px;
+    font-weight: 700;
+    color: #ED7D31;
+    margin-bottom: 1.5mm;
+  }
+  .view3d-title {
+    margin: 0 0 1.5mm 0;
+    font-size: 26px;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .view3d-subtitle {
+    font-size: 11px;
+    color: #475569;
+    font-weight: 400;
+  }
+  .view3d-body {
+    display: flex;
+    align-items: stretch;
+    gap: 5mm;
+    height: 102mm; /* hard cap — the bottom credit was moved down to
+                      0.3cm so we have ~22mm more usable vertical
+                      than before. Header chrome is ~23mm (taller
+                      title), accent/spacing ~6mm, meta footer
+                      ~14mm, page-header ~30mm, bottom slack ~10mm
+                      → ~83mm chrome on a ~185mm print area, leaving
+                      ~102mm for the hero shot. */
+  }
+  .view3d-figure {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .view3d-image {
+    max-width: 100%;
+    max-height: 102mm;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow:
+      0 1px 2px rgba(15, 23, 42, 0.04),
+      0 8px 24px rgba(15, 23, 42, 0.10);
+  }
+  /* Legend column sits to the right of the hero image — same height
+     so it visually anchors against the image's top + bottom edges.
+     Sized so the image gets the majority of the page width while
+     the key stays comfortably legible at print resolution. */
+  .view3d-legend {
+    flex: 0 0 44mm;
+    padding: 2.5mm 3mm 2mm;
+    border: 1px solid #e2e8f0;
+    border-radius: 5px;
+    background: #f8fafc;
+    font-size: 8px;
+    color: #1f2937;
+    overflow: hidden;
+  }
+  .view3d-legend-title {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 7px;
+    font-weight: 700;
+    color: #ED7D31;
+    margin-bottom: 1.5mm;
+    padding-bottom: 1mm;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .view3d-legend-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .view3d-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 1.5mm;
+    padding: 0.4mm 0;
+    min-width: 0;
+  }
+  .view3d-legend-swatch {
+    flex: 0 0 auto;
+    width: 2.2mm;
+    height: 2.2mm;
+    border-radius: 1px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+  }
+  .view3d-legend-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #0f172a;
+    font-weight: 500;
+  }
+  .view3d-legend-code {
+    flex: 0 0 auto;
+    color: #94a3b8;
+    font-size: 7px;
+    font-variant-numeric: tabular-nums;
+  }
+  .view3d-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6mm;
+    padding-top: 3mm;
+    margin-top: 3mm;
+    border-top: 1px solid #e2e8f0;
+  }
+  .view3d-meta-block {
+    min-width: 0;
+  }
+  .view3d-meta-label {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 7px;
+    font-weight: 600;
+    color: #94a3b8;
+    margin-bottom: 0.7mm;
+  }
+  .view3d-meta-value {
+    font-size: 10px;
+    font-weight: 600;
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
+  }
+
   .disclaimer {
     background: #fef9c3;
     border-left: 4px solid #ca8a04;
@@ -2184,6 +2501,9 @@ export function createDefaultBlockExportInclusions(): BlockExportInclusions {
     // them on the plan they almost certainly want them carried through into
     // the exported PDF. Toggle hides them when not wanted.
     measurements: true,
+    // 3D snapshot default ON — if the user has captured one it'll
+    // appear; if not, the export is just silently shorter by one page.
+    view3d: true,
     disclaimer: true,
   }
 }

@@ -60,6 +60,18 @@ interface ExportParams {
   projectDetails: ProjectDetails
   inclusions: BrickExportInclusions
   /**
+   * Optional list of 3D viewport snapshots captured via the ▣
+   * Capture button. Each entry pairs the PNG image with the legend
+   * items visible at the moment of capture. When non-empty and
+   * `inclusions.view3d` is true, the export renders one "3D View"
+   * page per snapshot with the image as the hero and the legend as
+   * a key column on the right. Matches the block export.
+   */
+  view3dSnapshots?: Array<{
+    dataUrl: string
+    legend: Array<{ code: string; label: string; color: string }>
+  }>
+  /**
    * Server-allocated 6-digit reference number. Embedded in the exported
    * document header + meta strip so the reader can quote it back when
    * looking the job up. Optional for projects predating the rollout.
@@ -303,6 +315,49 @@ function buildBrickPlanOverviewPage(
     })
     .join('\n          ')
 
+  // Opening markers — cream break on top of the wall line at each
+  // opening's along-wall position with dark slate jamb ticks at each
+  // end. Same architectural convention as the block export so
+  // door / window positions read identically across both product
+  // exports. Skips curved walls for now.
+  const openingShapes = openings
+    .map((op) => {
+      const w = walls.find((ww) => ww.id === op.wallId)
+      if (!w) return ''
+      if (w.kind === 'curved') return ''
+      const dx = w.endX - w.startX
+      const dy = w.endY - w.startY
+      const wallLen = Math.sqrt(dx * dx + dy * dy)
+      if (wallLen === 0) return ''
+      const ux = dx / wallLen
+      const uy = dy / wallLen
+      const px = -uy
+      const py = ux
+      const s0 = Math.max(0, op.startAlongWallMm)
+      const s1 = Math.min(wallLen, op.startAlongWallMm + op.widthMm)
+      if (s1 - s0 < 1) return ''
+      const ox0 = w.startX + ux * s0
+      const oy0 = w.startY + uy * s0
+      const ox1 = w.startX + ux * s1
+      const oy1 = w.startY + uy * s1
+      const tickHalf = brickThicknessMm * 0.65
+      const t0x = ox0 + px * tickHalf
+      const t0y = oy0 + py * tickHalf
+      const t0xN = ox0 - px * tickHalf
+      const t0yN = oy0 - py * tickHalf
+      const t1x = ox1 + px * tickHalf
+      const t1y = oy1 + py * tickHalf
+      const t1xN = ox1 - px * tickHalf
+      const t1yN = oy1 - py * tickHalf
+      return [
+        `<line x1="${ox0.toFixed(1)}" y1="${oy0.toFixed(1)}" x2="${ox1.toFixed(1)}" y2="${oy1.toFixed(1)}" stroke="#fef3c7" stroke-opacity="0.96" stroke-width="${(brickThicknessMm * 0.92).toFixed(1)}" stroke-linecap="butt"/>`,
+        `<line x1="${t0x.toFixed(1)}" y1="${t0y.toFixed(1)}" x2="${t0xN.toFixed(1)}" y2="${t0yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(brickThicknessMm * 0.18).toFixed(1)}" stroke-linecap="round"/>`,
+        `<line x1="${t1x.toFixed(1)}" y1="${t1y.toFixed(1)}" x2="${t1xN.toFixed(1)}" y2="${t1yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(brickThicknessMm * 0.18).toFixed(1)}" stroke-linecap="round"/>`,
+      ].join('\n          ')
+    })
+    .filter(Boolean)
+    .join('\n          ')
+
   // Measurement overlays — dashed cyan lines with the measured length
   // labelled at the midpoint. Same visual treatment as the block export
   // so the deliverables read consistently across product modes.
@@ -389,6 +444,7 @@ function buildBrickPlanOverviewPage(
         <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
           ${backgroundSvgElement}
           ${wallShapes}
+          ${openingShapes}
           ${measurementShapes}
           ${wallLabels}
         </svg>
@@ -533,6 +589,7 @@ export async function buildBrickEstimateHtml(
     makeups = [],
     pdfFile,
     pagesInfo,
+    view3dSnapshots,
   } = params
 
   const referenceText =
@@ -1084,6 +1141,81 @@ export async function buildBrickEstimateHtml(
     `
       : ''
 
+  // 3D view snapshots — same magazine-style hero pages as the block
+  // export. One page per snapshot, in queue order, immediately after
+  // the 2D plan overview so the same project geometry flows from
+  // plan → 3D → tally tables.
+  const formattedDate = projectDetails.date
+    ? new Date(projectDetails.date).toLocaleDateString('en-AU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : ''
+  const view3dPages =
+    inclusions.view3d && view3dSnapshots && view3dSnapshots.length > 0
+      ? view3dSnapshots
+          .map((snap, i) => {
+            const legendHtml =
+              snap.legend.length > 0
+                ? `
+              <aside class="view3d-legend">
+                <div class="view3d-legend-title">Legend</div>
+                <ul class="view3d-legend-list">
+                  ${snap.legend
+                    .map(
+                      (item) => `
+                    <li class="view3d-legend-row">
+                      <span class="view3d-legend-swatch" style="background:${item.color};"></span>
+                      <span class="view3d-legend-label">${escapeHtml(item.label)}</span>
+                      <span class="view3d-legend-code">${escapeHtml(item.code)}</span>
+                    </li>
+                  `
+                    )
+                    .join('')}
+                </ul>
+              </aside>
+            `
+                : ''
+            return `
+      <section class="page view3d-page">
+        ${pageHeader}
+        <div class="view3d-accent"></div>
+        <header class="view3d-header">
+          <div class="view3d-eyebrow">3D Visualisation${view3dSnapshots.length > 1 ? ` &middot; View ${i + 1} of ${view3dSnapshots.length}` : ''}</div>
+          <h1 class="view3d-title">${escapeHtml(projectDetails.projectName || 'Project preview')}</h1>
+          ${
+            projectDetails.siteAddress
+              ? `<div class="view3d-subtitle">${escapeHtml(projectDetails.siteAddress)}</div>`
+              : ''
+          }
+        </header>
+        <div class="view3d-body${legendHtml ? ' has-legend' : ''}">
+          <figure class="view3d-figure">
+            <img src="${snap.dataUrl}" alt="3D view of the project" class="view3d-image" />
+          </figure>
+          ${legendHtml}
+        </div>
+        <footer class="view3d-meta">
+          <div class="view3d-meta-block">
+            <div class="view3d-meta-label">Reference</div>
+            <div class="view3d-meta-value">${referenceText || '—'}</div>
+          </div>
+          <div class="view3d-meta-block">
+            <div class="view3d-meta-label">Client</div>
+            <div class="view3d-meta-value">${escapeHtml(projectDetails.clientName || '—')}</div>
+          </div>
+          <div class="view3d-meta-block">
+            <div class="view3d-meta-label">Date</div>
+            <div class="view3d-meta-value">${escapeHtml(formattedDate || '—')}</div>
+          </div>
+        </footer>
+      </section>
+    `
+          })
+          .join('')
+      : ''
+
   // Page 3: Disclaimer
   const disclaimerPage = inclusions.disclaimer
     ? `
@@ -1106,6 +1238,10 @@ export async function buildBrickEstimateHtml(
   const bodyContent = `
   ${assumptionsPage}
   ${planOverviewPages}
+  ${/* 3D snapshots flow directly after the 2D plan overview — same
+       visual subject (the walls), different view. Same ordering as
+       the block export so combined exports read consistently. */ ''}
+  ${view3dPages}
   ${tablesPage}
   ${disclaimerPage}
 `
@@ -1237,21 +1373,163 @@ export async function buildBrickEstimateHtml(
     margin-bottom: 6px;
   }
 
-  /* "Built with Beme" credit footer on every page. */
+  /* "Built with Beme" credit footer on every page. Pulled tight
+     against the bottom margin so it doesn't crowd metadata rows. */
   .page { position: relative; padding-bottom: 50px; }
   .beme-credit {
     position: absolute;
     left: 1.5cm;
     right: 1.5cm;
-    bottom: 1cm;
+    bottom: 0.3cm;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    font-size: 10px;
+    gap: 5px;
+    font-size: 9px;
     color: #9CA3AF;
     border-top: 1px solid #E5E7EB;
-    padding-top: 6px;
+    padding-top: 4px;
+  }
+
+  /* 3D view pages — magazine-style hero shot. Same layout as the
+     block export so the deliverables read consistently across
+     product modes. Explicit mm dimensions because PDF print engines
+     don't honour flex grow on landscape A4. */
+  .view3d-page {
+    position: relative;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .view3d-accent {
+    width: 32mm;
+    height: 3px;
+    background: linear-gradient(90deg, #ED7D31 0%, #F59E0B 100%);
+    border-radius: 2px;
+    margin-bottom: 3mm;
+  }
+  .view3d-header {
+    margin-bottom: 3mm;
+  }
+  .view3d-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 9px;
+    font-weight: 700;
+    color: #ED7D31;
+    margin-bottom: 1.5mm;
+  }
+  .view3d-title {
+    margin: 0 0 1.5mm 0;
+    font-size: 26px;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .view3d-subtitle {
+    font-size: 11px;
+    color: #475569;
+    font-weight: 400;
+  }
+  .view3d-body {
+    display: flex;
+    align-items: stretch;
+    gap: 5mm;
+    height: 102mm;
+  }
+  .view3d-figure {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .view3d-image {
+    max-width: 100%;
+    max-height: 102mm;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow:
+      0 1px 2px rgba(15, 23, 42, 0.04),
+      0 8px 24px rgba(15, 23, 42, 0.10);
+  }
+  .view3d-legend {
+    flex: 0 0 44mm;
+    padding: 2.5mm 3mm 2mm;
+    border: 1px solid #e2e8f0;
+    border-radius: 5px;
+    background: #f8fafc;
+    font-size: 8px;
+    color: #1f2937;
+    overflow: hidden;
+  }
+  .view3d-legend-title {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 7px;
+    font-weight: 700;
+    color: #ED7D31;
+    margin-bottom: 1.5mm;
+    padding-bottom: 1mm;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .view3d-legend-list { list-style: none; margin: 0; padding: 0; }
+  .view3d-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 1.5mm;
+    padding: 0.4mm 0;
+    min-width: 0;
+  }
+  .view3d-legend-swatch {
+    flex: 0 0 auto;
+    width: 2.2mm;
+    height: 2.2mm;
+    border-radius: 1px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+  }
+  .view3d-legend-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #0f172a;
+    font-weight: 500;
+  }
+  .view3d-legend-code {
+    flex: 0 0 auto;
+    color: #94a3b8;
+    font-size: 7px;
+    font-variant-numeric: tabular-nums;
+  }
+  .view3d-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6mm;
+    padding-top: 3mm;
+    margin-top: 3mm;
+    border-top: 1px solid #e2e8f0;
+  }
+  .view3d-meta-block { min-width: 0; }
+  .view3d-meta-label {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 7px;
+    font-weight: 600;
+    color: #94a3b8;
+    margin-bottom: 0.7mm;
+  }
+  .view3d-meta-value {
+    font-size: 10px;
+    font-weight: 600;
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
   }
   .beme-credit .beme-mark {
     display: inline-block;
@@ -1479,6 +1757,10 @@ export function createDefaultExportInclusions(): BrickExportInclusions {
     // if the user drew them, they likely want them carried through.
     measurements: true,
     brickAreaSummary: true,
+    // 3D snapshot default ON — same semantics as the block side. If
+    // the user hasn't captured any, the export is just silently
+    // shorter by a page.
+    view3d: true,
     disclaimer: true,
   }
 }

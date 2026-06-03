@@ -3121,42 +3121,12 @@ function WallDrawingLayerInner({
                 fill="rgba(139, 92, 246, 0.18)"
               />
             )}
-            {/* Arc preview. By default the third point is the cursor's
-                mm position (legacy three-click flow). When the user is
-                typing a radius after the two endpoint clicks, switch to
-                computing the midpoint from the typed radius + cursor
-                side instead so the preview matches what Enter will
-                commit. */}
+            {/* Arc preview — both anchors set, mid follows the cursor
+                for the third-click commit. */}
             {curveAnchorA && curveAnchorB && curveCursorMm && (() => {
               const A = { x: curveAnchorA.xMm, y: curveAnchorA.yMm }
               const B = { x: curveAnchorB.xMm, y: curveAnchorB.yMm }
-              const typedNum = parseFloat(typedCurveRadiusMm)
-              const hasTyped =
-                !!typedCurveRadiusMm.trim() &&
-                Number.isFinite(typedNum) &&
-                typedNum > 0
-              let midPointMm: Point = curveCursorMm
-              let typedValid = false
-              if (hasTyped) {
-                const dx = B.x - A.x
-                const dy = B.y - A.y
-                const chordLen = Math.sqrt(dx * dx + dy * dy)
-                if (chordLen > 0 && 2 * typedNum >= chordLen - 0.001) {
-                  const halfChord = chordLen / 2
-                  const sag = typedNum - Math.sqrt(Math.max(0, typedNum * typedNum - halfChord * halfChord))
-                  const perpX = -dy / chordLen
-                  const perpY = dx / chordLen
-                  const cx = curveCursorMm.x - A.x
-                  const cy = curveCursorMm.y - A.y
-                  const cross = dx * cy - dy * cx
-                  const side = cross >= 0 ? 1 : -1
-                  midPointMm = {
-                    x: (A.x + B.x) / 2 + perpX * sag * side,
-                    y: (A.y + B.y) / 2 + perpY * sag * side,
-                  }
-                  typedValid = true
-                }
-              }
+              const midPointMm: Point = curveCursorMm
               const geom = arcFromThreePoints(A, midPointMm, B)
               if (!geom) {
                 // Collinear or invalid — show a dashed straight line as
@@ -3164,10 +3134,10 @@ function WallDrawingLayerInner({
                 return (
                   <Line
                     points={[
-                      mmToPx(curveAnchorA.xMm),
-                      mmToPx(curveAnchorA.yMm),
-                      mmToPx(curveAnchorB.xMm),
-                      mmToPx(curveAnchorB.yMm),
+                      mmToPx(A.x),
+                      mmToPx(A.y),
+                      mmToPx(B.x),
+                      mmToPx(B.y),
                     ]}
                     stroke="#8b5cf6"
                     strokeWidth={2}
@@ -3178,21 +3148,6 @@ function WallDrawingLayerInner({
               const pts = sampleArc(geom, 48)
               const flat: number[] = []
               for (const p of pts) flat.push(mmToPx(p.x), mmToPx(p.y))
-              // Label badge content: when the user is typing show the
-              // typed digits + ⏎ hint; when they've typed but the
-              // chord won't fit a circle of that radius, flag it
-              // visibly; otherwise the cursor-driven R xxx · arc xxx
-              // readout.
-              const labelText = hasTyped
-                ? typedValid
-                  ? `R ${typedCurveRadiusMm} mm ⏎`
-                  : `R ${typedCurveRadiusMm} mm — too small for this chord`
-                : `R ${Math.round(geom.radiusMm)} · arc ${Math.round(geom.arcLengthMm)}mm`
-              const labelFill = hasTyped
-                ? typedValid
-                  ? '#3B82F6'
-                  : '#dc2626'
-                : '#6d28d9'
               return (
                 <>
                   <Line
@@ -3204,11 +3159,11 @@ function WallDrawingLayerInner({
                     lineJoin="round"
                   />
                   <Text
-                    x={mmToPx(curveCursorMm.x) + 10}
-                    y={mmToPx(curveCursorMm.y) - 22}
-                    text={labelText}
+                    x={mmToPx(B.x) + 10}
+                    y={mmToPx(B.y) - 22}
+                    text={`R ${Math.round(geom.radiusMm)} · arc ${Math.round(geom.arcLengthMm)}mm`}
                     fontSize={13}
-                    fill={labelFill}
+                    fill="#6d28d9"
                     fontStyle="bold"
                   />
                 </>

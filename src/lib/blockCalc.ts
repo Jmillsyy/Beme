@@ -1692,6 +1692,36 @@ export function planWallLayout(
     // and wallThickness are all computed earlier in this iteration so
     // the per-course re-fit above can account for the cube-shift. We
     // just consume them here for the actual emit.
+    // ── Short-wall overlap guard ───────────────────────────────────
+    //
+    // When a wall is too short for start_end + mortar + end_end at
+    // their natural face widths, the two blocks physically overlap
+    // (e.g. a yellow corner block morphs into the purple half block
+    // at the free end). Always cut the LARGER of the two — real
+    // masons keep the smaller / half block at its natural finished
+    // face and chop the corner block down to fit. If both naturals
+    // are equal, default to cutting the START so the END anchor
+    // position is preserved.
+    const naturalStartWidth = ownsStartCorner ? startEndWidth : startCubeDepth
+    const naturalEndWidth = ownsEndCorner ? endEndWidth : endCubeDepth
+    const naturalEndRegionStart = lengthMm - naturalEndWidth
+    const wouldOverlap =
+      naturalStartWidth + MORTAR_MM > naturalEndRegionStart + 0.001
+    let actualStartWidth = naturalStartWidth
+    let actualEndWidth = naturalEndWidth
+    if (wouldOverlap) {
+      if (naturalStartWidth > naturalEndWidth) {
+        // START is larger — cut it, keep END at natural.
+        actualStartWidth = Math.max(0, naturalEndRegionStart - MORTAR_MM)
+      } else if (naturalEndWidth > naturalStartWidth) {
+        // END is larger — cut it, keep START at natural.
+        actualEndWidth = Math.max(0, lengthMm - naturalStartWidth - MORTAR_MM)
+      } else {
+        // Equal — default to cutting START (preserves END anchor).
+        actualStartWidth = Math.max(0, naturalEndRegionStart - MORTAR_MM)
+      }
+    }
+
     if (ownsStartCorner) {
       layout.blocks.push({
         code: startBlock,
@@ -1700,10 +1730,10 @@ export function planWallLayout(
             ? 'corner'
             : 'end-half',
         s0Mm: s,
-        widthMm: startEndWidth,
+        widthMm: actualStartWidth,
         courseIdx: i,
       })
-      s += startEndWidth + MORTAR_MM
+      s += actualStartWidth + MORTAR_MM
     } else {
       // Skipped — body grid starts at the cube boundary, not cornerW.
       // We still emit a render-only "cube filler" at s∈[0, cubeDepth]
@@ -1718,11 +1748,11 @@ export function planWallLayout(
         code: startBlock,
         role: 'corner',
         s0Mm: 0,
-        widthMm: startCubeDepth,
+        widthMm: actualStartWidth,
         courseIdx: i,
         renderOnly: true,
       })
-      s += startCubeDepth + MORTAR_MM
+      s += actualStartWidth + MORTAR_MM
     }
 
     // Start lead-ins.
@@ -1738,15 +1768,11 @@ export function planWallLayout(
     }
 
     // Pre-compute the end-side anchor BEFORE body emission so the
-    // body/fraction/lead-in loop can respect it. Anchoring the end
-    // block at its natural position (lengthMm - endEndWidth) and
-    // letting the body absorb any cut is the construction-correct
-    // behaviour — masons cut a body block to fit, never the end
-    // termination. ownsEndCorner / endCubeDepth come from the early
-    // computation block above.
-    const endRegionStart = ownsEndCorner
-      ? lengthMm - endEndWidth
-      : lengthMm - endCubeDepth
+    // body/fraction/lead-in loop can respect it. The end region
+    // starts at lengthMm minus the ACTUAL end width (which the
+    // overlap guard above may have reduced when the wall is too
+    // short for both end blocks at natural face widths).
+    const endRegionStart = lengthMm - actualEndWidth
     // The last s-position bodies / fractions / lead-ins are allowed
     // to reach — one mortar joint short of the end region's start,
     // so the gap between the last body and the end block reads as
@@ -1830,18 +1856,18 @@ export function planWallLayout(
     }
 
     if (ownsEndCorner) {
-      // End block emitted at its natural anchor position with its
-      // full library face width — no Math.max(s, …) any more. With
-      // bodies now respecting bodyCap, s should be ≤ endRegionStart
-      // by construction; the end block always fits.
+      // End block at its anchor position. Width uses actualEndWidth
+      // which equals the library face width unless the overlap guard
+      // above shortened it (when END is the corner-junction side on
+      // a too-short wall and START is the free end staying natural).
       layout.blocks.push({
         code: endBlock,
         role:
           BLOCK_LIBRARY[endBlock]?.roles.includes('corner')
             ? 'corner'
             : 'end-half',
-        s0Mm: lengthMm - endEndWidth,
-        widthMm: endEndWidth,
+        s0Mm: lengthMm - actualEndWidth,
+        widthMm: actualEndWidth,
         courseIdx: i,
       })
     } else {
@@ -1852,8 +1878,8 @@ export function planWallLayout(
       layout.blocks.push({
         code: endBlock,
         role: 'corner',
-        s0Mm: lengthMm - endCubeDepth,
-        widthMm: endCubeDepth,
+        s0Mm: lengthMm - actualEndWidth,
+        widthMm: actualEndWidth,
         courseIdx: i,
         renderOnly: true,
       })
@@ -2290,29 +2316,15 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
   const courseCount = Math.round(heightMm / COURSE_MODULE_MM)
   if (courseCount <= 0) return {}
 
-  // Pick body block by radius zone. Curves at moderate radii (cut zone)
-  // inherit the makeup's body block so the curve uses the same material
-  // as the straight walls it extends from — the bricklayer just saws a
-  // few mm off the rear corners. The export's assumption page notes that
-  // cuts are required so the supplier doesn't see "20.48" on a curve and
-  // assume zero modification.
-  const zone = curveZoneForRadius(geom.radiusMm)
-  // Use the wedge block when the curve is tight enough — picked by role so a
-  // US / UK / custom library with a non-SEQ wedge still works. If no wedge
-  // is defined we fall back to the makeup's body block (the tally will be
-  // slightly over but the user is alerted via the curve-zone export note).
-  const wedge = pickCurveWedge()
-  const useWedge = zone === 'wedge' && !!wedge
-  const bodyCode: BlockCode = useWedge && wedge ? wedge.code : makeup.bodyBlockCode
-  // Modular face width comes from the actual block dimensions + mortar:
-  // wedge front face (typically 190+10=200mm), or standard body block
-  // (typically 390+10=400mm). For the cut zone the block face stays
-  // full width — only the back is shaved — so still uses the body's
-  // own modular.
+  // Always use the makeup's body block — no radius-based auto-swap to
+  // a wedge. The user picked their blocks in the wall type modal
+  // (including via the Curved kind picker) and expects to see THOSE
+  // blocks in the schedule. At tight radii the bricklayer cuts the
+  // rear corners of each block to fit; the export's curve-assumption
+  // note still calls this out. Region-agnostic by default.
+  const bodyCode: BlockCode = makeup.bodyBlockCode
   const bodyBlock = BLOCK_LIBRARY[bodyCode]
-  const bodyModularMm = useWedge && wedge
-    ? wedge.dimensions.widthMm + MORTAR_MM
-    : (bodyBlock?.dimensions.widthMm ?? 390) + MORTAR_MM
+  const bodyModularMm = (bodyBlock?.dimensions.widthMm ?? 390) + MORTAR_MM
 
   // Body blocks per course along the arc — ceil, leaves a touch of overshoot for safety.
   const blocksPerCourse = Math.max(1, Math.ceil(geom.arcLengthMm / bodyModularMm))

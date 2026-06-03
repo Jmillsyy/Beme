@@ -94,6 +94,71 @@ function formatRef(n: number): string {
   return n >= 100000 ? `${n}` : n.toString().padStart(6, '0')
 }
 
+/**
+ * Cheap roll-up of a project's wall count and total run-length in
+ * metres. Used by the dashboard cards to give each tile a glanceable
+ * "size" beyond name + date — a 200-block apartment job should look
+ * meaningfully different from a 12-block fence quote even before the
+ * user opens it. Computed off `wallsByPage` (whatever's saved on the
+ * project) without touching the calc engine.
+ */
+function projectMetrics(project: {
+  wallsByPage?: Record<number, Array<{
+    startX: number
+    startY: number
+    endX: number
+    endY: number
+  }>>
+}): { wallCount: number; runMetres: number } {
+  let wallCount = 0
+  let totalMm = 0
+  const pages = project.wallsByPage ?? {}
+  for (const walls of Object.values(pages)) {
+    for (const w of walls) {
+      wallCount++
+      const dx = w.endX - w.startX
+      const dy = w.endY - w.startY
+      totalMm += Math.sqrt(dx * dx + dy * dy)
+    }
+  }
+  return { wallCount, runMetres: totalMm / 1000 }
+}
+
+/**
+ * Trade → Tailwind class for the thin colour stripe down the left
+ * edge of a project card. Mirrors the TradeBadges palette so the
+ * stripe and the badge read as the same encoding.
+ */
+function tradeStripeClass(trades: ('block' | 'brick')[]): string {
+  const isBoth = trades.includes('block') && trades.includes('brick')
+  if (isBoth) return 'bg-gradient-to-b from-beme-500 to-amber-400'
+  const t = trades[0] ?? 'block'
+  return t === 'brick' ? 'bg-amber-400' : 'bg-beme-500'
+}
+
+/**
+ * Compact owner-initial pip — round avatar with the user's display
+ * name initials. Falls back to a single hyphen when no owner is
+ * resolvable so the column alignment stays consistent.
+ */
+function OwnerPip({ name }: { name: string | null }) {
+  const initials = (name ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((s) => s[0])
+    .join('')
+    .toUpperCase()
+  return (
+    <span
+      className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-ink-700 border border-ink-500 text-[9px] font-semibold text-ink-200"
+      title={name ? `Owner: ${name}` : 'Unowned'}
+    >
+      {initials || '–'}
+    </span>
+  )
+}
+
 function formatRelative(iso: string): string {
   const date = new Date(iso)
   const now = new Date()
@@ -676,7 +741,15 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         p.completedAt &&
         new Date(p.completedAt).getTime() >= weekAgo
     ).length
-    return { inProgress, completedThisWeek }
+    // "Stale" — in-progress projects that haven't been touched in 5+
+    // days. Surfaces work that's drifting before it slips entirely.
+    const staleCutoff = Date.now() - 5 * 24 * 60 * 60 * 1000
+    const stale = projects.filter(
+      (p) =>
+        p.status === 'in-progress' &&
+        new Date(p.updatedAt).getTime() < staleCutoff
+    ).length
+    return { inProgress, completedThisWeek, stale }
   }, [projects])
 
   // Split the in-progress projects into 'mine' (above) and 'team' (below) so
@@ -759,17 +832,28 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         />
       </div>
 
-      {/* ── Stats row + New-estimate CTA ──
-          Two read-only stat tiles followed by the primary "+ New
-          estimate" CTA tile sitting flush with them. Lives here
-          instead of in the right rail so create-action is one
-          natural eye-sweep from the dashboard headline. */}
-      <section className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* ── Stats strip + New-estimate CTA ──
+          Three read-only stat tiles followed by the primary "+ New
+          estimate" CTA tile sitting flush with them. "Stale" surfaces
+          in-progress work that's drifted past 5 days, so the user
+          spots stalled jobs at a glance instead of having to scan the
+          list dates. Stacks to 2-up on small screens. */}
+      <section className="mt-6 grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <StatTile label="In progress" value={stats.inProgress} accent="beme" />
         <StatTile
           label="Completed this week"
           value={stats.completedThisWeek}
           accent="emerald"
+        />
+        <StatTile
+          label="Stale &gt; 5 days"
+          value={stats.stale}
+          accent="amber"
+          sub={
+            stats.stale > 0
+              ? `Last touch over 5 days ago`
+              : `All active work is fresh`
+          }
         />
         <NewEstimateTile />
       </section>
@@ -1029,43 +1113,65 @@ function ProjectInProgressRow({
     (ownerId ? 'a teammate' : null)
   const isMyProject = ownerId && currentUserId && ownerId === currentUserId
 
+  const trades = tradesOf(project)
+  const metrics = projectMetrics(project)
+  const sizeLine =
+    metrics.wallCount > 0
+      ? `${metrics.wallCount} wall${metrics.wallCount === 1 ? '' : 's'} · ${metrics.runMetres.toFixed(1)} m run`
+      : 'No walls drawn yet'
+
   return (
     <li>
       <Link
         to={href}
-        className="block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 min-h-[124px] hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors"
+        className="relative block border border-ink-600 rounded-lg bg-ink-800 pl-5 pr-4 py-3 min-h-[124px] hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors overflow-hidden"
       >
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-ink-50 truncate">
-                {name}
+        {/* Trade-coloured stripe down the left edge. Block = brand
+            orange, brick = amber, mixed = vertical gradient between
+            the two. Lets the eye scan a column and pick out trade at
+            a glance without parsing the badge text. */}
+        <span
+          aria-hidden="true"
+          className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
+        />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-ink-50 truncate">
+              {name}
+            </span>
+            {typeof project.referenceNumber === 'number' && (
+              <span
+                className="text-[11px] tabular-nums font-semibold text-beme-500"
+                title="Reference number — quote this when looking the project up."
+              >
+                #{formatRef(project.referenceNumber)}
               </span>
-              {typeof project.referenceNumber === 'number' && (
-                <span
-                  className="text-[11px] tabular-nums font-semibold text-beme-500"
-                  title="Reference number — quote this when looking the project up."
-                >
-                  #{formatRef(project.referenceNumber)}
-                </span>
-              )}
-              <TradeBadges trades={tradesOf(project)} />
-              {ownerName && !isMyProject && (
-                <span className="text-[11px] text-ink-400">
-                  by <span className="text-ink-300">{ownerName}</span>
-                </span>
-              )}
-            </div>
-            {/* Subtitle slot always rendered so rows of varying content
-                (with/without an address line) keep an identical height.
-                Empty when not present — gives the next line a stable
-                Y position to slot into. */}
-            <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
-              {subtitle || ' '}
-            </div>
-            <div className="text-xs text-ink-400 mt-1">
+            )}
+            <TradeBadges trades={trades} />
+          </div>
+          {/* Subtitle slot always rendered so rows of varying content
+              (with/without an address line) keep an identical height.
+              Empty when not present — gives the next line a stable
+              Y position to slot into. */}
+          <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
+            {subtitle || ' '}
+          </div>
+          {/* Size line. Gives the row weight beyond the name.
+              Tabular-nums so a 1-wall card vs a 12-wall card don't
+              shimmy column alignment. */}
+          <div className="text-xs text-ink-300/80 mt-1 tabular-nums">
+            {sizeLine}
+          </div>
+          {/* Footer row. Updated-relative on the left, owner pip on
+              the right (only when not the current user — owners of
+              their own projects already see their column header). */}
+          <div className="flex items-center justify-between gap-2 mt-1">
+            <div className="text-xs text-ink-400">
               Updated {formatRelative(project.updatedAt)}
             </div>
+            {ownerName && !isMyProject && (
+              <OwnerPip name={ownerName} />
+            )}
           </div>
         </div>
       </Link>
@@ -1092,50 +1198,64 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
   const sub = project.projectDetails.siteAddress.trim()
   const href = projectUrl(project)
 
+  const trades = tradesOf(project)
+  const metrics = projectMetrics(project)
+  const sizeLine =
+    metrics.wallCount > 0
+      ? `${metrics.wallCount} wall${metrics.wallCount === 1 ? '' : 's'} · ${metrics.runMetres.toFixed(1)} m run`
+      : 'No walls drawn'
   return (
     // Mirrors ProjectInProgressRow's layout 1:1 so all three columns
-    // read as a single grid of identically-shaped pods. Only the
-    // semantic touches differ:
-    //   - hover ring goes emerald (positive / done) instead of beme
-    //   - the inline "by {owner}" slot is replaced by a small
-    //     "✓ {turnaround}" emerald chip so turnaround stays visible
-    //     without an extra row of chrome
-    //   - bottom line says "Completed Xm ago" rather than "Updated"
+    // read as a single grid of identically-shaped pods of the same
+    // height. Same rows in the same order: title + size line + footer,
+    // with the trade-colour stripe matching across columns.
     <Link
       to={href}
-      className="block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 min-h-[124px] hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors"
+      className="relative block border border-ink-600 rounded-lg bg-ink-800 pl-5 pr-4 py-3 min-h-[124px] hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors overflow-hidden"
     >
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-ink-50 truncate">
-              {title}
-            </span>
-            {typeof project.referenceNumber === 'number' && (
-              <span
-                className="text-[11px] tabular-nums font-semibold text-beme-500"
-                title="Reference number — quote this when looking the project up."
-              >
-                #{formatRef(project.referenceNumber)}
-              </span>
-            )}
-            <TradeBadges trades={tradesOf(project)} />
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
+      />
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold text-ink-50 truncate">
+            {title}
+          </span>
+          {typeof project.referenceNumber === 'number' && (
             <span
-              className="text-[11px] text-emerald-400 tabular-nums"
-              title={`Turnaround: ${turnaroundLabel}`}
+              className="text-[11px] tabular-nums font-semibold text-beme-500"
+              title="Reference number — quote this when looking the project up."
             >
-              ✓ {turnaroundLabel}
+              #{formatRef(project.referenceNumber)}
             </span>
-          </div>
-          {/* Subtitle slot always rendered so rows of varying content
-              (with/without a site-address line) keep an identical
-              vertical footprint. */}
-          <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
-            {sub && sub !== title ? sub : ' '}
-          </div>
-          <div className="text-xs text-ink-400 mt-1">
+          )}
+          <TradeBadges trades={trades} />
+        </div>
+        {/* Subtitle slot always rendered so rows of varying content
+            (with/without a site-address line) keep an identical
+            vertical footprint. */}
+        <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
+          {sub && sub !== title ? sub : ' '}
+        </div>
+        {/* Size line — same line the in-progress sibling shows. */}
+        <div className="text-xs text-ink-300/80 mt-1 tabular-nums">
+          {sizeLine}
+        </div>
+        {/* Footer row: completed-relative on the left, turnaround
+            chip on the right — same shape as the in-progress card's
+            "Updated · owner pip" footer so all three columns end on
+            the same row. */}
+        <div className="flex items-center justify-between gap-2 mt-1">
+          <div className="text-xs text-ink-400">
             Completed {formatRelative(completedIso)}
           </div>
+          <span
+            className="text-[11px] text-emerald-400 tabular-nums"
+            title={`Turnaround: ${turnaroundLabel}`}
+          >
+            ✓ {turnaroundLabel}
+          </span>
         </div>
       </div>
     </Link>

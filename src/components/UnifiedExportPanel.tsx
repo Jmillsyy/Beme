@@ -763,6 +763,12 @@ function ExportEstimateModal({
       blockSchedule: sections.schedules,
       wallTypeBreakdown: sections.schedules,
       measurements: sections.measurements,
+      // 3D snapshots are gated by the user managing their own queue
+      // in the 3D viewport (Capture button + Snapshots panel) — flag
+      // is always on here so any queued snapshots land in the PDF.
+      // If the queue is empty `view3dImages` is `[]` and the export
+      // skips the pages anyway.
+      view3d: true,
       disclaimer: sections.disclaimer,
     }
   }
@@ -772,6 +778,10 @@ function ExportEstimateModal({
       wallLayout: sections.wallLayout,
       measurements: sections.measurements,
       brickAreaSummary: sections.schedules,
+      // 3D snapshots gated by the user's queue in the 3D viewport.
+      // Flag is always on here — queue empty → snapshot pages just
+      // don't appear in the PDF.
+      view3d: true,
       disclaimer: sections.disclaimer,
     }
   }
@@ -805,6 +815,55 @@ function ExportEstimateModal({
         business: business(),
         pdfFile: pdfFile ?? undefined,
       }
+      // Read the 3D view snapshot queue (saved to localStorage by
+      // the ▣ Capture button as a JSON array of {id, dataUrl,
+      // createdAt, legend}). Shared across all three export modes
+      // (block, brick, combined) so the snapshot pages appear in
+      // whichever PDF the user is generating.
+      let view3dSnapshots: Array<{
+        dataUrl: string
+        legend: Array<{ code: string; label: string; color: string }>
+      }> = []
+      try {
+        const saved = window.localStorage.getItem(
+          'beme:3d-export-snapshots'
+        )
+        if (saved) {
+          const parsed = JSON.parse(saved) as Array<{
+            dataUrl?: string
+            legend?: Array<{ code?: string; label?: string; color?: string }>
+          }>
+          if (Array.isArray(parsed)) {
+            view3dSnapshots = parsed
+              .filter(
+                (s) =>
+                  s &&
+                  typeof s.dataUrl === 'string' &&
+                  s.dataUrl.startsWith('data:image/')
+              )
+              .map((s) => ({
+                dataUrl: s.dataUrl as string,
+                legend: Array.isArray(s.legend)
+                  ? s.legend
+                      .filter(
+                        (i) =>
+                          i &&
+                          typeof i.code === 'string' &&
+                          typeof i.label === 'string' &&
+                          typeof i.color === 'string'
+                      )
+                      .map((i) => ({
+                        code: i.code as string,
+                        label: i.label as string,
+                        color: i.color as string,
+                      }))
+                  : [],
+              }))
+          }
+        }
+      } catch {
+        // localStorage / JSON parse failures fall back to no snapshots
+      }
       if (exportMode === 'combined') {
         await exportCombinedEstimate({
           ...shared,
@@ -823,30 +882,35 @@ function ExportEstimateModal({
           brickSettings,
           brickPagesInfo,
           brickAdjustments,
+          view3dSnapshots,
         })
-      } else if (exportMode === 'block') {
-        await exportBlockEstimate({
-          ...shared,
-          inclusions: buildBlockInclusions(),
-          walls: blockWalls,
-          makeups: blockMakeups,
-          openings: blockOpenings,
-          piers: includedPiers,
-          pierMakeups,
-          pagesInfo: blockPagesInfo,
-          blockAdjustments,
-        })
-      } else {
-        await exportBrickEstimate({
-          ...shared,
-          inclusions: buildBrickInclusions(),
-          walls: brickWalls,
-          openings: brickOpenings,
-          settings: brickSettings,
-          makeups: brickMakeups,
-          pagesInfo: brickPagesInfo,
-          brickAdjustments,
-        })
+      } else if (exportMode === 'block' || exportMode === 'brick') {
+        if (exportMode === 'block') {
+          await exportBlockEstimate({
+            ...shared,
+            inclusions: buildBlockInclusions(),
+            walls: blockWalls,
+            makeups: blockMakeups,
+            openings: blockOpenings,
+            piers: includedPiers,
+            pierMakeups,
+            pagesInfo: blockPagesInfo,
+            blockAdjustments,
+            view3dSnapshots,
+          })
+        } else {
+          await exportBrickEstimate({
+            ...shared,
+            inclusions: buildBrickInclusions(),
+            walls: brickWalls,
+            openings: brickOpenings,
+            settings: brickSettings,
+            makeups: brickMakeups,
+            pagesInfo: brickPagesInfo,
+            brickAdjustments,
+            view3dSnapshots,
+          })
+        }
       }
       toast.dismiss(progressId)
       toast.success('Estimate exported')

@@ -2801,6 +2801,53 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   ) {
     if (mode !== 'block') return // Brick mode doesn't support curves yet
 
+    // Use the user's active wall type as-is when it's a normal
+    // (user-configured) makeup — no `curveRadiusMm` means the user
+    // built it through the wall type modal, including the Curved
+    // path that drops them into curve-draw against the new type.
+    // Bypass the auto-create-a-curve-makeup branch in that case so
+    // the drawn curve carries the exact composition the user picked
+    // (blocks, bond, height, etc.). The calc engine still adapts the
+    // chosen blocks to the curve geometry on render / tally.
+    const userActiveMakeup = makeupsById[activeMakeupId]
+    if (userActiveMakeup && typeof userActiveMakeup.curveRadiusMm !== 'number') {
+      const newWallId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `wall-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const targetAreaId =
+        userActiveMakeup.areaId ??
+        activeAreaId ??
+        (areas.length > 0 ? areas[0].id : undefined)
+      const curvedWall: Wall = {
+        id: newWallId,
+        trade: 'block',
+        ...(targetAreaId ? { areaId: targetAreaId } : {}),
+        makeupId: userActiveMakeup.id,
+        startX: startMm.x,
+        startY: startMm.y,
+        endX: endMm.x,
+        endY: endMm.y,
+        kind: 'curved',
+        midX: midMm.x,
+        midY: midMm.y,
+        startJunction: { type: 'free' },
+        endJunction: { type: 'free' },
+      }
+      const existing = wallsByPage[currentPage] ?? []
+      const newWalls = [...existing, curvedWall]
+      const thicknesses = computeWallThicknessByWallId(
+        newWalls,
+        makeupsById,
+        mode,
+        brickSettings.brickTypeCode
+      )
+      const recomputed = recomputeAllJunctions(newWalls, thicknesses)
+      setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
+      setDrawingCurveMode(false)
+      return
+    }
+
     // Pick a body block based on the curve's radius so the user doesn't have
     // to think about it: tight radii get the wedge (20.03CW), mid radii get
     // standard body with a cut allowance noted in assumptions, large radii
@@ -4160,14 +4207,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const k = e.key.toLowerCase()
       if (k === 'w') {
         if (!currentScale || calibrating) return
+        let activeMakeupForW: WallMakeup | undefined
         if (mode === 'block') {
-          const activeMakeup = makeupsById[activeMakeupId]
-          if (!activeMakeup) return
+          activeMakeupForW = makeupsById[activeMakeupId]
+          if (!activeMakeupForW) return
         }
         e.preventDefault()
-        const next = !drawingMode
-        clearOtherModes()
-        setDrawingMode(next)
+        // Route to curve-draw when the active makeup is configured
+        // for curves (kind: 'curved' or legacy curveRadiusMm set);
+        // otherwise straight wall draw. Mirrors the toolbar button.
+        const isCurveType =
+          !!activeMakeupForW &&
+          (activeMakeupForW.kind === 'curved' ||
+            typeof activeMakeupForW.curveRadiusMm === 'number')
+        if (isCurveType) {
+          const next = !drawingCurveMode
+          clearOtherModes()
+          setDrawingCurveMode(next)
+        } else {
+          const next = !drawingMode
+          clearOtherModes()
+          setDrawingMode(next)
+        }
       } else if (k === 'o') {
         if (!currentScale || calibrating || currentPageWalls.length === 0) return
         e.preventDefault()
@@ -6401,13 +6462,29 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   setPlacingFreestandingPier((v) => !v)
                   setPlacingTiedPier(false)
                   setDrawingMode(false)
+                  setDrawingCurveMode(false)
                 } else {
-                  setDrawingMode((v) => !v)
+                  // Route to curve-draw when the active wall type is
+                  // configured for curves (kind === 'curved' or has
+                  // a legacy curveRadiusMm); otherwise straight-draw.
+                  // Same button, the active type's kind decides which
+                  // draw mode toggles on.
+                  const m = makeupsById[activeMakeupId]
+                  const isCurveType =
+                    !!m &&
+                    (m.kind === 'curved' ||
+                      typeof m.curveRadiusMm === 'number')
+                  if (isCurveType) {
+                    setDrawingCurveMode((v) => !v)
+                    setDrawingMode(false)
+                  } else {
+                    setDrawingMode((v) => !v)
+                    setDrawingCurveMode(false)
+                  }
                   setPlacingFreestandingPier(false)
                   setPlacingTiedPier(false)
                 }
                 setPlacingOpening(false)
-                setDrawingCurveMode(false)
                 setPlacingControlJoint(false)
                 setSelectedWallId(null)
                 setSelectedOpeningId(null)
@@ -7650,10 +7727,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onDeselectPier={() => setSelectedPierId(null)}
             // Curved-wall trigger lives in the editor modal's TYPE
             // picker. Only wire in block mode (brick has no curves).
+            // Sets curve-draw mode ON unconditionally (was a toggle
+            // — but the only caller is the modal's Save handler post-
+            // configure, where the user has explicitly picked Curved
+            // and expects to land in curve-draw mode every time, not
+            // be flipped back off if curve mode happened to be on
+            // already).
             onToggleCurvedWall={
               mode === 'block'
                 ? () => {
-                    setDrawingCurveMode((v) => !v)
+                    setDrawingCurveMode(true)
                     setDrawingMode(false)
                     setPlacingOpening(false)
                     setPlacingControlJoint(false)
