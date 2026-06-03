@@ -207,6 +207,12 @@ export default function HomePage() {
  * scrolls. Stacks under the main content on smaller viewports.
  */
 function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
+  // isOrgUser is no longer branched on inside this sidebar (the
+  // org-only Start-a-new-estimate card moved to the dashboard's
+  // stats row), but the prop is kept on the signature so the call
+  // site doesn't need to change and so future org-gated rail content
+  // doesn't have to re-thread it.
+  void isOrgUser
   // Library health nudge. Mirrors the LibraryHealthBanner that already
   // surfaces on /library, but as a compact badge on the dashboard sidebar
   // card so the user is alerted to issues without having to navigate
@@ -236,47 +242,11 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
 
   return (
     <aside className="w-full lg:w-[260px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
-      {/* Start a new estimate — ORG ONLY. The body of the org dashboard is
-          reserved for team activity (pending requests, In-progress
-          projects, recently completed), so the estimate-start actions
-          go into the rail to keep the team feed clean. Sits ABOVE the
-          Material library so it's the first thing the user's eye lands
-          on. PersonalDashboard already gives these the prominent hero
-          card treatment in its body, so showing the same shortcut in
-          the rail there would just duplicate the affordance.
-
-          Two actions live in this card now: "+ New estimate" (the
-          primary, beme-orange) for the estimator picking up their
-          own job, and "+ New request for a teammate" (muted) for the
-          sales / project-management case where the user is queuing a
-          job for someone else to estimate. Grouping both under one
-          "Start a new estimate" header reads more cleanly than
-          having the request-for-teammate action sitting under the
-          Material library card. */}
-      {isOrgUser && (
-        <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3 space-y-2">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-1">
-            Start a new estimate
-          </div>
-          {/* Opens the workspace in block mode by default; user can
-              switch to brick (or work on both) via the trade chip group
-              at the top of the right rail. Sharing a project with a
-              teammate is now just a reference-number paste-and-look-up
-              — no separate request flow. */}
-          <Link
-            to="/project/block"
-            className="block px-3 py-2.5 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group"
-            title="Start a new masonry estimate — block, brick, or both"
-          >
-            <div className="font-bold text-sm text-beme-400 group-hover:text-beme-300">
-              + New estimate
-            </div>
-            <div className="text-[11px] text-ink-400 group-hover:text-ink-300 mt-0.5">
-              Block, brick, or both — switch trades inside
-            </div>
-          </Link>
-        </div>
-      )}
+      {/* "+ New estimate" used to live up here as the rail's first
+          card. It's been promoted to a tile in the dashboard's stats
+          row so the create action sits flush with the In progress /
+          Completed-this-week numbers — one eye-sweep across the top
+          of the page. The rail now leads with Material library. */}
 
       {/* Material library — the next-most-frequent destination from the
           dashboard (users tune blocks, bricks, and supply items between
@@ -294,10 +264,10 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
         <Link
           to="/library"
           title={healthSummary?.tooltip}
-          className="px-3 py-3 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500/60 hover:bg-ink-800 transition-colors group flex items-center gap-3"
+          className="px-3 py-3 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group flex items-center gap-3"
         >
           <span
-            className="inline-block w-1 h-10 rounded-full bg-beme-500/80 flex-shrink-0"
+            className="inline-block w-1 h-10 rounded-full bg-beme-500 flex-shrink-0"
             aria-hidden
           />
           <div className="flex-1 text-left min-w-0">
@@ -327,7 +297,7 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
               Blocks, bricks, supply items
             </div>
           </div>
-          <span className="text-ink-400 group-hover:text-beme-300 transition-colors">→</span>
+          <span className="text-ink-400 group-hover:text-beme-500 transition-colors">→</span>
         </Link>
       </div>
 
@@ -431,7 +401,7 @@ function FindByReferenceCard() {
           onChange={(e) => setValue(e.target.value)}
           inputMode="numeric"
           placeholder="100123"
-          className="flex-1 min-w-0 px-2 py-1.5 rounded-r-md border border-ink-600 bg-ink-900 text-ink-50 text-sm tabular-nums focus:outline-none focus:border-beme-400"
+          className="flex-1 min-w-0 px-2 py-1.5 rounded-r-md border border-ink-600 bg-ink-900 text-ink-50 text-sm tabular-nums focus:outline-none focus:border-beme-500"
         />
         <button
           type="submit"
@@ -474,7 +444,7 @@ function ActiveTemplateCard() {
         </h3>
         <Link
           to="/library"
-          className="text-[11px] text-beme-400 hover:text-beme-300 hover:underline"
+          className="text-[11px] text-beme-500 hover:text-beme-400 hover:underline"
           title="Switch template in the Material library"
         >
           Switch
@@ -534,7 +504,7 @@ function TipCard() {
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-300">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-500">
           Tip
         </span>
         <span className="text-[11px] text-ink-400 truncate">· {tip.title}</span>
@@ -563,12 +533,12 @@ function SidebarLink({
       className="flex items-start gap-3 px-4 py-2.5 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
     >
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-ink-100 group-hover:text-beme-300 transition-colors">
+        <div className="text-sm font-medium text-ink-100 group-hover:text-beme-500 transition-colors">
           {title}
         </div>
         <div className="text-xs text-ink-400 mt-0.5">{desc}</div>
       </div>
-      <span className="text-ink-500 group-hover:text-beme-300 transition-colors">→</span>
+      <span className="text-ink-500 group-hover:text-beme-500 transition-colors">→</span>
     </Link>
   )
 }
@@ -736,7 +706,9 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
   }, [projects, userId])
 
-  // Team-wide "shipped in the last 7 days" feed — projects only.
+  // Team-wide "shipped in the last 7 days" feed — projects only. NOT
+  // sliced here; the CompletedColumn slices to its own slotCount so
+  // it can compute overflow and surface a "View all N →" link.
   const recentlyCompleted = useMemo(() => {
     const weekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000
     const withinPastWeek = (iso: string | undefined) => {
@@ -754,7 +726,6 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           new Date(b.completedAt ?? b.updatedAt).getTime() -
           new Date(a.completedAt ?? a.updatedAt).getTime()
       )
-      .slice(0, 5)
   }, [projects])
 
   // Look up the current user in the org's member list to surface a real
@@ -788,133 +759,77 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         />
       </div>
 
-      {/* ── Stats row ── */}
-      <section className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {/* ── Stats row + New-estimate CTA ──
+          Two read-only stat tiles followed by the primary "+ New
+          estimate" CTA tile sitting flush with them. Lives here
+          instead of in the right rail so create-action is one
+          natural eye-sweep from the dashboard headline. */}
+      <section className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
         <StatTile label="In progress" value={stats.inProgress} accent="beme" />
         <StatTile
           label="Completed this week"
           value={stats.completedThisWeek}
           accent="emerald"
         />
+        <NewEstimateTile />
       </section>
 
       {/* ── Your projects ──
-          The current user's own active projects — anything they started or
-          got allocated. Sits above the team's in-progress list so a user's
-          first glance at the dashboard is their own work. Same 5-cap +
-          View all affordance as the other lists. */}
-      {myProjects.length > 0 && (
-        <section className="mt-8">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-              <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
-              Your projects
-            </h3>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-ink-400">
-                {myProjects.length}{' '}
-                {myProjects.length === 1 ? 'project' : 'projects'} on the go
-              </span>
-              {myProjects.length > 5 && (
-                <Link
-                  to={`/projects?status=in-progress${userId ? `&owner=${userId}` : ''}`}
-                  className="text-xs text-beme-300 hover:text-beme-200"
-                >
-                  View all →
-                </Link>
-              )}
-            </div>
-          </div>
-          <ul className="space-y-2">
-            {myProjects.slice(0, 5).map((p) => (
-              <ProjectInProgressRow
-                key={p.id}
-                project={p}
-                members={members}
-                currentUserId={userId}
-              />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* ── Your team's projects ──
-          Active projects owned by other org members — the 'by Sarah'
-          label calls out whose each one is so the user can spot who's
-          working on what at a glance. */}
-      {teamProjects.length > 0 && (
-        <section className="mt-8">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-              <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
-              Your team's projects
-            </h3>
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-ink-400">
-                {teamProjects.length}{' '}
-                {teamProjects.length === 1 ? 'project' : 'projects'} on the go
-              </span>
-              {teamProjects.length > 5 && (
-                <Link
-                  to="/projects?status=in-progress"
-                  className="text-xs text-beme-300 hover:text-beme-200"
-                >
-                  View all →
-                </Link>
-              )}
-            </div>
-          </div>
-          <ul className="space-y-2">
-            {teamProjects.slice(0, 5).map((p) => (
-              <ProjectInProgressRow
-                key={p.id}
-                project={p}
-                members={members}
-                currentUserId={userId}
-              />
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* ── Recently completed (team, past 7 days) ──
-          Team-wide scope: every project the org has shipped in the last
-          week. Older completed work lives behind the View all link on
-          the /projects page. */}
-      <section className="mt-8">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-            <span className="inline-block w-1 h-1 rounded-full bg-beme-500/80" aria-hidden="true" />
-            Team — recently completed
-          </h3>
-          <Link
-            to="/projects?status=completed"
-            className="text-xs text-beme-300 hover:text-beme-200"
-          >
-            View all →
-          </Link>
-        </div>
-        {recentlyCompleted.length === 0 ? (
-          <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 p-6 text-center">
-            <div className="text-sm text-ink-300">
-              Nothing finished by the team this week
-            </div>
-            <p className="text-xs text-ink-500 mt-1 max-w-md mx-auto">
-              Completed projects from the past 7 days show up here. Older
-              work is one click away under View all.
-            </p>
-          </div>
-        ) : (
-          // Auto-fit + 1fr: cards stretch to fill the row evenly no matter
-          // how many there are. 1 card spans the full row, 2 split 50/50,
-          // 3 split 33/33/33, 4+ wrap to a new row at the min width.
-          <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
-            {recentlyCompleted.map((p) => (
-              <CompletedProjectCard key={`proj-${p.id}`} project={p} />
-            ))}
-          </div>
-        )}
-      </section>
+          Two side-by-side columns: the user's own active projects on
+          the left, the rest of the team's on the right. Capped at 4 each
+          so the row stays a clean glance — a "View all →" link surfaces
+          below the column when there's more. Stacks vertically on
+          narrow viewports so the rows don't squash. Hidden entirely
+          when neither column has any work. */}
+      {/* ── Project lists — three columns side by side ──
+          Your projects · Your team's projects · Recently completed.
+          Each column is capped at 3 rows so the entire dashboard
+          (header + stats row + this grid) fits a 13" MacBook Pro
+          viewport. Overflow surfaces via per-column "View all" links.
+          Stacks vertically on narrow viewports. */}
+      {(() => {
+        const COLUMN_CAP = 3
+        const slotCount = Math.min(
+          COLUMN_CAP,
+          Math.max(
+            myProjects.length,
+            teamProjects.length,
+            recentlyCompleted.length,
+            1
+          )
+        )
+        return (
+          <section className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-x-6 gap-y-8 items-start">
+            <ProjectsColumn
+              title="Your projects"
+              projects={myProjects}
+              viewAllHref={`/projects?status=in-progress${
+                userId ? `&owner=${userId}` : ''
+              }`}
+              members={members}
+              currentUserId={userId}
+              slotCount={slotCount}
+              emptyCopy="No personal projects on the go — kick one off above."
+            />
+            <ProjectsColumn
+              title="Your team's projects"
+              projects={teamProjects}
+              viewAllHref="/projects?status=in-progress"
+              members={members}
+              currentUserId={userId}
+              slotCount={slotCount}
+              emptyCopy="Quiet over here — your team's caught up."
+            />
+            <CompletedColumn
+              title="Recently completed"
+              projects={recentlyCompleted}
+              viewAllHref="/projects?status=completed"
+              slotCount={slotCount}
+              emptyCopy="Nothing finished by the team this week."
+            />
+          </section>
+        )
+      })()}
 
       {/* Material library and Beme guide tiles have been promoted to the
           dashboard sidebar (right rail). They were big banner cards down
@@ -926,17 +841,161 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
 
 
 /**
- * Compact card for the Recently Completed 3-up grid. Surfaces the three
- * things a teammate actually wants from this view: the customer's name,
- * who closed it out, and how long it took (turnaround). Click-through
- * lands on the request detail page so the project can be reopened from
- * there if needed.
+ * One column inside the side-by-side "Your projects" / "Your team's
+ * projects" dashboard grid. Renders a section header, the project
+ * count chip, up to `slotCount` rows, and a "View all →" link below
+ * when there are more projects than visible slots.
+ *
+ * `slotCount` is computed by the caller off the busier column so both
+ * sides render the same number of slots — empty slots become dashed-
+ * border placeholders so the grid stays visually balanced even when
+ * one side is much quieter than the other. When the column has no
+ * projects at all, the first placeholder carries an `emptyCopy`
+ * message instead of being a silent dash.
  */
+function ProjectsColumn({
+  title,
+  projects,
+  viewAllHref,
+  members,
+  currentUserId,
+  slotCount,
+  emptyCopy,
+}: {
+  title: string
+  projects: SavedProject[]
+  viewAllHref: string
+  members: OrgMember[]
+  currentUserId: string | null
+  slotCount: number
+  emptyCopy: string
+}) {
+  const visible = projects.slice(0, slotCount)
+  const fillerCount = Math.max(0, slotCount - visible.length)
+  const overflow = projects.length - visible.length
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 gap-3">
+        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" aria-hidden="true" />
+          {title}
+        </h3>
+        <span className="text-xs text-ink-400 whitespace-nowrap">
+          {projects.length}{' '}
+          {projects.length === 1 ? 'project' : 'projects'} on the go
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {visible.map((p) => (
+          <ProjectInProgressRow
+            key={p.id}
+            project={p}
+            members={members}
+            currentUserId={currentUserId}
+          />
+        ))}
+        {Array.from({ length: fillerCount }).map((_, i) => (
+          <li key={`filler-${i}`}>
+            {/* Dashed placeholder slot. Matches ProjectInProgressRow's
+                outer shape + min-height so both columns line up cell
+                for cell. First filler in an EMPTY column carries the
+                section's copy so the user sees a friendly explanation
+                instead of a silent dash.
+
+                Border + background bumped a notch so the placeholder
+                reads as "an intentional empty slot" rather than
+                vanishing into the page background — was almost
+                invisible at ink-700/60 + ink-800/20. */}
+            <div className="border border-dashed border-ink-500/70 rounded-lg bg-ink-800/60 px-4 py-3 min-h-[124px] flex items-center justify-center text-center">
+              <span className="text-xs text-ink-300">
+                {i === 0 && visible.length === 0 ? emptyCopy : '—'}
+              </span>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {overflow > 0 && (
+        <Link
+          to={viewAllHref}
+          className="mt-2 inline-flex items-center gap-1 text-xs text-beme-500 hover:text-beme-400"
+        >
+          View all {projects.length} →
+        </Link>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Recently-completed column — sister of {@link ProjectsColumn} that
+ * renders {@link CompletedProjectCard} tiles instead of in-progress
+ * rows. Same header + slot-count + filler + View-all flow so all
+ * three dashboard columns read as one unified grid.
+ */
+function CompletedColumn({
+  title,
+  projects,
+  viewAllHref,
+  slotCount,
+  emptyCopy,
+}: {
+  title: string
+  projects: SavedProject[]
+  viewAllHref: string
+  slotCount: number
+  emptyCopy: string
+}) {
+  const visible = projects.slice(0, slotCount)
+  const fillerCount = Math.max(0, slotCount - visible.length)
+  const overflow = projects.length - visible.length
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 gap-3">
+        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" aria-hidden="true" />
+          {title}
+        </h3>
+        <span className="text-xs text-ink-400 whitespace-nowrap">
+          {projects.length}{' '}
+          {projects.length === 1 ? 'project' : 'projects'} this week
+        </span>
+      </div>
+      <ul className="space-y-2">
+        {visible.map((p) => (
+          <li key={p.id}>
+            <CompletedProjectCard project={p} />
+          </li>
+        ))}
+        {Array.from({ length: fillerCount }).map((_, i) => (
+          <li key={`completed-filler-${i}`}>
+            {/* Same dashed-edge placeholder pattern as ProjectsColumn so
+                all three columns line up cell-for-cell when one side
+                is quieter than the rest. */}
+            <div className="border border-dashed border-ink-500/70 rounded-lg bg-ink-800/60 px-4 py-3 min-h-[124px] flex items-center justify-center text-center">
+              <span className="text-xs text-ink-300">
+                {i === 0 && visible.length === 0 ? emptyCopy : '—'}
+              </span>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {overflow > 0 && (
+        <Link
+          to={viewAllHref}
+          className="mt-2 inline-flex items-center gap-1 text-xs text-beme-500 hover:text-beme-400"
+        >
+          View all {projects.length} →
+        </Link>
+      )}
+    </div>
+  )
+}
+
 /**
  * Single row in the 'In-progress projects' dashboard section. Lighter than
- * an estimate-request InboxRow because there's less status to convey — the
- * project's just sitting there waiting to be worked on. Click anywhere on
- * the row to open the workspace; brick / block decides the URL path.
+ * a richer card because there's less status to convey — the project's just
+ * sitting there waiting to be worked on. Click anywhere on the row to open
+ * the workspace; brick / block decides the URL path.
  */
 function ProjectInProgressRow({
   project,
@@ -974,7 +1033,7 @@ function ProjectInProgressRow({
     <li>
       <Link
         to={href}
-        className="block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors"
+        className="block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 min-h-[124px] hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors"
       >
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="min-w-0 flex-1">
@@ -984,7 +1043,7 @@ function ProjectInProgressRow({
               </span>
               {typeof project.referenceNumber === 'number' && (
                 <span
-                  className="text-[11px] tabular-nums font-semibold text-beme-400/80"
+                  className="text-[11px] tabular-nums font-semibold text-beme-500"
                   title="Reference number — quote this when looking the project up."
                 >
                   #{formatRef(project.referenceNumber)}
@@ -997,11 +1056,13 @@ function ProjectInProgressRow({
                 </span>
               )}
             </div>
-            {subtitle && (
-              <div className="text-sm text-ink-300 mt-0.5 truncate">
-                {subtitle}
-              </div>
-            )}
+            {/* Subtitle slot always rendered so rows of varying content
+                (with/without an address line) keep an identical height.
+                Empty when not present — gives the next line a stable
+                Y position to slot into. */}
+            <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
+              {subtitle || ' '}
+            </div>
             <div className="text-xs text-ink-400 mt-1">
               Updated {formatRelative(project.updatedAt)}
             </div>
@@ -1032,41 +1093,50 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
   const href = projectUrl(project)
 
   return (
+    // Mirrors ProjectInProgressRow's layout 1:1 so all three columns
+    // read as a single grid of identically-shaped pods. Only the
+    // semantic touches differ:
+    //   - hover ring goes emerald (positive / done) instead of beme
+    //   - the inline "by {owner}" slot is replaced by a small
+    //     "✓ {turnaround}" emerald chip so turnaround stays visible
+    //     without an extra row of chrome
+    //   - bottom line says "Completed Xm ago" rather than "Updated"
     <Link
       to={href}
-      className="block border border-ink-600 rounded-xl bg-ink-800 p-4 hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors group"
+      className="block border border-ink-600 rounded-lg bg-ink-800 px-4 py-3 min-h-[124px] hover:border-emerald-500/40 hover:bg-ink-700/40 transition-colors"
     >
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="min-w-0">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-ink-50 truncate group-hover:text-emerald-300 transition-colors">
+            <span className="font-semibold text-ink-50 truncate">
               {title}
             </span>
             {typeof project.referenceNumber === 'number' && (
-              <span className="text-[11px] tabular-nums font-semibold text-beme-400/80">
+              <span
+                className="text-[11px] tabular-nums font-semibold text-beme-500"
+                title="Reference number — quote this when looking the project up."
+              >
                 #{formatRef(project.referenceNumber)}
               </span>
             )}
+            <TradeBadges trades={tradesOf(project)} />
+            <span
+              className="text-[11px] text-emerald-400 tabular-nums"
+              title={`Turnaround: ${turnaroundLabel}`}
+            >
+              ✓ {turnaroundLabel}
+            </span>
           </div>
-          {sub && sub !== title && (
-            <div className="text-xs text-ink-400 truncate">{sub}</div>
-          )}
+          {/* Subtitle slot always rendered so rows of varying content
+              (with/without a site-address line) keep an identical
+              vertical footprint. */}
+          <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
+            {sub && sub !== title ? sub : ' '}
+          </div>
+          <div className="text-xs text-ink-400 mt-1">
+            Completed {formatRelative(completedIso)}
+          </div>
         </div>
-        <span className="shrink-0">
-          <TradeBadges trades={tradesOf(project)} />
-        </span>
-      </div>
-      <div className="flex items-center justify-between text-xs text-ink-400 gap-2 flex-wrap">
-        <span className="truncate">Direct estimate</span>
-        <span
-          className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 font-medium tabular-nums"
-          title={`Turnaround: ${turnaroundLabel}`}
-        >
-          ⏱ {turnaroundLabel}
-        </span>
-      </div>
-      <div className="text-[11px] text-ink-500 mt-2">
-        Completed {formatRelative(completedIso)}
       </div>
     </Link>
   )
@@ -1546,13 +1616,17 @@ function StatTile({
   sub?: string
   accent?: 'beme' | 'emerald' | 'amber'
 }) {
+  // Accent colours bumped one step brighter (300 → 500 for beme,
+  // 300 → 400 for emerald/amber) so the headline numbers carry the
+  // brand orange / green more strongly. Earlier the burnt-tone
+  // beme-300 read as muted brown in light mode.
   const accentClass =
     accent === 'beme'
-      ? 'text-beme-300'
+      ? 'text-beme-500'
       : accent === 'emerald'
-        ? 'text-emerald-300'
+        ? 'text-emerald-400'
         : accent === 'amber'
-          ? 'text-amber-300'
+          ? 'text-amber-400'
           : 'text-ink-50'
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5">
@@ -1564,6 +1638,39 @@ function StatTile({
       </div>
       {sub && <div className="text-xs text-ink-400 mt-0.5">{sub}</div>}
     </div>
+  )
+}
+
+/**
+ * "+ New estimate" tile that lives in the stats row to the right of
+ * the read-only metrics. Matches StatTile's outer shape (border,
+ * radius, padding) so the row reads as three equal cells, but the
+ * whole thing is a Link with a beme-orange title + descriptive
+ * sub-line — visually the primary CTA on the page.
+ */
+function NewEstimateTile() {
+  return (
+    <Link
+      to="/project/block"
+      title="Start a new masonry estimate — block, brick, or both"
+      className="block border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5 hover:border-beme-500 hover:bg-ink-700/40 transition-colors group"
+    >
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 flex items-center justify-between gap-2">
+        <span>Start a new estimate</span>
+        <span className="text-ink-500 group-hover:text-beme-500 transition-colors">→</span>
+      </div>
+      {/* Title font tuned down from text-2xl/extrabold to a chunkier
+          lg/bold — the long phrase looked squished at the stat-value
+          weight while the digits (6, 9) read fine. Colour bumped to
+          beme-500 so it matches the brighter brand-orange the rail
+          accents use, not the muted beme-300 burnt tone. */}
+      <div className="text-lg font-bold tracking-tight mt-1 text-beme-500 group-hover:text-beme-400">
+        + New estimate
+      </div>
+      <div className="text-xs text-ink-400 mt-0.5">
+        Block, brick, or both — switch trades inside
+      </div>
+    </Link>
   )
 }
 
