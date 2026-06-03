@@ -194,6 +194,7 @@ import {
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions } from '../lib/junctions'
 import { masonryTypeColor, wallTypeColor } from '../lib/wallTypeColors'
+import { useTheme } from '../lib/theme'
 import { selectBlockLintel } from '../lib/lintels'
 import { getCurrentOrgId, listOrgMembers } from '../lib/organisations'
 import { useAuth } from '../lib/auth'
@@ -401,6 +402,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // route. If the route changes project id entirely, React unmounts and
   // remounts so the new initialMode wins automatically.
   const [mode, setMode] = useState<'block' | 'brick' | undefined>(initialMode)
+  // Read theme so the 3D viewer wrapper bg can flip with the rest of
+  // the app — otherwise a dark slate "frame" surrounds the canvas in
+  // light mode and vice-versa.
+  const [theme] = useTheme()
   // Project Areas — user-defined buckets ("Balcony", "Staircase", etc.)
   // that subdivide a single project's work. `areas` is the canonical
   // list (persisted on save); `activeAreaId` is per-session UI state
@@ -6939,7 +6944,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         // user wanted gone. Without the border, the wrapper's dark bg
         // butts flush against whatever's around it (rail / page bg),
         // and the Canvas inside fills the wrapper edge to edge.
-        <div className="flex-1 min-w-0 min-h-0 relative overflow-hidden bg-[#1a1d24]">
+        <div
+          className="flex-1 min-w-0 min-h-0 relative overflow-hidden"
+          // Wrapper bg doubles as the visible "frame" around the 3D
+          // Canvas (the Canvas is absolute-inset-0). Flip with theme so
+          // it matches the scene clearColor in either mode — dark slate
+          // in dark, warm off-white in light — and stays seamless with
+          // the surrounding chrome.
+          style={{ backgroundColor: theme === 'light' ? '#f7f4ec' : '#1a1d24' }}
+        >
           <Suspense
             fallback={
               <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">

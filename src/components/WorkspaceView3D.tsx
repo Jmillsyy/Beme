@@ -66,6 +66,7 @@ import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { bandColor } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import { rasterisePdfPage } from '../lib/pdfRaster'
+import { useTheme, type Theme } from '../lib/theme'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
 import {
   planWallLayout,
@@ -84,12 +85,35 @@ const FALLBACK_HEIGHT_MM = 2400
 // slightly weathered tone of a finished wall. Also acts as the
 // fallback when a block code isn't in the colour map (rare).
 const DEFAULT_WALL_COLOR = '#a85540'
-// Ground plane colour matches the canvas clear colour (#1a1d24) so the
-// horizon line disappears and the viewport reads as one continuous
-// background — like the 2D view's flat canvas. The plane itself stays
-// for raycast hits (fly-to-cursor scroll-zoom needs something to land
-// on past the building).
-const GROUND_COLOR = '#1a1d24'
+// Scene background pair — flips with the app theme. Dark mode is the
+// original "Studio Black" slate (#1a1d24); light mode is the warm
+// off-white that the rest of the app uses for the page surface
+// (--color-ink-900 in :root.light). Ground plane / fog / canvas
+// clearColor / PDF page-bg-erase all read from the same pair so the
+// horizon stays seamless in either theme.
+const SCENE_BG_DARK = '#1a1d24'
+const SCENE_BG_LIGHT = '#f7f4ec'
+function sceneBgFor(theme: Theme): string {
+  return theme === 'light' ? SCENE_BG_LIGHT : SCENE_BG_DARK
+}
+function sceneBgRgbFor(theme: Theme): [number, number, number] {
+  // Must match sceneBgFor — the PDF threshold pass writes this rgb on
+  // every "page background" pixel so the page sheet visually disappears
+  // into the scene clearColor. Keep in sync if SCENE_BG_* changes.
+  return theme === 'light' ? [247, 244, 236] : [26, 29, 36]
+}
+// Plan-line ink — drawn lines on the rasterised PDF after the threshold
+// pass. Dark theme: pure white over slate. Light theme: dark slate over
+// the warm page bg. The user wants the same plan to read as inverted
+// blueprints between themes.
+function planLineRgbFor(theme: Theme): [number, number, number] {
+  return theme === 'light' ? [26, 29, 36] : [255, 255, 255]
+}
+const GROUND_COLOR_DARK = SCENE_BG_DARK
+const GROUND_COLOR_LIGHT = SCENE_BG_LIGHT
+function groundColorFor(theme: Theme): string {
+  return theme === 'light' ? GROUND_COLOR_LIGHT : GROUND_COLOR_DARK
+}
 const CURVE_SAMPLES = 24
 
 /** Fallback widths (mm) when the library doesn't carry the block. AU
@@ -1762,9 +1786,11 @@ function Scene({
   pageWidthMm,
   pageHeightMm,
   pageScaleRatio,
+  theme,
 }: Omit<WorkspaceView3DProps, 'areas'> & {
   navStyle: NavStyle
   planTexture: { texture: THREE.Texture; widthM: number; heightM: number } | null
+  theme: Theme
 }) {
   const { segments, segmentBounds } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
@@ -2566,7 +2592,7 @@ function Scene({
       <fog
         attach="fog"
         args={[
-          '#1a1d24',
+          sceneBgFor(theme),
           segmentBounds.sizeMax * 2,
           segmentBounds.sizeMax * 8,
         ]}
@@ -2614,23 +2640,24 @@ function Scene({
               position={[-pageW / 2, -0.02, -pageH / 2]}
             >
               <planeGeometry args={[pageW, pageH]} />
-              <meshStandardMaterial color={GROUND_COLOR} side={THREE.DoubleSide} />
+              <meshStandardMaterial color={groundColorFor(theme)} side={THREE.DoubleSide} />
             </mesh>
             <Grid
               position={[-pageW / 2, -0.01, -pageH / 2]}
               args={[pageW, pageH]}
               cellSize={1}
               cellThickness={0.6}
-              // Blueprint feel: navy floor + cool light-grey grid.
-              // Cells are visible-but-not-shouty (~Tailwind slate-500
-              // tone) so 1m divisions read as a regular grid.
-              cellColor="#64748b"
+              // Blueprint feel: floor + grid contrast inverts with theme
+              // so a dark room reads as the cool blueprint look, and a
+              // light room reads as a faint pencil grid on warm paper.
+              // Cell tone is the "secondary" line weight (~slate-500 / -400).
+              cellColor={theme === 'light' ? '#94a3b8' : '#64748b'}
               sectionSize={5}
               sectionThickness={1.2}
-              // Section lines (every 5m) brighter — almost white —
-              // so the bigger divisions clearly stand out, matching
+              // Section lines (every 5m) get the stronger tone in each
+              // theme: near-white on dark, dark slate on light. Matches
               // the heavy / light line pattern of a real CAD plan.
-              sectionColor="#cbd5e1"
+              sectionColor={theme === 'light' ? '#475569' : '#cbd5e1'}
               fadeDistance={Math.max(pageW, pageH) * 2}
               fadeStrength={1.2}
               followCamera={false}
@@ -2730,6 +2757,10 @@ function loadNavStyle(): NavStyle {
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio } = props
+  // Theme drives the scene clearColor + the PDF threshold pass colour
+  // pair. We only read the value (the 3D view doesn't change the theme).
+  // The Header has the picker; this view just re-renders when it flips.
+  const [theme] = useTheme()
   const [navStyle, setNavStyleState] = useState<NavStyle>(loadNavStyle)
   const setNavStyle = (v: NavStyle) => {
     setNavStyleState(v)
@@ -2781,27 +2812,32 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         const ctx = canvas.getContext('2d')
         if (!ctx) return
         ctx.drawImage(img, 0, 0)
-        // B&W wireframe pass: pixels darker than ~78% white become a
-        // mid-tone grey line on the dark canvas background; everything
-        // else becomes the canvas-background colour so the page "white"
-        // disappears and only the drawn lines remain visible against
-        // the 3D scene background.
+        // Two-tone wireframe pass: pixels darker than ~78% white become
+        // the theme's "ink" line colour; everything else becomes the
+        // canvas-background colour so the page "white" disappears and
+        // only the drawn lines remain visible.
+        //   - Dark mode: white lines on dark slate.
+        //   - Light mode: dark slate lines on warm off-white.
+        // The bg rgb here MUST match the gl.setClearColor call below so
+        // the page edge can't be seen against the canvas backdrop.
+        const [lr, lg, lb] = planLineRgbFor(theme)
+        const [br, bg, bb] = sceneBgRgbFor(theme)
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
         const data = imageData.data
         for (let i = 0; i < data.length; i += 4) {
           const gray = (data[i] + data[i + 1] + data[i + 2]) / 3
           if (gray < 200) {
-            // Drawn line — light enough to read against the dark scene.
-            data[i] = 200
-            data[i + 1] = 200
-            data[i + 2] = 200
+            // Drawn line — high contrast against the theme background.
+            data[i] = lr
+            data[i + 1] = lg
+            data[i + 2] = lb
             data[i + 3] = 255
           } else {
-            // Page background — match the canvas clearColor so it
-            // visually disappears.
-            data[i] = 26  // #1a
-            data[i + 1] = 29 // #1d
-            data[i + 2] = 36 // #24
+            // Page background — matches the canvas clearColor so the
+            // sheet visually disappears.
+            data[i] = br
+            data[i + 1] = bg
+            data[i + 2] = bb
             data[i + 3] = 255
           }
         }
@@ -2836,7 +2872,7 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
       // Free GPU memory when the page changes or 3D unmounts.
       if (createdTexture) createdTexture.dispose()
     }
-  }, [pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio])
+  }, [pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio, theme])
 
   const initialCamera = useMemo<[number, number, number]>(() => {
     if (walls.length === 0) return [10, 12, 10]
@@ -2917,12 +2953,17 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         shadows={false}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
         onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color('#1a1d24'))
+          gl.setClearColor(new THREE.Color(sceneBgFor(theme)))
         }}
         style={{ position: 'absolute', inset: 0, display: 'block' }}
+        // Keying the Canvas on the theme forces a clean remount when
+        // it flips so the new clearColor takes effect (onCreated only
+        // runs on mount; r3f doesn't expose a setClearColor hook we
+        // can subscribe to here without restructuring).
+        key={theme}
       >
         <Suspense fallback={null}>
-          <Scene {...props} navStyle={navStyle} planTexture={planTexture} />
+          <Scene {...props} navStyle={navStyle} planTexture={planTexture} theme={theme} />
         </Suspense>
       </Canvas>
 

@@ -286,7 +286,7 @@ export default function ProjectBar({
                 ? 'Open the export estimate modal'
                 : 'Draw at least one wall to enable export'
             }
-            className="px-3.5 py-2 rounded-md border border-beme-500/70 text-beme-300 text-sm hover:bg-beme-500/15 hover:text-beme-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+            className="px-3.5 py-2 rounded-md bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
           >
             Export
           </button>

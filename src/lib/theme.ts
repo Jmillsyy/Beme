@@ -42,11 +42,44 @@ export function initTheme() {
 }
 
 /**
+ * Tiny same-tab pub/sub for theme changes.
+ *
+ * Why this exists: each `useTheme()` caller used to keep its own local
+ * `useState`. When the Header's instance flipped the theme, the document
+ * `light` class updated and `localStorage` was written — but every OTHER
+ * component that had read the theme (e.g. the 3D viewer) stayed stale
+ * because `setThemeState` only mutates that single hook's state.
+ *
+ * `window.storage` events only fire across tabs, not within the same one,
+ * so we route same-tab updates through a module-level listener set. Every
+ * hook instance subscribes on mount and gets notified whenever ANY other
+ * instance calls its setter, keeping all readers in sync without needing
+ * a Context provider (which would touch every consumer site).
+ */
+type ThemeListener = (next: Theme) => void
+const themeListeners = new Set<ThemeListener>()
+function emitThemeChange(next: Theme) {
+  themeListeners.forEach((fn) => fn(next))
+}
+
+/**
  * React hook that returns the current theme + a setter. Persists changes to
- * localStorage and keeps the document class in sync.
+ * localStorage, keeps the document class in sync, and stays in sync with
+ * every other `useTheme()` consumer in the same tab.
  */
 export function useTheme(): [Theme, (next: Theme) => void] {
   const [theme, setThemeState] = useState<Theme>(() => readStoredTheme())
+
+  // Subscribe to same-tab theme changes from sibling hook instances.
+  // Without this the Header's setter wouldn't re-render mounted views
+  // (3D, project bar, etc.) that read the theme via their own hook copy.
+  useEffect(() => {
+    const fn: ThemeListener = (next) => setThemeState(next)
+    themeListeners.add(fn)
+    return () => {
+      themeListeners.delete(fn)
+    }
+  }, [])
 
   useEffect(() => {
     applyTheme(theme)
@@ -55,5 +88,13 @@ export function useTheme(): [Theme, (next: Theme) => void] {
     }
   }, [theme])
 
-  return [theme, setThemeState]
+  function setTheme(next: Theme) {
+    setThemeState(next)
+    // Notify siblings synchronously so they re-render in the same React
+    // commit pass — avoids a one-frame flash of the old theme on the
+    // other panels.
+    emitThemeChange(next)
+  }
+
+  return [theme, setTheme]
 }
