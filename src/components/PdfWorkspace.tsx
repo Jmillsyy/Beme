@@ -91,8 +91,6 @@ import {
   createDefaultWallMakeup,
   getMakeupHeightMm,
 } from '../lib/makeups'
-import { arcFromThreePoints } from '../lib/curveGeom'
-import { curveZoneForRadius } from '../lib/blockCalc'
 import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
 import { resolveBlockByRole } from '../lib/blockRoles'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
@@ -2848,53 +2846,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       return
     }
 
-    // Pick a body block based on the curve's radius so the user doesn't have
-    // to think about it: tight radii get the wedge (20.03CW), mid radii get
-    // standard body with a cut allowance noted in assumptions, large radii
-    // get plain standard body. The same threshold logic is used by the calc
-    // engine downstream — we're just pre-stamping the makeup so the user
-    // sees the right block in the Wall Types panel from the moment they
-    // draw the curve.
-    const geom = arcFromThreePoints(startMm, midMm, endMm)
-    const radiusMm = geom?.radiusMm ?? Infinity
-    const zone = isFinite(radiusMm) ? curveZoneForRadius(radiusMm) : 'standard'
-    // 'standard' (R ≥ 6000mm): plain 20.48, no cuts.
-    // 'cut' (1500-6000mm): 20.48 with rear-corner cuts (noted in assumptions).
-    // 'wedge' (665-1500mm): 20.03CW wedge.
-    // 'custom' (< 665mm): wedge is closest stock; calc-engine + assumptions
-    //    flag that custom blocks are really needed.
-    // Wedge / custom curves prefer a curve-tight tagged block from the
-    // live library (AU's 20.03CW, or whatever the user's region has
-    // tagged). When NO wedge is defined in the library — common
-    // outside AU, since US / UK don't ship a dedicated wedge — fall
-    // back to the body block. The export's curve assumption note
-    // already explains that cuts are required at that radius.
-    // Route both picks through resolveBlockByRole so the user's
-    // DefaultsByRole map can override (e.g. they've nominated a non-
-    // standard wedge for their region). Falls through to library tag
-    // scan, then to AU SEQ literal as last resort for the body.
-    const wedgeSettings = getUserSettings()
-    const wedgeBlock =
-      resolveBlockByRole('curve-tight', BLOCK_LIBRARY, { settings: wedgeSettings })?.code
-    const bodyDefault =
-      resolveBlockByRole('body', BLOCK_LIBRARY, { settings: wedgeSettings })?.code ??
-      '20.48'
-    const bodyBlock =
-      zone === 'wedge' || zone === 'custom'
-        ? wedgeBlock ?? bodyDefault
-        : bodyDefault
-    const radiusLabel = isFinite(radiusMm)
-      ? `R${Math.round(radiusMm)}mm`
-      : 'straight-ish'
-
-    // Resolve which area this curve (and its auto-created makeup, if any)
-    // should belong to. Same chain as handleAddMakeup:
-    //   1. activeAreaId (we're inside a specific area)
-    //   2. areas[0]?.id (we're on All view; pick the first area)
-    //   3. null → fall back to auto-creating a 'New Area' below
-    // Without this, the curve makeup ended up with areaId = undefined and
-    // got demoted to All-only, so the curve wall looked unbound even
-    // though its wall geometry carried the right areaId.
+    // Curve drawing uses whatever wall type the user has ACTIVE in the
+    // Wall Types panel — same as straight walls. The radius doesn't
+    // pre-select the body block any more: if the user wants 20.03CW
+    // they set it on the active wall type and every curve they draw
+    // inherits it; if they want plain 20.48 they leave it as-is.
+    //
+    // Previously we ran a `curveZoneForRadius` classifier here and
+    // auto-created a separate makeup per zone (standard / cut / wedge /
+    // custom). That ignored the user's composition setting, which made
+    // curves drawn from a 20.03CW wall type still come out as 20.48
+    // body whenever the radius landed in the "standard" zone. Removed.
+    //
+    // Resolve target area: same chain as handleAddMakeup. Used only to
+    // stamp the wall (not a new makeup — we reuse the active one).
     let targetAreaId: string | null = activeAreaId
       ? activeAreaId
       : areas.length > 0
@@ -2912,82 +2877,24 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       targetAreaId = newAreaId
     }
 
-    // Dedup: if there's already a curve makeup for the same zone +
-    // bodyBlock + height AND the same target area, reuse it. Two curves
-    // drawn for the same intent become one row in the Wall Types panel
-    // with count N rather than N separate types.
-    //
-    // Crucially we ALSO match on areaId — without that filter a curve
-    // drawn in Ground Floor would reuse a same-shape makeup that belongs
-    // to First Floor, and the wall would inherit a makeupId pointing at
-    // another area's wall type list, looking orphaned in its own area.
-    const existingCurveMakeup = makeups.find((m) => {
-      if (typeof m.curveRadiusMm !== 'number' || !isFinite(m.curveRadiusMm)) return false
-      const existingZone = curveZoneForRadius(m.curveRadiusMm)
-      if (existingZone !== zone) return false
-      if (m.bodyBlockCode !== bodyBlock) return false
-      if (m.heightMm !== newCurveHeightMm) return false
-      if ((m.areaId ?? null) !== targetAreaId) return false
-      return true
-    })
-
-    let makeupId: string
+    let makeupId: string = activeMakeupId
     let nextMakeups = makeups
     let nextMakeupsById = makeupsById
-    if (existingCurveMakeup) {
-      makeupId = existingCurveMakeup.id
-    } else {
-      // Auto-create a wall type for this curve. Height comes from the
-      // current "new curve height" input (surfaced in the drawing-curve
-      // banner) so the user picks it up front. They can still rename /
-      // tweak in the Wall Types panel later.
-      // Wedge / custom curves use the 20.03CW wedge block stacked — every
-      // course identical, no stretcher offset, no full/half end alternation.
-      // That's how a wedge wall is built in reality (the taper takes care of
-      // the curve; there's no other block in the composition). Standard /
-      // cut curves stay on the stretcher + 20.48 + 20.01/20.03 default since
-      // they use ordinary blocks.
-      const isWedgeMakeup = zone === 'wedge' || zone === 'custom'
-      const curveMakeup = createDefaultWallMakeup({
-        name: `Curved wall — ${radiusLabel}`,
+    const activeMakeup = makeupsById[activeMakeupId]
+    if (!activeMakeup) {
+      // Defensive: no valid active makeup (shouldn't happen because the
+      // toolbar's draw button requires one). Auto-create a neutral
+      // default so the curve still lands somewhere reasonable.
+      const fallback = createDefaultWallMakeup({
+        name: 'Curved wall',
         heightMm: newCurveHeightMm,
-        bondType: isWedgeMakeup ? 'stack' : 'stretcher',
-        // Respect user defaults for body/corner/base/top so curve makeups
-        // pick from the same map as the standard external-wall seed above.
+        bondType: 'stretcher',
         settings: getUserSettings(),
       })
-      curveMakeup.bodyBlockCode = bodyBlock
-      curveMakeup.topCourseBlockCode = bodyBlock
-      if (isWedgeMakeup) {
-        // For a wedge wall every block is the same 20.03CW — no
-        // distinct corner, half, base or tile blocks. The default
-        // createDefaultWallMakeup seeds 20.45 + 50.45 for the base
-        // course (cleanout + tile) which doesn't apply to wedge
-        // curves: there's no 200-series cleanout on a wedge run.
-        // Stamping every role to the wedge block keeps the wall
-        // preview as a uniform stacked-square column AND keeps the
-        // calc engine from tallying a phantom 20.45 / 50.45.
-        curveMakeup.cornerBlockCode = bodyBlock
-        curveMakeup.halfBlockCode = bodyBlock
-        curveMakeup.baseCourseBlockCode = bodyBlock
-        curveMakeup.baseCourseTileCode = undefined
-      }
-      // Stamp the radius so the Wall Types panel can render the dual
-      // wedge / normal-block composition UI for this makeup and pick
-      // the right section to enable based on the curve's zone.
-      if (isFinite(radiusMm)) {
-        curveMakeup.curveRadiusMm = radiusMm
-      }
-      // Stamp the resolved area on the makeup so it shows up in the
-      // correct area's Wall Types panel. createDefaultWallMakeup
-      // doesn't set areaId; without this assignment the makeup
-      // landed in All-only and the curve wall looked orphaned.
-      if (targetAreaId) {
-        curveMakeup.areaId = targetAreaId
-      }
-      makeupId = curveMakeup.id
-      nextMakeups = [...makeups, curveMakeup]
-      nextMakeupsById = { ...makeupsById, [curveMakeup.id]: curveMakeup }
+      if (targetAreaId) fallback.areaId = targetAreaId
+      makeupId = fallback.id
+      nextMakeups = [...makeups, fallback]
+      nextMakeupsById = { ...makeupsById, [fallback.id]: fallback }
       setMakeups(nextMakeups)
     }
 

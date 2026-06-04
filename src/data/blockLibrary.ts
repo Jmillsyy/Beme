@@ -167,35 +167,42 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     code: '20.18',
     name: '400mm Lintel Block',
     description:
-      'Lintel block for opening head heights ≥ 300mm. 400mm modular height (190 + 10 mortar = 200 ' +
+      'Lintel block for opening head heights ≥ ~320mm. 400mm modular height (190 + 10 mortar = 200 ' +
       'horizontal, 390 + 10 = 400 vertical). Dimensions are the as-used dimensions — Beme places ' +
       'them straight as stored, no rotation.',
     dimensions: { widthMm: 190, heightMm: 390, depthMm: 190 },
     roles: ['lintel'],
-    // Upper-open bucket: head heights ≥ 300mm.
-    lintelMinHeadHeightMm: 300,
+    // Upper bucket starts above 20.25's reach. 20.25 (290mm tall)
+    // bridges heads up to ~320mm by absorbing the 10-30mm overshoot
+    // in the bearing mortar; beyond that the 390mm 20.18 takes over.
+    lintelMinHeadHeightMm: 320,
   },
   '20.25': {
     code: '20.25',
     name: '300mm Lintel Block',
     description:
-      'Lintel for opening head heights between 200mm and 299mm. 300mm modular height (190 face × ' +
-      '290 tall). Dimensions are the as-used dimensions — no rotation.',
+      'Lintel for opening head heights from 200mm up to ~320mm. 290mm face height bridges a ' +
+      '300mm head with 10mm absorbed in the bottom bearing mortar — the standard AU detail. ' +
+      'Picked over the taller 20.18 wherever it physically fits.',
     dimensions: { widthMm: 190, heightMm: 290, depthMm: 190 },
     roles: ['lintel'],
     lintelMinHeadHeightMm: 200,
-    lintelMaxHeadHeightMm: 300,
+    // Extends past 290 (the block face height) by ~30mm of mortar
+    // slop so non-modular wall heights (e.g. a 2390mm wall opening
+    // 2090mm yielding a 300mm head) still pick this block instead of
+    // jumping to the oversized 20.18.
+    lintelMaxHeadHeightMm: 320,
   },
   '20.13': {
     code: '20.13',
     name: 'Half Lintel Block',
     description:
-      'Half-height lintel for opening head heights under 200mm. Cubic 190mm block (200mm modular ' +
-      'each side).',
+      'Half-height lintel for opening head heights under ~210mm. Cubic 190mm block (200mm modular ' +
+      'each side). Same mortar slop as 20.25.',
     dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
     roles: ['lintel'],
     lintelMinHeadHeightMm: 0,
-    lintelMaxHeadHeightMm: 200,
+    lintelMaxHeadHeightMm: 210,
   },
   '20.12': {
     code: '20.12',
@@ -885,13 +892,23 @@ export function pickLintelBlockIn(
 ): Block | undefined {
   const candidates = Object.values(library)
     .filter((b) => b.roles.includes('lintel'))
-    .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm)
-  // First lintel ≥ head height. If none, fall back to the tallest — the
-  // calc engine will stack it as many times as needed to span the head.
-  return (
-    candidates.find((b) => b.dimensions.heightMm >= openingHeightMm) ??
-    candidates[candidates.length - 1]
+    .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
+  // Pick the LARGEST lintel whose face height FITS WITHIN the head —
+  // i.e. lintel height ≤ head height + a small mortar tolerance. This
+  // matches the masonry rule the user described: a 290 mm 20.25
+  // bridges a 300 mm head (10 mm absorbed in the bottom bearing
+  // mortar), so it wins over a 390 mm 20.18 which would extend 90 mm
+  // past the head course.
+  //
+  // Tolerance covers the standard 10 mm mortar joint plus a touch of
+  // slop for non-modular wall heights. If the head is too short for
+  // any lintel to fit (head < smallest lintel), fall back to the
+  // smallest available — the calc engine treats it as a stub course.
+  const TOLERANCE_MM = 20
+  const fits = candidates.find(
+    (b) => b.dimensions.heightMm <= openingHeightMm + TOLERANCE_MM
   )
+  return fits ?? candidates[candidates.length - 1]
 }
 export function pickLintelBlock(openingHeightMm: number): Block | undefined {
   return pickLintelBlockIn(BLOCK_LIBRARY, openingHeightMm)
