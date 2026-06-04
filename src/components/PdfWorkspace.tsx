@@ -993,6 +993,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const [openingHeadHeightMm, setOpeningHeadHeightMm] = useState(300)
   /** Brick-mode opening height — user types it directly, no sill/head math needed. */
   const [brickOpeningHeightMm, setBrickOpeningHeightMm] = useState(2100)
+  /** Brick-mode opening kind — drives sill trim suppression in 3D for doors. */
+  const [brickOpeningKind, setBrickOpeningKind] = useState<'window' | 'door'>('window')
+  /** Brick-mode opening sill height — only meaningful for windows; doors
+   *  always reach the floor and persist sill=0. Default 900 mm = typical
+   *  Australian residential window sill height. */
+  const [brickOpeningSillMm, setBrickOpeningSillMm] = useState(900)
 
   // ---------- Undo / redo ----------
   // A snapshot is the tuple of every page-keyed data state we let the user
@@ -2394,6 +2400,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     [wallsByPage, currentPage, mode, activeAreaId]
   )
   const allOpenings = useMemo(() => Object.values(openingsByPage).flat(), [openingsByPage])
+  // Openings restricted to those on walls in the current view. The
+  // tally panels are area / trade-scoped via `allWalls`, but the raw
+  // `allOpenings` would still subtract opening area for openings on
+  // walls in OTHER areas — calculateBrickTally / calculateBlockTally
+  // sum every opening's area against the project totalAreaSqMm
+  // regardless of whether their wall is in scope. That caused the
+  // per-area square-metre figure to under-count by the wrong-area
+  // opening area: FF area = FF walls − (FF + SF openings),
+  // SF area = SF walls − (FF + SF openings), so FF + SF was less than
+  // All by exactly one extra deduction of every opening. Filtering
+  // openings here so they share the same scope as the walls fixes
+  // both panels in one place.
+  const openingsForActiveView = useMemo(() => {
+    const wallIds = new Set(allWalls.map((w) => w.id))
+    return allOpenings.filter((o) => wallIds.has(o.wallId))
+  }, [allOpenings, allWalls])
   const currentPageOpenings = openingsByPage[currentPage] ?? []
   const allPiers = useMemo(() => Object.values(piersByPage).flat(), [piersByPage])
   const currentPagePiers = piersByPage[currentPage] ?? []
@@ -2476,6 +2498,63 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       return filtered
     })
   }, [wallCountsByMakeupId])
+
+  // ── Migrate legacy UNASSIGNED walls to the first area ──────────────
+  //
+  // Old projects (or any wall drawn before areas were created) could
+  // sit without an areaId. That left walls invisible when filtering by
+  // any specific area and only countable under the "Unassigned" toggle
+  // in the export modal — confusing because individual-area sums then
+  // didn't equal the all-areas total. Going forward, every wall is
+  // stamped with an areaId at creation (see handleWallPlaced /
+  // handleCurvedWallAdded). This migration repairs already-stored data.
+  //
+  // Rule: any wall without areaId AND with at least one area defined
+  // gets the first area's id. If no areas exist yet, a 'Main' area
+  // is auto-created so unassigned walls have somewhere to land.
+  // Runs whenever wallsByPage or areas changes; the early-return when
+  // nothing needs migrating keeps it cheap on every commit.
+  useEffect(() => {
+    const pages = Object.keys(wallsByPage).map((n) => Number(n))
+    let hasUnassigned = false
+    for (const p of pages) {
+      const pageWalls = wallsByPage[p] ?? []
+      for (const w of pageWalls) {
+        if (!w.areaId) {
+          hasUnassigned = true
+          break
+        }
+      }
+      if (hasUnassigned) break
+    }
+    if (!hasUnassigned) return
+    let firstAreaId = areas[0]?.id
+    if (!firstAreaId) {
+      // No areas at all — create a default 'Main' area so the walls
+      // have somewhere to live.
+      const newAreaId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setAreas((prev) => [...prev, { id: newAreaId, name: 'Main' }])
+      firstAreaId = newAreaId
+    }
+    const targetAreaId: string = firstAreaId
+    setWallsByPage((prev) => {
+      const next: typeof prev = {}
+      let changed = false
+      for (const k of Object.keys(prev)) {
+        const pageNum = Number(k)
+        const pageWalls = prev[pageNum] ?? []
+        const fixed = pageWalls.map((w) =>
+          w.areaId ? w : { ...w, areaId: targetAreaId }
+        )
+        if (fixed.some((w, i) => w !== pageWalls[i])) changed = true
+        next[pageNum] = fixed
+      }
+      return changed ? next : prev
+    })
+  }, [wallsByPage, areas])
 
   // Migrate legacy wedge curve makeups in-place. Old wedge curves were
   // created with the default 20.45 cleanout + 50.45 tile base course
@@ -2737,6 +2816,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // forever, so subsequent wall-type height edits looked like they
     // did nothing on existing brick walls — same bug we already fixed
     // in calculateBrickTally's precedence chain.
+    // Every wall belongs to an area. Resolution chain:
+    //   1. activeAreaId (user is viewing a specific area — draw into it)
+    //   2. areas[0].id (user is on All-areas view but areas exist —
+    //      drop into the first area as a sensible default)
+    //   3. auto-create a 'Main' area (no areas exist at all — the user
+    //      shouldn't be able to leave a wall un-bucketed)
+    // After this chain runs, targetAreaId is guaranteed non-null and
+    // can be stamped on the wall unconditionally.
+    let targetWallAreaId: string = activeAreaId ?? ''
+    if (!targetWallAreaId) {
+      if (areas.length > 0) {
+        targetWallAreaId = areas[0].id
+      } else {
+        const newAreaId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        setAreas((prev) => [...prev, { id: newAreaId, name: 'Main' }])
+        setActiveAreaId(newAreaId)
+        targetWallAreaId = newAreaId
+      }
+    }
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -2747,10 +2848,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // to look the id up in, and so switching trades doesn't make this
       // wall disappear into the wrong filter.
       trade: isBrick ? 'brick' : 'block',
-      // Stamp the active area (if any) so the wall lives in that bucket.
-      // Drawn while the "All" tab is active → no area → only visible
-      // under All going forward. User can bulk-reassign later (v2 work).
-      ...(activeAreaId ? { areaId: activeAreaId } : {}),
+      // Walls always belong to an area (see chain above) so the export
+      // / panel counts can never silently drop them.
+      areaId: targetWallAreaId,
       startX: snappedStart.x,
       startY: snappedStart.y,
       endX: snappedEnd.x,
@@ -3341,13 +3441,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     let sillForSave: number
 
     if (mode === 'brick') {
-      // Brick mode: user types height directly; sill irrelevant for
-      // tally (just stored as 0). 0mm is allowed — lintel-only
-      // marker (counts the per-opening supply item without removing
-      // any wall area). Reject negative only.
+      // Brick mode: user types height directly. Sill comes from the
+      // door/window picker — doors always reach the floor (sill=0),
+      // windows use the typed sill height. 0mm height is allowed —
+      // lintel-only marker (counts the per-opening supply item
+      // without removing any wall area). Reject negative only.
       if (brickOpeningHeightMm < 0) return
       openingHeightForSave = brickOpeningHeightMm
-      sillForSave = 0
+      sillForSave =
+        brickOpeningKind === 'door' ? 0 : Math.max(0, brickOpeningSillMm)
     } else {
       // Block mode: opening height = wall − sill − head. 0 allowed
       // (lintel-only marker — same rationale as brick mode).
@@ -3369,6 +3471,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       widthMm: pendingOpening.widthMm,
       heightMm: openingHeightForSave,
       sillHeightMm: sillForSave,
+      // Persist kind only in brick mode — block-mode openings don't
+      // use the door/window distinction yet (block walls don't have
+      // a sill-trim concept). Default 'window' otherwise.
+      ...(mode === 'brick' ? { kind: brickOpeningKind } : {}),
     }
     setOpeningsByPage((prev) => ({
       ...prev,
@@ -6765,21 +6871,91 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </header>
 
               <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
+                {/* Door vs window — drives 3D sill suppression. Door
+                    openings render without a sill trim band, since
+                    they typically reach the floor or wall base. */}
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                    Type
+                  </h4>
+                  <div className="inline-flex border border-ink-600 rounded-lg overflow-hidden">
+                    {(['window', 'door'] as const).map((k, i) => {
+                      const isActive = brickOpeningKind === k
+                      return (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setBrickOpeningKind(k)}
+                          className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                            isActive
+                              ? 'bg-beme-500 text-black'
+                              : 'bg-ink-800 text-ink-300 hover:bg-ink-700 hover:text-ink-100'
+                          } ${i > 0 ? 'border-l border-ink-600' : ''}`}
+                        >
+                          {k === 'window' ? 'Window' : 'Door'}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[10px] text-ink-500 mt-1.5 leading-snug">
+                    {brickOpeningKind === 'door'
+                      ? 'Door: opening reaches the floor (sill = 0). No sill trim in 3D.'
+                      : 'Window: sill + head trim rendered per the wall type.'}
+                  </p>
+                </section>
+
+                {/* Sill height input — only meaningful for windows.
+                    Doors are pinned to the floor (sill=0) so the
+                    field is suppressed when door is active. */}
+                {brickOpeningKind === 'window' && (
+                  <section>
+                    <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                      Sill height
+                    </h4>
+                    <label className="block">
+                      <span className="block text-ink-300 text-xs mb-1">
+                        Distance from floor to opening bottom (mm)
+                      </span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        value={brickOpeningSillMm}
+                        onChange={(e) =>
+                          setBrickOpeningSillMm(
+                            Math.max(0, parseInt(e.target.value || '0', 10)),
+                          )
+                        }
+                        className="w-40 px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                      <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
+                        Typical residential window sill = 900 mm. Kitchen
+                        bench window = ~1000 mm. Floor-level highlight
+                        window = 0 mm.
+                      </span>
+                    </label>
+                  </section>
+                )}
+
                 <section>
                   <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                     Presets
                   </h4>
                   <div className="flex flex-wrap gap-1.5">
                     {[
-                      { label: 'Door 2100', h: 2100 },
-                      { label: 'Door 2040', h: 2040 },
-                      { label: 'Window 1500', h: 1500 },
-                      { label: 'Window 1200', h: 1200 },
-                      { label: 'Window 1800', h: 1800 },
+                      { label: 'Door 2100', h: 2100, kind: 'door' as const, sill: 0 },
+                      { label: 'Door 2040', h: 2040, kind: 'door' as const, sill: 0 },
+                      { label: 'Window 1500', h: 1500, kind: 'window' as const, sill: 900 },
+                      { label: 'Window 1200', h: 1200, kind: 'window' as const, sill: 900 },
+                      { label: 'Window 1800', h: 1800, kind: 'window' as const, sill: 600 },
                     ].map((p) => (
                       <button
                         key={p.label}
-                        onClick={() => setBrickOpeningHeightMm(p.h)}
+                        onClick={() => {
+                          setBrickOpeningHeightMm(p.h)
+                          setBrickOpeningKind(p.kind)
+                          setBrickOpeningSillMm(p.sill)
+                        }}
                         disabled={p.h > wallHeightMm}
                         title={`${p.h}mm tall`}
                         className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -7714,7 +7890,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           <BlockTallyPanel
             walls={allWalls}
             makeupsById={makeupsById}
-            openings={allOpenings}
+            openings={openingsForActiveView}
             piers={allPiers}
             pierMakeupsById={pierMakeupsById}
           />
@@ -7724,7 +7900,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         {mode === 'brick' && (
           <BrickTallyPanel
             walls={allWalls}
-            openings={allOpenings}
+            openings={openingsForActiveView}
             settings={brickSettings}
             makeups={brickMakeups}
           />

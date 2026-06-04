@@ -51,6 +51,13 @@ export interface BrickTally {
    */
   bricksByType: Record<string, number>
   /**
+   * Per-opening "trim" bricks the makeup nominates for sill and head
+   * courses. One entry per (brick type, role) so multiple makeups
+   * sharing a sill type aggregate cleanly. Empty when no openings or
+   * no makeup carries sillBrickCode / headBrickCode.
+   */
+  openingTrimByType: Record<string, number>
+  /**
    * Per wall-type (per-makeup) breakdown so the estimator can see how
    * much brickwork sits in each wall type and price each one
    * independently (Common @ $X/m² vs Facework @ $Y/m²).
@@ -308,34 +315,108 @@ export function calculateBrickTally(
   totalAreaSqMm -= openingTotalArea
   if (totalAreaSqMm < 0) totalAreaSqMm = 0
 
-  // Sum bands per brick type, then ceil into counts.
-  const areaByType: Record<string, number> = {}
-  for (const entry of wallAreas) {
-    for (const band of entry.bands) {
-      if (band.areaSqMm <= 0) continue
-      const m2 = band.areaSqMm / 1_000_000
-      const key = band.brickTypeCode || '__default__'
-      areaByType[key] = (areaByType[key] ?? 0) + m2 * band.bricksPerSquareMetre
+  // ── Grid-based brick counting ────────────────────────────────────
+  //
+  // Walk each wall's courses (matching how the 3D renderer lays bricks)
+  // and tally one brick per visible unit. Where openings sit inside a
+  // course's Y range, the bricks inside the opening's X span DON'T
+  // count — same as the renderer not drawing them. Result: every brick
+  // the user sees in 3D is one brick in this tally, no area-rate
+  // approximation drift.
+  //
+  // Per-course brick type comes from `brickTypeForCourse(courseNum)`
+  // applied to the makeup's courseRanges, falling back to the makeup's
+  // primary brickTypeCode then to the project-default brick. Matches
+  // the renderer's resolution exactly.
+  const BRICK_MORTAR_MM = 10
+  const bricksByTypeRaw: Record<string, number> = {}
+  // Per-wall total brick count — used below to populate
+  // byMakeup[m].brickCount with grid-counted bricks, matching the
+  // project-wide bricksByType totals.
+  const bricksPerWall = new Map<string, number>()
+  for (const wall of walls) {
+    const wallMakeup = wall.makeupId ? makeupsById.get(wall.makeupId) : undefined
+    const wallLenMm = wallLengthMm(wall)
+    const wallHeightMm =
+      wall.heightMmOverride ??
+      wallMakeup?.heightMm ??
+      settings.defaultWallHeightMm
+    if (wallLenMm < 1 || wallHeightMm < 1) continue
+    const sortedRanges = [...(wallMakeup?.courseRanges ?? [])]
+      .filter(
+        (r) =>
+          Number.isFinite(r.fromCourse) &&
+          r.fromCourse >= 1 &&
+          !!r.brickTypeCode,
+      )
+      .sort((a, b) => a.fromCourse - b.fromCourse)
+    const brickTypeForCourse = (courseNum: number): string => {
+      let active =
+        wallMakeup?.brickTypeCode ?? settings.brickTypeCode ?? '__default__'
+      for (const r of sortedRanges) {
+        if (r.fromCourse > courseNum) break
+        active = r.brickTypeCode
+      }
+      return active
     }
-  }
-  // Orphan-opening area isn't allocated to any wall. Spread it across
-  // the largest bucket as a best-effort deduction so per-type counts
-  // sum to approximately net brickwork.
-  if (orphanOpenings.length > 0 && Object.keys(areaByType).length > 0) {
-    let orphanArea = 0
-    for (const op of orphanOpenings) orphanArea += op.widthMm * op.heightMm
-    const largestKey = Object.entries(areaByType).sort((a, b) => b[1] - a[1])[0][0]
-    const orphanBricks = (orphanArea / 1_000_000) * settings.bricksPerSquareMetre
-    areaByType[largestKey] = Math.max(0, areaByType[largestKey] - orphanBricks)
+    const wallOpenings = openings.filter((o) => o.wallId === wall.id)
+    let wallTotal = 0
+    let cursorMm = 0
+    let courseIdx = 0
+    while (cursorMm < wallHeightMm - 0.5) {
+      const courseNum = courseIdx + 1
+      const code = brickTypeForCourse(courseNum)
+      const brickFromLib = BRICK_LIBRARY[code]
+      const brickWidthMm = brickFromLib?.widthMm ?? 230
+      const brickHeightMm = brickFromLib?.heightMm ?? 76
+      const modularMm = brickWidthMm + BRICK_MORTAR_MM
+      const y0 = cursorMm
+      const y1 = Math.min(wallHeightMm, cursorMm + brickHeightMm)
+      // Subtract opening x-spans from the course's available width
+      // when an opening overlaps this course vertically.
+      let availableSpans: Array<{ start: number; end: number }> = [
+        { start: 0, end: wallLenMm },
+      ]
+      for (const op of wallOpenings) {
+        const opSill = op.sillHeightMm
+        const opHead = op.sillHeightMm + op.heightMm
+        if (opHead <= y0 + 0.5 || opSill >= y1 - 0.5) continue
+        const opStart = op.startAlongWallMm
+        const opEnd = op.startAlongWallMm + op.widthMm
+        const next: Array<{ start: number; end: number }> = []
+        for (const span of availableSpans) {
+          if (opEnd <= span.start || opStart >= span.end) {
+            next.push(span)
+          } else {
+            if (opStart > span.start) next.push({ start: span.start, end: opStart })
+            if (opEnd < span.end) next.push({ start: opEnd, end: span.end })
+          }
+        }
+        availableSpans = next
+      }
+      // ceil(spanLen / modular) per available chunk — matches the
+      // renderer's body-emit loop which lays one brick per modular
+      // step and clamps the last brick to the chunk end.
+      let bricksThisCourse = 0
+      for (const span of availableSpans) {
+        const spanLenMm = span.end - span.start
+        if (spanLenMm < 1) continue
+        bricksThisCourse += Math.ceil(spanLenMm / modularMm)
+      }
+      bricksByTypeRaw[code] = (bricksByTypeRaw[code] ?? 0) + bricksThisCourse
+      wallTotal += bricksThisCourse
+      cursorMm += brickHeightMm + BRICK_MORTAR_MM
+      courseIdx++
+    }
+    bricksPerWall.set(wall.id, wallTotal)
   }
 
   const bricksByType: Record<string, number> = {}
   let brickCount = 0
-  for (const [key, n] of Object.entries(areaByType)) {
-    const rounded = Math.ceil(n)
-    if (rounded <= 0) continue
-    bricksByType[key === '__default__' ? '' : key] = rounded
-    brickCount += rounded
+  for (const [key, n] of Object.entries(bricksByTypeRaw)) {
+    if (n <= 0) continue
+    bricksByType[key === '__default__' ? '' : key] = n
+    brickCount += n
   }
 
   const distinctTypes = Object.keys(bricksByType)
@@ -378,19 +459,53 @@ export function calculateBrickTally(
     )
     bucket.openingAreaSqMm += wallOpeningArea
     bucket.grossAreaSqMm += netArea + wallOpeningArea
-    // Per-makeup brick count: sum across bands at each band's rate
-    // (so banded walls in the same makeup get their own rate per
-    // band). Net area for the band × rate.
-    for (const band of entry.bands) {
-      if (band.areaSqMm <= 0) continue
-      const m2 = band.areaSqMm / 1_000_000
-      bucket.brickCount += m2 * band.bricksPerSquareMetre
-    }
+    // Per-makeup brick count: use the per-wall grid-counted total so
+    // every wall's contribution to its makeup matches what the 3D
+    // renderer draws. bricksPerWall was populated in the grid walk
+    // above; missing entries (degenerate walls) contribute 0.
+    bucket.brickCount += bricksPerWall.get(entry.wallId) ?? 0
   }
-  // Round each makeup's brick count up at the end so the per-makeup
-  // numbers tile cleanly to the table.
-  for (const bucket of Object.values(byMakeup)) {
-    bucket.brickCount = Math.ceil(bucket.brickCount)
+
+  // ── Opening trim bricks (sill / head courses) ────────────────────
+  //
+  // When a brick makeup nominates a sillBrickCode or headBrickCode,
+  // every opening on walls of that type gets ONE COURSE of that brick
+  // type across its width — plus a small bearing overhang at each end
+  // so the count covers the full opening trim zone, not just the void.
+  //
+  // Bricks per opening = ceil((openingWidth + 2 * overhang) / brickModular)
+  // where brickModular = brickWidth + 10mm mortar. We use the trim
+  // brick's actual width when it's in the library, falling back to
+  // the wall's main brick width otherwise.
+  //
+  // Sill + head are independent — a makeup can nominate one or both.
+  // Undefined codes skip silently so existing projects without these
+  // fields are unaffected.
+  const openingTrimByType: Record<string, number> = {}
+  const DEFAULT_TRIM_OVERHANG_MM = 100
+  const wallByIdLocal = new Map<string, Wall>()
+  for (const w of walls) wallByIdLocal.set(w.id, w)
+  for (const op of openings) {
+    if (!op.wallId) continue
+    const wall = wallByIdLocal.get(op.wallId)
+    if (!wall) continue
+    const makeup = wall.makeupId ? makeupsById.get(wall.makeupId) : undefined
+    if (!makeup) continue
+    const overhang = makeup.openingTrimOverhangMm ?? DEFAULT_TRIM_OVERHANG_MM
+    const trimSpanMm = op.widthMm + 2 * overhang
+    const fallbackBrickWidthMm =
+      (makeup.brickTypeCode ? BRICK_LIBRARY[makeup.brickTypeCode]?.widthMm : undefined) ??
+      230
+    const addTrim = (code: string | undefined) => {
+      if (!code) return
+      const trimBrick = BRICK_LIBRARY[code]
+      const brickWidthMm = trimBrick?.widthMm ?? fallbackBrickWidthMm
+      const modularMm = brickWidthMm + 10
+      const count = Math.max(1, Math.ceil(trimSpanMm / modularMm))
+      openingTrimByType[code] = (openingTrimByType[code] ?? 0) + count
+    }
+    addTrim(makeup.sillBrickCode)
+    addTrim(makeup.headBrickCode)
   }
 
   return {
@@ -400,6 +515,7 @@ export function calculateBrickTally(
     totalAreaSqMm,
     brickCount,
     bricksByType: finalBricksByType,
+    openingTrimByType,
     byMakeup,
   }
 }

@@ -476,6 +476,13 @@ export interface Opening {
   sillHeightMm: number
   /** Height of the head — typically derived from wall height − sillHeight − openingHeight. */
   headHeightMm?: number
+  /**
+   * Window vs door — purely a 3D rendering hint. A door has no sill
+   * (the opening reaches the floor or the wall base), so the sill
+   * trim emission is skipped on brick walls. Defaults to 'window'
+   * when undefined (existing data) so older projects render unchanged.
+   */
+  kind?: 'window' | 'door'
 }
 
 /**
@@ -655,6 +662,50 @@ export interface BrickMakeup {
    * {@link brickTypeCode} brick (backward-compatible default).
    */
   courseRanges?: BrickCourseRange[]
+  /**
+   * Optional brick type for the SILL COURSE under every opening on
+   * walls of this type — typically a soldier or rowlock brick that
+   * forms the windowsill. The tally adds one course of this brick
+   * across each opening's width (plus a small overhang at each end
+   * for the bearing). Undefined → no sill line item, sill area
+   * remains part of the main brick deduction.
+   */
+  sillBrickCode?: string
+  /**
+   * Orientation of the sill brick relative to the wall face. Drives
+   * BOTH the rendered face dimensions AND the count modular.
+   *
+   *   - `'stretcher'` (default): brick laid flat with its long face
+   *     visible — face is widthMm × heightMm.
+   *   - `'soldier'`: brick stood on its end, long edge vertical —
+   *     face is heightMm × widthMm (tall and narrow).
+   *   - `'rowlock'`: brick on its long edge, depth showing as the
+   *     visible height — face is widthMm × depthMm.
+   *   - `'header'`: brick laid horizontal going INTO the wall
+   *     lengthwise, rolled so the TYPICAL long face (the one you'd
+   *     see in stretcher bond) is pointing UP. The brick's end
+   *     profile faces out, rotated 90° from the wider rowlock —
+   *     face is heightMm × depthMm (narrow and tall), and the
+   *     brick extends along the wall length direction.
+   */
+  sillBrickOrientation?: 'stretcher' | 'soldier' | 'rowlock' | 'header'
+  /**
+   * Optional brick type for the HEAD COURSE above every opening on
+   * walls of this type — typically a soldier course (flat arch) or
+   * rowlock above the lintel that the bricklayer lays distinctly.
+   * Tally adds one course of this brick across each opening's width
+   * (plus bearing overhang). Undefined → no head line item.
+   */
+  headBrickCode?: string
+  /** Orientation of the head brick — see {@link sillBrickOrientation}. */
+  headBrickOrientation?: 'stretcher' | 'soldier' | 'rowlock' | 'header'
+  /**
+   * Optional overhang (mm) at each end of the sill / head course,
+   * defaulting to 100 mm. Real openings tuck the sill / head bricks
+   * a touch past the jamb so the count covers the full bearing zone,
+   * not just the opening void width.
+   */
+  openingTrimOverhangMm?: number
 }
 
 /**

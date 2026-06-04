@@ -5,6 +5,7 @@ import type { Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
 import { formatLengthShort } from '../lib/units'
 import { useUserSettings } from '../lib/userSettings'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { hexToRgba } from '../lib/wallTypeColors'
 
 interface Point {
@@ -996,16 +997,23 @@ function WallDrawingLayerInner({
             }
           }
         } else if (junction.type === 'free') {
-          // Pull the snap target halfThickness in from the data endpoint along the wall
-          // direction, into the body — that's where the centre of the corner block sits
-          // for clean masonry alignment.
+          // Pull the snap target HALF-MODULAR in from the data endpoint
+          // along the wall direction — that's (thickness + mortar) / 2,
+          // not just thickness / 2. The extra 5 mm puts the snap line
+          // on the modular grid where the NEW wall's first mortar joint
+          // would sit when it corners against this wall. For AU 190 mm
+          // walls that's 100 mm in (not 95 mm), which keeps every new
+          // corner clean on the 50 mm wall-length grid. Drawing snaps to
+          // halfThickness was a 5 mm off-grid error that propagated
+          // through every wall drawn off another wall's corner.
           const farX = end === 'start' ? w.endX : w.startX
           const farY = end === 'start' ? w.endY : w.startY
           const dx = dataX - farX
           const dy = dataY - farY
           const len = Math.sqrt(dx * dx + dy * dy)
           if (len > 0) {
-            const offset = Math.min(thickness / 2, len)
+            const halfModularMm = (thickness + DEFAULT_MORTAR_JOINT_MM) / 2
+            const offset = Math.min(halfModularMm, len)
             const ux = dx / len
             const uy = dy / len
             snapX = dataX - ux * offset
@@ -1648,7 +1656,11 @@ function WallDrawingLayerInner({
   function cornerLengthAdjustAt(pointMm: Point): number {
     for (const w of walls) {
       if (isCurvedWall(w)) continue
-      const halfT = (wallThicknessByWallId[w.id] ?? 190) / 2
+      // Half-modular = (thickness + mortar) / 2. Matches the snap-target
+      // offset above so the live preview length stays consistent with
+      // where the user is actually clicking.
+      const halfModular =
+        ((wallThicknessByWallId[w.id] ?? 190) + DEFAULT_MORTAR_JOINT_MM) / 2
       for (const which of ['start' as const, 'end' as const]) {
         const junction = which === 'start' ? w.startJunction : w.endJunction
         if (junction.type !== 'free') continue
@@ -1660,13 +1672,13 @@ function WallDrawingLayerInner({
         const ddy = dataY - farY
         const len = Math.sqrt(ddx * ddx + ddy * ddy)
         if (len < 0.001) continue
-        const insetX = dataX - (ddx / len) * halfT
-        const insetY = dataY - (ddy / len) * halfT
+        const insetX = dataX - (ddx / len) * halfModular
+        const insetY = dataY - (ddy / len) * halfModular
         if (
           Math.abs(pointMm.x - insetX) < 1 &&
           Math.abs(pointMm.y - insetY) < 1
         ) {
-          return halfT
+          return halfModular
         }
       }
     }

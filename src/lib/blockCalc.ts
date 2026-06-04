@@ -525,101 +525,12 @@ export function fitCourseLength(
     }
   }
 
-  // ── Step 3b' — multi-fraction rescue ─────────────────────────────
-  //
-  // The single-fraction substitution above only fires when ONE fraction
-  // fits the gap. But many walls have a clean fit using TWO fractions
-  // instead of (one body + one cut). Canonical case: a 990 mm
-  // corner+corner wall non-owning course — ends contribute 400 mm
-  // modular, interior needs 600. The bodies-only path picks 1 body
-  // (400) and rounds up to a cut (200 mm wide). But two 20.02
-  // fractions (300 modular each = 600 modular total) fit EXACTLY,
-  // and crucially produce joints at different positions to the cut
-  // body — so the wall's bond breaks between courses instead of
-  // sharing a vertical seam up the middle.
-  //
-  // We enumerate combinations of (k bodies, m fractions) for k in
-  // [0..nFloor], m in [1..3]. For each combo, check if the total
-  // modular lands within TINY_GAP_MM of the wall length. If any do,
-  // pick the one with the smallest |gap| (preferring exact fits),
-  // breaking ties by fewer fractions / fewer bodies so the simpler
-  // layouts win when multiple combos tie.
-  if (useFractions) {
-    const fracOpts = getFractionOptions()
-    if (fracOpts.length > 0) {
-      type RescueCandidate = {
-        bodyCount: number
-        fractions: BlockCode[]
-        actualLengthMm: number
-        absGap: number
-      }
-      let best: RescueCandidate | null = null
-      const evaluateCombo = (bodyCount: number, fracs: FractionOption[]) => {
-        const totalModular =
-          endsTotal +
-          bodyCount * BODY_BLOCK_MODULE_MM +
-          fracs.reduce((s, f) => s + f.modular, 0)
-        const actualLength = totalModular - MORTAR_MM
-        const absGap = Math.abs(wallLengthMm - actualLength)
-        if (absGap > TINY_GAP_MM) return
-        if (best === null) {
-          best = {
-            bodyCount,
-            fractions: fracs.map((f) => f.code),
-            actualLengthMm: actualLength,
-            absGap,
-          }
-          return
-        }
-        // Tie-breakers: smaller |gap|, then fewer fractions, then fewer bodies.
-        if (
-          absGap < best.absGap ||
-          (absGap === best.absGap && fracs.length < best.fractions.length) ||
-          (absGap === best.absGap &&
-            fracs.length === best.fractions.length &&
-            bodyCount < best.bodyCount)
-        ) {
-          best = {
-            bodyCount,
-            fractions: fracs.map((f) => f.code),
-            actualLengthMm: actualLength,
-            absGap,
-          }
-        }
-      }
-      // Enumerate 0..3 fractions × 0..nFloor bodies. 3 is a sensible
-      // cap — more than that is rare in practice and the search blows
-      // up combinatorially. nFloor as upper body bound keeps us in
-      // sensible territory (we already proved nFloor+1 overshoots).
-      const maxFractions = 3
-      for (let bodyCount = 0; bodyCount <= nFloor; bodyCount++) {
-        // 1 fraction
-        for (const f1 of fracOpts) {
-          evaluateCombo(bodyCount, [f1])
-          // 2 fractions
-          if (maxFractions >= 2) {
-            for (const f2 of fracOpts) {
-              evaluateCombo(bodyCount, [f1, f2])
-              // 3 fractions
-              if (maxFractions >= 3) {
-                for (const f3 of fracOpts) {
-                  evaluateCombo(bodyCount, [f1, f2, f3])
-                }
-              }
-            }
-          }
-        }
-      }
-      if (best !== null) {
-        return {
-          bodyCount: (best as RescueCandidate).bodyCount,
-          fractions: (best as RescueCandidate).fractions,
-          actualLengthMm: (best as RescueCandidate).actualLengthMm,
-          cutBlocks: 0,
-        }
-      }
-    }
-  }
+  // Multi-fraction rescue intentionally not used: bricklayers don't
+  // lay fractions back-to-back. Step 3b above is the only fraction
+  // path — it adds a single fraction in the last column position
+  // (after bodies, before the end block). When step 3b can't find a
+  // fitting fraction, step 3c falls through to a cut body in the
+  // last column.
 
   // Step 3c — no fraction fits, gap isn't tiny → round up to N+1 bodies
   // and mark one as cut. Identical to the fractions-OFF behaviour for

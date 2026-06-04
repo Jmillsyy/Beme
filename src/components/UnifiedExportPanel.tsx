@@ -245,30 +245,26 @@ function ExportEstimateModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Area selection. Default seed:
-  //   - One area → that area + Unassigned ticked, picker hidden.
-  //     We include Unassigned in the single-area case because legacy
-  //     projects can have walls drawn BEFORE the area was created,
-  //     leaving them with no areaId. Excluding them would empty the
-  //     tally and hide every adjustment row — confusingly making it
-  //     look like the modal can't change anything.
-  //   - activeAreaId → only that area ticked (current scope wins).
-  //   - Otherwise → every area + Unassigned ticked (everything export).
+  // Area selection. Default to EVERY area + Unassigned ticked so
+  // exports include the whole project by default — that matches how a
+  // builder reads an estimate (the whole job, not just one floor).
+  // Earlier this defaulted to just the active area when activeAreaId
+  // was set, which silently dropped every wall in other areas from
+  // the tally + wall types list. User had to remember to tick the
+  // others; if they didn't, the PDF was missing wall types they
+  // expected to see. Defaulting to all-on means the export always
+  // surfaces everything, and the user can deselect any area they
+  // want excluded.
   const initialSelectedAreas = useMemo(() => {
     const s = new Set<string>()
-    if (areas.length === 1) {
-      s.add(areas[0].id)
-      s.add(UNASSIGNED)
-    } else if (activeAreaId) {
-      s.add(activeAreaId)
-    } else {
-      for (const a of areas) s.add(a.id)
-      s.add(UNASSIGNED)
-    }
+    for (const a of areas) s.add(a.id)
+    s.add(UNASSIGNED)
     return s
     // Initial state only — see comment block above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // activeAreaId intentionally not consumed here — see initialSelectedAreas.
+  void activeAreaId
   const [selectedAreas, setSelectedAreas] =
     useState<Set<string>>(initialSelectedAreas)
 
@@ -882,6 +878,7 @@ function ExportEstimateModal({
           brickSettings,
           brickPagesInfo,
           brickAdjustments,
+          areas,
           view3dSnapshots,
         })
       } else if (exportMode === 'block' || exportMode === 'brick') {
@@ -906,6 +903,10 @@ function ExportEstimateModal({
             openings: brickOpenings,
             settings: brickSettings,
             makeups: brickMakeups,
+            // Project areas pass through so the Brickwork by Wall Type
+            // table can group rows under area headings (First Floor /
+            // Second Floor / etc.).
+            areas,
             pagesInfo: brickPagesInfo,
             brickAdjustments,
             view3dSnapshots,

@@ -16,6 +16,7 @@ import type {
   ProjectDetails,
   Wall,
 } from '../types/walls'
+import type { ProjectArea } from './projectStorage'
 import { calculateBrickTally } from './brickCalc'
 import { downloadPdfFromHtml } from './pdfExport'
 import { rasterisePdfPage } from './pdfRaster'
@@ -105,6 +106,15 @@ interface ExportParams {
   /** Brick wall types — used to colour the Wall Layout diagrams and group
    *  walls for the legend. Optional + defaulted-empty for older callers. */
   makeups?: BrickMakeup[]
+  /**
+   * Project areas (e.g. "First Floor", "Second Floor"). Optional so older
+   * callers stay valid. When provided, the Brickwork by Wall Type table
+   * groups rows under area headings so the estimator can see at a glance
+   * which wall types live on which floor — and any wall whose areaId
+   * doesn't resolve gets surfaced under an "Unassigned" group so missing
+   * area data isn't silently buried.
+   */
+  areas?: ProjectArea[]
   /**
    * Per brick-type quantity adjustments — same semantics as
    * `blockAdjustments` in blockExport: positive number = bricks of
@@ -587,6 +597,7 @@ export async function buildBrickEstimateHtml(
     settings,
     business,
     makeups = [],
+    areas,
     pdfFile,
     pagesInfo,
     view3dSnapshots,
@@ -1006,19 +1017,148 @@ export async function buildBrickEstimateHtml(
     `
     : ''
 
-  // Per-wall-type (per-makeup) breakdown. Each wall makeup gets its
-  // own row showing gross area / openings deducted / net area /
-  // bricks needed — so the estimator can price each wall type
-  // independently (Common $X/m², Facework $Y/m², etc.) without
+  // Opening trim bricks (sill / head courses) — one row per brick type
+  // used as sill or head, with the count of trim bricks the bricklayer
+  // needs to order separately from the body brickwork. Only renders
+  // when at least one makeup on the project nominated a trim brick;
+  // empty for legacy projects without sill / head codes set.
+  const trimEntries = Object.entries(tally.openingTrimByType ?? {}).sort(
+    (a, b) => b[1] - a[1],
+  )
+  const trimTable = trimEntries.length > 0
+    ? `
+      <h2 class="section-title">Opening Trim Bricks</h2>
+      <p style="margin: 4px 0 8px; color: #555; font-size: 12px;">
+        Sill and head course bricks ordered separately from the body
+        brickwork. One course's worth of bricks per opening, including
+        bearing overhang at each end. Tally is the sum across every
+        opening on walls whose type nominates a trim brick.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Brick</th><th class="right">Quantity</th></tr>
+        </thead>
+        <tbody>
+          ${trimEntries
+            .map(([code, count]) => {
+              const brick = BRICK_LIBRARY[code]
+              const label = brick?.name ?? code ?? 'Project default'
+              return `<tr><td>${escapeHtml(label)}</td><td class="right">${count.toLocaleString()}</td></tr>`
+            })
+            .join('')}
+        </tbody>
+      </table>
+    `
+    : ''
+
+  const brickMakeupsById = new Map(makeups.map((m) => [m.id, m]))
+  // Per-wall-type (per-makeup) breakdown, grouped by AREA. Each wall
+  // makeup gets a row under its area heading showing gross area /
+  // openings deducted / net area / bricks needed — so the estimator
+  // can price each wall type independently per floor (Common $X/m²
+  // on Ground Floor, Facework $Y/m² on First Floor, etc.) without
   // re-doing the deduction maths by hand.
   //
-  // Hidden when there's only ONE makeup on the project (or no
-  // makeups at all), since a one-row table just duplicates the
-  // Brick Area Summary above.
-  const makeupBuckets = Object.values(tally.byMakeup ?? {})
-    .filter((b) => b.grossAreaSqMm > 0)
-    .sort((a, b) => b.grossAreaSqMm - a.grossAreaSqMm)
-  const makeupBreakdownTable = makeupBuckets.length > 1
+  // Hidden when there's only ONE makeup on the project (or no makeups
+  // at all), since a one-row table just duplicates the Brick Area
+  // Summary above.
+  //
+  // Per-area aggregation works by re-bucketing each wall against
+  // (areaId, makeupId) — `tally.byMakeup` doesn't carry area info
+  // because the tally engine is area-agnostic. We re-compute per-area
+  // gross/net/opening here using the same engine pattern.
+  type AreaMakeupRow = {
+    areaId: string | null
+    makeupId: string
+    wallCount: number
+    grossAreaSqMm: number
+    openingAreaSqMm: number
+    netAreaSqMm: number
+    brickCount: number
+  }
+  const rowsByKey: Record<string, AreaMakeupRow> = {}
+  const openingsByWallId = new Map<string, Opening[]>()
+  for (const op of openings) {
+    if (!op.wallId) continue
+    const arr = openingsByWallId.get(op.wallId) ?? []
+    arr.push(op)
+    openingsByWallId.set(op.wallId, arr)
+  }
+  for (const w of walls) {
+    const areaKey = w.areaId ?? ''
+    const makeupKey = w.makeupId || '__none__'
+    const key = `${areaKey}|${makeupKey}`
+    const row =
+      rowsByKey[key] ??
+      (rowsByKey[key] = {
+        areaId: w.areaId ?? null,
+        makeupId: makeupKey,
+        wallCount: 0,
+        grossAreaSqMm: 0,
+        openingAreaSqMm: 0,
+        netAreaSqMm: 0,
+        brickCount: 0,
+      })
+    const makeup = brickMakeupsById.get(w.makeupId)
+    const height =
+      w.heightMmOverride ??
+      makeup?.heightMm ??
+      settings.defaultWallHeightMm
+    // Brick walls don't have corner extensions like block walls do, so
+    // a simple Euclidean length matches what calculateBrickTally does
+    // for the same wall.
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    const len = Math.sqrt(dx * dx + dy * dy)
+    const gross = len * height
+    const wallOps = openingsByWallId.get(w.id) ?? []
+    const opArea = wallOps.reduce(
+      (s, o) => s + o.widthMm * o.heightMm,
+      0,
+    )
+    const net = Math.max(0, gross - opArea)
+    row.wallCount += 1
+    row.grossAreaSqMm += gross
+    row.openingAreaSqMm += opArea
+    row.netAreaSqMm += net
+    // Brick count for this wall using its own makeup's rate (falls
+    // back to project default when the makeup carries no rate).
+    const rate = settings.bricksPerSquareMetre
+    row.brickCount += Math.ceil((net / 1_000_000) * rate)
+  }
+  const allRows = Object.values(rowsByKey).filter((r) => r.grossAreaSqMm > 0)
+  // Order areas: project order first, then any 'Unassigned' / unknown
+  // area at the bottom. Within an area, sort wall-type rows by net
+  // area DESC so the biggest contributor leads.
+  const areaIdOrder = new Map<string, number>()
+  if (areas) {
+    for (let i = 0; i < areas.length; i++) areaIdOrder.set(areas[i].id, i)
+  }
+  const areaOrder = (id: string | null): number =>
+    id === null
+      ? Number.POSITIVE_INFINITY
+      : areaIdOrder.get(id) ?? Number.POSITIVE_INFINITY - 1
+  allRows.sort((a, b) => {
+    const ao = areaOrder(a.areaId)
+    const bo = areaOrder(b.areaId)
+    if (ao !== bo) return ao - bo
+    return b.netAreaSqMm - a.netAreaSqMm
+  })
+  // Group by area for rendering.
+  const groupedByArea: Array<{
+    areaName: string
+    rows: AreaMakeupRow[]
+  }> = []
+  for (const row of allRows) {
+    const areaName =
+      row.areaId === null
+        ? 'Unassigned'
+        : areas?.find((a) => a.id === row.areaId)?.name ?? 'Unknown area'
+    const last = groupedByArea[groupedByArea.length - 1]
+    if (last && last.areaName === areaName) last.rows.push(row)
+    else groupedByArea.push({ areaName, rows: [row] })
+  }
+  const makeupBreakdownTable = allRows.length > 1
     ? `
       <h2 class="section-title">Brickwork by Wall Type</h2>
       <table>
@@ -1033,41 +1173,59 @@ export async function buildBrickEstimateHtml(
           </tr>
         </thead>
         <tbody>
-          ${makeupBuckets
-            .map((b) => {
-              const makeup =
-                b.makeupId === '__none__'
-                  ? null
-                  : makeups.find((m) => m.id === b.makeupId) ?? null
-              const label = makeup?.name ?? 'No wall type'
-              const gross = b.grossAreaSqMm / 1_000_000
-              const opening = b.openingAreaSqMm / 1_000_000
-              const net = b.netAreaSqMm / 1_000_000
-              return `<tr>
-                <td>${escapeHtml(label)}</td>
-                <td class="right">${b.wallCount}</td>
-                <td class="right">${formatNumber(gross, 3)}</td>
-                <td class="right">${opening > 0 ? `-${formatNumber(opening, 3)}` : '0'}</td>
-                <td class="right">${formatNumber(net, 3)}</td>
-                <td class="right">${b.brickCount.toLocaleString()}</td>
+          ${groupedByArea
+            .map((group) => {
+              const groupGross = group.rows.reduce((s, r) => s + r.grossAreaSqMm, 0)
+              const groupOpening = group.rows.reduce((s, r) => s + r.openingAreaSqMm, 0)
+              const groupNet = group.rows.reduce((s, r) => s + r.netAreaSqMm, 0)
+              const groupBricks = group.rows.reduce((s, r) => s + r.brickCount, 0)
+              const groupWallCount = group.rows.reduce((s, r) => s + r.wallCount, 0)
+              const header = `<tr class="area-header">
+                <td colspan="6" style="background: #f3f0ea; font-weight: 600; padding-top: 6px;">${escapeHtml(group.areaName)}</td>
               </tr>`
+              const rowsHtml = group.rows
+                .map((r) => {
+                  const makeup =
+                    r.makeupId === '__none__'
+                      ? null
+                      : makeups.find((m) => m.id === r.makeupId) ?? null
+                  const label = makeup?.name ?? 'No wall type'
+                  return `<tr>
+                    <td>${escapeHtml(label)}</td>
+                    <td class="right">${r.wallCount}</td>
+                    <td class="right">${formatNumber(r.grossAreaSqMm / 1_000_000, 3)}</td>
+                    <td class="right">${r.openingAreaSqMm > 0 ? `-${formatNumber(r.openingAreaSqMm / 1_000_000, 3)}` : '0'}</td>
+                    <td class="right">${formatNumber(r.netAreaSqMm / 1_000_000, 3)}</td>
+                    <td class="right">${r.brickCount.toLocaleString()}</td>
+                  </tr>`
+                })
+                .join('')
+              const subtotal = groupedByArea.length > 1
+                ? `<tr class="area-subtotal" style="font-style: italic;">
+                    <td>${escapeHtml(group.areaName)} subtotal</td>
+                    <td class="right">${groupWallCount}</td>
+                    <td class="right">${formatNumber(groupGross / 1_000_000, 3)}</td>
+                    <td class="right">-${formatNumber(groupOpening / 1_000_000, 3)}</td>
+                    <td class="right">${formatNumber(groupNet / 1_000_000, 3)}</td>
+                    <td class="right">${groupBricks.toLocaleString()}</td>
+                  </tr>`
+                : ''
+              return header + rowsHtml + subtotal
             })
             .join('')}
           <tr class="bold">
             <td>Total</td>
             <td class="right">${tally.wallCount}</td>
             <td class="right">${formatNumber(
-              makeupBuckets.reduce((s, b) => s + b.grossAreaSqMm, 0) /
-                1_000_000,
+              allRows.reduce((s, r) => s + r.grossAreaSqMm, 0) / 1_000_000,
               3
             )}</td>
             <td class="right">-${formatNumber(
-              makeupBuckets.reduce((s, b) => s + b.openingAreaSqMm, 0) /
-                1_000_000,
+              allRows.reduce((s, r) => s + r.openingAreaSqMm, 0) / 1_000_000,
               3
             )}</td>
             <td class="right">${formatNumber(
-              makeupBuckets.reduce((s, b) => s + b.netAreaSqMm, 0) / 1_000_000,
+              allRows.reduce((s, r) => s + r.netAreaSqMm, 0) / 1_000_000,
               3
             )}</td>
             <td class="right">${tally.brickCount.toLocaleString()}</td>
@@ -1129,6 +1287,7 @@ export async function buildBrickEstimateHtml(
     summaryTable ||
     makeupBreakdownTable ||
     typeBreakdownTable ||
+    trimTable ||
     accessoriesTable
       ? `
       <section class="page">
@@ -1136,6 +1295,7 @@ export async function buildBrickEstimateHtml(
         ${summaryTable}
         ${makeupBreakdownTable}
         ${typeBreakdownTable}
+        ${trimTable}
         ${accessoriesTable}
       </section>
     `

@@ -36,6 +36,7 @@ import {
 } from './blockExport'
 import { buildBrickEstimateHtml } from './brickExport'
 import { downloadPdfFromHtml } from './pdfExport'
+import type { ProjectArea } from './projectStorage'
 
 export interface CombinedExportParams {
   projectDetails: ProjectDetails
@@ -75,6 +76,12 @@ export interface CombinedExportParams {
   brickPagesInfo?: PageInfo[]
   /** Per-brick-type quantity adjustments — see brickExport ExportParams. */
   brickAdjustments?: Record<string, number>
+
+  /**
+   * Project areas (e.g. First Floor / Second Floor). Forwarded to both
+   * trade builders so the per-wall-type tables can group rows by area.
+   */
+  areas?: ProjectArea[]
 
   /**
    * Optional 3D viewport snapshots shared across BOTH trade sections.
@@ -134,6 +141,7 @@ export async function exportCombinedEstimate(
     brickSettings,
     brickPagesInfo,
     brickAdjustments,
+    areas,
     view3dSnapshots,
   } = params
 
@@ -178,6 +186,7 @@ export async function exportCombinedEstimate(
     openings: brickOpenings,
     settings: brickSettings,
     makeups: brickMakeups,
+    areas,
     business,
     pdfFile,
     pagesInfo: brickPagesInfo,

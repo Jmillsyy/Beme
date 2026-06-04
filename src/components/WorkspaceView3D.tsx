@@ -72,7 +72,9 @@ import { selectBlockLintel } from '../lib/lintels'
 import { rasterisePdfPage } from '../lib/pdfRaster'
 import { useTheme, type Theme } from '../lib/theme'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
+import type { BrickType } from '../types/bricks'
 import {
+  planWall,
   planWallLayout,
   verifyLayoutMatchesTally,
   cornerOwnershipFor,
@@ -675,7 +677,18 @@ function segmentsForStraightWall(
    * masonry block lintels. With this flag the head course just
    * continues as bricks like the rest of the wall.
    */
-  disableBlockLintels = false
+  disableBlockLintels = false,
+  /**
+   * Optional map of each wall's effective height in mm. Used to make
+   * corner ownership height-aware: when two walls of different
+   * heights meet at a corner, the TALLER wall's courses ABOVE the
+   * shorter wall's top render as a free end (half block on even
+   * courses, no corner cube extension) — there's no perpendicular
+   * wall to share a corner with at those upper courses. When the
+   * map is omitted or doesn't contain the partner wall's id, the
+   * corner is treated as full-height like before.
+   */
+  wallHeightMmByWallId?: Record<string, number>
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -929,11 +942,13 @@ function segmentsForStraightWall(
   // even-courses rule that applies to true free / T-junction ends.
   const leftIsControlJoint = wall.startJunction.type === 'control-joint'
   const rightIsControlJoint = wall.endJunction.type === 'control-joint'
-  const leftIsFreeEnd =
+  // Renamed `*Raw` so per-course shadow vars inside grid.map can use
+  // the bare names after the mixed-height corner override.
+  const leftIsFreeEndRaw =
     wall.startJunction.type === 'free' ||
     wall.startJunction.type === 't-junction' ||
     leftIsControlJoint
-  const rightIsFreeEnd =
+  const rightIsFreeEndRaw =
     wall.endJunction.type === 'free' ||
     wall.endJunction.type === 't-junction' ||
     rightIsControlJoint
@@ -953,10 +968,10 @@ function segmentsForStraightWall(
   function cornerPhase(other: string): CornerPhase {
     return wall.id < other ? 'lead-odd' : 'lead-even'
   }
-  const leftPhase: CornerPhase | null = leftCornerNeighbor
+  const leftPhaseRaw: CornerPhase | null = leftCornerNeighbor
     ? cornerPhase(leftCornerNeighbor)
     : null
-  const rightPhase: CornerPhase | null = rightCornerNeighbor
+  const rightPhaseRaw: CornerPhase | null = rightCornerNeighbor
     ? cornerPhase(rightCornerNeighbor)
     : null
   function ownsCornerThisCourse(
@@ -972,6 +987,34 @@ function segmentsForStraightWall(
   const grid: CourseEntry[] = courses.map((course) => {
     const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
+
+    // Mixed-height corner: if the partner wall at a corner end is
+    // SHORTER than this course's top, the corner doesn't physically
+    // exist at this Y — there's nothing perpendicular to bond with.
+    // Treat the end as a free end on THIS course only (override
+    // leftPhase/rightPhase to null, leftIsFreeEnd/rightIsFreeEnd to
+    // true) so the upper courses don't render a corner cube
+    // extension into thin air. Shadowing the outer-scope variables
+    // here scopes the override to this course's grid entry without
+    // touching the wall-level corner config.
+    const courseTopMm = course.y1 * 1000
+    const leftPartnerHeight =
+      leftCornerNeighbor !== undefined && wallHeightMmByWallId
+        ? wallHeightMmByWallId[leftCornerNeighbor]
+        : undefined
+    const rightPartnerHeight =
+      rightCornerNeighbor !== undefined && wallHeightMmByWallId
+        ? wallHeightMmByWallId[rightCornerNeighbor]
+        : undefined
+    const leftCornerActive =
+      leftPartnerHeight === undefined || courseTopMm <= leftPartnerHeight + 0.5
+    const rightCornerActive =
+      rightPartnerHeight === undefined || courseTopMm <= rightPartnerHeight + 0.5
+    const leftPhase = leftCornerActive ? leftPhaseRaw : null
+    const rightPhase = rightCornerActive ? rightPhaseRaw : null
+    const leftIsFreeEnd = leftIsFreeEndRaw || !leftCornerActive
+    const rightIsFreeEnd = rightIsFreeEndRaw || !rightCornerActive
+
     // Half blocks alternate at every non-corner end in stretcher
     // bond — including control joints. The seam between two split
     // halves should show two free-end terminations meeting (full
@@ -2321,13 +2364,35 @@ function CADControls({
     navStyleRef.current = navStyle
   }, [navStyle])
 
+  // Same trick for the scene-bound values consumed by fitView(): we
+  // need them LIVE so pressing F re-frames the current scene, but we
+  // must NOT re-run the controller effect when they change — that
+  // would re-create `target` at the (potentially shifted) scene
+  // centre and snap the user's view back to the default position
+  // every time a wall is added / moved / saved. The refs let fitView
+  // read the current value while the effect's dep array stays stable.
+  const initialTargetXRef = useRef(initialTargetX)
+  const initialTargetZRef = useRef(initialTargetZ)
+  const sceneSizeMaxRef = useRef(sceneSizeMax)
+  useEffect(() => {
+    initialTargetXRef.current = initialTargetX
+    initialTargetZRef.current = initialTargetZ
+    sceneSizeMaxRef.current = sceneSizeMax
+  }, [initialTargetX, initialTargetZ, sceneSizeMax])
+
   useEffect(() => {
     const dom = gl.domElement
 
     // Orbit target. Initially at the scene's horizontal centre, just
     // above the ground (1m) so we're looking at roughly where the
-    // walls are, not at the ground plane.
-    const target = new THREE.Vector3(initialTargetX, 1, initialTargetZ)
+    // walls are, not at the ground plane. Read from refs so subsequent
+    // bound changes (wall edits / saves) don't re-trigger this effect
+    // and snap the camera back.
+    const target = new THREE.Vector3(
+      initialTargetXRef.current,
+      1,
+      initialTargetZRef.current,
+    )
 
     // Seed spherical coords (theta=azimuth, phi=polar) from the
     // camera's offset from the target — so the controller picks up
@@ -2503,14 +2568,14 @@ function CADControls({
      *  convention) and exposed on `window.__beme3dFit` so the overlay
      *  button can call into it. */
     const fitView = () => {
-      target.set(initialTargetX, 1, initialTargetZ)
+      target.set(initialTargetXRef.current, 1, initialTargetZRef.current)
       const FIT_FOV_RAD = (45 * Math.PI) / 180
       // Same aggressive multiplier (0.55) as the initial framing so
       // F-fit and the initial view match. See initialCamera comments
       // for the trade-off.
       const dist = Math.max(
         4,
-        (sceneSizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.55
+        (sceneSizeMaxRef.current / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.55
       )
       // theta = horizontal angle (45° = corner view).
       // phi = polar angle from world Y; ~60° gives a 3/4 elevation.
@@ -2568,9 +2633,8 @@ function CADControls({
     gl,
     scene,
     invalidate,
-    initialTargetX,
-    initialTargetZ,
-    sceneSizeMax,
+    // initialTargetX/Z and sceneSizeMax intentionally NOT in deps —
+    // read via refs above so wall edits / saves don't snap the camera.
   ])
 
   return null
@@ -2637,6 +2701,28 @@ function Scene({
         if (spec) allCodes.push(spec.code)
       }
     }
+    // Fraction codes — collected from each wall's planWall fits so any
+    // 20.02 / 20.22 (or library-defined fraction) the planner picks for
+    // a course gets its own distinct legend entry + colour. Without
+    // this loop, fractions render in 3D but the legend only lists
+    // body / corner / half / lintel, so the user has no way to see
+    // which fraction code corresponds to which colour on the wall.
+    const wallsByIdForFractions: Record<string, Wall> = {}
+    for (const w of walls) wallsByIdForFractions[w.id] = w
+    for (let i = 0; i < walls.length; i++) {
+      const wall = walls[i]
+      if (wall.trade === 'brick') continue
+      const makeup = makeupsById[wall.makeupId]
+      if (!makeup) continue
+      try {
+        const plan = planWall(wall, makeup, wallThicknessByWallId, wallsByIdForFractions)
+        for (const fracCode of plan.oddCourseFit.fractions) allCodes.push(fracCode)
+        for (const fracCode of plan.evenCourseFit.fractions) allCodes.push(fracCode)
+      } catch {
+        // planWall throws on degenerate geometry (zero-length walls).
+        // Skip silently — those walls won't render fractions anyway.
+      }
+    }
     // Build the colour map via plain hash-based `bandColor` for every
     // code. We DELIBERATELY don't use buildBlockColorMap here, even
     // though it would dedupe slot collisions — because the
@@ -2667,6 +2753,21 @@ function Scene({
     // rebuilding per wall.
     const wallsByIdMap: Record<string, Wall> = {}
     for (const w of walls) wallsByIdMap[w.id] = w
+
+    // Map of each wall's effective height in mm. Used by
+    // segmentsForStraightWall to make corner ownership HEIGHT-AWARE:
+    // when two walls of different heights meet at a corner, the
+    // taller wall's courses above the shorter wall's top render as
+    // a free end (no corner cube extension) — there's no
+    // perpendicular wall to share a corner with up there.
+    const wallHeightMmByWallId: Record<string, number> = {}
+    for (const w of walls) {
+      wallHeightMmByWallId[w.id] = resolveWallHeightMm(
+        w,
+        makeupsById,
+        brickMakeupsById,
+      )
+    }
 
     /**
      * Emit a mortar fill behind every brick/block face of the given wall.
@@ -2915,13 +3016,28 @@ function Scene({
 
         // Default opening position: head sits HEAD_DROP_FROM_TOP_MM
         // (= 300mm) below the wall top, with the opening height
-        // subtracted downward from there. The 2D opening tool only
-        // captures width × height for brick openings (no explicit
-        // vertical position), so without this override every opening
-        // would default to sill=0 (door at floor).
+        // subtracted downward from there. The 2D opening tool used
+        // to only capture width × height for brick openings (no
+        // explicit vertical position), so this override anchored
+        // every opening near the wall top by default — fine for
+        // legacy windows but DEAD WRONG for doors, which need to
+        // sit on the floor.
+        //
+        // Now: doors ALWAYS sit at sill=0 (floor). Windows with a
+        // stored sill > 0 honour the stored value (the opening
+        // modal lets the user pick). Windows with sill=0 (legacy
+        // brick openings created before the kind / sill picker)
+        // fall back to the head-drop default so existing projects
+        // render unchanged.
         const HEAD_DROP_FROM_TOP_MM = 300
         const brickOpenings = openings.map((o) => {
           if (o.wallId !== wall.id) return o
+          if (o.kind === 'door') {
+            return { ...o, sillHeightMm: 0 }
+          }
+          if (o.sillHeightMm > 0) {
+            return o
+          }
           const sill = Math.max(0, heightMm - HEAD_DROP_FROM_TOP_MM - o.heightMm)
           return { ...o, sillHeightMm: sill }
         })
@@ -2938,67 +3054,107 @@ function Scene({
         // junctions, swapping end widths between cornerWidth (owning)
         // and the fudged neighbour thickness (non-owning) to produce
         // the half-brick offset stretcher bond needs.
+        // Per-course brick type resolution from the makeup's
+        // courseRanges. Each range starts at a given course number and
+        // its brickTypeCode applies until the NEXT range begins (or to
+        // the top of the wall if it's the last range). Course 1 falls
+        // back to the makeup's primary brickTypeCode when no range
+        // covers it explicitly. Same algorithm as
+        // resolveBrickCourseSegments in brickCalc.ts so the 3D render
+        // matches the tally bands exactly.
+        const sortedRanges = [
+          ...(brickMakeup?.courseRanges ?? []).filter(
+            (r) =>
+              Number.isFinite(r.fromCourse) &&
+              r.fromCourse >= 1 &&
+              !!r.brickTypeCode,
+          ),
+        ].sort((a, b) => a.fromCourse - b.fromCourse)
+        const brickTypeForCourse = (courseNum: number): string => {
+          let active = brickMakeup?.brickTypeCode ?? ''
+          for (const r of sortedRanges) {
+            if (r.fromCourse > courseNum) break
+            active = r.brickTypeCode
+          }
+          return active
+        }
+        // Synthetic library + colour entries keyed per brick type so
+        // segmentsForStraightWall reads the per-course brick width /
+        // height / depth, and so the legend slot matches the renderer.
+        // Each band gets its own pair of entries:
+        //   __brick_<typeCode>__       — full brick at THIS type's dims
+        //   __brick_<typeCode>_half__  — half brick at THIS type's dims
+        const ensureSyntheticEntries = (code: string) => {
+          const fullKey = `__brick_${code}__`
+          const halfKey = `__brick_${code}_half__`
+          if (brickLibrary[fullKey]) return { fullKey, halfKey }
+          const bt = code ? BRICK_LIBRARY[code] : undefined
+          const w = bt?.widthMm ?? brickWidthMm
+          const h = bt?.heightMm ?? brickHeightMm
+          const d = bt?.depthMm ?? brickDepthMm
+          brickLibrary[fullKey] = {
+            code: fullKey,
+            name: bt?.name ?? 'Brick',
+            description: 'Brick wall unit',
+            dimensions: { widthMm: w, heightMm: h, depthMm: d },
+            roles: ['body', 'corner'],
+          } as Block
+          brickLibrary[halfKey] = {
+            code: halfKey,
+            name: `${bt?.name ?? 'Brick'} (half)`,
+            description: 'Half brick — stretcher bond end',
+            dimensions: { widthMm: w / 2, heightMm: h, depthMm: d },
+            roles: ['end-termination'],
+          } as Block
+          const colour = bandColor(code || brickPaletteKey, palette)
+          brickColorMap.set(fullKey, colour)
+          brickColorMap.set(halfKey, colour)
+          return { fullKey, halfKey }
+        }
         const brickCourses: ResolvedCourse[] = []
         let cursorMm = 0
         let courseIdx = 0
         while (cursorMm < heightMm - 0.5) {
+          const courseNum = courseIdx + 1
+          const typeCode = brickTypeForCourse(courseNum)
+          const bt = typeCode ? BRICK_LIBRARY[typeCode] : undefined
+          const courseBrickHeight = bt?.heightMm ?? brickHeightMm
+          const courseModMm = courseBrickHeight + BRICK_MORTAR_MM
+          const { fullKey, halfKey } = ensureSyntheticEntries(typeCode)
           const y0Mm = cursorMm
-          const y1Mm = Math.min(heightMm, cursorMm + brickHeightMm)
+          const y1Mm = Math.min(heightMm, cursorMm + courseBrickHeight)
           if (y1Mm - y0Mm > 0.5) {
             brickCourses.push({
-              courseNumber: courseIdx + 1,
+              courseNumber: courseNum,
               y0: y0Mm / 1000,
               y1: y1Mm / 1000,
-              bodyCode: '__brick__',
-              cornerCode: '__brick__',
-              halfCode: '__brick_half__',
+              bodyCode: fullKey,
+              cornerCode: fullKey,
+              halfCode: halfKey,
             })
           }
-          cursorMm += courseModularMm
+          cursorMm += courseModMm
           courseIdx++
         }
-        // Insert opening sill/head boundaries as additional course
-        // splits so partial-height openings carve cleanly (a course
-        // is only marked REMOVED when fully inside an opening's
-        // sill→head range — small bricks already align closely, but
-        // splitting at exact boundaries removes any sliver where
-        // bricks straddle the opening edges).
-        const yBoundariesMm = new Set<number>()
-        for (const op of brickOpenings) {
-          if (op.wallId !== wall.id) continue
-          const sillMm = Math.max(0, Math.min(heightMm, op.sillHeightMm))
-          const headMm = Math.max(0, Math.min(heightMm, op.sillHeightMm + op.heightMm))
-          if (headMm > sillMm) {
-            yBoundariesMm.add(sillMm)
-            yBoundariesMm.add(headMm)
-          }
-        }
-        if (yBoundariesMm.size > 0) {
-          // Re-build courses by splitting any course that straddles
-          // a boundary into two sub-courses at the boundary.
-          const split: ResolvedCourse[] = []
-          for (const c of brickCourses) {
-            const cuts = Array.from(yBoundariesMm)
-              .map((mm) => mm / 1000)
-              .filter((y) => y > c.y0 + 0.0005 && y < c.y1 - 0.0005)
-              .sort((a, b) => a - b)
-            if (cuts.length === 0) {
-              split.push(c)
-              continue
-            }
-            let last = c.y0
-            for (const y of cuts) {
-              split.push({ ...c, y0: last, y1: y })
-              last = y
-            }
-            split.push({ ...c, y0: last, y1: c.y1 })
-          }
-          brickCourses.splice(0, brickCourses.length, ...split.map((c, i) => ({ ...c, courseNumber: i + 1 })))
-        }
+        // Opening sill / head no longer splits courses. The old
+        // course-splitting pass tried to "snap" courses to opening
+        // boundaries so the renderer wouldn't draw bricks straddling
+        // an opening edge — but the split itself produced sliver
+        // sub-courses (a course straddling y=900 became two strips
+        // of 40 mm and 36 mm), and those slivers still rendered as
+        // full-width bricks at squashed height, which looked like
+        // random cut bricks in the middle of the wall. Letting
+        // courses run at their natural height and trusting
+        // segmentsForStraightWall to carve the body cells inside
+        // opening x-spans gives a clean wall without any sliver
+        // artefacts. The trade-off: bricks at the very edge of an
+        // opening's sill / head are clipped by the opening void, the
+        // same way a real bricklayer would cut a brick to fit.
 
-        // Half-brick uses the same colour as the full brick — the
-        // stretcher offset is geometric, not a visual distinction.
-        brickColorMap.set('__brick_half__', bandColor(brickPaletteKey, palette))
+        // Half-brick colour entries are now created per-band by
+        // ensureSyntheticEntries above (each band has its own
+        // __brick_<typeCode>_half__ key sharing the band's colour),
+        // so no global half-brick colour mapping is needed.
 
         // Fudged thickness map for brick corners.
         //
@@ -3028,14 +3184,659 @@ function Scene({
         // lookups (e.g. fallback paths) see the same value.
         brickCubeThicknessMap[wall.id] = cubeHalfBrick
 
+        // ── Sill / head trim — anchored at opening edge ─────────────
+        //
+        // The trim brick uses its makeup dimensions (height + face
+        // width) and ANCHORS at the opening edge:
+        //   - Sill trim: top at sillHeightMm (= bottom of opening),
+        //     bottom at sillHeightMm − trimHeight.
+        //   - Head trim: bottom at openingHeadMm (= top of opening),
+        //     top at openingHeadMm + trimHeight.
+        // The trim is a row of full-size makeup bricks. Whatever body
+        // course(s) it overlaps get FULLY carved (ghost opening that
+        // covers the union of trim Y + overlapping course Y ranges,
+        // so the body course is fully contained for carving). The
+        // gap between the trim edge and the next intact body course
+        // edge is filled with a thin body-coloured sliver (the "cut"
+        // body brick) so the wall doesn't show a void.
+        const trimMakeup = brickMakeup
+        const trimGhostOpenings: Opening[] = []
+        type TrimZone = {
+          op: Opening
+          kind: 'sill' | 'head'
+          /** Trim brick render Y range — anchored to opening edge. */
+          trimY0Mm: number
+          trimY1Mm: number
+          /** Body-sliver filler Y range — null if no cut needed. */
+          fillerY0Mm: number | null
+          fillerY1Mm: number | null
+          startMm: number
+          endMm: number
+          brickFaceWidthMm: number
+          /**
+           * The trim brick's depth INTO the wall (perpendicular to
+           * the wall face). Drives the rendered thickness — a header
+           * brick (depth = 230 mm) extends past a 110 mm wall, so
+           * `brickFaceDepthMm > wallThicknessMm` means the trim
+           * sticks out front + back equally.
+           */
+          brickFaceDepthMm: number
+          colour: string
+          fillerColour: string
+        }
+        const trimYZones: TrimZone[] = []
+
+        if (trimMakeup && (trimMakeup.sillBrickCode || trimMakeup.headBrickCode)) {
+          const wallLenMmHere = Math.hypot(
+            wall.endX - wall.startX,
+            wall.endY - wall.startY,
+          )
+          const bodyColourFor = (course: { bodyCode: string } | undefined) => {
+            if (!course) return DEFAULT_WALL_COLOR
+            return brickColorMap.get(course.bodyCode) ?? DEFAULT_WALL_COLOR
+          }
+          for (const op of brickOpenings) {
+            if (op.wallId !== wall.id) continue
+            // Trim spans EXACTLY the opening width — no overhang.
+            const startMm = Math.max(0, op.startAlongWallMm ?? 0)
+            const endMm = Math.min(
+              wallLenMmHere,
+              (op.startAlongWallMm ?? 0) + op.widthMm,
+            )
+            if (endMm <= startMm + 1) continue
+
+            // Resolve a brick type + orientation into:
+            //   faceWMm — visible face width (along wall)
+            //   faceHMm — visible face height (vertical)
+            //   faceDMm — brick depth INTO the wall (perpendicular)
+            //
+            // Orientations:
+            //   - stretcher: long face out — L along wall, D into wall,
+            //                H vertical. Face = L × H = w × h. D = d.
+            //   - soldier:   on end, long edge vertical — L vertical,
+            //                D into wall, H along wall. Face = H × L.
+            //                D = d (same as stretcher — depth
+            //                unchanged when rotating around vertical).
+            //   - rowlock:   on edge, depth showing as height —
+            //                L along wall, D vertical, H into wall.
+            //                Face = L × D. D-into-wall = h.
+            //   - header:    flat, typical face UP, brick rolled 90°
+            //                from rowlock — L into wall, H along wall,
+            //                D vertical. Face = H × D (narrow, tall).
+            //                D-into-wall = L = w. Header bricks are
+            //                typically LONGER than the wall is thick,
+            //                so they extend out front AND back of
+            //                the wall equally.
+            const orientedFace = (
+              type: BrickType | undefined,
+              orientation: 'stretcher' | 'soldier' | 'rowlock' | 'header' | undefined,
+            ) => {
+              const w = type?.widthMm ?? brickWidthMm
+              const h = type?.heightMm ?? brickHeightMm
+              const d = type?.depthMm ?? brickDepthMm
+              switch (orientation) {
+                case 'soldier':
+                  return { faceWMm: h, faceHMm: w, faceDMm: d }
+                case 'rowlock':
+                  return { faceWMm: w, faceHMm: d, faceDMm: h }
+                case 'header':
+                  return { faceWMm: h, faceHMm: d, faceDMm: w }
+                default:
+                  return { faceWMm: w, faceHMm: h, faceDMm: d }
+              }
+            }
+
+            // ── Sill trim ──
+            // Doors skip the sill trim — opening reaches the floor,
+            // so there's no sill course to lay bricks under.
+            if (trimMakeup.sillBrickCode && op.kind !== 'door') {
+              const sillType = BRICK_LIBRARY[trimMakeup.sillBrickCode]
+              const {
+                faceWMm: sillBrickWidthMm,
+                faceHMm: sillBrickHeightMm,
+                faceDMm: sillBrickDepthMm,
+              } = orientedFace(sillType, trimMakeup.sillBrickOrientation)
+              const trimY1Mm = op.sillHeightMm
+              const trimY0Mm = Math.max(0, trimY1Mm - sillBrickHeightMm)
+              if (trimY1Mm > trimY0Mm + 0.5) {
+                // Body courses overlapping trim Y range
+                const overlapping = brickCourses.filter((c) => {
+                  const cY0 = c.y0 * 1000
+                  const cY1 = c.y1 * 1000
+                  return cY1 > trimY0Mm + 0.5 && cY0 < trimY1Mm - 0.5
+                })
+                // Ghost MUST fully contain every overlapping course
+                // for the carving condition (op.sill ≤ courseY0 AND
+                // op.head ≥ courseY1) to fire. Extend in both
+                // directions to the union of overlap + trim.
+                // Trim brick sits at its EXACT makeup height. Body
+                // courses overlapping the trim Y range get carved by
+                // the ghost; the gap between the trim's BOTTOM (for
+                // sill) and the lowest carved course's bottom gets
+                // filled with cut body bricks (individual bricks,
+                // not a slab) so the bricklayer logic stays intact.
+                let ghostY0Mm = trimY0Mm
+                let ghostY1Mm = trimY1Mm
+                let fillerY0Mm: number | null = null
+                let fillerY1Mm: number | null = null
+                let fillerColour = DEFAULT_WALL_COLOR
+                if (overlapping.length > 0) {
+                  const lowestY0Mm = Math.min(
+                    ...overlapping.map((c) => c.y0 * 1000),
+                  )
+                  const highestY1Mm = Math.max(
+                    ...overlapping.map((c) => c.y1 * 1000),
+                  )
+                  ghostY0Mm = Math.min(ghostY0Mm, lowestY0Mm)
+                  ghostY1Mm = Math.max(ghostY1Mm, highestY1Mm)
+                  // Body filler BELOW the trim — sits in solid wall.
+                  // (Filler ABOVE the trim would be inside the
+                  // opening void, so omitted for the sill case.)
+                  if (lowestY0Mm < trimY0Mm - 0.5) {
+                    fillerY0Mm = lowestY0Mm
+                    fillerY1Mm = trimY0Mm
+                    const bottomCourse = overlapping.reduce((a, b) =>
+                      a.y0 < b.y0 ? a : b,
+                    )
+                    fillerColour = bodyColourFor(bottomCourse)
+                  }
+                }
+                if (ghostY1Mm > ghostY0Mm + 0.5) {
+                  trimGhostOpenings.push({
+                    id: `${op.id}-sill-trim`,
+                    wallId: op.wallId,
+                    startAlongWallMm: startMm,
+                    widthMm: endMm - startMm,
+                    heightMm: ghostY1Mm - ghostY0Mm,
+                    sillHeightMm: ghostY0Mm,
+                  })
+                }
+                trimYZones.push({
+                  op,
+                  kind: 'sill',
+                  trimY0Mm,
+                  trimY1Mm,
+                  fillerY0Mm,
+                  fillerY1Mm,
+                  startMm,
+                  endMm,
+                  brickFaceWidthMm: sillBrickWidthMm,
+                  brickFaceDepthMm: sillBrickDepthMm,
+                  colour: bandColor(trimMakeup.sillBrickCode, palette),
+                  fillerColour,
+                })
+              }
+            }
+
+            // ── Head trim ──
+            if (trimMakeup.headBrickCode) {
+              const headType = BRICK_LIBRARY[trimMakeup.headBrickCode]
+              const {
+                faceWMm: headBrickWidthMm,
+                faceHMm: headBrickHeightMm,
+                faceDMm: headBrickDepthMm,
+              } = orientedFace(headType, trimMakeup.headBrickOrientation)
+              const trimY0Mm = op.sillHeightMm + op.heightMm
+              const trimY1Mm = Math.min(
+                totalHeightM * 1000,
+                trimY0Mm + headBrickHeightMm,
+              )
+              if (trimY1Mm > trimY0Mm + 0.5) {
+                const overlapping = brickCourses.filter((c) => {
+                  const cY0 = c.y0 * 1000
+                  const cY1 = c.y1 * 1000
+                  return cY1 > trimY0Mm + 0.5 && cY0 < trimY1Mm - 0.5
+                })
+                let ghostY0Mm = trimY0Mm
+                let ghostY1Mm = trimY1Mm
+                let fillerY0Mm: number | null = null
+                let fillerY1Mm: number | null = null
+                let fillerColour = DEFAULT_WALL_COLOR
+                if (overlapping.length > 0) {
+                  const lowestY0Mm = Math.min(
+                    ...overlapping.map((c) => c.y0 * 1000),
+                  )
+                  const highestY1Mm = Math.max(
+                    ...overlapping.map((c) => c.y1 * 1000),
+                  )
+                  ghostY0Mm = Math.min(ghostY0Mm, lowestY0Mm)
+                  ghostY1Mm = Math.max(ghostY1Mm, highestY1Mm)
+                  // Body filler ABOVE the trim — sits in solid wall.
+                  // Rendered as individual cut bricks below.
+                  if (highestY1Mm > trimY1Mm + 0.5) {
+                    fillerY0Mm = trimY1Mm
+                    fillerY1Mm = highestY1Mm
+                    const topCourse = overlapping.reduce((a, b) =>
+                      a.y1 > b.y1 ? a : b,
+                    )
+                    fillerColour = bodyColourFor(topCourse)
+                  }
+                }
+                if (ghostY1Mm > ghostY0Mm + 0.5) {
+                  trimGhostOpenings.push({
+                    id: `${op.id}-head-trim`,
+                    wallId: op.wallId,
+                    startAlongWallMm: startMm,
+                    widthMm: endMm - startMm,
+                    heightMm: ghostY1Mm - ghostY0Mm,
+                    sillHeightMm: ghostY0Mm,
+                  })
+                }
+                trimYZones.push({
+                  op,
+                  kind: 'head',
+                  trimY0Mm,
+                  trimY1Mm,
+                  fillerY0Mm,
+                  fillerY1Mm,
+                  startMm,
+                  endMm,
+                  brickFaceWidthMm: headBrickWidthMm,
+                  brickFaceDepthMm: headBrickDepthMm,
+                  colour: bandColor(trimMakeup.headBrickCode, palette),
+                  fillerColour,
+                })
+              }
+            }
+          }
+        }
+
+        const renderingOpenings = [...brickOpenings, ...trimGhostOpenings]
         out.push(
           ...segmentsForStraightWall(
-            wall, brickOpenings, thicknessMm, brickCourses, totalHeightM,
+            wall, renderingOpenings, thicknessMm, brickCourses, totalHeightM,
             'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap,
-            /* disableBlockLintels */ true
+            /* disableBlockLintels */ true,
+            wallHeightMmByWallId,
           )
         )
-        emitMortarForWall(wall, thicknessMm, totalHeightM, brickOpenings)
+        emitMortarForWall(wall, thicknessMm, totalHeightM, renderingOpenings)
+
+        // ── Jamb mortar cover ──────────────────────────────────────
+        //
+        // segmentsForStraightWall stamps a JAMB cell at every
+        // opening edge with the bond's corner / half code. That
+        // creates a 10 mm VERTICAL mortar joint between the jamb
+        // brick and the body brick adjacent to it — visible at the
+        // opening edge as a dark vertical column running the full
+        // opening height. In real brickwork the body bond just
+        // continues to the cut at the opening edge, so there's no
+        // visible joint at the jamb position.
+        //
+        // We cover that visual gap by emitting a body-coloured box
+        // at each jamb spanning the opening Y range, at the wall's
+        // axial centerline + standard wall thickness. The cover
+        // sits BEHIND the body / jamb brick faces (recessed
+        // slightly) so it doesn't z-fight with them — it only fills
+        // the 10 mm vertical mortar joint that would otherwise
+        // expose the scene background.
+        if (brickOpenings.some((o) => o.wallId === wall.id)) {
+          // Use the SAME corner-extended endpoints as
+          // segmentsForStraightWall — the cover's world position
+          // must match the body bricks' world position or the
+          // joint stays visible. wall.startX/endX alone is OFF by
+          // the corner extension at corner / t-junction ends, which
+          // is exactly the asymmetric "mortar protruding on the
+          // left but not the right" the user noticed.
+          const extJ = outerEdgeEndpoints(wall, brickCubeThicknessMap, wallsByIdMap)
+          const sxJ = -extJ.startX / 1000
+          const szJ = -extJ.startY / 1000
+          const exJ = -extJ.endX / 1000
+          const ezJ = -extJ.endY / 1000
+          const dxJ = exJ - sxJ
+          const dzJ = ezJ - szJ
+          const wallLenMJ = Math.hypot(dxJ, dzJ)
+          if (wallLenMJ > 0.001) {
+            const dirXJ = dxJ / wallLenMJ
+            const dirZJ = dzJ / wallLenMJ
+            const yRotJ = Math.atan2(-dzJ, dxJ)
+            // Pick the body code of a course AT the opening's Y
+            // range, NOT the bottom-most course. For walls with
+            // courseRanges (e.g. double-height bricks at lower
+            // courses, standard bricks higher up), the bottom
+            // course may be a completely different brick from the
+            // one around the opening — using the wrong colour
+            // makes the cover bleed through the mortar joints of
+            // every body brick on this wall in the wrong colour.
+            //
+            // Picked per-opening below.
+            // Cover thickness MUST be less than the mortar band's
+            // thickness so the regular mortar between body bricks
+            // (which fills horizontal joints and the vertical 6 mm
+            // gaps within a course) wins the depth test against
+            // the cover. Otherwise the cover shows through every
+            // mortar joint on the wall in the cover's colour.
+            // mortarBand thickness = wall × MORTAR_THICKNESS_FRAC
+            // = ~96.8 mm for a 110 mm wall. Cover = mortar − 2 mm.
+            const JAMB_COVER_THICKNESS_M =
+              Math.max(
+                0.001,
+                (thicknessMm / 1000) * MORTAR_THICKNESS_FRAC - 0.002,
+              )
+            // Cover spans the FULL jamb width PLUS the opening edge
+            // gap. There are TWO exposed mortar joints at each jamb:
+            //   (1) body/jamb joint at (opStart - jambW)
+            //   (2) jamb/opening edge gap at opStart (3 mm mortar
+            //       inset on the jamb brick's edge facing the void)
+            // And the jamb width alternates per course in stretcher
+            // bond (full vs half brick). Use the FULL brick width
+            // for the cover span and extend to the opening edge.
+            // This handles all course alternations + both joints at
+            // once. Recessed thickness so the body / jamb brick
+            // faces render in front; the cover only fills the
+            // gaps between bricks.
+            const COVER_EDGE_INSET_MM = 6 // extends past body/jamb joint
+            for (const op of brickOpenings) {
+              if (op.wallId !== wall.id) continue
+              const opStartMmJ = op.startAlongWallMm ?? 0
+              const opEndMmJ = opStartMmJ + op.widthMm
+              const opSillM = op.sillHeightMm / 1000
+              const opHeadM = (op.sillHeightMm + op.heightMm) / 1000
+              const heightM = opHeadM - opSillM
+              if (heightM < 0.001) continue
+              // Pick a body course whose Y range overlaps the
+              // opening's centre — that course's bodyCode is the
+              // colour the body bricks adjacent to the opening are
+              // actually drawn with.
+              const opMidY = (opSillM + opHeadM) / 2
+              const coverCourse =
+                brickCourses.find(
+                  (c) => c.y0 <= opMidY && c.y1 >= opMidY,
+                ) ?? brickCourses[brickCourses.length - 1] ?? brickCourses[0]
+              const jambCoverColour =
+                (coverCourse?.bodyCode &&
+                  brickColorMap.get(coverCourse.bodyCode)) ??
+                DEFAULT_WALL_COLOR
+              // ── Left jamb cover ──
+              // From (opStart − brickWidth − 6 mm) to opStart.
+              // Covers the body/jamb joint, the jamb brick itself,
+              // and the jamb/opening edge gap.
+              {
+                const leftStartMm = Math.max(
+                  0,
+                  opStartMmJ - brickWidthMm - COVER_EDGE_INSET_MM,
+                )
+                const leftEndMm = opStartMmJ
+                if (leftEndMm > leftStartMm) {
+                  const centreM = (leftStartMm + leftEndMm) / 2 / 1000
+                  const lenM = (leftEndMm - leftStartMm) / 1000
+                  out.push({
+                    cx: sxJ + dirXJ * centreM,
+                    cy: (opSillM + opHeadM) / 2,
+                    cz: szJ + dirZJ * centreM,
+                    length: lenM,
+                    heightM,
+                    thickness: JAMB_COVER_THICKNESS_M,
+                    yRotation: yRotJ,
+                    color: jambCoverColour,
+                    highlight: false,
+                  })
+                }
+              }
+              // ── Right jamb cover ──
+              // From opEnd to (opEnd + brickWidth + 6 mm).
+              {
+                const rightStartMm = opEndMmJ
+                const rightEndMm = Math.min(
+                  wallLenMJ * 1000,
+                  opEndMmJ + brickWidthMm + COVER_EDGE_INSET_MM,
+                )
+                if (rightEndMm > rightStartMm) {
+                  const centreM = (rightStartMm + rightEndMm) / 2 / 1000
+                  const lenM = (rightEndMm - rightStartMm) / 1000
+                  out.push({
+                    cx: sxJ + dirXJ * centreM,
+                    cy: (opSillM + opHeadM) / 2,
+                    cz: szJ + dirZJ * centreM,
+                    length: lenM,
+                    heightM,
+                    thickness: JAMB_COVER_THICKNESS_M,
+                    yRotation: yRotJ,
+                    color: jambCoverColour,
+                    highlight: false,
+                  })
+                }
+              }
+            }
+          }
+        }
+
+        // Emit trim bricks + body sliver fillers into the carved
+        // Y-band. Trim brick uses the makeup brick's face width + the
+        // anchored Y range (trimY0..trimY1, at the opening edge).
+        // Filler is a single body-coloured strip in the leftover
+        // sliver between the trim edge and the carved body course
+        // boundary — the "cut brick" the user described. Thickness =
+        // wall thickness exactly so trim + filler sit in plane with
+        // the body wall.
+        if (trimYZones.length > 0) {
+          // Use the SAME corner-extended endpoints as
+          // segmentsForStraightWall so trim X positions align with
+          // body-brick X positions. wall.startX alone misaligns at
+          // corner / t-junction ends (offset by the outer-edge
+          // extension), which manifests as the mortar backing
+          // pushing out further on one side than the other.
+          const extT = outerEdgeEndpoints(wall, brickCubeThicknessMap, wallsByIdMap)
+          const sxT = -extT.startX / 1000
+          const szT = -extT.startY / 1000
+          const exT = -extT.endX / 1000
+          const ezT = -extT.endY / 1000
+          const dxT = exT - sxT
+          const dzT = ezT - szT
+          const wallLenMT = Math.hypot(dxT, dzT)
+          if (wallLenMT > 0.001) {
+            const dirXT = dxT / wallLenMT
+            const dirZT = dzT / wallLenMT
+            const yRotT = Math.atan2(-dzT, dxT)
+            const TRIM_MORTAR_MM = 10
+            for (const z of trimYZones) {
+              // Trim brick thickness = its actual depth into the wall
+              // (from orientedFace). A header brick is longer than a
+              // standard wall is thick, so it extends past the wall
+              // face on BOTH sides equally. Centred on the wall axis
+              // by buildBox geometry below, so left-of-axis = right-
+              // of-axis automatically.
+              const trimThicknessM = z.brickFaceDepthMm / 1000
+              const trimY0M = z.trimY0Mm / 1000
+              const trimY1M = z.trimY1Mm / 1000
+
+              // Mortar-coloured backing band runs the trim span at
+              // slightly LESS depth than the trim bricks so the
+              // 10 mm gaps between bricks read as recessed mortar
+              // joints from EVERY view angle (front, back, side).
+              // Using trim brick depth (not wall thickness) so a
+              // header brick whose depth (230 mm) extends past the
+              // wall still shows mortar through the gaps when viewed
+              // from outside / inside / through the opening.
+              //
+              // X span is RECESSED 1 mm at each end so the backing's
+              // left + right END FACES are hidden inside the first
+              // and last trim brick. Without this recess the
+              // backing's end face shows at the jamb as a brown
+              // "mortar chunk extruding" past the wall plane
+              // (because the band protrudes 60 mm front + back for
+              // a header trim).
+              const trimBackThicknessM =
+                Math.max(0.001, trimThicknessM - 0.004)
+              const BACKING_END_INSET_MM = 1
+              const backingStartMm = z.startMm + BACKING_END_INSET_MM
+              const backingEndMm = z.endMm - BACKING_END_INSET_MM
+              const backingCentreM = (backingStartMm + backingEndMm) / 2 / 1000
+              const backingLenM = (backingEndMm - backingStartMm) / 1000
+              // Recess the backing 5 mm on the side that FACES the
+              // opening void — top for sill (opening is above) and
+              // bottom for head (opening is below) — so when you
+              // look down at the sill from the room interior, the
+              // brick tops read as flush instead of showing a wide
+              // brown stripe in each mortar gap. The other end
+              // stays flush with the trim brick edge so the mortar
+              // joint visible from the front still reaches the
+              // brick edge that abuts solid wall.
+              const VOID_FACING_INSET_M = 0.005
+              let backingY0M = trimY0M
+              let backingY1M = trimY1M
+              if (z.kind === 'sill') {
+                backingY1M = trimY1M - VOID_FACING_INSET_M
+              } else {
+                backingY0M = trimY0M + VOID_FACING_INSET_M
+              }
+              out.push({
+                cx: sxT + dirXT * backingCentreM,
+                cy: (backingY0M + backingY1M) / 2,
+                cz: szT + dirZT * backingCentreM,
+                length: Math.max(0.001, backingLenM),
+                heightM: Math.max(0.001, backingY1M - backingY0M),
+                thickness: trimBackThicknessM,
+                yRotation: yRotT,
+                color: MORTAR_COLOR,
+                highlight: false,
+              })
+
+              // Body filler — emitted as INDIVIDUAL CUT BRICKS at the
+              // body bond's natural positions (alternating stretcher
+              // stagger per course parity). The trim brick stays at
+              // its makeup height; these cut bricks fill the gap
+              // between the trim edge and the next body course
+              // boundary, with widths CUT at the opening jambs the
+              // way a real bricklayer would. Bricklayer logic
+              // preserved: bond continues across the wall, no slab.
+              if (
+                z.fillerY0Mm !== null &&
+                z.fillerY1Mm !== null &&
+                z.fillerY1Mm - z.fillerY0Mm > 1
+              ) {
+                const fY0M = z.fillerY0Mm / 1000
+                const fY1M = z.fillerY1Mm / 1000
+                const fillerCY = (fY0M + fY1M) / 2
+                const fillerHM = Math.max(0.001, fY1M - fY0M)
+                const FILLER_MORTAR_MM = 10
+                const fillerModularMm = brickWidthMm + FILLER_MORTAR_MM
+                // Bond stagger — the course we're filling is the
+                // CARVED body course (the one the ghost opening
+                // removed). For head trim that's the course whose
+                // top (y1) matches fillerY1Mm; for sill trim it's
+                // the course whose bottom (y0) matches fillerY0Mm.
+                // Read parity from THAT course so the cut bricks
+                // continue the natural body bond stagger.
+                const refCourse =
+                  z.kind === 'head'
+                    ? brickCourses.find(
+                        (c) =>
+                          Math.abs(c.y1 * 1000 - z.fillerY1Mm!) < 1,
+                      )
+                    : brickCourses.find(
+                        (c) =>
+                          Math.abs(c.y0 * 1000 - z.fillerY0Mm!) < 1,
+                      )
+                const courseNumber = refCourse?.courseNumber ?? 1
+                const isEvenCourse = courseNumber % 2 === 0
+                const bondOffsetMm = isEvenCourse ? -brickWidthMm / 2 : 0
+
+                // Mortar BAND under the cut bricks — the ghost
+                // opening blocked emitMortarForWall in this Y
+                // range, so without our own band the 10 mm gaps
+                // between cut bricks would show the scene
+                // background. Thickness is recessed so cut bricks
+                // (at full wall thickness) render in front; mortar
+                // shows only in the gaps between bricks.
+                const cutMortarThicknessM =
+                  (thicknessMm / 1000) * MORTAR_THICKNESS_FRAC
+                const cutMortarCentreM =
+                  (z.startMm + z.endMm) / 2 / 1000
+                const cutMortarLenM = (z.endMm - z.startMm) / 1000
+                out.push({
+                  cx: sxT + dirXT * cutMortarCentreM,
+                  cy: fillerCY,
+                  cz: szT + dirZT * cutMortarCentreM,
+                  length: Math.max(0.001, cutMortarLenM),
+                  heightM: fillerHM,
+                  thickness: cutMortarThicknessM,
+                  yRotation: yRotT,
+                  color: MORTAR_COLOR,
+                  highlight: false,
+                })
+                // Walk body bond positions across the wall and
+                // clip each brick to the trim X span. Cuts at the
+                // jambs are real cuts — that's the brick that
+                // would be physically chiselled on site.
+                let bxStartMm = bondOffsetMm
+                while (bxStartMm < z.endMm) {
+                  const bxEndMm = bxStartMm + brickWidthMm
+                  const cxStartMm = Math.max(bxStartMm, z.startMm)
+                  const cxEndMm = Math.min(bxEndMm, z.endMm)
+                  if (cxEndMm > cxStartMm + 1) {
+                    const alongCentreM = (cxStartMm + cxEndMm) / 2 / 1000
+                    const widthM = (cxEndMm - cxStartMm) / 1000
+                    out.push({
+                      cx: sxT + dirXT * alongCentreM,
+                      cy: fillerCY,
+                      cz: szT + dirZT * alongCentreM,
+                      length: Math.max(0.001, widthM),
+                      heightM: fillerHM,
+                      // Body brick thickness — full wall thickness.
+                      thickness: thicknessMm / 1000,
+                      yRotation: yRotT,
+                      color: z.fillerColour,
+                      highlight: false,
+                    })
+                  }
+                  bxStartMm += fillerModularMm
+                }
+              }
+              // Legacy slab emission — disabled; left in place as a
+              // structural marker (the `if` above replaced its push)
+              if (false) {
+                out.push({
+                  cx: sxT + dirXT * backingCentreM,
+                  cy: (z.fillerY0Mm! + z.fillerY1Mm!) / 2 / 1000,
+                  cz: szT + dirZT * backingCentreM,
+                  length: 0.001,
+                  heightM: 0.001,
+                  thickness: trimThicknessM,
+                  yRotation: yRotT,
+                  color: z.fillerColour,
+                  highlight: false,
+                })
+              }
+
+              // Lay each trim brick at its makeup face width across
+              // the trim X span. Final brick clamps to the span end
+              // if it would overshoot.
+              const modularMm = z.brickFaceWidthMm + TRIM_MORTAR_MM
+              const totalSpanMm = z.endMm - z.startMm
+              const brickCount = Math.max(
+                1,
+                Math.ceil(totalSpanMm / modularMm),
+              )
+              let cursorMm = z.startMm
+              for (let i = 0; i < brickCount; i++) {
+                const remainMm = z.endMm - cursorMm
+                if (remainMm < 1) break
+                const widthMm = Math.min(z.brickFaceWidthMm, remainMm)
+                if (widthMm < 1) break
+                const startMm = cursorMm
+                const endMm = startMm + widthMm
+                const alongCentreM = (startMm + endMm) / 2 / 1000
+                const widthM = (endMm - startMm) / 1000
+                out.push({
+                  cx: sxT + dirXT * alongCentreM,
+                  cy: (trimY0M + trimY1M) / 2,
+                  cz: szT + dirZT * alongCentreM,
+                  length: Math.max(0.001, widthM),
+                  heightM: Math.max(0.001, trimY1M - trimY0M),
+                  thickness: trimThicknessM,
+                  yRotation: yRotT,
+                  color: z.colour,
+                  highlight: false,
+                })
+                // Advance by full modular even when the brick was
+                // clamped — keeps the tally formula matching the
+                // box count (ceil(span / modular)).
+                cursorMm += modularMm
+              }
+            }
+          }
+        }
         return
       }
 
@@ -3194,7 +3995,9 @@ function Scene({
           out.push(
             ...segmentsForStraightWall(
               wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
-              bondType, colorMap, library, wallThicknessByWallId, wallsByIdMap
+              bondType, colorMap, library, wallThicknessByWallId, wallsByIdMap,
+              /* disableBlockLintels */ false,
+              wallHeightMmByWallId,
             )
           )
         }
@@ -3398,9 +4201,29 @@ function Scene({
     for (const wall of walls) {
       if (wall.trade !== 'brick') continue
       const m = brickMakeupsById[wall.makeupId]
-      if (!m?.brickTypeCode) continue
-      if (!codes.has(m.brickTypeCode)) {
+      if (!m) continue
+      // Primary brick type — used by every course unless overridden by
+      // a courseRange entry.
+      if (m.brickTypeCode && !codes.has(m.brickTypeCode)) {
         codes.set(m.brickTypeCode, bandColor(m.brickTypeCode, palette))
+      }
+      // Course-range brick types — each band can declare its own brick
+      // type (e.g. base course in common, body in face brick, soldier
+      // course in clinker). Surface every one in the legend so the
+      // estimator can match the colour in the 3D view to a real code.
+      for (const range of m.courseRanges ?? []) {
+        if (range.brickTypeCode && !codes.has(range.brickTypeCode)) {
+          codes.set(range.brickTypeCode, bandColor(range.brickTypeCode, palette))
+        }
+      }
+      // Opening-trim brick types — sill course / head course. Same
+      // colour treatment as bands so the 3D overlay reads against the
+      // legend.
+      if (m.sillBrickCode && !codes.has(m.sillBrickCode)) {
+        codes.set(m.sillBrickCode, bandColor(m.sillBrickCode, palette))
+      }
+      if (m.headBrickCode && !codes.has(m.headBrickCode)) {
+        codes.set(m.headBrickCode, bandColor(m.headBrickCode, palette))
       }
     }
     // Pier block codes — piers render via bandColor directly without
