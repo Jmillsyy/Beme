@@ -191,9 +191,9 @@ body,
    `transform: scale()` which leaves them at their original size and
    creates a viewport overflow. Standard in WebKit/Blink/Firefox now. */
 html {
-  /* Was 0.88 — Josh asked for ~15% smaller so more of the floorplan fits
-     on a laptop screen. 0.88 × 0.85 ≈ 0.75; rounded for cleanliness. */
-  zoom: 0.75;
+  /* Was 0.88, then 0.75 (15% smaller for more floorplan room). Josh
+     bumped back up by 5% — 0.75 × 1.05 ≈ 0.79. */
+  zoom: 0.79;
 }
 
 body {
