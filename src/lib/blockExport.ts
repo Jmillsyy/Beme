@@ -29,6 +29,7 @@ import type {
 import {
   calculateProjectTally,
   calculateWallTally,
+  cornerOwnershipFor,
   curveZoneForRadius,
   wallLengthMm,
 } from './blockCalc'
@@ -1240,7 +1241,7 @@ export async function buildBlockEstimateHtml(
     const merged: BlockTally = {}
     for (const w of wallsOfMakeup) {
       const openingsForWall = openings.filter((o) => o.wallId === w.id)
-      const wallTally = calculateWallTally(w, m, openingsForWall, thicknessByWallId, wallsById)
+      const wallTally = calculateWallTally(w, m, openingsForWall, thicknessByWallId, wallsById, cornerOwnershipFor(w))
       for (const [code, count] of Object.entries(wallTally) as Array<[BlockCode, number]>) {
         if (!count) continue
         merged[code] = (merged[code] ?? 0) + count
@@ -1570,7 +1571,7 @@ export async function buildBlockEstimateHtml(
       const makeup = makeupsById[w.makeupId]
       if (!makeup) continue
       const openingsForWall = page.openings.filter((o) => o.wallId === w.id)
-      const t = calculateWallTally(w, makeup, openingsForWall, thicknessByWallId, wallsById)
+      const t = calculateWallTally(w, makeup, openingsForWall, thicknessByWallId, wallsById, cornerOwnershipFor(w))
       for (const c of Object.values(t)) pageBlockTotal += c ?? 0
     }
 

@@ -528,12 +528,56 @@ function segmentsFromWallLayout(
   const ez = -ext.endY / 1000
   const dx = ex - sx
   const dz = ez - sz
-  const wallLenM = Math.hypot(dx, dz)
-  if (wallLenM === 0 || layout.blocks.length === 0) return []
+  const chordLenM = Math.hypot(dx, dz)
+  if (chordLenM === 0 || layout.blocks.length === 0) return []
   const yRotation = Math.atan2(-dz, dx)
   const thickness = thicknessMm / 1000
-  const dirX = dx / wallLenM
-  const dirZ = dz / wallLenM
+  const dirX = dx / chordLenM
+  const dirZ = dz / chordLenM
+
+  // ── Outer-corner extension ────────────────────────────────────────
+  //
+  // The wall data stores start/end at the perpendicular wall's
+  // CENTRELINE (the snap target during drawing). Physically the wall
+  // extends past that centreline by halfThickness at each corner
+  // junction to reach the OUTER corner of the cube. T-junctions go
+  // the opposite way — the wall actually ends at the host wall's
+  // face, halfThickness BEFORE its data endpoint.
+  //
+  // The calc engine accounts for this via `wallLengthMm` (returns
+  // outer length when junctions resolve), and the layout's lengthMm
+  // already encodes the outer length. The renderer just needs to use
+  // the outer-relative coordinate frame: shift the wall's origin to
+  // outer_start and use layout.lengthMm for clipping. All blocks
+  // (corner, body, end) then render at their correct outer-relative
+  // positions in one consistent transform.
+  //
+  // Approximation: uses THIS wall's own thickness as the perpendicular
+  // wall's thickness. Matches `wallLengthMm`'s computation exactly for
+  // uniform-thickness corners (the common case); a few mm off in
+  // mixed-thickness corners.
+  const halfThicknessM = thickness / 2
+  const startAdjustM =
+    wall.startJunction.type === 'corner'
+      ? halfThicknessM
+      : wall.startJunction.type === 't-junction'
+        ? -halfThicknessM
+        : 0
+  const endAdjustM =
+    wall.endJunction.type === 'corner'
+      ? halfThicknessM
+      : wall.endJunction.type === 't-junction'
+        ? -halfThicknessM
+        : 0
+  // World origin for the wall's outer-relative coords. Layout s=0
+  // corresponds to this point.
+  const effectiveSx = sx - dirX * startAdjustM
+  const effectiveSz = sz - dirZ * startAdjustM
+  // Effective wall length in the outer-relative frame. Use layout's
+  // own lengthMm (which the calc engine computed via wallLengthMm) so
+  // any rounding / fancy junction resolution stays consistent between
+  // renderer and tally — instead of recomputing here.
+  const effectiveWallLenM = layout.lengthMm / 1000
 
   // Mortar joint visualisation: each box is inset slightly on edges
   // that face a neighbour, so adjacent blocks read as discrete units.
@@ -569,7 +613,8 @@ function segmentsFromWallLayout(
     const course = layout.courses[block.courseIdx]
     if (!course) continue
 
-    // Convert mm → m.
+    // Convert mm → m. Layout's s positions are in outer-relative
+    // coordinates (s=0 at outer corner of wall's start end).
     const s0 = block.s0Mm / 1000
     const s1 = (block.s0Mm + block.widthMm) / 1000
     const y0 = course.yBottomMm / 1000
@@ -600,9 +645,9 @@ function segmentsFromWallLayout(
 
     const localCx = (aS0 + aS1) / 2
     boxes.push({
-      cx: sx + dirX * localCx,
+      cx: effectiveSx + dirX * localCx,
       cy: (aY0 + aY1) / 2,
-      cz: sz + dirZ * localCx,
+      cz: effectiveSz + dirZ * localCx,
       length: aS1 - aS0,
       heightM: aY1 - aY0,
       thickness,

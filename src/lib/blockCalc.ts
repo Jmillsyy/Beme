@@ -1210,7 +1210,8 @@ export function calculateWallTally(
   makeup: WallMakeup,
   openings: Opening[] = [],
   thicknessByWallId?: Record<string, number>,
-  wallsById?: Record<string, Wall>
+  wallsById?: Record<string, Wall>,
+  cornerOwnership?: CornerOwnership
 ): BlockTally {
   // Curved walls bypass the straight-wall planning machinery entirely.
   if (isCurvedWall(wall)) {
@@ -1309,16 +1310,78 @@ export function calculateWallTally(
       }
     }
 
-    // Per-course fit: if this course doesn't carry a lead-in, reuse the
-    // pre-computed odd/even fit (the original common case). If it does, the
-    // ends consume more modular so we re-fit against the actual wall length.
-    let fit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
-    if (leadInModularTotal > 0) {
-      const startEndModular = isOddCourse ? plan.startEnd.oddModular : plan.startEnd.evenModular
-      const endEndModular = isOddCourse ? plan.endEnd.oddModular : plan.endEnd.evenModular
-      const adjustedEndsTotal = startEndModular + endEndModular + leadInModularTotal
-      fit = fitCourseLength(wallLenForRefit, adjustedEndsTotal, makeup.useFractions)
-    }
+    // Per-course corner ownership: at a shared corner only ONE wall
+    // emits a corner block on each course. On a non-owning course this
+    // wall's body grid starts at the cube boundary (perpendicular wall
+    // thickness) rather than past a corner block, so the body region
+    // is larger and fits one more body unit. Without this, courses
+    // where this wall yields the corner would count too few bodies and
+    // the 3D view would visibly under-fill the wall.
+    const startIsCornerJunction =
+      wall.startJunction.type === 'corner' ||
+      wall.startJunction.type === 'control-joint'
+    const endIsCornerJunction =
+      wall.endJunction.type === 'corner' ||
+      wall.endJunction.type === 'control-joint'
+    const ownsStartCorner =
+      !cornerOwnership || !startIsCornerJunction
+        ? true
+        : cornerOwnership({ wallEnd: 'start', courseNumber })
+    const ownsEndCorner =
+      !cornerOwnership || !endIsCornerJunction
+        ? true
+        : cornerOwnership({ wallEnd: 'end', courseNumber })
+    const wallThicknessForTally =
+      thicknessByWallId?.[wall.id] ??
+      BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ??
+      190
+    const startNeighborIdForTally = startIsCornerJunction
+      ? wall.startJunction.connectedWallIds?.[0]
+      : undefined
+    const endNeighborIdForTally = endIsCornerJunction
+      ? wall.endJunction.connectedWallIds?.[0]
+      : undefined
+    const startCubeDepthForTally =
+      startNeighborIdForTally !== undefined
+        ? (thicknessByWallId?.[startNeighborIdForTally] ?? wallThicknessForTally)
+        : wallThicknessForTally
+    const endCubeDepthForTally =
+      endNeighborIdForTally !== undefined
+        ? (thicknessByWallId?.[endNeighborIdForTally] ?? wallThicknessForTally)
+        : wallThicknessForTally
+
+    const startEndModularBase = isOddCourse
+      ? plan.startEnd.oddModular
+      : plan.startEnd.evenModular
+    const endEndModularBase = isOddCourse
+      ? plan.endEnd.oddModular
+      : plan.endEnd.evenModular
+    const effectiveStartModular =
+      startIsCornerJunction && !ownsStartCorner
+        ? startCubeDepthForTally + MORTAR_MM
+        : startEndModularBase
+    const effectiveEndModular =
+      endIsCornerJunction && !ownsEndCorner
+        ? endCubeDepthForTally + MORTAR_MM
+        : endEndModularBase
+
+    // Per-course fit: re-fit whenever effective ends differ from the
+    // odd/even base (ownership shift OR lead-in widening). Otherwise
+    // reuse the cached fit. When no cornerOwnership callback is
+    // supplied (legacy callers), this collapses to the prior parity-
+    // only behavior with re-fit only on lead-in courses.
+    const baseFit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
+    const needsRefit =
+      leadInModularTotal > 0 ||
+      effectiveStartModular !== startEndModularBase ||
+      effectiveEndModular !== endEndModularBase
+    const fit = needsRefit
+      ? fitCourseLength(
+          wallLenForRefit,
+          effectiveStartModular + effectiveEndModular + leadInModularTotal,
+          makeup.useFractions
+        )
+      : baseFit
 
     // Height-makeup courses (20.71, 20.140) extend across the FULL course length —
     // the height-makeup block is cut to the size of any end block (20.03) and any fill
@@ -1935,6 +1998,7 @@ export function planWallLayout(
     // and wallThickness are all computed earlier in this iteration so
     // the per-course re-fit above can account for the cube-shift. We
     // just consume them here for the actual emit.
+    //
     // ── Short-wall overlap guard ───────────────────────────────────
     //
     // When a wall is too short for start_end + mortar + end_end at
@@ -2098,6 +2162,12 @@ export function planWallLayout(
       })
     }
 
+    // End block — anchored at the right end of the wall. Same
+    // ownership rule as the start: skip if another wall at this
+    // corner owns the block this course. When skipped, the corner
+    // cube boundary sits at (length - cubeDepth); body region
+    // extends to there so the gap that would otherwise sit between
+    // the last body block and the end gets filled.
     if (ownsEndCorner) {
       // End block at its anchor position. Width uses actualEndWidth
       // which equals the library face width unless the overlap guard
@@ -2718,12 +2788,19 @@ export function calculateProjectTally(
     .map((wall) => {
       const makeup = makeupsById[wall.makeupId]
       if (!makeup) return null
+      // Pass cornerOwnership so the per-course body fit varies based on
+      // which wall owns each shared corner this course — matches what
+      // planWallLayout emits to the 3D view. Without this, walls that
+      // share a corner under-count bodies on the courses where the
+      // OTHER wall owns the corner (the body region is 200mm longer on
+      // those courses and fits one extra body).
       return calculateWallTally(
         wall,
         makeup,
         openingsByWallId[wall.id] ?? [],
         thicknessByWallId,
-        wallsById
+        wallsById,
+        cornerOwnershipFor(wall)
       )
     })
     .filter((t): t is BlockTally => t !== null)
