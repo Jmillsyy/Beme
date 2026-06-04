@@ -2411,10 +2411,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   )
 
   const wallCountsByMakeupId = useMemo(() => {
+    // Count across EVERY wall in the project, not just the area-filtered
+    // view. The Wall Types panel's "X walls using this" / Delete gate
+    // needs to reflect global truth so a wall type that's still in use
+    // by walls in another area can't be silently deleted — that would
+    // orphan those walls (dangling makeupId). The visible count then
+    // also accurately reads "1 wall using this" even when the user is
+    // viewing a different area.
     const counts: Record<string, number> = {}
-    for (const w of allWalls) counts[w.makeupId] = (counts[w.makeupId] ?? 0) + 1
+    for (const w of allWallsRaw) counts[w.makeupId] = (counts[w.makeupId] ?? 0) + 1
     return counts
-  }, [allWalls])
+  }, [allWallsRaw])
 
   /** Brick makeups keyed by id. Used by the calc engine + the wall-rendering
    *  layer to resolve wall.heightMmOverride defaults and per-wall brick types. */

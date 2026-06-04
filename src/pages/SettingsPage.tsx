@@ -990,6 +990,18 @@ function DefaultsTab({
             />
           </Field>
           <Field
+            label="Wall length snap"
+            hint="When drawing a wall, the live length rounds to the nearest multiple of this. 50 mm fits the AU SEQ library cleanly (full / 7-8 / 3-4 / half blocks). Use 100 mm to limit walls to full + half only; use 25 mm or 10 mm for libraries with finer block widths."
+          >
+            <NumberInput
+              value={defaults.wallLengthSnapMm ?? 50}
+              onChange={(v) => set({ wallLengthSnapMm: Math.max(1, v) })}
+              min={1}
+              step={5}
+              suffix="mm"
+            />
+          </Field>
+          <Field
             label="Default brick type"
             hint="Used when starting a new brick estimate."
           >

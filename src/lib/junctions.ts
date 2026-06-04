@@ -413,6 +413,16 @@ export function recomputeAllJunctions(
     for (let j = i + 1; j < reset.length; j++) {
       const a = reset[i]
       const b = reset[j]
+      // Curves don't form structural corners with their neighbours.
+      // A curve started on the face / endpoint of a normal wall is
+      // there purely as a positional anchor — the curve should keep
+      // its own ends free, and the normal wall's bond should not be
+      // perturbed by the curve's presence. Skipping the pair entirely
+      // when either side is curved keeps both walls' junctions at
+      // 'free' regardless of geometry. Control joints on curves stay
+      // preserved separately via the skipCornerKeys / preservation
+      // pass above.
+      if (isCurvedWall(a) || isCurvedWall(b)) continue
       const aStartCJ = skipCornerKeys.has(`${a.id}|start`)
       const aEndCJ = skipCornerKeys.has(`${a.id}|end`)
       const bStartCJ = skipCornerKeys.has(`${b.id}|start`)

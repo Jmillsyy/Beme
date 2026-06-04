@@ -80,6 +80,20 @@ export interface EstimatingDefaults {
   defaultMortarJointMm: number
   /** Default brick type code — references a code in the user's BrickLibrary. */
   defaultBrickTypeCode: string
+  /**
+   * Wall-length snap increment (mm). When the user draws a wall, the live
+   * preview rounds the wall length to the nearest multiple of this value
+   * (after axis + endpoint snaps have run). 50 mm fits the AU SEQ block
+   * library cleanly — every combination of full / 7-8 / 3-4 / half blocks
+   * lands on a 50 mm grid. Set lower (e.g. 25 or 10) for libraries with
+   * finer block widths; set higher (e.g. 100) to discourage 7-8 / 3-4
+   * cuts and limit walls to full + half compositions.
+   *
+   * Optional — older accounts without this field treated 5 mm as default;
+   * new accounts get 50 mm and the snap function falls back to 50 when
+   * the field is missing.
+   */
+  wallLengthSnapMm?: number
 }
 
 /**
@@ -237,6 +251,10 @@ export function createDefaultUserSettings(): UserSettings {
       defaultBondType: 'stretcher',
       defaultMortarJointMm: 10,
       defaultBrickTypeCode: 'standard',
+      // 50 mm matches the AU SEQ block library's modular GCD —
+      // any combination of full / 7-8 / 3-4 / half blocks composes
+      // cleanly on this grid. Customisable in Settings.
+      wallLengthSnapMm: 50,
     },
     supplyItems: createDefaultSupplyItems(),
   }

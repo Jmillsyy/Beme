@@ -371,7 +371,14 @@ function snapRulerToAxis(
  * overridden, and bypassed by holding Shift the same way axis-snap is, for
  * the rare measurement that genuinely needs an off-grid value.
  */
-const WALL_LENGTH_SNAP_MM = 5
+/**
+ * Fallback wall-length snap, used when the user's settings haven't been
+ * loaded yet or don't carry a `wallLengthSnapMm` value (older accounts).
+ * The active value comes from `userSettings.defaults.wallLengthSnapMm`
+ * and defaults to 50 mm — which matches the AU SEQ block library's
+ * modular GCD across full / 7-8 / 3-4 / half blocks.
+ */
+const WALL_LENGTH_SNAP_MM = 50
 
 /**
  * Openings (doors / windows / brickwork voids) use a coarser 10 mm grid
@@ -385,12 +392,18 @@ const WALL_LENGTH_SNAP_MM = 5
 const OPENING_SNAP_MM = 10
 
 /**
- * Round a mm length to the nearest WALL_LENGTH_SNAP_MM. Shared by all the
- * placement code paths (walls, openings, control joints, piers) so the user
- * sees a consistent grid no matter what they're dropping onto the plan.
+ * Round a mm length to the nearest snap increment. Shared by every
+ * placement path (wall length, control joint position, tied/freestanding
+ * pier coords) so the user sees a consistent grid no matter what they're
+ * dropping onto the plan.
+ *
+ * `snapMm` defaults to WALL_LENGTH_SNAP_MM (50). Callers inside the
+ * component override it with the live user-settings value so a user who
+ * changes the snap in Settings sees the new grid take effect on the
+ * next draw.
  */
-function snapMmToGrid(mm: number): number {
-  return Math.round(mm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
+function snapMmToGrid(mm: number, snapMm: number = WALL_LENGTH_SNAP_MM): number {
+  return Math.round(mm / snapMm) * snapMm
 }
 
 /** Round to the coarser opening grid — see OPENING_SNAP_MM. */
@@ -1715,8 +1728,8 @@ function WallDrawingLayerInner({
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     if (lenPx <= 0) return { point: axisSnapped, snap: null }
     const lenMm = pxToMm(lenPx)
-    const snappedMm = snapMmToGrid(lenMm)
-    if (snappedMm < WALL_LENGTH_SNAP_MM) {
+    const snappedMm = snapMmToGrid(lenMm, wallSnapMm)
+    if (snappedMm < wallSnapMm) {
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
@@ -1859,7 +1872,7 @@ function WallDrawingLayerInner({
       if (!wall || isCurvedWall(wall)) return
       onControlJointPlaced?.(
         proj.wallId,
-        useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm
       )
       setControlJointHover(null)
       return
@@ -1872,7 +1885,7 @@ function WallDrawingLayerInner({
       if (!wall || isCurvedWall(wall)) return
       onTiedPierPlaced?.(
         proj.wallId,
-        useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm
       )
       setTiedPierHover(null)
       return
@@ -1903,14 +1916,14 @@ function WallDrawingLayerInner({
       if (tiedWallId !== null) {
         onTiedPierPlaced?.(
           tiedWallId,
-          useGrid ? snapMmToGrid(tiedAlongMm) : tiedAlongMm
+          useGrid ? snapMmToGrid(tiedAlongMm, wallSnapMm) : tiedAlongMm
         )
       } else {
         const xMm = pxToMm(raw.x)
         const yMm = pxToMm(raw.y)
         onFreestandingPierPlaced?.(
-          useGrid ? snapMmToGrid(xMm) : xMm,
-          useGrid ? snapMmToGrid(yMm) : yMm
+          useGrid ? snapMmToGrid(xMm, wallSnapMm) : xMm,
+          useGrid ? snapMmToGrid(yMm, wallSnapMm) : yMm
         )
       }
       setFreestandingPierHoverMm(null)
@@ -2158,6 +2171,10 @@ function WallDrawingLayerInner({
   function formatMm(mm: number) {
     return formatLengthShort(mm, __userSettings.preferences.units)
   }
+  // Wall-length snap, configurable per-account. Falls back to the
+  // 50 mm SEQ default when the field is absent (older settings blobs).
+  const wallSnapMm =
+    __userSettings.defaults.wallLengthSnapMm ?? WALL_LENGTH_SNAP_MM
 
   function effectiveEndpoint(wall: Wall, which: 'start' | 'end'): Point {
     if (dragPreview?.wallId === wall.id && dragPreview.which === which) {
