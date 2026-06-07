@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useUserSettings } from '../lib/userSettings'
 import type {
   Pier,
   PierMakeup,
@@ -682,10 +683,26 @@ function WallTypeEditorModal({
   )
 
   const [activeTab, setActiveTab] = useState<TabKey>('basics')
+  // User-level defaults — when creating a NEW wall type, seed match-
+  // exact-length and its scope from the user's Settings preferences so
+  // the user only sets them once globally. Existing makeups keep their
+  // own saved values. `useFractions` is per-makeup (toggleable in
+  // Basics); `exactLengthCourses` (which course types it applies to)
+  // is global-only and read straight from settings — there's no UI
+  // for it on the per-makeup form.
+  const { settings: userSettings } = useUserSettings()
+  const settingsMatchExact =
+    userSettings.defaults.defaultMatchExactLength ?? true
+  const settingsExactLengthCourses =
+    userSettings.defaults.defaultExactLengthCourses
+
   const [name, setName] = useState(existing?.name ?? 'New wall type')
   const [bondType, setBondType] = useState<BondType>(existing?.bondType ?? 'stretcher')
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
-  const [useFractions, setUseFractions] = useState(existing?.useFractions ?? true)
+  const [useFractions, setUseFractions] = useState(
+    existing?.useFractions ?? settingsMatchExact
+  )
+  const exactLengthCourses = existing?.exactLengthCourses ?? settingsExactLengthCourses
 
   // Defaults for new wall types come from the LIVE library via the role
   // pickers — so a US user creating their first wall type lands on
@@ -789,6 +806,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      exactLengthCourses,
       courseOverrides,
     }
     // skipHeightMakeup: true keeps the preview faithful to the user's
@@ -916,6 +934,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      exactLengthCourses,
     }
     return convertMakeupToBands(draft, undefined, { skipHeightMakeup: true }).bands
   }, [
@@ -961,6 +980,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      exactLengthCourses,
       courseOverrides,
       courseSeriesRanges: seriesRanges,
       coursePattern: coursePattern.length > 0 ? coursePattern : undefined,
@@ -1150,6 +1170,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      exactLengthCourses,
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
       coursePattern: cleanedPattern.length > 0 ? cleanedPattern : undefined,
@@ -1599,11 +1620,15 @@ function BasicsTab({
             <span>Match exact wall length</span>
             <span className="block text-[11px] text-ink-400 mt-0.5">
               When on, the calc absorbs leftover length using
-              fraction-tagged blocks from your library (AU 20.02 / 20.22,
-              or whichever you've tagged). If your library has no
-              fraction blocks, leftover length is tallied as cut blocks
-              to be trimmed on site. When off, walls round up to whole
-              body blocks and the gap is ignored.
+              fraction-tagged blocks from your library (e.g. AU 20.02 /
+              20.22), or tallies cut blocks if your library has none.
+              When off, walls round up to whole body blocks and the gap
+              is ignored. WHICH course types this rule applies to is
+              configured globally in{' '}
+              <Link to="/settings" className="text-orange-400 underline">
+                Settings → Wall defaults
+              </Link>
+              .
             </span>
           </span>
         </label>

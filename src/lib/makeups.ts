@@ -309,7 +309,6 @@ export function resolveCourseBlocks(
   } = { halfBlockCode: '20.03', heightMakeup71BlockCode: '20.71' }
 ): ResolvedCourseBlocks {
   const range = findSeriesRangeForCourse(makeup, courseNumber)
-  const cornerLeadInBlockCode = range?.cornerLeadInBlockCode
   return {
     bodyBlockCode: range?.bodyBlockCode ?? makeup.bodyBlockCode,
     cornerBlockCode: range?.cornerBlockCode ?? makeup.cornerBlockCode,
@@ -322,8 +321,16 @@ export function resolveCourseBlocks(
     baseCourseTileCode: range?.baseCourseTileCode ?? makeup.baseCourseTileCode,
     heightMakeup71BlockCode:
       range?.heightMakeup71BlockCode ?? defaults.heightMakeup71BlockCode,
-    cornerLeadInBlockCode,
-    cornerLeadInCount: cornerLeadInBlockCode ? range?.cornerLeadInCount ?? 2 : 0,
+    // Lead-in blocks (e.g. 30.02 ×2 after 300-series corners) are
+    // permanently disabled — the cut block emission in planWallLayout
+    // (startCutWidthMm / endCutWidthMm) now handles getting the body
+    // grid back on bond after a deep-series corner, so we no longer
+    // need a dedicated lead-in block. Saved makeups may still have
+    // `cornerLeadInBlockCode` set in their ranges (the field is kept
+    // on the type so old projects don't break to load), but the
+    // resolver ignores it — every course returns 0 lead-ins.
+    cornerLeadInBlockCode: undefined,
+    cornerLeadInCount: 0,
   }
 }
 

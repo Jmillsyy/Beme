@@ -67,7 +67,7 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
-import { bandColor, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
+import { bandColor, buildBlockColorMap, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import { rasterisePdfPage } from '../lib/pdfRaster'
 import { useTheme, type Theme } from '../lib/theme'
@@ -506,7 +506,16 @@ function segmentsFromWallLayout(
    * strip here instead. Omitted on legacy call sites that pre-date
    * caps; pass the makeup when you want caps rendered.
    */
-  makeup?: WallMakeup
+  makeup?: WallMakeup,
+  /**
+   * Optional per-wall resolved courses map. When provided, end-face
+   * positioning at corners is computed per-course from the partner
+   * wall's actual block depth at this course's Y — supporting mixed-
+   * series partners where upper courses are narrower than the base.
+   * Without this map, falls back to wall-level (max) thickness so the
+   * end face sits at the partner's wall-level outer face.
+   */
+  wallCoursesById?: Record<string, ResolvedCourse[]>
 ): WallSegmentBox[] {
   // The data endpoints `wall.startX/Y, wall.endX/Y` represent CENTRELINE
   // positions and at corners they sit halfThickness inside the outer
@@ -528,56 +537,19 @@ function segmentsFromWallLayout(
   const ez = -ext.endY / 1000
   const dx = ex - sx
   const dz = ez - sz
-  const chordLenM = Math.hypot(dx, dz)
-  if (chordLenM === 0 || layout.blocks.length === 0) return []
+  const wallLenM = Math.hypot(dx, dz)
+  if (wallLenM === 0 || layout.blocks.length === 0) return []
   const yRotation = Math.atan2(-dz, dx)
   const thickness = thicknessMm / 1000
-  const dirX = dx / chordLenM
-  const dirZ = dz / chordLenM
+  const dirX = dx / wallLenM
+  const dirZ = dz / wallLenM
 
-  // ── Outer-corner extension ────────────────────────────────────────
-  //
-  // The wall data stores start/end at the perpendicular wall's
-  // CENTRELINE (the snap target during drawing). Physically the wall
-  // extends past that centreline by halfThickness at each corner
-  // junction to reach the OUTER corner of the cube. T-junctions go
-  // the opposite way — the wall actually ends at the host wall's
-  // face, halfThickness BEFORE its data endpoint.
-  //
-  // The calc engine accounts for this via `wallLengthMm` (returns
-  // outer length when junctions resolve), and the layout's lengthMm
-  // already encodes the outer length. The renderer just needs to use
-  // the outer-relative coordinate frame: shift the wall's origin to
-  // outer_start and use layout.lengthMm for clipping. All blocks
-  // (corner, body, end) then render at their correct outer-relative
-  // positions in one consistent transform.
-  //
-  // Approximation: uses THIS wall's own thickness as the perpendicular
-  // wall's thickness. Matches `wallLengthMm`'s computation exactly for
-  // uniform-thickness corners (the common case); a few mm off in
-  // mixed-thickness corners.
-  const halfThicknessM = thickness / 2
-  const startAdjustM =
-    wall.startJunction.type === 'corner'
-      ? halfThicknessM
-      : wall.startJunction.type === 't-junction'
-        ? -halfThicknessM
-        : 0
-  const endAdjustM =
-    wall.endJunction.type === 'corner'
-      ? halfThicknessM
-      : wall.endJunction.type === 't-junction'
-        ? -halfThicknessM
-        : 0
-  // World origin for the wall's outer-relative coords. Layout s=0
-  // corresponds to this point.
-  const effectiveSx = sx - dirX * startAdjustM
-  const effectiveSz = sz - dirZ * startAdjustM
-  // Effective wall length in the outer-relative frame. Use layout's
-  // own lengthMm (which the calc engine computed via wallLengthMm) so
-  // any rounding / fancy junction resolution stays consistent between
-  // renderer and tally — instead of recomputing here.
-  const effectiveWallLenM = layout.lengthMm / 1000
+  // Note: outerEdgeEndpoints (above) already shifted the wall's
+  // start/end to the outer-corner positions. wallLenM is the chord
+  // between those adjusted endpoints, matching what wallLengthMm
+  // returns. No further per-junction adjustment is needed here —
+  // doing so would double-count the extension and the corner blocks
+  // would protrude past the corner cube by halfThickness.
 
   // Mortar joint visualisation: each box is inset slightly on edges
   // that face a neighbour, so adjacent blocks read as discrete units.
@@ -604,57 +576,316 @@ function segmentsFromWallLayout(
   const colorOf = (code: BlockCode) =>
     colorMap.get(code) ?? DEFAULT_WALL_COLOR
 
+  // ── Per-course outer-face shifts at corner ends ──
+  // `wallLenM` was extended via outerEdgeEndpoints using the partner
+  // wall's WALL-LEVEL (max) thickness so the chord reaches the outer
+  // building corner of the widest partner course. For a mixed-series
+  // partner the actual outer face on any thinner course is closer in
+  // by (partnerWallLevelHalf − partnerActualHalfAtY); clamp the per-
+  // course render extent to land each course's end on the partner's
+  // real face at that Y. For uniform partners both shifts are 0.
+  const leftCornerNeighbor =
+    wall.startJunction.type === 'corner'
+      ? wall.startJunction.connectedWallIds?.[0]
+      : undefined
+  const rightCornerNeighbor =
+    wall.endJunction.type === 'corner'
+      ? wall.endJunction.connectedWallIds?.[0]
+      : undefined
+  const partnerHalfAtYM = (
+    partnerId: string | undefined,
+    yMidM: number
+  ): number => {
+    if (partnerId === undefined) return 0
+    const partnerCourses = wallCoursesById?.[partnerId]
+    if (partnerCourses) {
+      for (const pc of partnerCourses) {
+        if (yMidM >= pc.y0 - 0.001 && yMidM <= pc.y1 + 0.001) {
+          const d = library[pc.bodyCode]?.dimensions.depthMm
+          if (typeof d === 'number') return d / 2 / 1000
+          break
+        }
+      }
+    }
+    return (
+      (wallThicknessByWallId[partnerId] ?? thicknessMm) / 2 / 1000
+    )
+  }
+  const leftWallLevelHalfM =
+    leftCornerNeighbor !== undefined
+      ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) /
+        2 /
+        1000
+      : 0
+  const rightWallLevelHalfM =
+    rightCornerNeighbor !== undefined
+      ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) /
+        2 /
+        1000
+      : 0
+  const courseShiftCache = new Map<number, { left: number; right: number }>()
+  const shiftsForCourse = (
+    yBottomM: number,
+    yTopM: number
+  ): { left: number; right: number } => {
+    const yMid = (yBottomM + yTopM) / 2
+    const key = Math.round(yMid * 1000)
+    const cached = courseShiftCache.get(key)
+    if (cached) return cached
+    const left =
+      leftCornerNeighbor !== undefined
+        ? Math.max(
+            0,
+            leftWallLevelHalfM - partnerHalfAtYM(leftCornerNeighbor, yMid)
+          )
+        : 0
+    const right =
+      rightCornerNeighbor !== undefined
+        ? Math.max(
+            0,
+            rightWallLevelHalfM - partnerHalfAtYM(rightCornerNeighbor, yMid)
+          )
+        : 0
+    const result = { left, right }
+    courseShiftCache.set(key, result)
+    return result
+  }
+  // Per-course translate-and-trim. Group blocks by course, then per
+  // course: translate any block whose outer edge touches the wall start
+  // (s=0) inward by `leftCornerShift`, and any whose outer edge touches
+  // the wall end (s=wallLenM) inward by `rightCornerShift`. After
+  // translation the body block adjacent to a shifted end overlaps the
+  // shifted end's new position — resolve by trimming the body block's
+  // start to meet the shifted end. This preserves the corner block's
+  // natural width (e.g. 200-series corner stays at 390mm) while
+  // landing its outer face on the partner's actual face at this Y.
+  // For courses with uniform-thickness partners both shifts are 0 and
+  // the per-course pass is a no-op.
+  interface WorkBlock {
+    block: typeof layout.blocks[number]
+    s0: number
+    s1: number
+  }
+  const blocksByCourse: Map<number, WorkBlock[]> = new Map()
   for (const block of layout.blocks) {
-    // Paired tiles sit inside the wall cavity (cleanout backing) and
-    // don't have a face on the exterior to render. Skip them so the
-    // 3D doesn't show stray boxes at body interior positions.
     if (block.role === 'paired-tile') continue
+    const work: WorkBlock = {
+      block,
+      s0: block.s0Mm / 1000,
+      s1: (block.s0Mm + block.widthMm) / 1000,
+    }
+    const list = blocksByCourse.get(block.courseIdx)
+    if (list) list.push(work)
+    else blocksByCourse.set(block.courseIdx, [work])
+  }
 
-    const course = layout.courses[block.courseIdx]
+  const MORTAR_M = DEFAULT_MORTAR_JOINT_MM / 1000
+  for (const [courseIdx, courseBlocks] of blocksByCourse) {
+    const course = layout.courses[courseIdx]
     if (!course) continue
-
-    // Convert mm → m. Layout's s positions are in outer-relative
-    // coordinates (s=0 at outer corner of wall's start end).
-    const s0 = block.s0Mm / 1000
-    const s1 = (block.s0Mm + block.widthMm) / 1000
     const y0 = course.yBottomMm / 1000
     const y1 = (course.yBottomMm + course.heightMm) / 1000
+    const courseShifts = shiftsForCourse(y0, y1)
 
-    // Clamp s to wall length so cut blocks don't overhang the model
-    // (the tally still counts the full block; here we just trim the
-    // visible face). The clamp uses effectiveStart/End so control-
-    // joint ends get pulled back by the sealant gap.
-    const cs0 = Math.max(effectiveStartM, Math.min(effectiveEndM, s0))
-    const cs1 = Math.max(effectiveStartM, Math.min(effectiveEndM, s1))
-    if (cs1 - cs0 < 0.001) continue
+    courseBlocks.sort((a, b) => a.s0 - b.s0)
 
-    // Mortar-style inset on edges that face a neighbour. Edges
-    // touching the wall envelope (true outer edges OR a control-
-    // joint sealant boundary) stay flush — at those edges, the
-    // existing wall-end gap / sealant gap IS the visible joint.
-    const leftInset = cs0 < effectiveStartM + 0.001 ? 0 : halfGap
-    const rightInset = cs1 > effectiveEndM - 0.001 ? 0 : halfGap
-    const bottomInset = y0 < 0.001 ? 0 : halfGap
-    const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
+    // Determine whether this course needs a per-course refit. Refit is
+    // required when EITHER (a) a corner shift applies on this course
+    // (partner is thinner than wall-level at this Y) OR (b) the START
+    // / END is a non-owning cube whose width was sized to wall-level
+    // partner thickness but the partner is actually thinner here.
+    const yMid = (y0 + y1) / 2
+    const startBlock = courseBlocks[0]
+    const endBlock = courseBlocks[courseBlocks.length - 1]
+    const startTouchesStart =
+      startBlock !== undefined && startBlock.s0 < 0.001
+    const endTouchesEnd =
+      endBlock !== undefined && endBlock.s1 > wallLenM - 0.001
+    const startIsRenderOnly =
+      startTouchesStart && startBlock.block.renderOnly === true
+    const endIsRenderOnly =
+      endTouchesEnd && endBlock.block.renderOnly === true
 
-    const aS0 = cs0 + leftInset
-    const aS1 = cs1 - rightInset
-    const aY0 = y0 + bottomInset
-    const aY1 = y1 - topInset
-    if (aS1 - aS0 < 0.001 || aY1 - aY0 < 0.001) continue
+    // Per-course actual partner depth at this Y (full block depth, m).
+    const partnerStartActualM =
+      leftCornerNeighbor !== undefined
+        ? partnerHalfAtYM(leftCornerNeighbor, yMid) * 2
+        : 0
+    const partnerEndActualM =
+      rightCornerNeighbor !== undefined
+        ? partnerHalfAtYM(rightCornerNeighbor, yMid) * 2
+        : 0
+    // Wall-level partner depth used by planWallLayout for cube width.
+    const wallLevelStartCubeM =
+      leftCornerNeighbor !== undefined
+        ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) / 1000
+        : 0
+    const wallLevelEndCubeM =
+      rightCornerNeighbor !== undefined
+        ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) / 1000
+        : 0
+    // Whether the cube on each side needs a per-course resize.
+    const needStartCubeResize =
+      startIsRenderOnly &&
+      Math.abs(partnerStartActualM - wallLevelStartCubeM) > 0.001
+    const needEndCubeResize =
+      endIsRenderOnly &&
+      Math.abs(partnerEndActualM - wallLevelEndCubeM) > 0.001
+    const needsRefit =
+      courseShifts.left > 0.001 ||
+      courseShifts.right > 0.001 ||
+      needStartCubeResize ||
+      needEndCubeResize
 
-    const localCx = (aS0 + aS1) / 2
-    boxes.push({
-      cx: effectiveSx + dirX * localCx,
-      cy: (aY0 + aY1) / 2,
-      cz: effectiveSz + dirZ * localCx,
-      length: aS1 - aS0,
-      heightM: aY1 - aY0,
-      thickness,
-      yRotation,
-      color: colorOf(block.code),
-      highlight: isHighlightedBlock(block.code, library),
-    })
+    if (needsRefit && startTouchesStart && endTouchesEnd) {
+      // ── Per-course rebuild ───────────────────────────────────────
+      // Compute the new start and end block widths based on what the
+      // partner actually is at this Y (rather than wall-level max).
+      // Owning corner blocks keep their natural width — only render-only
+      // cube fillers get resized. Then position the start at leftShift,
+      // the end so its outer face lands at (wallLenM − rightShift), and
+      // refit the body cells between them. This is the only way to keep
+      // the stretcher bond stagger at the correct 200 mm: planWallLayout
+      // anchors the body grid off wall-level cube depth, so any course
+      // where the actual cube is thinner ends up one half-block out of
+      // phase with the owning courses below / above.
+      const startWidthOriginalM = startBlock.s1 - startBlock.s0
+      const endWidthOriginalM = endBlock.s1 - endBlock.s0
+      const startWidthNewM = needStartCubeResize
+        ? partnerStartActualM
+        : startWidthOriginalM
+      const endWidthNewM = needEndCubeResize
+        ? partnerEndActualM
+        : endWidthOriginalM
+
+      // New positions for the start and end blocks (preserving the
+      // block's natural width when owning; resizing to per-course
+      // cube when non-owning).
+      const startS0 = courseShifts.left
+      const startS1 = startS0 + startWidthNewM
+      const endS1 = wallLenM - courseShifts.right
+      const endS0 = endS1 - endWidthNewM
+
+      startBlock.s0 = startS0
+      startBlock.s1 = startS1
+      endBlock.s0 = endS0
+      endBlock.s1 = endS1
+
+      // Refit body / fraction / lead-in blocks into the new body
+      // region. The body region is (startS1 + mortar, endS0 − mortar).
+      // Each non-edge block keeps its original library width but its
+      // position is recomputed so the grid runs contiguously from the
+      // start cube/corner's inner face. This preserves block widths
+      // (so the tally still reads correctly) but shifts the grid into
+      // the correct stretcher phase for this course.
+      const bodyRegionStart = startS1 + MORTAR_M
+      const bodyRegionEnd = endS0 - MORTAR_M
+      let cursor = bodyRegionStart
+      let lastPlacedIdx = -1
+      for (let i = 1; i < courseBlocks.length - 1; i++) {
+        const w = courseBlocks[i]
+        const naturalWidthM = (w.block.widthMm) / 1000
+        const room = bodyRegionEnd - cursor
+        if (room < 0.02) {
+          // No room left — collapse this block (will be skipped at emit).
+          w.s0 = bodyRegionEnd
+          w.s1 = bodyRegionEnd
+          continue
+        }
+        const w_M = Math.min(naturalWidthM, room)
+        w.s0 = cursor
+        w.s1 = cursor + w_M
+        cursor += w_M + MORTAR_M
+        lastPlacedIdx = i
+      }
+      // Close any leftover gap between the last placed body block and
+      // the end block by extending the last body block. The gap arises
+      // when the per-course body region is LONGER than what the
+      // original body blocks (sized for the wall-level layout) consume
+      // — this happens on non-owning courses where the cube was
+      // resized from wall-level 290 down to per-course 190, leaving
+      // the body grid an extra ~100 mm of room. Without this fill the
+      // gap shows on every second course as a clean stripe between
+      // the body and the end block.
+      if (lastPlacedIdx >= 0) {
+        const last = courseBlocks[lastPlacedIdx]
+        if (bodyRegionEnd - last.s1 > 0.02) {
+          last.s1 = bodyRegionEnd
+        }
+      }
+    } else if (courseShifts.left > 0.001 || courseShifts.right > 0.001) {
+      // Single-side shift with no cube resize needed (uniform partner
+      // thickness). Translate edge-touching blocks preserving width
+      // and trim adjacent overlaps — original behaviour.
+      if (courseShifts.left > 0.001) {
+        for (const w of courseBlocks) {
+          if (w.s0 < 0.001) {
+            w.s0 += courseShifts.left
+            w.s1 += courseShifts.left
+          }
+        }
+      }
+      if (courseShifts.right > 0.001) {
+        for (const w of courseBlocks) {
+          if (w.s1 > wallLenM - 0.001) {
+            w.s0 -= courseShifts.right
+            w.s1 -= courseShifts.right
+          }
+        }
+      }
+      courseBlocks.sort((a, b) => a.s0 - b.s0)
+      for (let i = 0; i < courseBlocks.length - 1; i++) {
+        if (courseBlocks[i].s1 > courseBlocks[i + 1].s0 + 0.001) {
+          courseBlocks[i + 1].s0 = courseBlocks[i].s1
+        }
+      }
+    }
+
+    // Emit each block in this course.
+    for (const w of courseBlocks) {
+      const s0 = w.s0
+      const s1 = w.s1
+      // Clamp to wall envelope (control-joint sealant gap). Per-course
+      // corner shifts are already baked into s0/s1 above.
+      const cs0 = Math.max(effectiveStartM, Math.min(effectiveEndM, s0))
+      const cs1 = Math.max(effectiveStartM, Math.min(effectiveEndM, s1))
+      if (cs1 - cs0 < 0.02) continue
+
+      // Mortar-style inset on edges that face a neighbour. Edges
+      // touching the wall envelope (true outer edges OR a control-
+      // joint sealant boundary) stay flush — at those edges, the
+      // existing wall-end gap / sealant gap IS the visible joint.
+      const leftInset = cs0 < effectiveStartM + 0.001 ? 0 : halfGap
+      const rightInset = cs1 > effectiveEndM - 0.001 ? 0 : halfGap
+      const bottomInset = y0 < 0.001 ? 0 : halfGap
+      const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
+
+      const aS0 = cs0 + leftInset
+      const aS1 = cs1 - rightInset
+      const aY0 = y0 + bottomInset
+      const aY1 = y1 - topInset
+      if (aS1 - aS0 < 0.001 || aY1 - aY0 < 0.001) continue
+
+      const localCx = (aS0 + aS1) / 2
+      // Per-block thickness — each block renders at its own library
+      // depth, centered on the wall centerline (cx/cz unchanged). A
+      // 200-series course on top of a 300-series base shows the
+      // expected 50mm step on each face at the boundary.
+      const perBlockDepthMm = library[w.block.code]?.dimensions.depthMm
+      const perBlockThickness =
+        perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness
+      boxes.push({
+        cx: sx + dirX * localCx,
+        cy: (aY0 + aY1) / 2,
+        cz: sz + dirZ * localCx,
+        length: aS1 - aS0,
+        heightM: aY1 - aY0,
+        thickness: perBlockThickness,
+        yRotation,
+        color: colorOf(w.block.code),
+        highlight: isHighlightedBlock(w.block.code, library),
+      })
+    }
   }
 
   // Optional cap strip — one segment running the full wall length at
@@ -733,7 +964,15 @@ function segmentsForStraightWall(
    * map is omitted or doesn't contain the partner wall's id, the
    * corner is treated as full-height like before.
    */
-  wallHeightMmByWallId?: Record<string, number>
+  wallHeightMmByWallId?: Record<string, number>,
+  /**
+   * Optional per-wall resolved courses map. When provided, corner cube
+   * depth on each course is computed from the perpendicular wall's
+   * body block depth AT THIS COURSE'S Y — supporting mixed-series
+   * partners where the upper courses are narrower than the base.
+   * Without this map, falls back to wall-level (max) thickness.
+   */
+  wallCoursesById?: Record<string, ResolvedCourse[]>
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -824,13 +1063,21 @@ function segmentsForStraightWall(
     const aY0 = y0 + bottomInset
     const aY1 = y1 - topInset
     const localCx = (aS0 + aS1) / 2
+    // Per-block thickness — use this block's library depth so a
+    // 200-series block on top of a 300-series base renders at its
+    // own depth, centered on the wall centerline (50mm step each
+    // side at the boundary). Falls back to the wall-level thickness
+    // when the block has no library entry.
+    const perBlockDepthMm = library[code]?.dimensions.depthMm
+    const perBlockThickness =
+      perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness
     return {
       cx: sx + dirX * localCx,
       cy: (aY0 + aY1) / 2,
       cz: sz + dirZ * localCx,
       length: Math.max(0.001, aS1 - aS0),
       heightM: Math.max(0.001, aY1 - aY0),
-      thickness,
+      thickness: perBlockThickness,
       yRotation,
       color,
       highlight: isHighlightedBlock(code, library),
@@ -894,7 +1141,12 @@ function segmentsForStraightWall(
    *  The lintel often spans MULTIPLE courses (a 390mm lintel takes up
    *  ~2 courses of 200mm). So body emission in EVERY course whose y-
    *  range overlaps the lintel footprint must exclude the lintel's
-   *  span — not just the single "lintel course". */
+   *  span — not just the single "lintel course".
+   *
+   *  Block walls only — brick walls use steel angle / catnic supply
+   *  items handled separately (disableBlockLintels=true). Per-opening
+   *  override via `headCourseBlockCode` still wins over the auto-pick
+   *  when set; otherwise selectBlockLintel chooses by head height. */
   const wallHeightMm = totalHeightM * 1000
   const lintelFootprints = disableBlockLintels
     ? []
@@ -902,14 +1154,40 @@ function segmentsForStraightWall(
         .map((op) => {
           const headHeightMm = wallHeightMm - op.sill * 1000 - (op.head - op.sill) * 1000
           if (headHeightMm <= 0) return null
-          const spec = selectBlockLintel(headHeightMm)
-          if (!spec) return null
-          const block = library[spec.code]
+          // User override on the opening's headCourseBlockCode wins
+          // over the auto-pick. Look up the source opening (op here
+          // is the geometry-only slice; the override field lives on
+          // the original Opening record).
+          const sourceOp = openings.find(
+            (o) =>
+              o.wallId === wall.id &&
+              Math.abs(o.startAlongWallMm / 1000 - op.start) < 0.001 &&
+              Math.abs(o.widthMm / 1000 - (op.end - op.start)) < 0.001
+          )
+          let code: BlockCode | null = null
+          if (sourceOp?.headCourseBlockCode) {
+            code = sourceOp.headCourseBlockCode as BlockCode
+          } else {
+            // Detect height-makeup course modular from wall height
+            // (the only way a non-200mm course sneaks into the head
+            // area). 100mm → 20.71 stub; 150mm → 20.140 stub.
+            const wallHeightMod200 = Math.round(wallHeightMm) % 200
+            const extras: number[] =
+              wallHeightMod200 === 100
+                ? [100]
+                : wallHeightMod200 === 150
+                  ? [150]
+                  : []
+            const spec = selectBlockLintel(headHeightMm, extras)
+            if (spec) code = spec.code as BlockCode
+          }
+          if (!code) return null
+          const block = library[code]
           if (!block) return null
           const lintelHeightM = block.dimensions.heightMm / 1000
           const lintelBlockW = block.dimensions.widthMm / 1000
           return {
-            code: spec.code as BlockCode,
+            code,
             spanStart: op.start,
             spanEnd: op.end,
             y0: op.head,
@@ -963,7 +1241,26 @@ function segmentsForStraightWall(
     endCode: BlockCode
     endColor: string
     endWidth: number
+    /** Effective LEFT end-block width on this course — corner block,
+     *  cube extension, or half/full depending on junction + parity.
+     *  Used by jamb stamping to avoid overlapping the end block. */
+    leftEndWidth: number
+    /** Effective RIGHT end-block width on this course — same rules. */
+    rightEndWidth: number
     bodyW: number
+    /** Per-course inward shift on the LEFT (start) end, metres.
+     *  Wall `length` is extended by the partner wall's MAX (wall-level)
+     *  halfThickness so the chord reaches the outer building corner.
+     *  But on a mixed-series partner (e.g. 300 base + 200 above), the
+     *  partner's actual block at THIS course is thinner — so the actual
+     *  outer face at this Y is `partnerWallLevelHalf - partnerActualHalf`
+     *  closer in. Cells that touch s=0 on this course get clamped to
+     *  `leftCornerShiftM` so their outer face lands on the partner's
+     *  real face at this Y rather than overshooting the centerline. */
+    leftCornerShiftM: number
+    /** Per-course inward shift on the RIGHT (end) end, metres. Same
+     *  rule as `leftCornerShiftM` but for the wall's end side. */
+    rightCornerShiftM: number
   }
 
   // Junction-aware end handling:
@@ -1103,16 +1400,65 @@ function segmentsForStraightWall(
     const cornerWidth =
       widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
     // Corner cube depth on this wall's axis = perpendicular wall's
-    // thickness. Fallback to this wall's own thickness (almost always
-    // the same — same-series walls meet at corners), then halfBlockW.
-    const leftCornerCubeDepth =
+    // depth AT THIS COURSE'S Y. For uniform walls this matches the
+    // partner's overall thickness; for mixed-series partners (e.g.
+    // 300 base + 200 above), it shrinks to the partner's actual
+    // block depth at this y so the cube doesn't extend past the
+    // narrower upper courses. Falls back to wall-level thickness
+    // when partner courses aren't available.
+    const partnerCubeDepthM = (partnerId: string | undefined): number => {
+      if (partnerId === undefined) return thicknessMm / 1000
+      const partnerCourses = wallCoursesById?.[partnerId]
+      if (partnerCourses) {
+        const yMid = (course.y0 + course.y1) / 2
+        for (const pc of partnerCourses) {
+          if (yMid >= pc.y0 - 0.001 && yMid <= pc.y1 + 0.001) {
+            const d = library[pc.bodyCode]?.dimensions.depthMm
+            if (typeof d === 'number') return d / 1000
+            break
+          }
+        }
+      }
+      return (wallThicknessByWallId[partnerId] ?? thicknessMm) / 1000
+    }
+    const leftCornerCubeDepth = partnerCubeDepthM(leftCornerNeighbor)
+    const rightCornerCubeDepth = partnerCubeDepthM(rightCornerNeighbor)
+    // Per-course outer-face shift on this wall's axis.
+    //
+    // The wall's `length` was computed with `outerEdgeEndpoints` using
+    // each corner partner's WALL-LEVEL thickness (the partner's maximum
+    // thickness across its courses) — so the chord extends to the outer
+    // building corner of the WIDEST partner course. For a mixed-series
+    // partner (e.g. 300 base + 200 above), every course where the
+    // partner's actual block is thinner than its wall-level max has its
+    // real outer-face plane closer in by (partnerWallLevelHalf −
+    // partnerActualHalfAtY). Without correction the corner block on
+    // this course pokes 50mm past the partner's real face — exactly
+    // the symptom of "200 above 300 corner pushing out" the user sees.
+    //
+    // partnerCubeDepthM returns the partner's FULL block depth at this
+    // course's Y (in metres), so partnerActualHalfM = cubeDepth/2.
+    // wallThicknessByWallId is mm; convert.
+    const leftWallLevelHalfM =
       leftCornerNeighbor !== undefined
-        ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) / 1000
-        : thicknessMm / 1000
-    const rightCornerCubeDepth =
+        ? (wallThicknessByWallId[leftCornerNeighbor] ?? thicknessMm) /
+          2 /
+          1000
+        : 0
+    const rightWallLevelHalfM =
       rightCornerNeighbor !== undefined
-        ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) / 1000
-        : thicknessMm / 1000
+        ? (wallThicknessByWallId[rightCornerNeighbor] ?? thicknessMm) /
+          2 /
+          1000
+        : 0
+    const leftCornerShiftM =
+      leftCornerActive && leftCornerNeighbor !== undefined
+        ? Math.max(0, leftWallLevelHalfM - leftCornerCubeDepth / 2)
+        : 0
+    const rightCornerShiftM =
+      rightCornerActive && rightCornerNeighbor !== undefined
+        ? Math.max(0, rightWallLevelHalfM - rightCornerCubeDepth / 2)
+        : 0
     const leftHasCornerJunction = leftPhase !== null
     const rightHasCornerJunction = rightPhase !== null
     const ownsLeftThisCourse =
@@ -1301,8 +1647,35 @@ function segmentsForStraightWall(
           s1: leftEndWidth,
         })
       }
+      // Cut block after the corner on owning courses — gets the body
+      // grid back on stretcher bond when the block series is deep
+      // (e.g. 300-series: bodyDepth 290 vs bodyLength 390 → 90mm cut).
+      // For 200-series (depth = halfLength) the math gives 0 → no cell.
+      const bodyDepthM = thicknessMm / 1000
+      const mortarM = DEFAULT_MORTAR_JOINT_MM / 1000
+      const halfBodyModularM = (bodyW + mortarM) / 2
       let c = leftEndWidth
-      const bodyEnd = length - rightEndWidth
+      if (leftHasCornerJunction && ownsLeftThisCourse) {
+        const cutW =
+          halfBodyModularM - (cornerWidth - leftCornerCubeDepth) - mortarM
+        if (cutW > 0.005) {
+          cells.push({
+            role: 'BODY',
+            code: course.bodyCode,
+            color: bodyColor,
+            s0: c,
+            s1: c + cutW,
+          })
+          c += cutW
+        }
+      }
+      const rightCutW =
+        rightHasCornerJunction && ownsRightThisCourse
+          ? halfBodyModularM - (cornerWidth - rightCornerCubeDepth) - mortarM
+          : 0
+      const stampRightCut = rightCutW > 0.005
+      const bodyEnd =
+        length - rightEndWidth - (stampRightCut ? rightCutW : 0)
       while (c < bodyEnd) {
         const cellEnd = Math.min(c + bodyW, bodyEnd)
         if (cellEnd - c > 0.02) {
@@ -1316,6 +1689,15 @@ function segmentsForStraightWall(
         }
         c += bodyW
       }
+      if (stampRightCut) {
+        cells.push({
+          role: 'BODY',
+          code: course.bodyCode,
+          color: bodyColor,
+          s0: bodyEnd,
+          s1: bodyEnd + rightCutW,
+        })
+      }
       if (renderRightEnd) {
         cells.push({
           role: 'END',
@@ -1325,8 +1707,21 @@ function segmentsForStraightWall(
           s1: length,
         })
       }
+      // Suppress unused-var lint for bodyDepthM (kept for future use).
+      void bodyDepthM
     }
-    return { course, cells, endCode, endColor, endWidth, bodyW }
+    return {
+      course,
+      cells,
+      endCode,
+      endColor,
+      endWidth,
+      leftEndWidth,
+      rightEndWidth,
+      bodyW,
+      leftCornerShiftM,
+      rightCornerShiftM,
+    }
   })
 
   // ── Helper: stamp a span (replace cells in [zoneS0, zoneS1]) ─────
@@ -1426,40 +1821,56 @@ function segmentsForStraightWall(
     const jambW =
       widthOf(jambCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
 
+    // End-block boundaries on this course. Jambs must stay inside the
+    // body region — without these clamps a jamb stamped right at a
+    // wall corner overlaps the corner block's column, producing the
+    // doubled / confused pattern at the corner.
+    const leftBodyStart = entry.leftEndWidth
+    const rightBodyEnd = length - entry.rightEndWidth
+
     for (let i = 0; i < openingsFull.length; i++) {
       const op = openingsFull[i]
       const prevOp = i > 0 ? openingsFull[i - 1] : null
       const nextOp = i < openingsFull.length - 1 ? openingsFull[i + 1] : null
 
       // Left jamb of this opening — at [start, op.start].
-      // Start is the LARGER of: wall start (0), ideal jambW back
-      // from op, OR midpoint of the pier between prev opening and
-      // this one (so paired inner jambs meet rather than overlap).
+      // Start is the LARGEST of: wall body start (leftEndWidth),
+      // ideal jambW back from op, OR midpoint of the pier between
+      // prev opening and this one (so paired inner jambs meet rather
+      // than overlap). Clamping at leftBodyStart prevents the jamb
+      // from overlapping the corner / end block at the wall start.
       const leftIdeal = op.start - jambW
-      const leftFloor = prevOp ? (prevOp.end + op.start) / 2 : 0
-      const leftJambStart = Math.max(0, leftIdeal, leftFloor)
-      if (op.start - leftJambStart > 0.02) {
-        stampZone(cells, leftJambStart, op.start, {
+      const leftFloor = prevOp ? (prevOp.end + op.start) / 2 : leftBodyStart
+      const leftJambStart = Math.max(leftBodyStart, leftIdeal, leftFloor)
+      // Also clamp the END of the left jamb — if the opening's edge
+      // is inside the end-block region (very near corner), there's
+      // no space for a jamb at all and we skip it.
+      const leftJambEnd = Math.min(op.start, rightBodyEnd)
+      if (leftJambEnd - leftJambStart > 0.02) {
+        stampZone(cells, leftJambStart, leftJambEnd, {
           role: 'JAMB',
           code: jambCode,
           color: jambColor,
           s0: leftJambStart,
-          s1: op.start,
+          s1: leftJambEnd,
         })
       }
 
       // Right jamb of this opening — at [op.end, end]. End is
-      // the SMALLER of: wall end (length), ideal jambW forward
-      // from op, OR midpoint of the pier with next opening.
+      // the SMALLEST of: wall body end (length-rightEndWidth), ideal
+      // jambW forward from op, OR midpoint of the pier with next
+      // opening. Clamping at rightBodyEnd prevents the jamb from
+      // overlapping the corner / end block at the wall end.
       const rightIdeal = op.end + jambW
-      const rightCeil = nextOp ? (op.end + nextOp.start) / 2 : length
-      const rightJambEnd = Math.min(length, rightIdeal, rightCeil)
-      if (rightJambEnd - op.end > 0.02) {
-        stampZone(cells, op.end, rightJambEnd, {
+      const rightCeil = nextOp ? (op.end + nextOp.start) / 2 : rightBodyEnd
+      const rightJambEnd = Math.min(rightBodyEnd, rightIdeal, rightCeil)
+      const rightJambStart = Math.max(op.end, leftBodyStart)
+      if (rightJambEnd - rightJambStart > 0.02) {
+        stampZone(cells, rightJambStart, rightJambEnd, {
           role: 'JAMB',
           code: jambCode,
           color: jambColor,
-          s0: op.end,
+          s0: rightJambStart,
           s1: rightJambEnd,
         })
       }
@@ -1470,7 +1881,7 @@ function segmentsForStraightWall(
   // Lintels span multiple courses vertically (e.g. 20.18 = 390mm = 2
   // course heights). For each lintel footprint, in EVERY course it
   // overlaps, remove cells in the lintel x range. Then emit the
-  // lintel separately as its own multi-course mesh.
+  // lintel separately as its own multi-course mesh (Phase 6 below).
   interface LintelMesh {
     code: BlockCode
     color: string
@@ -1497,6 +1908,44 @@ function segmentsForStraightWall(
       y1: lintel.y1,
       blockWidthM: lintel.blockWidthM,
     })
+  }
+
+  // ── Phase 4b: sill course override (windows only) ───────────────
+  //
+  // The HEAD course is handled by the lintel logic above (auto-pick
+  // OR user override via headCourseBlockCode). The SILL course is a
+  // separate concept: the row of blocks immediately below the
+  // opening's bottom edge, on windows only. When the user sets
+  // sillCourseBlockCode the cells in that row get overridden to
+  // that block.
+  if (!disableBlockLintels) {
+    for (const op of wallOpenings) {
+      const sourceOp = openings.find(
+        (o) =>
+          o.wallId === wall.id &&
+          Math.abs(o.startAlongWallMm / 1000 - op.start) < 0.001 &&
+          Math.abs(o.widthMm / 1000 - (op.end - op.start)) < 0.001
+      )
+      if (!sourceOp) continue
+      if (!sourceOp.sillCourseBlockCode || op.sill <= 0.001) continue
+      let sillCourse: typeof grid[number] | undefined
+      for (let i = grid.length - 1; i >= 0; i--) {
+        if (grid[i].course.y1 <= op.sill + 0.001) {
+          sillCourse = grid[i]
+          break
+        }
+      }
+      if (sillCourse) {
+        const code = sourceOp.sillCourseBlockCode as BlockCode
+        stampZone(sillCourse.cells, op.start, op.end, {
+          role: 'BODY',
+          code,
+          color: colorOf(code),
+          s0: op.start,
+          s1: op.end,
+        })
+      }
+    }
   }
 
   // ── Phase 4.5: merge narrow adjacent body cells ─────────────────
@@ -1528,6 +1977,53 @@ function segmentsForStraightWall(
     }
   }
 
+  // ── Phase 4.7: per-course outer-edge translate-and-trim ────────
+  // For courses where the partner wall's actual block at this Y is
+  // thinner than the partner's wall-level max thickness, the actual
+  // outer corner sits inboard by (partnerWallLevelHalf − partnerActualHalf).
+  // Translate cells touching the wall's left/right edge by that shift
+  // (PRESERVING their natural width — corner block stays at e.g. 390mm
+  // instead of being clipped shorter), then trim any body cells the
+  // shifted ends overlap into. For uniform partners both shifts are 0
+  // and this phase is a no-op.
+  for (const entry of grid) {
+    const { cells, leftCornerShiftM, rightCornerShiftM } = entry
+    if (leftCornerShiftM < 0.001 && rightCornerShiftM < 0.001) continue
+    // Translate any cell whose outer edge sits at the wall start (s=0)
+    // inward by leftCornerShiftM. Width preserved.
+    if (leftCornerShiftM > 0.001) {
+      for (const cell of cells) {
+        if (cell.s0 < 0.001) {
+          cell.s0 += leftCornerShiftM
+          cell.s1 += leftCornerShiftM
+        }
+      }
+    }
+    // Same for the wall end (s=length).
+    if (rightCornerShiftM > 0.001) {
+      for (const cell of cells) {
+        if (cell.s1 > length - 0.001) {
+          cell.s0 -= rightCornerShiftM
+          cell.s1 -= rightCornerShiftM
+        }
+      }
+    }
+    // After translation, the body cell adjacent to a shifted end now
+    // overlaps the shifted end. Resolve by trimming the right-hand
+    // cell's start to meet the left-hand cell's end (real masons
+    // would cut the body block to fit at the corner).
+    cells.sort((a, b) => a.s0 - b.s0)
+    for (let i = 0; i < cells.length - 1; i++) {
+      if (cells[i].s1 > cells[i + 1].s0 + 0.001) {
+        cells[i + 1].s0 = cells[i].s1
+      }
+    }
+    // Drop slivers left over after trim.
+    for (let i = cells.length - 1; i >= 0; i--) {
+      if (cells[i].s1 - cells[i].s0 < 0.02) cells.splice(i, 1)
+    }
+  }
+
   // ── Phase 5: emit cells ──────────────────────────────────────────
   for (const { course, cells } of grid) {
     for (const cell of cells) {
@@ -1539,6 +2035,10 @@ function segmentsForStraightWall(
   }
 
   // ── Phase 6: emit lintels (as individual blocks across span) ────
+  // Each lintel footprint becomes a row of lintel-coded blocks at
+  // the lintel's natural block width, spanning [s0, s1] at the
+  // lintel's y-range. Body cells in this range were already removed
+  // in Phase 4.
   for (const lm of lintelMeshes) {
     let cursor = lm.s0
     while (cursor < lm.s1) {
@@ -1551,8 +2051,8 @@ function segmentsForStraightWall(
   }
 
   // Phase 7 (mortar emit) intentionally skipped — mortar removed at
-  // user request. pushMortar / lintelFootprints kept defined above
-  // so re-enabling later is just removing this `void` line.
+  // user request. pushMortar kept defined above so re-enabling
+  // later is just removing this `void` line.
   void pushMortar
 
   return boxes
@@ -1924,13 +2424,13 @@ function InstancedSegmentGroup({
     >
       <boxGeometry args={[1, 1, 1]} />
       {highlight ? (
-        <meshStandardMaterial
+        <meshLambertMaterial
           color={color}
           emissive={color}
           emissiveIntensity={0.45}
         />
       ) : (
-        <meshStandardMaterial color={color} />
+        <meshLambertMaterial color={color} />
       )}
     </instancedMesh>
   )
@@ -2099,13 +2599,13 @@ function WedgeGroupMesh({
   return (
     <mesh geometry={geometry} frustumCulled={false}>
       {highlight ? (
-        <meshStandardMaterial
+        <meshLambertMaterial
           color={color}
           emissive={color}
           emissiveIntensity={0.45}
         />
       ) : (
-        <meshStandardMaterial color={color} />
+        <meshLambertMaterial color={color} />
       )}
     </mesh>
   )
@@ -2248,7 +2748,7 @@ function CurvedMortarShellMesh({ shell }: { shell: CurvedMortarShell }) {
 
   return (
     <mesh geometry={geometry} frustumCulled={false}>
-      <meshStandardMaterial color={MORTAR_COLOR} />
+      <meshLambertMaterial color={MORTAR_COLOR} />
     </mesh>
   )
 }
@@ -2615,12 +3115,12 @@ function CADControls({
     const fitView = () => {
       target.set(initialTargetXRef.current, 1, initialTargetZRef.current)
       const FIT_FOV_RAD = (45 * Math.PI) / 180
-      // Same aggressive multiplier (0.55) as the initial framing so
+      // Same aggressive multiplier (0.40) as the initial framing so
       // F-fit and the initial view match. See initialCamera comments
-      // for the trade-off.
+      // for the trade-off (long thin buildings may clip).
       const dist = Math.max(
         4,
-        (sceneSizeMaxRef.current / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.55
+        (sceneSizeMaxRef.current / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.40
       )
       // theta = horizontal angle (45° = corner view).
       // phi = polar angle from world Y; ~60° gives a 3/4 elevation.
@@ -2721,29 +3221,118 @@ function Scene({
       if (wall.trade === 'brick') return null
       return resolveWallCourses(wall, makeupsById, library)
     })
+
+    // ── 3D-only opening head adjustment ─────────────────────────────
+    //
+    // Real masonry puts the window head 300 mm below the top of the
+    // wall — that's the gap that holds the lintel + one head course.
+    // The 2D data may carry an arbitrary sill (user typed-in or legacy
+    // zero), which can render with the head right against the wall top
+    // or floating mid-wall, looking wrong. For the 3D view (only — the
+    // tally / export still use the raw opening data) we re-anchor each
+    // WINDOW so its head sits at wallHeight − 300 mm; doors sit on the
+    // floor at sill = 0 regardless.
+    const HEAD_GAP_FROM_TOP_MM = 300
+    const wallById_forSill = new Map(walls.map((w) => [w.id, w]))
+    const wallHeightMmFor = (wall: Wall): number => {
+      if (typeof wall.heightMmOverride === 'number') return wall.heightMmOverride
+      if (wall.trade === 'brick') {
+        return brickMakeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
+      }
+      return makeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
+    }
+    const adjustedOpenings: Opening[] = openings.map((o) => {
+      const wall = wallById_forSill.get(o.wallId)
+      if (!wall) return o
+      if (o.kind === 'door') {
+        return o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
+      }
+      // Sill = 0 is treated as door-like positioning: respect it as
+      // floor-to-head (user explicitly wants the opening to reach the
+      // ground). Block-mode openings don't carry a kind tag yet, so
+      // without this gate they'd all auto-reposition as windows even
+      // when the user typed sill=0.
+      if (o.sillHeightMm === 0) return o
+      // Windows with a non-zero sill — auto-anchor the head at
+      // wallHeight − HEAD_GAP for industry-standard window positioning.
+      // Clamp sill ≥ 0 so a tall opening on a short wall doesn't go
+      // below floor.
+      const wallHeightMm = wallHeightMmFor(wall)
+      const targetSill = Math.max(
+        0,
+        wallHeightMm - HEAD_GAP_FROM_TOP_MM - o.heightMm
+      )
+      return targetSill === o.sillHeightMm ? o : { ...o, sillHeightMm: targetSill }
+    })
+
     const allCodes: string[] = []
     for (const wr of wallResolutions) {
       if (!wr) continue
       for (const c of wr.courses) {
         allCodes.push(c.bodyCode, c.cornerCode, c.halfCode)
       }
+      // ALSO walk the makeup's bands (explicit coursePattern OR
+      // synthesised via convertMakeupToBands) so every band blockCode
+      // lands in allCodes — including height-makeup bands (20.71 /
+      // 20.140) and any specialty bands.
+      if (wr.makeup) {
+        const bandList =
+          wr.makeup.coursePattern && wr.makeup.coursePattern.length > 0
+            ? wr.makeup.coursePattern
+            : convertMakeupToBands(wr.makeup, undefined).bands
+        for (const band of bandList) {
+          if (band.blockCode) allCodes.push(band.blockCode)
+        }
+      }
     }
-    // Lintel codes — collected for every opening on a block wall so the
-    // lintel block gets its own distinct palette slot. selectBlockLintel
-    // resolves per opening's head height; null if the library carries
-    // no lintel-tagged block.
+    // Belt-and-braces: push every library block tagged as a height-
+    // makeup block, BUT ONLY when there's at least one block wall in
+    // the project. planWallLayout's buildCourses adds height-makeup
+    // courses based on the wall's height remainder regardless of
+    // whether the user's coursePattern declares them, so the actual
+    // rendered blocks can carry a code (e.g. 20.71 / 20.140) that
+    // doesn't appear in the wall's coursePattern. Gating on walls
+    // existing keeps the legend empty when the user deletes all walls
+    // — otherwise the library's height-makeup blocks would linger in
+    // the legend even with nothing on the canvas.
+    const hasBlockWalls = walls.some((w) => w.trade !== 'brick')
+    if (hasBlockWalls) {
+      for (const [code, block] of Object.entries(library)) {
+        if (block.roles?.includes('height-makeup')) {
+          allCodes.push(code)
+        }
+      }
+    }
+    // Lintel + sill override codes for the colour map. Block walls
+    // auto-pick a lintel via selectBlockLintel based on each opening's
+    // head height; the per-opening headCourseBlockCode override wins
+    // when set. Either way we need the chosen code in allCodes so it
+    // gets a palette slot.
     for (const wall of walls) {
       if (wall.trade === 'brick') continue
       const heightMm =
         typeof wall.heightMmOverride === 'number'
           ? wall.heightMmOverride
           : makeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
-      const wallOpenings = openings.filter((o) => o.wallId === wall.id)
+      const wallOpenings = adjustedOpenings.filter((o) => o.wallId === wall.id)
       for (const op of wallOpenings) {
-        const headHeightMm = heightMm - op.sillHeightMm - op.heightMm
-        if (headHeightMm <= 0) continue
-        const spec = selectBlockLintel(headHeightMm)
-        if (spec) allCodes.push(spec.code)
+        if (op.headCourseBlockCode) {
+          allCodes.push(op.headCourseBlockCode)
+        } else {
+          const headHeightMm = heightMm - op.sillHeightMm - op.heightMm
+          if (headHeightMm > 0) {
+            const wallHeightMod200 = Math.round(heightMm) % 200
+            const extras: number[] =
+              wallHeightMod200 === 100
+                ? [100]
+                : wallHeightMod200 === 150
+                  ? [150]
+                  : []
+            const spec = selectBlockLintel(headHeightMm, extras)
+            if (spec) allCodes.push(spec.code)
+          }
+        }
+        if (op.sillCourseBlockCode) allCodes.push(op.sillCourseBlockCode)
       }
     }
     // Fraction codes — collected from each wall's planWall fits so any
@@ -2767,27 +3356,41 @@ function Scene({
         // planWall throws on degenerate geometry (zero-length walls).
         // Skip silently — those walls won't render fractions anyway.
       }
+      // Height-makeup codes — surfaced from the makeup directly so
+      // 20.71 / 20.140 always land in the legend, even when the wall's
+      // height happens to be a clean modular multiple in some courses
+      // and an off-modular fit in others. Without this the height-
+      // makeup rows render but no legend entry exists for them.
+      if (makeup.heightMakeup71BlockCode) {
+        allCodes.push(makeup.heightMakeup71BlockCode)
+      }
+      if (makeup.heightMakeup140BlockCode) {
+        allCodes.push(makeup.heightMakeup140BlockCode)
+      }
+      // Also surface any per-range height-makeup overrides.
+      for (const range of makeup.courseSeriesRanges ?? []) {
+        if (range.heightMakeup71BlockCode) {
+          allCodes.push(range.heightMakeup71BlockCode)
+        }
+      }
     }
-    // Build the colour map via plain hash-based `bandColor` for every
-    // code. We DELIBERATELY don't use buildBlockColorMap here, even
-    // though it would dedupe slot collisions — because the
-    // WallTypesPanel preview builds its own (smaller) code set with
-    // buildBlockColorMap, and the two sets produce different slot
-    // assignments for the same code (the collision-avoidance walk
-    // depends on which other codes are sorted before it). That made
-    // the same `20.48` block look different in the panel preview vs
-    // the 3D scene — the bug the user reported.
+    // Build the colour map via buildBlockColorMap so every code lands
+    // on a UNIQUE palette slot until the set exceeds 16 codes (after
+    // which the walk wraps and slots can repeat). This avoids the
+    // collision the user hit where 20.71 and 20.140 hashed to the same
+    // slot and rendered in identical dark red. The trade-off: the
+    // same code may land in a different slot in the WallTypesPanel
+    // preview (which builds its own smaller code set). Cross-view
+    // consistency is therefore not guaranteed, but every code in the
+    // 3D view is visually distinct from every other.
     //
-    // Plain bandColor() is a pure function of the code itself, so the
-    // same code always resolves to the same palette slot, regardless
-    // of which other codes are around. ~1/16 of codes will collide on
-    // a shared slot, but with the concrete-grey palette where slots
-    // differ mainly by lightness, that's acceptable in exchange for
-    // perfect cross-view consistency.
-    const colorMap = new Map<string, string>()
-    for (const code of new Set(allCodes)) {
-      colorMap.set(code, bandColor(code, palette))
-    }
+    // Filter to ONLY codes that exist in the current library. When the
+    // user switches library templates, makeups keep their old codes in
+    // storage — but those codes may not exist in the new library. Without
+    // this filter the legend would show ghosts from the old library long
+    // after the switch.
+    const presentCodes = allCodes.filter((code) => library[code] !== undefined)
+    const colorMap = buildBlockColorMap(presentCodes, palette)
 
     const out: WallSegmentBox[] = []
     const outWedges: WallSegmentWedge[] = []
@@ -2832,12 +3435,29 @@ function Scene({
       wall: Wall,
       thicknessMm: number,
       totalHeightM: number,
-      wallOpenings: Opening[]
+      wallOpenings: Opening[],
+      /**
+       * Optional per-course info so the mortar plane can use the THINNEST
+       * block depth in each band. Without this the mortar uses the wall-
+       * level (max) thickness and extends past narrower courses, covering
+       * their faces — visible as a "wash" over 200-series courses sitting
+       * on top of 300-series.
+       */
+      courses?: Array<{
+        bodyCode: BlockCode
+        /** y range in metres. */
+        y0: number
+        y1: number
+      }>
     ) {
-      const sxw = -wall.startX / 1000
-      const szw = -wall.startY / 1000
-      const exw = -wall.endX / 1000
-      const ezw = -wall.endY / 1000
+      // Use outer-edge endpoints (matches the block-emission extent so
+      // mortar terminates at the same outer corner the blocks do, not
+      // at the data centerline).
+      const extW = outerEdgeEndpoints(wall, wallThicknessByWallId, wallsByIdMap)
+      const sxw = -extW.startX / 1000
+      const szw = -extW.startY / 1000
+      const exw = -extW.endX / 1000
+      const ezw = -extW.endY / 1000
       const dxw = exw - sxw
       const dzw = ezw - szw
       const wallLenM = Math.hypot(dxw, dzw)
@@ -2845,7 +3465,94 @@ function Scene({
       const dirXw = dxw / wallLenM
       const dirZw = dzw / wallLenM
       const yRotW = Math.atan2(-dzw, dxw)
-      const mortarThick = (thicknessMm / 1000) * MORTAR_THICKNESS_FRAC
+      const defaultMortarThick = (thicknessMm / 1000) * MORTAR_THICKNESS_FRAC
+      // For each mortar band, find the thinnest block depth that
+      // overlaps the band's y-range. Mortar uses that depth so it
+      // never extends past the narrowest course in the band.
+      const minDepthForBand = (bandY0: number, bandY1: number): number => {
+        if (!courses || courses.length === 0) return defaultMortarThick
+        let minDepthMm: number | null = null
+        for (const c of courses) {
+          if (c.y1 <= bandY0 + 0.001 || c.y0 >= bandY1 - 0.001) continue
+          const d = library[c.bodyCode]?.dimensions.depthMm
+          if (typeof d === 'number') {
+            if (minDepthMm === null || d < minDepthMm) minDepthMm = d
+          }
+        }
+        return minDepthMm !== null
+          ? (minDepthMm / 1000) * MORTAR_THICKNESS_FRAC
+          : defaultMortarThick
+      }
+
+      // Per-course corner-shift lookup. For mixed-series partners the
+      // actual outer corner sits inboard from the wall-level outer
+      // corner (the chord is extended via the partner's WALL-LEVEL
+      // half-thickness; per-course it should land at the partner's
+      // ACTUAL half-thickness at this Y). Mortar bands inherit that
+      // shift so the mortar fill doesn't poke past where the blocks
+      // actually land.
+      const leftCornerNeighborW =
+        wall.startJunction.type === 'corner'
+          ? wall.startJunction.connectedWallIds?.[0]
+          : undefined
+      const rightCornerNeighborW =
+        wall.endJunction.type === 'corner'
+          ? wall.endJunction.connectedWallIds?.[0]
+          : undefined
+      const partnerHalfAtYMortar = (
+        partnerId: string | undefined,
+        yMidM: number
+      ): number => {
+        if (partnerId === undefined) return 0
+        const partnerCourses = wallCoursesByIdCache?.[partnerId]
+        if (partnerCourses) {
+          for (const pc of partnerCourses) {
+            if (yMidM >= pc.y0 - 0.001 && yMidM <= pc.y1 + 0.001) {
+              const d = library[pc.bodyCode]?.dimensions.depthMm
+              if (typeof d === 'number') return d / 2 / 1000
+              break
+            }
+          }
+        }
+        return (
+          (wallThicknessByWallId[partnerId] ?? thicknessMm) / 2 / 1000
+        )
+      }
+      const leftWallLevelHalfMortar =
+        leftCornerNeighborW !== undefined
+          ? (wallThicknessByWallId[leftCornerNeighborW] ?? thicknessMm) /
+            2 /
+            1000
+          : 0
+      const rightWallLevelHalfMortar =
+        rightCornerNeighborW !== undefined
+          ? (wallThicknessByWallId[rightCornerNeighborW] ?? thicknessMm) /
+            2 /
+            1000
+          : 0
+      const shiftsForBand = (
+        bandY0: number,
+        bandY1: number
+      ): { left: number; right: number } => {
+        const yMid = (bandY0 + bandY1) / 2
+        const left =
+          leftCornerNeighborW !== undefined
+            ? Math.max(
+                0,
+                leftWallLevelHalfMortar -
+                  partnerHalfAtYMortar(leftCornerNeighborW, yMid)
+              )
+            : 0
+        const right =
+          rightCornerNeighborW !== undefined
+            ? Math.max(
+                0,
+                rightWallLevelHalfMortar -
+                  partnerHalfAtYMortar(rightCornerNeighborW, yMid)
+              )
+            : 0
+        return { left, right }
+      }
 
       const opLocal: { s0: number; s1: number; y0: number; y1: number }[] = []
       const yBoundaries = new Set<number>([0, totalHeightM])
@@ -2861,12 +3568,36 @@ function Scene({
           yBoundaries.add(y1)
         }
       }
+      // Also split at COURSE boundaries so each band sees a single
+      // course's depth — without this the mortar uses the thinnest
+      // depth across the whole wall, leaving the 300-series mortar
+      // too thin and revealing a recessed gap behind those blocks.
+      if (courses) {
+        for (const c of courses) {
+          yBoundaries.add(Math.max(0, Math.min(totalHeightM, c.y0)))
+          yBoundaries.add(Math.max(0, Math.min(totalHeightM, c.y1)))
+        }
+      }
       const sortedYs = Array.from(yBoundaries).sort((a, b) => a - b)
 
       const envelopeInset = MORTAR_GAP_M
-      const pushMortarStrip = (s0: number, s1: number, y0: number, y1: number) => {
-        const aS0 = s0 < 0.001 ? envelopeInset : s0
-        const aS1 = s1 > wallLenM - 0.001 ? wallLenM - envelopeInset : s1
+      const pushMortarStrip = (
+        s0: number,
+        s1: number,
+        y0: number,
+        y1: number,
+        bandMortarThick: number,
+        /** Effective left edge of this band (per-course shifted). When
+         *  the strip touches this edge, inset by envelopeInset so the
+         *  block's halfGap inset at the corner covers the mortar — no
+         *  visible overhang at the per-course outer corner. */
+        bandS0: number,
+        bandS1: number
+      ) => {
+        const atLeftEdge = Math.abs(s0 - bandS0) < 0.001
+        const atRightEdge = Math.abs(s1 - bandS1) < 0.001
+        const aS0 = atLeftEdge ? s0 + envelopeInset : s0
+        const aS1 = atRightEdge ? s1 - envelopeInset : s1
         const aY0 = y0 < 0.001 ? envelopeInset : y0
         const aY1 = y1 > totalHeightM - 0.001 ? totalHeightM - envelopeInset : y1
         if (aS1 - aS0 < 0.005 || aY1 - aY0 < 0.005) return
@@ -2877,7 +3608,7 @@ function Scene({
           cz: szw + dirZw * localCx,
           length: aS1 - aS0,
           heightM: aY1 - aY0,
-          thickness: mortarThick,
+          thickness: bandMortarThick,
           yRotation: yRotW,
           color: MORTAR_COLOR,
           highlight: false,
@@ -2888,15 +3619,46 @@ function Scene({
         const bandY0 = sortedYs[bi]
         const bandY1 = sortedYs[bi + 1]
         if (bandY1 - bandY0 < 0.001) continue
+        const bandMortarThick = minDepthForBand(bandY0, bandY1)
+        // Per-band s extents: pulled inboard by the per-course shift so
+        // mortar at the corner doesn't poke past where the blocks at
+        // this Y actually land. For uniform partners both shifts are 0
+        // and the band runs the full wall length.
+        const bandShifts = shiftsForBand(bandY0, bandY1)
+        const bandS0 = bandShifts.left
+        const bandS1 = wallLenM - bandShifts.right
+        if (bandS1 - bandS0 < 0.005) continue
         const blockingOps = opLocal
           .filter((o) => o.y0 <= bandY0 + 0.001 && o.y1 >= bandY1 - 0.001)
           .sort((a, b) => a.s0 - b.s0)
-        let cursor = 0
+        let cursor = bandS0
         for (const op of blockingOps) {
-          if (op.s0 > cursor) pushMortarStrip(cursor, op.s0, bandY0, bandY1)
-          cursor = Math.max(cursor, op.s1)
+          const clipped0 = Math.max(bandS0, op.s0)
+          const clipped1 = Math.min(bandS1, op.s1)
+          if (clipped0 > cursor) {
+            pushMortarStrip(
+              cursor,
+              clipped0,
+              bandY0,
+              bandY1,
+              bandMortarThick,
+              bandS0,
+              bandS1
+            )
+          }
+          cursor = Math.max(cursor, clipped1)
         }
-        if (cursor < wallLenM) pushMortarStrip(cursor, wallLenM, bandY0, bandY1)
+        if (cursor < bandS1) {
+          pushMortarStrip(
+            cursor,
+            bandS1,
+            bandY0,
+            bandY1,
+            bandMortarThick,
+            bandS0,
+            bandS1
+          )
+        }
       }
     }
 
@@ -2992,6 +3754,10 @@ function Scene({
       }
     }
 
+    // Lazily-built per-wall courses map for partner-cube-depth lookups
+    // inside segmentsForStraightWall on mixed-series corners.
+    let wallCoursesByIdCache: Record<string, ResolvedCourse[]> | undefined
+
     walls.forEach((wall, i) => {
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
 
@@ -3059,33 +3825,12 @@ function Scene({
         const brickPaletteKey = brickMakeup?.brickTypeCode ?? wall.makeupId
         const brickColorMap = new Map([['__brick__', bandColor(brickPaletteKey, palette)]])
 
-        // Default opening position: head sits HEAD_DROP_FROM_TOP_MM
-        // (= 300mm) below the wall top, with the opening height
-        // subtracted downward from there. The 2D opening tool used
-        // to only capture width × height for brick openings (no
-        // explicit vertical position), so this override anchored
-        // every opening near the wall top by default — fine for
-        // legacy windows but DEAD WRONG for doors, which need to
-        // sit on the floor.
-        //
-        // Now: doors ALWAYS sit at sill=0 (floor). Windows with a
-        // stored sill > 0 honour the stored value (the opening
-        // modal lets the user pick). Windows with sill=0 (legacy
-        // brick openings created before the kind / sill picker)
-        // fall back to the head-drop default so existing projects
-        // render unchanged.
-        const HEAD_DROP_FROM_TOP_MM = 300
-        const brickOpenings = openings.map((o) => {
-          if (o.wallId !== wall.id) return o
-          if (o.kind === 'door') {
-            return { ...o, sillHeightMm: 0 }
-          }
-          if (o.sillHeightMm > 0) {
-            return o
-          }
-          const sill = Math.max(0, heightMm - HEAD_DROP_FROM_TOP_MM - o.heightMm)
-          return { ...o, sillHeightMm: sill }
-        })
+        // Use the per-wall opening head adjustment computed once at
+        // the top of this useMemo (doors → sill=0, windows → head at
+        // wallHeight − 300 mm). Was inlined here for the brick path;
+        // the upstream pass now applies the same rule to both block
+        // and brick walls so the 3D view is consistent across trades.
+        const brickOpenings = adjustedOpenings
 
         // Build brick courses bottom-up at the brick's modular
         // height, snapping the final course to the wall top so the
@@ -3887,6 +4632,17 @@ function Scene({
 
       const wr = wallResolutions[i]
       if (!wr || !wr.makeup) return
+      // Build the per-wall courses map for partner cube-depth lookups
+      // — passed into segmentsForStraightWall so corner cube depth on
+      // each course uses the partner's actual block at the same Y.
+      if (!wallCoursesByIdCache) {
+        wallCoursesByIdCache = {}
+        for (let j = 0; j < walls.length; j++) {
+          const wj = walls[j]
+          const wrj = wallResolutions[j]
+          if (wj && wrj?.courses) wallCoursesByIdCache[wj.id] = wrj.courses
+        }
+      }
       const bondType = wr.makeup.bondType
       if (isCurvedWall(wall)) {
         outWedges.push(
@@ -3925,7 +4681,7 @@ function Scene({
         // Openings still take the legacy path until planWallLayout
         // learns to emit jambs / lintels / body-subtraction under
         // openings. Tracked as the follow-up to task #62.
-        const wallHasOpenings = openings.some((o) => o.wallId === wall.id)
+        const wallHasOpenings = adjustedOpenings.some((o) => o.wallId === wall.id)
         if (!wallHasOpenings) {
           // Corner ownership: at each shared corner, only ONE wall
           // emits the corner block per course (alternating per
@@ -3938,14 +4694,16 @@ function Scene({
           // corner+free neighbours at both ends and gets a symmetric
           // Course 1 (owns both corners or neither, never one).
           const ownership = cornerOwnershipFor(wall, wallsByIdMap)
-          // Auto-detect lead-in: when the wall's body width vs cube
-          // depth math doesn't naturally land on stretcher bond (e.g.
-          // 300-series corners are 100mm off), search the library for
-          // a block of the right width and inject it as the makeup's
-          // corner lead-in. The calc engine then emits it on owning
-          // courses between the corner block and body — same as a
-          // hand-configured cornerLeadInBlockCode would.
-          const effectiveMakeup = resolveLeadInForWall(wall, wr.makeup)
+          // Lead-in auto-detection disabled — the per-course cut block
+          // emission (planWallLayout's startCutWidthMm / endCutWidthMm)
+          // now handles getting the body grid back on bond after a
+          // deep-series corner, so we no longer need to inject a
+          // standalone lead-in block (30.02 etc). Any walls that still
+          // have `cornerLeadInBlockCode` hand-set in their makeup will
+          // continue to emit those blocks; only the auto-override is
+          // turned off.
+          void resolveLeadInForWall
+          const effectiveMakeup = wr.makeup
           const layout = planWallLayout(
             wall,
             effectiveMakeup,
@@ -4026,23 +4784,18 @@ function Scene({
               library,
               wallsByIdMap,
               wallThicknessByWallId,
-              wr.makeup
+              wr.makeup,
+              wallCoursesByIdCache,
             )
           )
         } else {
-          // Note: the auto-lead-in detection only applies on the
-          // planWallLayout path above (no-openings walls). The legacy
-          // segmentsForStraightWall path takes pre-resolved courses
-          // (wr.courses) which are generated upstream from wr.makeup
-          // — wiring lead-in into that path would require re-running
-          // the course resolution with the effective makeup. Follow-
-          // up for walls with openings that need 300-series corners.
           out.push(
             ...segmentsForStraightWall(
-              wall, openings, thicknessMm, wr.courses, wr.totalHeightM,
+              wall, adjustedOpenings, thicknessMm, wr.courses, wr.totalHeightM,
               bondType, colorMap, library, wallThicknessByWallId, wallsByIdMap,
               /* disableBlockLintels */ false,
               wallHeightMmByWallId,
+              wallCoursesByIdCache,
             )
           )
         }
@@ -4051,7 +4804,13 @@ function Scene({
         // bottom box faces tuck behind the block faces, skipped
         // wherever openings carve voids.
         if (!isCurvedWall(wall)) {
-          emitMortarForWall(wall, thicknessMm, wr.totalHeightM, openings)
+          emitMortarForWall(
+            wall,
+            thicknessMm,
+            wr.totalHeightM,
+            adjustedOpenings,
+            wr.courses
+          )
         }
       }
     })
@@ -4140,8 +4899,8 @@ function Scene({
       const totalPierHeightM = (courseCount * courseModuleMm) / 1000
 
       // Mortar column — sits behind the block faces, recessed inward
-      // on both width + depth so it's hidden by the blocks where
-      // they overlap, visible only through the joint gaps.
+      // on both width + depth so it's hidden by the blocks where they
+      // overlap, visible only through the joint gaps.
       out.push({
         cx: cxM,
         cy: totalPierHeightM / 2,
@@ -4758,12 +5517,13 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     // extent onto the viewport as roughly `sizeMax × sin(elevation) +
     // height`, which is smaller than `sizeMax` itself — so fitting
     // the camera to `sizeMax` over-shoots distance and leaves the
-    // building taking ~50% of the canvas. Multiplier 0.55 brings the
-    // camera in close enough that the projected building fills the
-    // viewport edge-to-edge for square-ish footprints; long thin
-    // buildings may clip on the long axis at this multiplier (F-fit
-    // is the user's recovery).
-    const dist = (sizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.55
+    // building taking ~50% of the canvas. Multiplier 0.40 brings the
+    // camera in tight so the projected building fills the viewport
+    // close to edge-to-edge; long thin buildings may clip on the
+    // long axis but F-fit lets the user recover. (Was 0.55 — left
+    // visible empty 3D scene space on the right + bottom of the
+    // canvas; user feedback wanted a tighter frame.)
+    const dist = (sizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.40
     // Place at 45° around the building, slightly elevated. Keeping
     // Y proportional to dist (0.55) gives a comfortable 3/4 view.
     return [cx + dist * 0.7, dist * 0.55, cz + dist * 0.7]
@@ -4783,49 +5543,55 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   }
 
   return (
-    // Direct fill: the Canvas is absolutely positioned to inset-0 of
-    // this wrapper, which is itself absolute-inset-0 of the PdfWorkspace
-    // 3D pod (line ~6400 — `flex-1 min-w-0 min-h-0 relative`). This
-    // means the Canvas always matches the pod's CSS size, no
-    // measurement / RAF / ResizeObserver dance. r3f handles the WebGL
-    // framebuffer resize internally via its own observer.
+    // r3f's internal useMeasure was getting an undersized initial
+    // reading and never updating — the canvas stuck at ~70% of the
+    // wrapper. Fix: own the measurement here via ResizeObserver, pass
+    // pixel dimensions to Canvas as explicit style. The observer
+    // fires on every wrapper size change (initial mount + flex
+    // resolution + window resize + mode toggle) so the canvas
+    // tracks the wrapper exactly.
     //
-    // Earlier we used a SizedCanvasShell that measured the wrapper
-    // and passed explicit pixel `style={{ width, height }}` to Canvas
-    // — but if the initial measurement was taken before flex resolved,
-    // the canvas got stuck at the smaller size. Direct CSS fill is
-    // robust to that race.
-    <div className="absolute inset-0">
-      <Canvas
-        frameloop="demand"
-        dpr={[1, 1.5]}
-        camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
-        shadows={false}
-        gl={{ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
-        onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color(sceneBgFor(theme)))
-        }}
-        style={{ position: 'absolute', inset: 0, display: 'block' }}
-        // Keying the Canvas on the theme forces a clean remount when
-        // it flips so the new clearColor takes effect (onCreated only
-        // runs on mount; r3f doesn't expose a setClearColor hook we
-        // can subscribe to here without restructuring).
-        key={theme}
-      >
-        <Suspense fallback={null}>
-          <Scene
-            {...props}
-            navStyle={navStyle}
-            planTexture={planTexture}
-            theme={theme}
-            palette={palette}
-            onResolvedCodes={setResolvedCodes}
-          />
-        </Suspense>
-      </Canvas>
+    // We RENDER Canvas only after a non-zero measurement has come
+    // back — avoids the prior SizedCanvasShell race where Canvas
+    // mounted at 0×0 and never updated.
+    <ManualResizeCanvas>
+      {(width, height, glRef) => (
+        <>
+        <Canvas
+          frameloop="demand"
+          dpr={[0.75, 1]}
+          camera={{ position: initialCamera, fov: 45, near: 0.1, far: 5000 }}
+          shadows={false}
+          gl={{ antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
+          onCreated={({ gl }) => {
+            glRef.current = gl
+            gl.setClearColor(new THREE.Color(sceneBgFor(theme)))
+            // Force the initial size manually — bypass r3f's useMeasure
+            // which gets the wrong reading on this layout.
+            gl.setSize(width, height, true)
+          }}
+          style={{
+            width: `${width}px`,
+            height: `${height}px`,
+            display: 'block',
+          }}
+          // Key on theme so the clearColor takes effect on theme flip.
+          key={theme}
+        >
+            <Suspense fallback={null}>
+              <Scene
+                {...props}
+                navStyle={navStyle}
+                planTexture={planTexture}
+                theme={theme}
+                palette={palette}
+                onResolvedCodes={setResolvedCodes}
+              />
+            </Suspense>
+          </Canvas>
 
-      {/* Nav-style picker + Fit button, top-right corner. */}
-      <div className="absolute top-2 right-3 pointer-events-auto flex items-center gap-2">
+          {/* Nav-style picker + Fit button, top-right corner. */}
+          <div className="absolute top-2 right-3 pointer-events-auto flex items-center gap-2">
         <button
           type="button"
           onClick={() => {
@@ -4867,11 +5633,91 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         )}
       </div>
 
-      {/* Controls hint, bottom-left. Updates as the user switches nav
-          style so they always see the bindings for the active mode. */}
-      <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
-        {`${NAV_STYLE_HINTS[navStyle]} · F = fit view`}
-      </div>
+          {/* Controls hint, bottom-left. Updates as the user switches nav
+              style so they always see the bindings for the active mode. */}
+          <div className="absolute bottom-2 left-3 text-[11px] text-ink-400/70 pointer-events-none select-none leading-tight">
+            {`${NAV_STYLE_HINTS[navStyle]} · F = fit view`}
+          </div>
+        </>
+      )}
+    </ManualResizeCanvas>
+  )
+}
+
+/**
+ * Wraps the r3f Canvas in a div that the component owns the
+ * measurement of via ResizeObserver. On every size change it BOTH
+ * passes pixel dimensions to children (for the Canvas's CSS style)
+ * AND directly calls `gl.setSize()` on the WebGL renderer — bypassing
+ * r3f's internal useMeasure entirely, which on this layout was
+ * returning stale dimensions and getting wedged at an undersized
+ * reading.
+ *
+ * Why so heavy-handed: simpler approaches (CSS 100% sizing,
+ * ResizeObserver with `>0` gating, passing pixel style to Canvas
+ * only) all left the canvas stuck at a smaller size than the wrapper.
+ * The console showed transient `{w: 196, h: 0}` reflows that the
+ * built-in r3f observer never recovered from. Driving gl.setSize
+ * manually means we don't depend on r3f's observer at all — every
+ * size update from our own observer goes straight to the WebGL
+ * renderer.
+ */
+function ManualResizeCanvas({
+  children,
+}: {
+  children: (
+    width: number,
+    height: number,
+    glRef: React.MutableRefObject<THREE.WebGLRenderer | null>,
+  ) => React.ReactNode
+}) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const glRef = useRef<THREE.WebGLRenderer | null>(null)
+  const [size, setSize] = useState({ width: 0, height: 0 })
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = Math.round(entry.contentRect.width)
+        const h = Math.round(entry.contentRect.height)
+        // Ignore zero / collapsed reads — they happen transiently
+        // during reflow. Keep the previous good size so the canvas
+        // stays mounted with valid framebuffer dimensions.
+        if (w === 0 || h === 0) continue
+        setSize((prev) =>
+          prev.width === w && prev.height === h ? prev : { width: w, height: h }
+        )
+      }
+    })
+    observer.observe(el)
+    // Seed synchronously so the canvas mounts on the first render
+    // cycle (ResizeObserver only fires on the NEXT frame).
+    const rect = el.getBoundingClientRect()
+    if (rect.width > 0 && rect.height > 0) {
+      setSize({ width: Math.round(rect.width), height: Math.round(rect.height) })
+    }
+    return () => observer.disconnect()
+  }, [])
+
+  // Drive gl.setSize manually on every size change. Bypasses r3f's
+  // built-in useMeasure (which was the root cause of the stuck
+  // canvas). updateStyle=true makes r3f also update the CSS width /
+  // height of the canvas element to match the framebuffer size.
+  useEffect(() => {
+    const gl = glRef.current
+    if (!gl || size.width === 0 || size.height === 0) return
+    gl.setSize(size.width, size.height, true)
+  }, [size.width, size.height])
+
+  return (
+    <div
+      ref={ref}
+      className="absolute inset-0"
+      style={{ width: '100%', height: '100%' }}
+    >
+      {size.width > 0 && size.height > 0 && children(size.width, size.height, glRef)}
     </div>
   )
 }

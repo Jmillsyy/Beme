@@ -22,7 +22,6 @@
  */
 
 import {
-  pickLintelForHeadHeightIn,
   pickLintelBlockIn,
   BLOCK_LIBRARY,
 } from '../data/blockLibrary'
@@ -65,13 +64,35 @@ export interface LintelSpec {
  * heightMm IS the vertical module driver and widthMm IS the horizontal
  * one. No flipping.
  */
-export function selectBlockLintel(headHeightMm: number): LintelSpec | null {
-  // Region-agnostic primary path: pick by lintelMinHeadHeightMm /
-  // lintelMaxHeadHeightMm bucket metadata. Falls through to height-based
-  // selection for lintel blocks without bucket metadata yet.
-  const block =
-    pickLintelForHeadHeightIn(BLOCK_LIBRARY, headHeightMm) ??
-    pickLintelBlockIn(BLOCK_LIBRARY, headHeightMm)
+export function selectBlockLintel(
+  headHeightMm: number,
+  /**
+   * Modular heights of any height-makeup courses in the head area
+   * (above the lintel). Empty for a pure-body wall.
+   *
+   * Each entry is the makeup course's modular height (face + 10mm
+   * mortar). A wall typically has at most one of these. Examples:
+   *   - 20.71 (90mm face)  → pass [100]
+   *   - 20.140 (140mm)     → pass [150]
+   *
+   * The selector decomposes the head as
+   *   lintel.face + N × 200 + Σ(extraModules) + bearing mortar
+   * and picks whichever lintel produces the cleanest decomposition.
+   * For 1500mm head with a 100mm makeup course in the head area this
+   * picks 20.18 instead of 20.25 (20.25's 290mm + 6×200 = 1490 leaves
+   * no room for the 100mm course; 20.18's 390mm + 5×200 + 100 = 1490
+   * fits exactly with the makeup course slotted in).
+   */
+  extraCourseModulesMm: number[] = []
+): LintelSpec | null {
+  // Modular-fit selection: pick the lintel whose remaining head
+  // (head − lintel face) divides cleanest by the available course
+  // modulars. See `pickLintelBlockIn` for the rule.
+  const block = pickLintelBlockIn(
+    BLOCK_LIBRARY,
+    headHeightMm,
+    extraCourseModulesMm
+  )
 
   if (!block) return null
 

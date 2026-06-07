@@ -269,6 +269,24 @@ export interface WallMakeup {
    */
   useFractions: boolean
 
+  /**
+   * Which course types the "match exact length" rule applies to when
+   * `useFractions` is true. Each entry switches on fraction / cut-block
+   * fitting for that course type; absent entries fall back to whole-
+   * block rounding for that course type.
+   *
+   *   - 'base'           → the cleanout / starter course
+   *   - 'body'           → standard 200mm-modular body courses
+   *   - 'height-makeup'  → the 20.71 / 20.140 rows that absorb
+   *                         odd wall heights
+   *   - 'top'            → the top course (bond beam / capping)
+   *
+   * Undefined means "all course types" (legacy behaviour on older
+   * saved projects). Empty array means "no course types" (equivalent
+   * to turning useFractions off entirely).
+   */
+  exactLengthCourses?: Array<'base' | 'body' | 'height-makeup' | 'top'>
+
   // ---- Pier ----
   /** If walls of this makeup contain piers, what type. */
   pierType?: PierType
@@ -483,6 +501,35 @@ export interface Opening {
    * when undefined (existing data) so older projects render unchanged.
    */
   kind?: 'window' | 'door'
+  /**
+   * Head course override — the block code laid in the row of blocks
+   * that borders the TOP of the opening. When undefined, the head
+   * course is whatever block the wall naturally puts there (= the
+   * body block) and the 3D / tally treats it as a continuation of
+   * the wall body. When set, the row of cells at the head's y-range
+   * (within the opening's x-span) is overridden to this block code.
+   *
+   * Replaces the older auto-`selectBlockLintel` behaviour — by
+   * default openings no longer get an auto-lintel; the user picks
+   * the block when they want one (typical AU residential masonry
+   * has a steel / concrete lintel separate from the masonry, so
+   * the head course IS just body blocks).
+   */
+  headCourseBlockCode?: BlockCode
+  /**
+   * Head course orientation hint. `running` = laid flat (default,
+   * indistinguishable from normal body blocks). `soldier` = block
+   * on end (rotated 90° in elevation; narrow face visible, takes
+   * up height equal to the block's natural width).
+   */
+  headCourseOrientation?: 'running' | 'soldier'
+  /**
+   * Sill course override — same as headCourseBlockCode but for the
+   * row of blocks that borders the BOTTOM of the opening (windows
+   * only; doors sit on the floor with no sill course).
+   */
+  sillCourseBlockCode?: BlockCode
+  sillCourseOrientation?: 'running' | 'soldier'
 }
 
 /**

@@ -7044,9 +7044,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             selMakeup?.heightMm ??
             (mode === 'brick' ? brickSettings.defaultWallHeightMm : 0)
           const selHead = selWallHeightMm - selectedOpening.sillHeightMm - selectedOpening.heightMm
+          const selWallMod200 = Math.round(selWallHeightMm) % 200
+          const selExtras: number[] =
+            selWallMod200 === 100
+              ? [100]
+              : selWallMod200 === 150
+                ? [150]
+                : []
           const selBlockLintel =
             mode === 'block' && selHead > 0
-              ? selectBlockLintel(selHead)?.code ?? null
+              ? selectBlockLintel(selHead, selExtras)?.code ?? null
               : null
           return (
             <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-3">

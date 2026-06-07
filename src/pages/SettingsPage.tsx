@@ -1011,6 +1011,115 @@ function DefaultsTab({
               options={brickOptions}
             />
           </Field>
+          <Field
+            label="Match exact wall length"
+            hint="When on, the calc absorbs leftover length using fraction-tagged blocks (e.g. AU 20.02 / 20.22), or tallies cut blocks if your library has none. When off, walls round up to whole body blocks and the gap is ignored."
+          >
+            <Select<'yes' | 'no'>
+              value={(defaults.defaultMatchExactLength ?? true) ? 'yes' : 'no'}
+              onChange={(v) =>
+                set({ defaultMatchExactLength: v === 'yes' })
+              }
+              options={[
+                { value: 'yes', label: 'On (use fractions / cut blocks)' },
+                { value: 'no', label: 'Off (round up to whole blocks)' },
+              ]}
+            />
+          </Field>
+          {(defaults.defaultMatchExactLength ?? true) && (
+            <Field
+              label="Apply exact length to"
+              hint="Which course types match exact length. The rest round up to whole blocks. 'Body only' is the most common — avoids cuts on the cleanout / cap row. 'Body + bottom' or 'Body + top' lets you also match the base or cap course. 'All courses' matches everything."
+            >
+              {(() => {
+                // Preset → set of course-type buckets. The dropdown
+                // shows these presets; selecting one writes the set
+                // back to defaultExactLengthCourses. Matching the saved
+                // set against the presets picks the displayed value.
+                type Bucket = 'base' | 'body' | 'height-makeup' | 'top'
+                const PRESETS: Array<{
+                  key: string
+                  label: string
+                  set: Bucket[]
+                }> = [
+                  {
+                    key: 'all',
+                    label: 'All courses',
+                    set: ['base', 'body', 'height-makeup', 'top'],
+                  },
+                  {
+                    key: 'body',
+                    label: 'Body courses only',
+                    set: ['body'],
+                  },
+                  {
+                    key: 'body-bottom',
+                    label: 'Body + bottom (base)',
+                    set: ['body', 'base'],
+                  },
+                  {
+                    key: 'body-top',
+                    label: 'Body + top',
+                    set: ['body', 'top'],
+                  },
+                  {
+                    key: 'body-bottom-top',
+                    label: 'Body + bottom + top',
+                    set: ['body', 'base', 'top'],
+                  },
+                  {
+                    key: 'body-hm',
+                    label: 'Body + height makeup',
+                    set: ['body', 'height-makeup'],
+                  },
+                  {
+                    key: 'none',
+                    label: 'None',
+                    set: [],
+                  },
+                ]
+                const sameSet = (a: Bucket[], b: Bucket[]): boolean => {
+                  if (a.length !== b.length) return false
+                  const sa = [...a].sort()
+                  const sb = [...b].sort()
+                  for (let i = 0; i < sa.length; i++) {
+                    if (sa[i] !== sb[i]) return false
+                  }
+                  return true
+                }
+                const current: Bucket[] =
+                  defaults.defaultExactLengthCourses ?? [
+                    'base',
+                    'body',
+                    'height-makeup',
+                    'top',
+                  ]
+                const matched = PRESETS.find((p) => sameSet(p.set, current))
+                const value = matched?.key ?? 'custom'
+                const options = matched
+                  ? PRESETS.map((p) => ({ value: p.key, label: p.label }))
+                  : [
+                      { value: 'custom', label: 'Custom combination' },
+                      ...PRESETS.map((p) => ({
+                        value: p.key,
+                        label: p.label,
+                      })),
+                    ]
+                return (
+                  <Select<string>
+                    value={value}
+                    onChange={(v) => {
+                      const preset = PRESETS.find((p) => p.key === v)
+                      if (preset) {
+                        set({ defaultExactLengthCourses: preset.set })
+                      }
+                    }}
+                    options={options}
+                  />
+                )
+              })()}
+            </Field>
+          )}
         </FieldGroup>
       </PanelCard>
 

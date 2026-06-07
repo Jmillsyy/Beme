@@ -94,6 +94,24 @@ export interface EstimatingDefaults {
    * the field is missing.
    */
   wallLengthSnapMm?: number
+
+  /**
+   * Whether new wall makeups default to "match exact wall length" (use
+   * fraction-tagged blocks / cut blocks to absorb leftover length).
+   * Most users set this once for their region's practice and forget it,
+   * so it lives here as a user preference rather than per-makeup. Older
+   * accounts default to `true` to preserve the previous behaviour where
+   * every makeup turned this on at creation.
+   */
+  defaultMatchExactLength?: boolean
+
+  /**
+   * When "match exact wall length" is on, which course types it applies
+   * to. Each entry switches on fraction / cut-block fitting for that
+   * course type; absent entries fall back to whole-block rounding for
+   * that course type. Undefined = all course types (default).
+   */
+  defaultExactLengthCourses?: Array<'base' | 'body' | 'height-makeup' | 'top'>
 }
 
 /**
@@ -255,6 +273,9 @@ export function createDefaultUserSettings(): UserSettings {
       // any combination of full / 7-8 / 3-4 / half blocks composes
       // cleanly on this grid. Customisable in Settings.
       wallLengthSnapMm: 50,
+      defaultMatchExactLength: true,
+      // undefined = all course types (same as ['base', 'body',
+      // 'height-makeup', 'top'])
     },
     supplyItems: createDefaultSupplyItems(),
   }

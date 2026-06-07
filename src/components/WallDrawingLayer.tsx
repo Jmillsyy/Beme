@@ -1817,11 +1817,13 @@ function WallDrawingLayerInner({
       //     the next wall should chain from there as-is.
       //   - Otherwise the click is a free end. resolveDrawSnap returned
       //     the data endpoint, but the visual corner / corner-block-
-      //     centre sits halfThickness IN from there along the wall's
-      //     direction (see endpointsPx for the matching snap target on
-      //     existing walls). Pull back by halfThickness so the chained
-      //     anchor lines up with where the user would have clicked if
-      //     they'd manually snapped to the new wall's free corner.
+      //     centre sits halfMODULAR (= (thickness + mortar) / 2 = 100mm
+      //     for 200-series) IN from there along the wall's direction —
+      //     matching endpointsPx's snap target for existing walls AND
+      //     junctions.ts's endpointsFormCorner check. Using halfThickness
+      //     here (95mm) puts the chained anchor 5mm off-grid, and the
+      //     next wall placed off it lands outside the corner detection
+      //     window — corners don't form, the two free ends just overlap.
       let chainAnchor: Point = posMm
       if (!clickSnap) {
         const dx = posMm.x - startMm.x
@@ -1830,10 +1832,11 @@ function WallDrawingLayerInner({
         if (dist > 0.001) {
           const ux = dx / dist
           const uy = dy / dist
-          const halfT = activeWallThicknessMm / 2
+          const halfMod =
+            (activeWallThicknessMm + DEFAULT_MORTAR_JOINT_MM) / 2
           chainAnchor = {
-            x: posMm.x - ux * halfT,
-            y: posMm.y - uy * halfT,
+            x: posMm.x - ux * halfMod,
+            y: posMm.y - uy * halfMod,
           }
         }
       }

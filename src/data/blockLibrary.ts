@@ -888,27 +888,90 @@ export function pickPierBlock(opts: ResolveByRoleOptions = {}): Block | undefine
  */
 export function pickLintelBlockIn(
   library: Record<BlockCode, Block>,
-  openingHeightMm: number
+  openingHeightMm: number,
+  /**
+   * Additional course MODULAR heights (face + mortar) that may sit in
+   * the head area above the lintel, beyond the standard 200mm body
+   * module. Each entry may be present at most ONCE in the head area
+   * (height-makeup courses are once-per-wall by design). Pass [] (or
+   * omit) for a standard pure-body wall.
+   *
+   * Examples:
+   *   - Standard 200-series wall            → []
+   *   - Wall with 20.71 makeup (100mm mod)  → [100]
+   *   - Wall with 20.140 makeup (150mm mod) → [150]
+   *
+   * When a height-makeup course is in the head area, the lintel +
+   * remaining courses must sum to head height EXACTLY using N×200 +
+   * the makeup module. The selector picks the lintel for which a valid
+   * decomposition exists with the smallest waste.
+   */
+  extraCourseModulesMm: number[] = []
 ): Block | undefined {
+  // Pick the lintel whose remaining head (head − lintel face − mortar)
+  // can be filled by available course modulars (200mm body + any
+  // makeup module present once in the head area).
+  //
+  //   head 1500, no makeup     → 20.25: 1500−290 = 1210 ≈ 6×200 + 10 ✓
+  //   head 1500, 100mm makeup  → 20.18: 1500−390 = 1110 ≈ 5×200 + 100 + 10 ✓
+  //   head 1500, 150mm makeup  → 20.13: 1500−190 = 1310 ≈ 6×200 + 100 + 10 ✗
+  //                              → 20.18: 1500−390 = 1110 ≈ 4×200 + 150 + 10 ✓
+  //
+  // Tolerance covers the 10mm bearing mortar plus a touch of slop. If
+  // nothing fits, fall back to the smallest available lintel.
+  const TOLERANCE_MM = 20
+  const BODY_VERTICAL_MODULE_MM = 200
   const candidates = Object.values(library)
     .filter((b) => b.roles.includes('lintel'))
-    .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
-  // Pick the LARGEST lintel whose face height FITS WITHIN the head —
-  // i.e. lintel height ≤ head height + a small mortar tolerance. This
-  // matches the masonry rule the user described: a 290 mm 20.25
-  // bridges a 300 mm head (10 mm absorbed in the bottom bearing
-  // mortar), so it wins over a 390 mm 20.18 which would extend 90 mm
-  // past the head course.
-  //
-  // Tolerance covers the standard 10 mm mortar joint plus a touch of
-  // slop for non-modular wall heights. If the head is too short for
-  // any lintel to fit (head < smallest lintel), fall back to the
-  // smallest available — the calc engine treats it as a stub course.
-  const TOLERANCE_MM = 20
-  const fits = candidates.find(
-    (b) => b.dimensions.heightMm <= openingHeightMm + TOLERANCE_MM
-  )
-  return fits ?? candidates[candidates.length - 1]
+    .filter(
+      (b) => b.dimensions.heightMm <= openingHeightMm + TOLERANCE_MM
+    )
+  if (candidates.length === 0) {
+    const allLintels = Object.values(library)
+      .filter((b) => b.roles.includes('lintel'))
+      .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm)
+    return allLintels[0]
+  }
+
+  // For a candidate lintel, find the smallest "distance to a valid
+  // course-stack" decomposition. Distance = absolute difference between
+  // the actual remainder and the closest sum of N×200 + Σ(extras subset).
+  // Each extra module is optional (0 or 1 of it).
+  const computeDistance = (remainderMm: number): number => {
+    let minDist = Infinity
+    const subsetCount = 1 << extraCourseModulesMm.length
+    for (let mask = 0; mask < subsetCount; mask++) {
+      let extrasTotal = 0
+      for (let i = 0; i < extraCourseModulesMm.length; i++) {
+        if (mask & (1 << i)) extrasTotal += extraCourseModulesMm[i]
+      }
+      const afterExtras = remainderMm - extrasTotal
+      if (afterExtras < -BODY_VERTICAL_MODULE_MM) continue
+      const modulo =
+        ((afterExtras % BODY_VERTICAL_MODULE_MM) + BODY_VERTICAL_MODULE_MM) %
+        BODY_VERTICAL_MODULE_MM
+      const dist = Math.min(modulo, BODY_VERTICAL_MODULE_MM - modulo)
+      if (dist < minDist) minDist = dist
+    }
+    return minDist
+  }
+
+  let best: Block | null = null
+  let bestDist = Infinity
+  for (const c of candidates) {
+    const remainderMm = Math.max(0, openingHeightMm - c.dimensions.heightMm)
+    const dist = computeDistance(remainderMm)
+    if (
+      dist < bestDist ||
+      // Tiebreak: prefer the LARGER lintel (fewer body courses above).
+      (dist === bestDist &&
+        (!best || c.dimensions.heightMm > best.dimensions.heightMm))
+    ) {
+      bestDist = dist
+      best = c
+    }
+  }
+  return best ?? candidates[candidates.length - 1]
 }
 export function pickLintelBlock(openingHeightMm: number): Block | undefined {
   return pickLintelBlockIn(BLOCK_LIBRARY, openingHeightMm)

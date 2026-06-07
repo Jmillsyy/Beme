@@ -9,6 +9,7 @@
  */
 
 import type { Wall, WallJunction } from '../types/walls'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { isCurvedWall } from './curveGeom'
 
 interface Point {
@@ -185,10 +186,17 @@ function endpointsFormCorner(
 
   if (pointsMatch(aPoint, bPoint)) return true
 
-  const halfA = (thicknessByWallId[wallA.id] ?? 190) / 2
-  const halfB = (thicknessByWallId[wallB.id] ?? 190) / 2
-  const aCornerPt = freeEndCornerPoint(wallA, endA, halfA)
-  const bCornerPt = freeEndCornerPoint(wallB, endB, halfB)
+  // Use halfModular (= halfThickness + mortar/2) to match the drawing
+  // layer's snap-target offset exactly. WallDrawingLayer.tsx places the
+  // green corner-snap dot at halfModular inset from each free end; if
+  // this check uses halfThickness instead, the snapped click lands 5mm
+  // off the corner-detection window and the corner doesn't form.
+  const halfModA =
+    (thicknessByWallId[wallA.id] ?? 190) / 2 + DEFAULT_MORTAR_JOINT_MM / 2
+  const halfModB =
+    (thicknessByWallId[wallB.id] ?? 190) / 2 + DEFAULT_MORTAR_JOINT_MM / 2
+  const aCornerPt = freeEndCornerPoint(wallA, endA, halfModA)
+  const bCornerPt = freeEndCornerPoint(wallB, endB, halfModB)
 
   if (pointsMatch(aPoint, bCornerPt)) return true
   if (pointsMatch(bPoint, aCornerPt)) return true
@@ -250,14 +258,18 @@ export function snapEndpointToThroughWallFace(
     // slack keeps us from doing redundant work when the wall-snap during drawing
     // already deposited the endpoint exactly on the face.
     if (perpDist >= halfT - 0.5) continue
-    // Skip the snap-to-face if the endpoint's projection sits within halfT of either
-    // data endpoint along the centreline — that's the "centre of the corner block"
-    // position the drawing-time snap deliberately puts a new wall at when it L-corners
-    // onto a free end. Pulling those points sideways onto the perpendicular face would
-    // convert a real corner into a T-junction and break corner detection downstream.
+    // Skip the snap-to-face if the endpoint's projection sits within halfModular
+    // of either data endpoint along the centreline — that's the "centre of the
+    // corner block" position the drawing-time snap deliberately puts a new wall
+    // at when it L-corners onto a free end. Use halfModular (= halfT + mortar/2)
+    // to match the snap target offset exactly; halfThickness would be 5mm short
+    // and the snapped endpoint would still get slid sideways onto the face,
+    // converting a real corner into a T-junction and breaking corner detection
+    // downstream.
+    const halfMod = halfT + DEFAULT_MORTAR_JOINT_MM / 2
     const distAlongMm = t * len
-    if (distAlongMm < halfT + ENDPOINT_TOLERANCE_MM) continue
-    if (distAlongMm > len - halfT - ENDPOINT_TOLERANCE_MM) continue
+    if (distAlongMm < halfMod + ENDPOINT_TOLERANCE_MM) continue
+    if (distAlongMm > len - halfMod - ENDPOINT_TOLERANCE_MM) continue
     // Face side = the side the OTHER endpoint of the new wall lies on. If the
     // other endpoint is itself on the centreline, fall back to the endpoint's
     // own perpendicular sign; if that's also zero, default to +N.
