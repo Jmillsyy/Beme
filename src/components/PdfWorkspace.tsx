@@ -986,9 +986,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     editingId?: string
   } | null>(null)
   const placingOpeningRef = useRef(false)
-  /** Block-mode opening height — typed directly. Default 2100mm
-   *  = a standard residential door height. */
-  const [blockOpeningHeightMm, setBlockOpeningHeightMm] = useState(2100)
+  /** Block-mode head height — distance from the TOP of the opening
+   *  to the top of the wall (the lintel allowance). The opening
+   *  height itself is DERIVED: openingH = wallH − sill − head.
+   *  Default 600 mm = 2700 mm wall − 2100 mm door − 0 mm sill, so
+   *  a freshly drawn standard door opening on a standard wall
+   *  comes out at the right size without the user typing anything. */
+  const [blockOpeningHeadMm, setBlockOpeningHeadMm] = useState(600)
   /** Block-mode sill height — typed directly. Block walls don't
    *  carry a door/window distinction (no sill-course concept), so
    *  the sill is just a free dimension the user sets manually.
@@ -2355,7 +2359,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           setBrickOpeningHeightMm(opening.heightMm)
           setBrickOpeningKind(opening.kind ?? 'window')
         } else {
-          setBlockOpeningHeightMm(opening.heightMm)
+          // Block modal asks for HEAD, not opening height. Derive
+          // head from the persisted (sill, openingH) + the wall's
+          // current height.
+          const pageWalls = wallsByPage[currentPage] ?? []
+          const editWall = pageWalls.find((w) => w.id === opening.wallId)
+          const editMakeup = editWall
+            ? makeupsById[editWall.makeupId]
+            : undefined
+          const editWallH =
+            editWall?.heightMmOverride ??
+            (editMakeup ? getMakeupHeightMm(editMakeup) : 0)
+          const derivedHead = Math.max(
+            0,
+            editWallH - opening.sillHeightMm - opening.heightMm,
+          )
+          setBlockOpeningHeadMm(derivedHead)
           setBlockOpeningSillMm(opening.sillHeightMm)
         }
       }
@@ -3607,18 +3626,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickWallHeightMm
       )
     } else {
-      // Block mode: user types the OPENING HEIGHT and the SILL height
-      // directly — no door/window kind here. Block walls don't have
-      // a sill-trim concept, so keeping the brick-side kind picker
-      // out of this flow stops brick-only state from polluting block
-      // openings. Head falls out as wallH − sill − openingH for the
-      // existing lintel-selection path.
+      // Block mode: user types HEAD HEIGHT (lintel allowance) and
+      // SILL height directly. Opening height is DERIVED so the user
+      // can specify the head allowance — what's typically called
+      // out on plans — instead of having to back-calculate the
+      // opening height. No door/window kind here; block walls don't
+      // have a sill-trim concept.
       const makeup = makeupsById[wall.makeupId]
       const wallHeightMm = wall.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
-      if (blockOpeningHeightMm < 0) return
+      if (blockOpeningHeadMm < 0) return
       if (blockOpeningSillMm < 0) return
-      if (blockOpeningSillMm + blockOpeningHeightMm > wallHeightMm) return
-      openingHeightForSave = blockOpeningHeightMm
+      const derivedOpeningMm =
+        wallHeightMm - blockOpeningSillMm - blockOpeningHeadMm
+      if (derivedOpeningMm < 0) return
+      openingHeightForSave = derivedOpeningMm
       sillForSave = blockOpeningSillMm
     }
 
@@ -6905,21 +6926,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const pendingMakeup = makeupsById[pendingOpeningWall.makeupId]
         const wallHeightMm =
           pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
-        // Derived head — falls out of the sill + opening height the
-        // user types. Shown in the input hint so the user can see the
-        // lintel allowance update live as they type.
-        const derivedHeadMm = Math.max(
+        // Derived opening height — falls out of wallH − sill − head.
+        // Shown in the input hint so the user can see the resulting
+        // opening height live as they type the head allowance.
+        const derivedOpeningMm = Math.max(
           0,
-          wallHeightMm - blockOpeningSillMm - blockOpeningHeightMm
+          wallHeightMm - blockOpeningSillMm - blockOpeningHeadMm
         )
         // 0mm openings are explicitly allowed — lets the user place a
         // lintel-only marker (counts toward the lintel supply item but
         // doesn't remove any wall area).
-        const tooSmall = blockOpeningHeightMm < 0 || blockOpeningSillMm < 0
+        const tooSmall = blockOpeningHeadMm < 0 || blockOpeningSillMm < 0
         const tooTall =
-          blockOpeningSillMm + blockOpeningHeightMm > wallHeightMm
-        // Common opening presets — each spec'd as (height, sill). The
-        // user can type a custom height + sill if none of these fit.
+          blockOpeningSillMm + blockOpeningHeadMm > wallHeightMm
+        // Presets specify the (opening height, sill) pair the user
+        // is choosing — head is derived from the current wall height
+        // when the preset is applied, so the same preset works
+        // across walls of different heights.
         const blockOpeningPresets: Array<{
           label: string
           openingMm: number
@@ -6972,17 +6995,27 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   <div className="flex flex-wrap gap-1.5">
                     {blockOpeningPresets.map((p) => {
                       const fits = p.openingMm + p.sillMm <= wallHeightMm
+                      // Derive head from the preset's opening height
+                      // against the current wall height — same preset
+                      // produces different head allowances on walls
+                      // of different heights, which is correct: a
+                      // 2100mm door on a 2700mm wall has 600mm head,
+                      // on a 3000mm wall it has 900mm.
+                      const derivedHead = Math.max(
+                        0,
+                        wallHeightMm - p.sillMm - p.openingMm,
+                      )
                       return (
                         <button
                           key={p.label}
                           onClick={() => {
-                            setBlockOpeningHeightMm(p.openingMm)
+                            setBlockOpeningHeadMm(derivedHead)
                             setBlockOpeningSillMm(p.sillMm)
                           }}
                           disabled={!fits}
                           title={
                             fits
-                              ? `${p.openingMm}mm tall, sill ${p.sillMm}mm`
+                              ? `${p.openingMm}mm tall, sill ${p.sillMm}mm, head ${derivedHead}mm`
                               : `Doesn't fit on a ${Math.round(wallHeightMm)}mm wall`
                           }
                           className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -6994,26 +7027,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   </div>
                 </section>
 
-                {/* Dimensions — opening height + sill, both editable.
-                    Head is derived (wallH − sill − height) and shown
-                    as a hint so the user can see the lintel allowance
-                    live as they type. AutoFocus on opening height so
-                    Enter-then-type flow works straight after the
-                    modal pops. */}
+                {/* Dimensions — HEAD (lintel allowance) + SILL,
+                    both editable. Opening height is derived
+                    (wallH − sill − head) and shown as a hint so the
+                    user can see what the resulting opening height
+                    will be. Head matches what's typically called
+                    out on plans (lintel allowance from wall top to
+                    top of opening). AutoFocus on head so the
+                    Enter-then-type flow works after the modal pops. */}
                 <section>
                   <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                     Dimensions
                   </h4>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
-                      <span className="block text-ink-300 text-xs mb-1">Opening height (mm)</span>
+                      <span className="block text-ink-300 text-xs mb-1">Head height (mm)</span>
                       <input
                         type="number"
                         min="0"
                         step="50"
-                        value={blockOpeningHeightMm}
+                        value={blockOpeningHeadMm}
                         onChange={(e) =>
-                          setBlockOpeningHeightMm(parseInt(e.target.value || '0', 10))
+                          setBlockOpeningHeadMm(parseInt(e.target.value || '0', 10))
                         }
                         className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                         autoFocus
@@ -7034,7 +7069,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     </label>
                   </div>
                   <p className="text-[11px] text-ink-500 mt-2 leading-snug">
-                    Head {Math.round(derivedHeadMm)}mm on a {Math.round(wallHeightMm)}mm wall.
+                    Opening height {Math.round(derivedOpeningMm)}mm on a {Math.round(wallHeightMm)}mm wall.
                     Use sill 0 for door-style openings.
                   </p>
                 </section>
@@ -7042,11 +7077,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 {/* Validation states */}
                 {tooTall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Sill + opening height exceeds the {Math.round(wallHeightMm)}mm wall.
+                    Sill + head exceeds the {Math.round(wallHeightMm)}mm wall.
                     Reduce one of them.
                   </p>
                 )}
-                {!tooTall && blockOpeningHeightMm === 0 && (
+                {!tooTall && derivedOpeningMm === 0 && (
                   <p className="text-[11px] text-ink-400 leading-relaxed">
                     0mm opening — counts toward lintel supply items but no
                     wall area is removed.

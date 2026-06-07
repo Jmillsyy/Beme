@@ -689,10 +689,37 @@ function buildPlanOverviewPage(
       `
     })
     .join('')
+  // Opening keys — break out by door / window kind so the reader
+  // can match the cream-break markers on the plan to "opening of
+  // kind X" in the legend. Inline SVG swatch mirrors the cream-body
+  // + dark jamb-tick marker treatment the plan uses.
+  const windowCount = openings.filter((o) => o.kind !== 'door').length
+  const doorCount = openings.filter((o) => o.kind === 'door').length
+  const openingSwatch = `
+    <svg viewBox="0 0 24 12" xmlns="http://www.w3.org/2000/svg" class="legend-opening-swatch" aria-hidden="true">
+      <rect x="0" y="3" width="24" height="6" fill="#cbb89a" stroke="#0f172a" stroke-width="0.5"/>
+      <rect x="3" y="3" width="18" height="6" fill="#fef3c7"/>
+      <line x1="3" y1="1" x2="3" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+      <line x1="21" y1="1" x2="21" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+    </svg>
+  `
+  const openingKeyItems: string[] = []
+  if (windowCount > 0) {
+    openingKeyItems.push(
+      `<span class="legend-item">${openingSwatch}<strong>Window</strong><span class="legend-sub">${windowCount} on this page</span></span>`,
+    )
+  }
+  if (doorCount > 0) {
+    openingKeyItems.push(
+      `<span class="legend-item">${openingSwatch}<strong>Door</strong><span class="legend-sub">${doorCount} on this page</span></span>`,
+    )
+  }
+
   const legend = `
     <div class="plan-overview-legend">
       ${wallTypeLegendItems}
       ${piers.length > 0 ? `<span class="legend-item"><span class="legend-swatch legend-pier"></span><strong>Pier</strong></span>` : ''}
+      ${openingKeyItems.join('')}
       <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan scaled to fit page.</span>
     </div>
   `
@@ -943,6 +970,28 @@ function buildWallSpecsPage(
   `
 }
 
+/**
+ * Categorised assumption list — each group renders as a subheading
+ * with its bullet items beneath. Groups are added in a deterministic
+ * order (Materials → Geometry → Junctions → Openings → Curves →
+ * Piers → Waste → Project-specific) so the reader gets the same
+ * information architecture every export.
+ */
+export type AssumptionCategory =
+  | 'materials'
+  | 'geometry'
+  | 'junctions'
+  | 'openings'
+  | 'curves'
+  | 'piers'
+  | 'waste'
+  | 'project'
+export interface AssumptionGroup {
+  category: AssumptionCategory
+  title: string
+  items: string[]
+}
+
 function buildAssumptions(
   inclusions: BlockExportInclusions,
   hasOpenings: boolean,
@@ -954,75 +1003,132 @@ function buildAssumptions(
     hasCustomCurves: false,
   },
   supplyItemNotes: string[] = []
-): string[] {
+): AssumptionGroup[] {
   if (!inclusions.assumptions) return []
 
-  // Tighter prose so the whole list comfortably fits on one landscape A4
-  // page. The previous wording was longer-form / explanatory; this version
-  // keeps the substance but cuts hedging and parenthetical asides. Anything
-  // a reader needs that's NOT in this list lives in the per-section pages
-  // (block schedule, breakdown, openings) anyway.
-  const items: string[] = [
-    'All block sizes are nominal and include a 10 mm mortar joint (200 mm modular face and 200 mm modular course).',
-    'Wall heights come from the wall-type definitions unless overridden per wall.',
-    'Wall heights are rounded UP to the nearest achievable course stack — i.e. combinations of 200 mm standard courses plus optional 100 mm (20.71) and 150 mm (20.140) modular makeup courses (each = block + 10 mm mortar joint). When the requested height doesn\'t hit an exact combination, the closest-size makeup block gets applied (typically 10–50 mm overage) and the bricklayer trims mortar to suit on site.',
-    'Wall lengths are measured from the drawings supplied. All dimensions in millimetres.',
-    'Corner columns shared between two walls are counted once.',
-    'T-junctions are treated as two separate walls. The stem terminates against the through-wall face with its own end column (alternating 20.01 / 20.03 in stretcher bond); the through-wall is unaffected.',
-    'Height-makeup courses (20.71 / 20.140) span the full course length — end and fraction blocks are not counted separately on those rows.',
-    'Walls under 800 mm use end blocks only (20.01 / 20.21) on every course, with up to two fill blocks (20.03 / 20.02 / 20.22) chosen to minimise overshoot.',
-    'Wall stubs under 400 mm use a single block per course — the closest face width from 20.03 (190 mm), 20.02 (290 mm), 20.22 (340 mm), or 20.01 (390 mm).',
-    'Curved walls: ≥ 6000 mm radius uses stock body blocks with compressed rear mortar. 1500–6000 mm uses stock blocks with a small saw cut on the rear corners. < 1500 mm uses the 20.03CW wedge. < 665 mm requires custom blocks.',
-  ]
+  const groups: AssumptionGroup[] = []
 
-  if (curvePresence.hasCutCurves) {
-    items.push(
-      'One or more curves fall in the 1500–6000 mm "cut to radius" band — stock body blocks are supplied; the bricklayer saws a few mm to ~30 mm off the rear corners to absorb the curvature. No cut allowance is added to the count.'
-    )
-  }
-  if (curvePresence.hasCustomCurves) {
-    items.push(
-      'One or more curves fall below the 665 mm minimum-feasible radius. The wedge can’t absorb a curve this tight — custom blocks need to be supplied. The wedge is counted as a placeholder; confirm the build with the bricklayer.'
-    )
-  }
+  // ── Materials ──
+  // Library-agnostic: sizes come from the user's block library and
+  // the wall-type definitions, not from any specific supplier's
+  // catalogue. Mortar joint is the only universal here.
+  groups.push({
+    category: 'materials',
+    title: 'Materials',
+    items: [
+      'All block sizes are nominal and include the mortar joint per the wall-type definitions.',
+    ],
+  })
 
+  // ── Geometry ──
+  // Wall heights, lengths. No hard-coded code names — the calc
+  // engine picks from the user's library based on each wall type's
+  // composition, so any reference to specific blocks here would be
+  // wrong for half the user base.
+  groups.push({
+    category: 'geometry',
+    title: 'Wall geometry',
+    items: [
+      'Wall heights come from the wall-type definitions unless overridden per wall.',
+      "Wall heights are rounded UP to the nearest achievable course stack from the wall type's composition. When the requested height doesn't hit an exact combination, the closest-size makeup block gets applied and the bricklayer trims mortar to suit on site.",
+      'Wall lengths are measured from the drawings supplied. All dimensions in millimetres.',
+      'Short walls / stubs that don\'t fit the standard end + body sequence use end blocks only or a single closest-size body block per course, chosen from the wall type\'s composition.',
+    ],
+  })
+
+  // ── Junctions ──
+  // How adjacent walls + corners are counted. Bond-pattern naming
+  // is universal; no code references needed.
+  groups.push({
+    category: 'junctions',
+    title: 'Junctions',
+    items: [
+      'Corner columns shared between two walls are counted once.',
+      'T-junctions are treated as two separate walls. The stem terminates against the through-wall face with its own end column following the wall type\'s bond pattern; the through-wall is unaffected.',
+    ],
+  })
+
+  // ── Openings ──
+  // Only when the project actually has any. Lintel selection
+  // language is generic — the user's library + per-opening lintel
+  // catalogue (supply items) decide the specific block, not a
+  // hard-coded code range.
   if (hasOpenings) {
-    items.push('Openings (doors, windows) are deducted from the gross block count.')
-    items.push(
-      'Lintels are stood-up lintel blocks by head height: 20.13 under 200 mm, 20.25 for 200–299 mm, 20.18 at 300 mm and above.'
-    )
+    groups.push({
+      category: 'openings',
+      title: 'Openings',
+      items: [
+        'Openings (doors, windows) are deducted from the gross block count.',
+        "Lintels are selected per the wall-type lintel rules and the user's block library — the chosen lintel block matches the head height (the wall above the opening).",
+      ],
+    })
   }
 
+  // ── Curves ──
+  // Curve handling is no longer rule-based on radius — whatever block
+  // the user puts in the curved wall type's composition is what gets
+  // supplied. The legacy radius-band rules (≥6000 mm stock / 1500–6000
+  // cut / <1500 wedge / <665 custom) have been removed; the wall type
+  // composition is authoritative.
+  groups.push({
+    category: 'curves',
+    title: 'Curved walls',
+    items: [
+      'Curved walls use the block(s) configured in the wall type composition — whatever block is set is what gets supplied, regardless of radius. The bricklayer is responsible for any on-site cutting needed for the chosen block to seat on the curve.',
+    ],
+  })
+  // The curvePresence flags (cut / wedge / custom) are still accepted
+  // for back-compat but no longer steer assumption content.
+  void curvePresence
+
+  // ── Piers ──
+  // Only emitted when the project has piers (tied or freestanding).
+  // No hard-coded block codes — pier composition comes from the
+  // pier-type definitions in the user's library.
+  const pierItems: string[] = []
   if (pierCounts.tied > 0) {
-    items.push(
-      'Tied piers use a per-makeup course pattern repeated up the wall height (default: 40.925 / 20.01 alternating). A pier only displaces a body block on courses where its block is deeper than the wall.'
+    pierItems.push(
+      "Tied piers use the per-pier-type course pattern repeated up the wall height. A pier only displaces a body block on courses where the pier's block is deeper than the wall.",
     )
   }
   if (pierCounts.freestanding > 0) {
-    items.push(
-      'Freestanding piers use a per-makeup course pattern repeated up the pier height (default: 40.925 stacked every course).'
+    pierItems.push(
+      'Freestanding piers use the per-pier-type course pattern repeated up the pier height.',
     )
   }
+  if (pierItems.length > 0) {
+    groups.push({ category: 'piers', title: 'Piers', items: pierItems })
+  }
 
-  items.push('No waste allowance applied — quantities are net as measured.')
+  // ── Waste / supply ──
+  groups.push({
+    category: 'waste',
+    title: 'Waste & supply',
+    items: ['No waste allowance applied — quantities are net as measured.'],
+  })
 
   // Supply-item lines deliberately NOT appended here. Per-item notes
-  // ('<name> allowance at <rate> — <qty> included.' × N) became
-  // overwhelming once users had 16+ Galintel SKUs configured. Each
-  // supply item is already listed in the Accessories table (grouped
-  // by category) so the customer can see what's quoted without the
-  // assumptions section becoming a wall of allowance lines. supplyItemNotes
-  // is kept in the signature for back-compat but ignored.
+  // became overwhelming once users had 16+ Galintel SKUs configured.
+  // Each supply item is already listed in the Accessories table.
   void supplyItemNotes
 
-  // Custom notes from the user — split on newlines, ignore blank lines
+  // ── Project-specific ──
+  // User-typed lines from Project details → Notes. Anything not
+  // covered by the canned categories above lives here. One bullet
+  // per non-empty line so the user can cover ANY scenario by typing.
   const customLines = customNotes
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean)
-  items.push(...customLines)
+  if (customLines.length > 0) {
+    groups.push({
+      category: 'project',
+      title: 'Project-specific notes',
+      items: customLines,
+    })
+  }
 
-  return items
+  return groups
 }
 
 // ---------- Main entry point ----------
@@ -1385,16 +1491,27 @@ export async function buildBlockEstimateHtml(
     return `<div class="meta">${rows.join('')}</div>`
   })()
 
-  // Page 1: Assumptions
+  // Page 1: Assumptions — rendered as categorised groups with
+  // subheadings so the reader can scan to the relevant area
+  // (Geometry vs Curves vs Openings vs Project-specific notes etc.)
+  // rather than reading through one long numbered list.
   const assumptionsPage = inclusions.assumptions
     ? `
       <section class="page">
         ${pageHeader}
         ${metaBlock}
         <h2 class="section-title">Assumptions</h2>
-        <ol class="assumptions">
-          ${assumptions.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
-        </ol>
+        ${assumptions
+          .map(
+            (g) => `
+          <div class="assumption-group">
+            <h3 class="assumption-group-title">${escapeHtml(g.title)}</h3>
+            <ul class="assumption-list">
+              ${g.items.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
+            </ul>
+          </div>`,
+          )
+          .join('')}
       </section>
     `
     : ''
@@ -1947,14 +2064,37 @@ export async function buildBlockEstimateHtml(
     font-size: 10.5px;
     line-height: 1.4;
   }
-  /* Keep the whole list together so it doesn't split across pages —
-     reading half the assumptions on each of two sheets reads worse than
-     a slightly tight single page. The shortened item text above is
-     sized so even the longest combination (curves + cut + openings +
-     piers + waste) still fits in landscape A4. */
-  ol.assumptions {
+  /* Categorised assumption groups — one subheading + bullet list
+     per category. Groups try not to split across pages (the
+     subheading + at least one bullet should stay together), and
+     they sit tight enough that the canonical full set still fits
+     on one landscape A4 page. */
+  .assumption-group {
     page-break-inside: avoid;
     break-inside: avoid;
+    margin-top: 10px;
+  }
+  .assumption-group:first-of-type { margin-top: 0; }
+  .assumption-group-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #1f2937;
+    margin: 0 0 4px 0;
+    padding-bottom: 2px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  ul.assumption-list {
+    list-style: disc;
+    padding-left: 18px;
+    margin: 0;
+  }
+  ul.assumption-list li {
+    padding: 1.5px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: #374151;
   }
 
   /* ── Wall layout page ─────────────────────────────────────────────
@@ -2071,6 +2211,12 @@ export async function buildBlockEstimateHtml(
     background: #3b82f6;
     border: 1px solid #1e40af;
     width: 10px;
+  }
+  .legend-opening-swatch {
+    display: inline-block;
+    width: 22px;
+    height: 11px;
+    vertical-align: middle;
   }
   .legend-note {
     color: #9ca3af;

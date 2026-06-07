@@ -428,9 +428,45 @@ function buildBrickPlanOverviewPage(
     })
     .join('')
 
+  // Opening keys — break out by door / window kind so the reader
+  // can match the cream-break markers on the plan to "opening of
+  // kind X" in the legend. Inline SVG swatch shows the same cream
+  // body + dark jamb tick treatment the plan uses, so the key is
+  // visually grounded to the markers above.
+  const windowCount = openings.filter((o) => o.kind !== 'door').length
+  const doorCount = openings.filter((o) => o.kind === 'door').length
+  const openingSwatch = `
+    <svg viewBox="0 0 24 12" xmlns="http://www.w3.org/2000/svg" class="legend-opening-swatch" aria-hidden="true">
+      <rect x="0" y="3" width="24" height="6" fill="#cbb89a" stroke="#0f172a" stroke-width="0.5"/>
+      <rect x="3" y="3" width="18" height="6" fill="#fef3c7"/>
+      <line x1="3" y1="1" x2="3" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+      <line x1="21" y1="1" x2="21" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+    </svg>
+  `
+  const openingKeyItems: string[] = []
+  if (windowCount > 0) {
+    openingKeyItems.push(`
+      <span class="legend-item">
+        ${openingSwatch}
+        <strong>Window</strong>
+        <span class="legend-sub">${windowCount} on this page</span>
+      </span>
+    `)
+  }
+  if (doorCount > 0) {
+    openingKeyItems.push(`
+      <span class="legend-item">
+        ${openingSwatch}
+        <strong>Door</strong>
+        <span class="legend-sub">${doorCount} on this page</span>
+      </span>
+    `)
+  }
+
   const legend = `
     <div class="plan-overview-legend">
       ${legendItems}
+      ${openingKeyItems.join('')}
       <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan scaled to fit page.</span>
     </div>
   `
@@ -512,6 +548,24 @@ function formatDate(iso: string): string {
   }
 }
 
+/**
+ * Categorised assumption groups for the brick export. Mirrors the
+ * block side's structure (Materials → Geometry → Openings → Waste →
+ * Project-specific) so the deliverable reads consistently across
+ * trades.
+ */
+export type BrickAssumptionCategory =
+  | 'materials'
+  | 'geometry'
+  | 'openings'
+  | 'waste'
+  | 'project'
+export interface BrickAssumptionGroup {
+  category: BrickAssumptionCategory
+  title: string
+  items: string[]
+}
+
 function buildAssumptions(
   inclusions: BrickExportInclusions,
   settings: BrickSettings,
@@ -525,49 +579,81 @@ function buildAssumptions(
    * height line that quotes settings.defaultWallHeightMm, which is what
    * older projects (single makeup, no per-wall overrides) want anyway.
    */
-  wallHeightSummary: string = ''
-): string[] {
+  wallHeightSummary: string = '',
+  /**
+   * True when the project has at least one opening on a brick wall.
+   * Used to gate the Openings group — no point telling the reader
+   * about opening deductions when there are none.
+   */
+  hasOpenings: boolean = false,
+): BrickAssumptionGroup[] {
   if (!inclusions.assumptions) return []
 
-  const items: string[] = [
-    'All brick dimensions are nominal and include mortar joint.',
-    wallHeightSummary ||
-      `Wall heights are uniform at ${formatNumber(settings.defaultWallHeightMm)}mm for all walls unless otherwise noted.`,
-    'Wall lengths are taken from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
-    'Openings (doors and windows) have been deducted from gross wall areas as indicated on the drawings.',
-    'No waste allowance has been applied. Quantities are net as measured.',
-  ]
+  const groups: BrickAssumptionGroup[] = []
 
-  // Brick-tie + plascourse + lintel assumption notes used to be hand-
-  // crafted here from BrickSettings + a hardcoded lintel catalogue. All
-  // three moved to the supply-items catalogue, so the lines now come in
-  // through `supplyItemNotes` below in the same rate-and-quantity style
-  // ('Brick Ties allowance at 2 per m² — 25 included.'). The previous
-  // hand-crafted paths have been deleted; nothing to suppress here.
+  // ── Materials ──
+  groups.push({
+    category: 'materials',
+    title: 'Materials',
+    items: [
+      'All brick dimensions are nominal and include mortar joint.',
+    ],
+  })
 
-  // Lintel assumption text removed — lintels are now per-opening supply
-  // items the user defines themselves (with optional opening-width
-  // ranges). Each lintel supply item's note appears below in the
-  // supply-items section of the assumption list, so the reader still
-  // knows what's being priced.
+  // ── Geometry ──
+  groups.push({
+    category: 'geometry',
+    title: 'Wall geometry',
+    items: [
+      wallHeightSummary ||
+        `Wall heights are uniform at ${formatNumber(settings.defaultWallHeightMm)}mm for all walls unless otherwise noted.`,
+      'Wall lengths are taken from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
+    ],
+  })
 
-  // Per-item supply notes are NOT appended any more. With 16+
-  // Galintel SKUs (and ties / cement / rebar etc.) the assumptions
-  // section became dominated by allowance-rate lines. The Accessories
-  // table on the tally page already lists every supply with its
-  // quantity and is grouped by category, so the reader gets the same
-  // information in a cleaner format. supplyItemNotes is left in the
-  // signature for caller back-compat; nothing consumes it here.
+  // ── Openings ──
+  // Only when the project actually has any — no point telling the
+  // reader about opening deductions on a wall with no openings.
+  if (hasOpenings) {
+    groups.push({
+      category: 'openings',
+      title: 'Openings',
+      items: [
+        'Openings (doors and windows) have been deducted from gross wall areas as indicated on the drawings.',
+      ],
+    })
+  }
+
+  // ── Waste / supply ──
+  groups.push({
+    category: 'waste',
+    title: 'Waste & supply',
+    items: ['No waste allowance has been applied. Quantities are net as measured.'],
+  })
+
+  // Per-item supply notes are NOT appended here. With 16+ Galintel
+  // SKUs configured the assumptions section became dominated by
+  // allowance-rate lines. Each supply item is already listed in the
+  // Accessories table with its quantity grouped by category.
   void supplyItemNotes
 
-  // Custom notes from the user — split on newlines, ignore blank lines
+  // ── Project-specific ──
+  // User-typed lines from Project details → Notes. Anything not
+  // covered by the canned categories above lives here, one bullet
+  // per non-empty line so the user can cover ANY scenario.
   const customLines = customNotes
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean)
-  items.push(...customLines)
+  if (customLines.length > 0) {
+    groups.push({
+      category: 'project',
+      title: 'Project-specific notes',
+      items: customLines,
+    })
+  }
 
-  return items
+  return groups
 }
 
 // groupLintels + LintelGroup removed — brick lintels now flow through
@@ -816,7 +902,8 @@ export async function buildBrickEstimateHtml(
     settings,
     projectDetails.notes,
     supplyItemNotes,
-    wallHeightSummary
+    wallHeightSummary,
+    openings.length > 0,
   )
 
   // ---------- HTML pieces ----------
@@ -952,16 +1039,26 @@ export async function buildBrickEstimateHtml(
   }
   const planOverviewPages = planOverviewPagesArr.join('\n')
 
-  // Page 1: Assumptions
+  // Page 1: Assumptions — categorised groups with subheadings so
+  // the reader can scan to the relevant area (Geometry vs Openings
+  // vs Project-specific) rather than reading one long flat list.
   const assumptionsPage = inclusions.assumptions
     ? `
       <section class="page">
         ${pageHeader}
         ${metaBlock}
         <h2 class="section-title">Assumptions</h2>
-        <ol class="assumptions">
-          ${assumptions.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
-        </ol>
+        ${assumptions
+          .map(
+            (g) => `
+          <div class="assumption-group">
+            <h3 class="assumption-group-title">${escapeHtml(g.title)}</h3>
+            <ul class="assumption-list">
+              ${g.items.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
+            </ul>
+          </div>`,
+          )
+          .join('')}
       </section>
     `
     : ''
@@ -1500,6 +1597,12 @@ export async function buildBrickEstimateHtml(
     height: 10px;
     border-radius: 2px;
   }
+  .legend-opening-swatch {
+    display: inline-block;
+    width: 22px;
+    height: 11px;
+    vertical-align: middle;
+  }
   .legend-note { color: #9ca3af; font-style: italic; }
 
   .page-header {
@@ -1765,6 +1868,35 @@ export async function buildBrickEstimateHtml(
     padding: 3px 0;
     font-size: 10.5px;
     line-height: 1.45;
+  }
+  /* Categorised assumption groups — same structure as the block
+     export so the trade-combined PDF reads consistently. */
+  .assumption-group {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-top: 10px;
+  }
+  .assumption-group:first-of-type { margin-top: 0; }
+  .assumption-group-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #1f2937;
+    margin: 0 0 4px 0;
+    padding-bottom: 2px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  ul.assumption-list {
+    list-style: disc;
+    padding-left: 18px;
+    margin: 0;
+  }
+  ul.assumption-list li {
+    padding: 1.5px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: #374151;
   }
 
   table {

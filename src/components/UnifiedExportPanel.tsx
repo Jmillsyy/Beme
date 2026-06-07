@@ -1123,15 +1123,14 @@ function ExportEstimateModal({
           </section>
           </div>
 
-          {/* Adjustments — BLOCK only. The brick deliverable no
-              longer reports brick counts (it reports total wall area
-              + lineal m for trim courses), so per-code adjustments
-              don't apply. The brickAdjustments state still exists
-              and flows through to the export functions for
-              back-compat, but the user can no longer add/edit them
-              from this modal. */}
+          {/* Quantity adjustments — Blocks + Bricks. The brick tally
+              now produces per-brick counts via grid walk in
+              calculateBrickTally, so per-code adjustments work the
+              same way as blocks (positive = reduce, negative = add). */}
           {(hasBlockTally ||
-            Object.keys(blockAdjustments).length > 0) && (
+            hasBrickTally ||
+            Object.keys(blockAdjustments).length > 0 ||
+            Object.keys(brickAdjustments).length > 0) && (
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
                 Quantity adjustments
@@ -1139,20 +1138,36 @@ function ExportEstimateModal({
               <p className="text-[11px] text-ink-500 mb-3 leading-snug">
                 Each row shows the auto-tally quantity. Hit Edit to
                 override it with a different number — useful when you
-                want fewer (blocks on site, reused from another job)
-                or more (extras for breakage, future work). Use the
-                "+ Add" button to include a code that isn't on the
-                plan at all.
+                want fewer (blocks/bricks on site, reused from another
+                job) or more (extras for breakage, future work). Use
+                the "+ Add" button to include a code that isn't on the
+                plan at all. Tallies respect the area filter above —
+                untick areas to remove their bricks from the count.
               </p>
-              <AdjustmentsTable
-                label="Blocks"
-                baseTally={blockBaseTally}
-                adjustments={blockAdjustments}
-                onSetAdjustment={setBlockAdj}
-                describe={blockLabel}
-                availableCodes={blockPickerOptions}
-                addLabel="Add block"
-              />
+              {hasBlockTally && (
+                <AdjustmentsTable
+                  label="Blocks"
+                  baseTally={blockBaseTally}
+                  adjustments={blockAdjustments}
+                  onSetAdjustment={setBlockAdj}
+                  describe={blockLabel}
+                  availableCodes={blockPickerOptions}
+                  addLabel="Add block"
+                />
+              )}
+              {hasBrickTally && (
+                <div className={hasBlockTally ? 'mt-3' : ''}>
+                  <AdjustmentsTable
+                    label="Bricks"
+                    baseTally={brickBaseTally}
+                    adjustments={brickAdjustments}
+                    onSetAdjustment={setBrickAdj}
+                    describe={brickLabel}
+                    availableCodes={brickPickerOptions}
+                    addLabel="Add brick"
+                  />
+                </div>
+              )}
             </section>
           )}
 
