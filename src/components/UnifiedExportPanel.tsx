@@ -43,6 +43,28 @@ interface UnifiedExportPanelProps {
   supplyItemRateOverrides?: Record<string, number>
   pdfFile?: File | null
 
+  /**
+   * Currently-open project id. Retained for legacy callers; the
+   * snapshot pipeline no longer needs it because captures now come
+   * straight in via {@link view3dSnapshots} from PdfWorkspace.
+   */
+  projectId?: string | null
+  /**
+   * 3D captures to embed in the export. Owned by PdfWorkspace
+   * (lifted out of WorkspaceView3D + localStorage) so they're
+   * scoped to a single saved project and can't bleed across.
+   * Empty array (or omitted) means "no captures" and the export
+   * skips the 3D pages entirely.
+   */
+  view3dSnapshots?: Array<{
+    id: string
+    dataUrl: string
+    createdAt: number
+    pageNumber?: number
+    trade?: 'block' | 'brick'
+    legend?: Array<{ code: string; label: string; color: string }>
+  }>
+
   /** Raw walls across both trades / all areas — partitioned internally. */
   allWalls: Wall[]
   /** Raw openings across both trades. */
@@ -124,6 +146,8 @@ export default function UnifiedExportPanel({
   supplyItemSelections,
   supplyItemRateOverrides,
   pdfFile,
+  projectId,
+  view3dSnapshots: view3dSnapshotsProp,
   allWalls,
   allOpenings,
   allPiers = [],
@@ -813,53 +837,58 @@ function ExportEstimateModal({
       }
       // Read the 3D view snapshot queue (saved to localStorage by
       // the ▣ Capture button as a JSON array of {id, dataUrl,
-      // createdAt, legend}). Shared across all three export modes
-      // (block, brick, combined) so the snapshot pages appear in
-      // whichever PDF the user is generating.
-      let view3dSnapshots: Array<{
+      // createdAt, legend}). Storage is namespaced per-PROJECT AND
+      // per-TRADE so block-mode captures live under :block and
+      // brick-mode captures under :brick — that way the per-trade
+      // exports (block estimate / brick estimate) only embed
+      // snapshots that match their walls, and the combined export
+      // includes both. A legacy `:no-trade` bucket is also read so
+      // captures taken before the trade split still surface.
+      // 3D captures: try the prop FIRST (correct path — state lives
+      // on the SavedProject), fall back to window.__beme3dCurrentSnapshots
+      // which PdfWorkspace mirrors the current project's captures
+      // onto. The fallback exists because Vite HMR occasionally
+      // ships a closure where the destructured prop binding is gone,
+      // which previously made captures vanish silently. The window
+      // mirror always holds the live React state.
+      type Snap = {
+        id: string
         dataUrl: string
-        legend: Array<{ code: string; label: string; color: string }>
-      }> = []
+        createdAt: number
+        pageNumber?: number
+        trade?: 'block' | 'brick'
+        legend?: Array<{ code: string; label: string; color: string }>
+      }
+      let allSnapshots: Snap[] = []
       try {
-        const saved = window.localStorage.getItem(
-          'beme:3d-export-snapshots'
-        )
-        if (saved) {
-          const parsed = JSON.parse(saved) as Array<{
-            dataUrl?: string
-            legend?: Array<{ code?: string; label?: string; color?: string }>
-          }>
-          if (Array.isArray(parsed)) {
-            view3dSnapshots = parsed
-              .filter(
-                (s) =>
-                  s &&
-                  typeof s.dataUrl === 'string' &&
-                  s.dataUrl.startsWith('data:image/')
-              )
-              .map((s) => ({
-                dataUrl: s.dataUrl as string,
-                legend: Array.isArray(s.legend)
-                  ? s.legend
-                      .filter(
-                        (i) =>
-                          i &&
-                          typeof i.code === 'string' &&
-                          typeof i.label === 'string' &&
-                          typeof i.color === 'string'
-                      )
-                      .map((i) => ({
-                        code: i.code as string,
-                        label: i.label as string,
-                        color: i.color as string,
-                      }))
-                  : [],
-              }))
-          }
+        if (
+          typeof view3dSnapshotsProp !== 'undefined' &&
+          Array.isArray(view3dSnapshotsProp)
+        ) {
+          allSnapshots = view3dSnapshotsProp as Snap[]
         }
       } catch {
-        // localStorage / JSON parse failures fall back to no snapshots
+        // Stale closure — fall through to the window mirror below.
       }
+      if (allSnapshots.length === 0) {
+        try {
+          const fromWindow = (
+            window as Window & { __beme3dCurrentSnapshots?: Snap[] }
+          ).__beme3dCurrentSnapshots
+          if (Array.isArray(fromWindow)) allSnapshots = fromWindow
+        } catch {
+          // ignore
+        }
+      }
+      const view3dSnapshots = (
+        exportMode === 'combined'
+          ? allSnapshots
+          : exportMode === 'block'
+            ? allSnapshots.filter((s) => s.trade !== 'brick')
+            : exportMode === 'brick'
+              ? allSnapshots.filter((s) => s.trade !== 'block')
+              : []
+      ).map((s) => ({ dataUrl: s.dataUrl, legend: s.legend ?? [] }))
       if (exportMode === 'combined') {
         await exportCombinedEstimate({
           ...shared,
@@ -1094,14 +1123,15 @@ function ExportEstimateModal({
           </section>
           </div>
 
-          {/* Adjustments — block and brick share one section so the
-              header + intro copy don't repeat. Tables show the auto-
-              tally with an Edit button per row + an "+ Add" button to
-              introduce a code that's not in the tally. */}
+          {/* Adjustments — BLOCK only. The brick deliverable no
+              longer reports brick counts (it reports total wall area
+              + lineal m for trim courses), so per-code adjustments
+              don't apply. The brickAdjustments state still exists
+              and flows through to the export functions for
+              back-compat, but the user can no longer add/edit them
+              from this modal. */}
           {(hasBlockTally ||
-            hasBrickTally ||
-            Object.keys(blockAdjustments).length > 0 ||
-            Object.keys(brickAdjustments).length > 0) && (
+            Object.keys(blockAdjustments).length > 0) && (
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
                 Quantity adjustments
@@ -1114,39 +1144,15 @@ function ExportEstimateModal({
                 "+ Add" button to include a code that isn't on the
                 plan at all.
               </p>
-              {(hasBlockTally ||
-                Object.keys(blockAdjustments).length > 0) && (
-                <AdjustmentsTable
-                  label="Blocks"
-                  baseTally={blockBaseTally}
-                  adjustments={blockAdjustments}
-                  onSetAdjustment={setBlockAdj}
-                  describe={blockLabel}
-                  availableCodes={blockPickerOptions}
-                  addLabel="Add block"
-                />
-              )}
-              {(hasBrickTally ||
-                Object.keys(brickAdjustments).length > 0) && (
-                <div
-                  className={
-                    hasBlockTally ||
-                    Object.keys(blockAdjustments).length > 0
-                      ? 'mt-3'
-                      : ''
-                  }
-                >
-                  <AdjustmentsTable
-                    label="Bricks"
-                    baseTally={brickBaseTally}
-                    adjustments={brickAdjustments}
-                    onSetAdjustment={setBrickAdj}
-                    describe={brickLabel}
-                    availableCodes={brickPickerOptions}
-                    addLabel="Add brick"
-                  />
-                </div>
-              )}
+              <AdjustmentsTable
+                label="Blocks"
+                baseTally={blockBaseTally}
+                adjustments={blockAdjustments}
+                onSetAdjustment={setBlockAdj}
+                describe={blockLabel}
+                availableCodes={blockPickerOptions}
+                addLabel="Add block"
+              />
             </section>
           )}
 

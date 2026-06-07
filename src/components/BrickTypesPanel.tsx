@@ -7,6 +7,13 @@ import { wallTypeColor } from '../lib/wallTypeColors'
 
 interface BrickTypesPanelProps {
   makeups: BrickMakeup[]
+  /**
+   * Full project-wide brick makeups list — used SOLELY to compute the
+   * palette slot for each type's colour swatch, so the same brick
+   * type lights up the same colour regardless of which area filter
+   * is active. Defaults to {@link makeups} when not provided.
+   */
+  paletteMakeups?: BrickMakeup[]
   activeMakeupId: string
   wallCountsByMakeupId: Record<string, number>
   onSetActive: (id: string) => void
@@ -34,6 +41,7 @@ function generateMakeupId(): string {
  */
 export default function BrickTypesPanel({
   makeups,
+  paletteMakeups,
   activeMakeupId,
   wallCountsByMakeupId,
   onSetActive,
@@ -41,6 +49,10 @@ export default function BrickTypesPanel({
   onUpdateMakeup,
   onDeleteMakeup,
 }: BrickTypesPanelProps) {
+  // Palette colours come from the FULL project list (or `makeups`
+  // when no separate palette arg was passed). See WallTypesPanel for
+  // the same rationale — keeps colours stable across area filters.
+  const colorMakeups = paletteMakeups ?? makeups
   const [editingId, setEditingId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const editingMakeup =
@@ -106,7 +118,7 @@ export default function BrickTypesPanel({
                 <div className="flex items-start gap-2 mb-1 pr-12">
                   <span
                     className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
-                    style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
+                    style={{ backgroundColor: wallTypeColor(m.id, colorMakeups) }}
                     aria-hidden
                   />
                   {/* Wrap the name onto multiple lines rather than truncate —

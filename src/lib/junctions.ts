@@ -307,7 +307,19 @@ export function detectJunctionsForNewWall(
   const newStart = { x: newWall.startX, y: newWall.startY }
   const newEnd = { x: newWall.endX, y: newWall.endY }
 
+  // Curves never form structural joints with their neighbours — they
+  // attach to a wall positionally but do NOT participate in corners,
+  // cube blocks, T-junctions, or any other shared-block behaviour.
+  // When EITHER side of a candidate pair is curved we skip the pair
+  // entirely; both walls' endpoints stay free. recomputeAllJunctions
+  // (the global re-derive used elsewhere) already does the same; this
+  // mirrors it at the live drawing path so the user never sees a
+  // mid-draw state where the straight wall briefly tags a curve as
+  // a corner connection.
+  const newIsCurve = isCurvedWall(newWall)
+
   for (const wall of existingWalls) {
+    if (newIsCurve || isCurvedWall(wall)) continue
     // newWall.start <-> wall.start
     if (endpointsFormCorner(newWall, 'start', wall, 'start', thicknessByWallId)) {
       startJunction = addConnection(startJunction, wall.id)
@@ -341,13 +353,15 @@ export function detectJunctionsForNewWall(
 
   // T-junction pass on the new wall's free endpoints against existing wall bodies.
   // (Corner detection has already run above, so only free endpoints reach this.)
-  if (startJunction.type === 'free') {
+  // Curves never form a T-junction — same rationale as the corner skip above:
+  // curves attach positionally only.
+  if (!newIsCurve && startJunction.type === 'free') {
     const through = findWallWhoseBodyContains(newStart, existingWalls, thicknessByWallId, newWall.id)
     if (through) {
       startJunction = { type: 't-junction', connectedWallIds: [through] }
     }
   }
-  if (endJunction.type === 'free') {
+  if (!newIsCurve && endJunction.type === 'free') {
     const through = findWallWhoseBodyContains(newEnd, existingWalls, thicknessByWallId, newWall.id)
     if (through) {
       endJunction = { type: 't-junction', connectedWallIds: [through] }

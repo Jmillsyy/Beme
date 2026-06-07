@@ -50,7 +50,12 @@ import type {
 import { findCornerPoints } from './junctions'
 import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
-import { getCourseCount, getMakeupHeightMm, resolveCourseBlocks } from './makeups'
+import {
+  getCourseCount,
+  getEffectiveWallThicknessMm,
+  getMakeupHeightMm,
+  resolveCourseBlocks,
+} from './makeups'
 import { resolveBlockByRole } from './blockRoles'
 
 /**
@@ -953,10 +958,12 @@ export function planWall(
       // So we compute the actual c1 ends total for SYNC and INV under
       // this wall's ownership and pick the smaller-gap option.
       const cornerSide: 'start' | 'end' = flipTarget === 'start' ? 'end' : 'start'
+      // Single source of truth — falls back to MAX depth across the
+      // makeup (not just bodyBlockCode) so corner blocks deeper than
+      // the body don't get under-sized when the caller doesn't pass
+      // the thicknessByWallId map.
       const wallThicknessForCube =
-        thicknessByWallId?.[wall.id] ??
-        BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ??
-        190
+        thicknessByWallId?.[wall.id] ?? getEffectiveWallThicknessMm(makeup)
       const cornerJunction =
         cornerSide === 'start' ? wall.startJunction : wall.endJunction
       const cornerNeighborId = cornerJunction.connectedWallIds?.[0]
@@ -1141,11 +1148,10 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
       healCode(b.baseCourseBlockCode, 'base-course') ||
       healCode(b.baseCourseBlockCode, 'body')
     const baseBlock = BLOCK_LIBRARY[healedBase]
-    // Pairing is now ONLY a library-level property (Block.pairedWith).
-    // The legacy `makeup.baseCourseTileCode` fallback used to keep
-    // 50.45 on AU walls after the pairing migration; dropping it
-    // here means US/UK walls (whose body block has no pairedWith)
-    // no longer tally a phantom AU tile.
+    // Pairing is ONLY a library-level property (Block.pairedWith) —
+    // when the base block has a pairedWith, the calc adds the tile
+    // automatically. The base-tile role + per-makeup tile slot were
+    // removed; library pairing is the single source of truth now.
     const pairedTile = baseBlock?.pairedWith
     courses.push({
       type: 'base',
@@ -1358,10 +1364,10 @@ export function calculateWallTally(
       !cornerOwnership || !endIsCornerJunction
         ? true
         : cornerOwnership({ wallEnd: 'end', courseNumber })
+    // Single source of truth — same fallback logic as wallThicknessForCube
+    // above and PdfWorkspace's computeWallThicknessByWallId.
     const wallThicknessForTally =
-      thicknessByWallId?.[wall.id] ??
-      BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ??
-      190
+      thicknessByWallId?.[wall.id] ?? getEffectiveWallThicknessMm(makeup)
     const startNeighborIdForTally = startIsCornerJunction
       ? wall.startJunction.connectedWallIds?.[0]
       : undefined
@@ -1392,14 +1398,52 @@ export function calculateWallTally(
         ? endCubeDepthForTally + MORTAR_MM
         : endEndModularBase
 
+    // Deep-block cut block: same formula planWallLayout uses to insert
+    // a small body-coded cut after the corner on OWNING courses when
+    // body depth × 2 > body width (e.g. 300-series). The tally has to
+    // include this in the adjusted-ends total OR the layout emits an
+    // extra body-coded block the tally doesn't count, and the two
+    // diverge. Falls through to 0 on 200-series and uniform 300-on-300
+    // partners (the math gives ≤ 0).
+    const bodyBlockWidthForCut =
+      BLOCK_LIBRARY[course.bodyBlock]?.dimensions.widthMm ?? 0
+    const bodyBlockDepthForCut =
+      BLOCK_LIBRARY[course.bodyBlock]?.dimensions.depthMm ?? 0
+    const halfBodyModularForCut = (bodyBlockWidthForCut + MORTAR_MM) / 2
+    const wantsCutBlockTally = bodyBlockDepthForCut * 2 > bodyBlockWidthForCut
+    const startCornerWForTally = ownsStartCorner ? startEndModularBase - MORTAR_MM : 0
+    const endCornerWForTally = ownsEndCorner ? endEndModularBase - MORTAR_MM : 0
+    const startIsSharedCornerForTally = wall.startJunction.type === 'corner'
+    const endIsSharedCornerForTally = wall.endJunction.type === 'corner'
+    const startCutWidthForTally =
+      wantsCutBlockTally && ownsStartCorner && startIsSharedCornerForTally
+        ? Math.max(
+            0,
+            halfBodyModularForCut - (startCornerWForTally - startCubeDepthForTally) - MORTAR_MM
+          )
+        : 0
+    const endCutWidthForTally =
+      wantsCutBlockTally && ownsEndCorner && endIsSharedCornerForTally
+        ? Math.max(
+            0,
+            halfBodyModularForCut - (endCornerWForTally - endCubeDepthForTally) - MORTAR_MM
+          )
+        : 0
+    const cutBlockModularTotal =
+      (startCutWidthForTally > 1 ? startCutWidthForTally + MORTAR_MM : 0) +
+      (endCutWidthForTally > 1 ? endCutWidthForTally + MORTAR_MM : 0)
+    const cutBlockCount =
+      (startCutWidthForTally > 1 ? 1 : 0) + (endCutWidthForTally > 1 ? 1 : 0)
+
     // Per-course fit: re-fit whenever effective ends differ from the
-    // odd/even base (ownership shift OR lead-in widening). Otherwise
-    // reuse the cached fit. When no cornerOwnership callback is
-    // supplied (legacy callers), this collapses to the prior parity-
+    // odd/even base (ownership shift OR lead-in widening OR cut block).
+    // Otherwise reuse the cached fit. When no cornerOwnership callback
+    // is supplied (legacy callers), this collapses to the prior parity-
     // only behavior with re-fit only on lead-in courses.
     const baseFit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
     const needsRefit =
       leadInModularTotal > 0 ||
+      cutBlockModularTotal > 0 ||
       effectiveStartModular !== startEndModularBase ||
       effectiveEndModular !== endEndModularBase
     // Per-course exact-length scope: the makeup's exactLengthCourses
@@ -1414,7 +1458,7 @@ export function calculateWallTally(
     const fit = needsRefit
       ? fitCourseLength(
           wallLenForRefit,
-          effectiveStartModular + effectiveEndModular + leadInModularTotal,
+          effectiveStartModular + effectiveEndModular + leadInModularTotal + cutBlockModularTotal,
           courseUsesFractions
         )
       : baseFit
@@ -1435,7 +1479,7 @@ export function calculateWallTally(
       continue
     }
 
-    addToTally(tally, course.bodyBlock, fit.bodyCount)
+    addToTally(tally, course.bodyBlock, fit.bodyCount + cutBlockCount)
 
     // Paired-tile count uses the BODY block's pairedPer ratio from
     // the library: 1 means 1:1 (one tile per block — AU default for
@@ -1888,12 +1932,11 @@ export function planWallLayout(
         ? true
         : cornerOwnership({ wallEnd: 'end', courseNumber })
     // Perpendicular wall's thickness = corner cube depth on this wall's
-    // axis. Falls back to this wall's own thickness (almost always
-    // equal at a corner) then 190 mm if unknown.
+    // axis. Falls back to this wall's MAX-depth across the makeup (via
+    // getEffectiveWallThicknessMm) so cube depth never under-counts a
+    // deeper corner block.
     const wallThickness =
-      thicknessByWallId?.[wall.id] ??
-      BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm ??
-      190
+      thicknessByWallId?.[wall.id] ?? getEffectiveWallThicknessMm(makeup)
     const startNeighborId =
       wall.startJunction.type === 'corner' ||
       wall.startJunction.type === 'control-joint'
@@ -2960,8 +3003,12 @@ export function calculateProjectTally(
   const wallsById: Record<string, Wall> = {}
   for (const w of walls) {
     const makeup = makeupsById[w.makeupId]
-    const block = makeup ? BLOCK_LIBRARY[makeup.bodyBlockCode] : undefined
-    thicknessByWallId[w.id] = block?.dimensions.depthMm ?? 190
+    // Wall envelope = the MAX block depth across the makeup so corner
+    // blocks (often deeper than the body) don't poke past the wall's
+    // outer face. Falls back to 190 when no makeup is resolved.
+    thicknessByWallId[w.id] = makeup
+      ? getEffectiveWallThicknessMm(makeup, BLOCK_LIBRARY)
+      : 190
     wallsById[w.id] = w
   }
 

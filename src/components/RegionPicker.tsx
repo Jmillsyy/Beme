@@ -7,6 +7,12 @@ import {
 import { getBlockLibrary, setBlockLibrary } from '../data/blockLibrary'
 import { BRICK_LIBRARY, setBrickLibrary } from '../data/brickLibrary'
 import { updateUserSettings, getUserSettings } from '../lib/userSettings'
+import { listProjects, saveProject } from '../lib/projectStorage'
+import {
+  remapBrickMakeupsForLibrary,
+  remapMakeupsForLibrary,
+  remapPierMakeupsForLibrary,
+} from '../lib/makeups'
 
 interface RegionPickerProps {
   /** Show a "Skip" option so the user can dismiss without picking — used
@@ -101,11 +107,84 @@ export default function RegionPicker({
       if (!ok) return
     }
 
+    // Capture the OLD library BEFORE swapping — we need it to look up
+    // the role of each code that's about to become invalid, so the
+    // migration can find a sensible replacement in the new library.
+    const oldLibrary = { ...currentBlocks }
     setBlockLibrary({ ...template.blocks })
     setBrickLibrary({ ...template.bricks })
     updateUserSettings({
       preferences: { libraryTemplateKey: key },
     })
+
+    // Walk every saved project's wall + pier makeups and remap any
+    // codes that don't exist in the NEW library to a sensible
+    // replacement (matched by role). Fire-and-forget — onPicked
+    // navigates onward immediately so the user doesn't wait for the
+    // sweep. Any project the user opens AFTER the sweep finishes
+    // sees the migrated makeups; one opened mid-sweep falls back to
+    // healCode at render-time (still produces a correct render —
+    // the migration just makes editor + export reflect the new
+    // codes consistently).
+    void (async () => {
+      try {
+        const newLibrary = { ...template.blocks }
+        const newBrickLibrary = { ...template.bricks }
+        const settingsOpts = { settings: getUserSettings() }
+        const projects = await listProjects()
+        for (const project of projects) {
+          const nextMakeups = project.makeups
+            ? remapMakeupsForLibrary(
+                project.makeups,
+                oldLibrary,
+                newLibrary,
+                settingsOpts
+              )
+            : undefined
+          const nextPierMakeups = project.pierMakeups
+            ? remapPierMakeupsForLibrary(
+                project.pierMakeups,
+                oldLibrary,
+                newLibrary,
+                settingsOpts
+              )
+            : undefined
+          const nextBrickMakeups = project.brickMakeups
+            ? remapBrickMakeupsForLibrary(
+                project.brickMakeups,
+                newBrickLibrary
+              )
+            : undefined
+          // Only re-save when something actually changed — skip
+          // projects whose makeups don't reference any old-library
+          // codes (cheap to compute the migrated copies but avoids
+          // gratuitous storage writes).
+          const makeupsChanged =
+            nextMakeups &&
+            JSON.stringify(nextMakeups) !== JSON.stringify(project.makeups)
+          const piersChanged =
+            nextPierMakeups &&
+            JSON.stringify(nextPierMakeups) !==
+              JSON.stringify(project.pierMakeups)
+          const brickChanged =
+            nextBrickMakeups &&
+            JSON.stringify(nextBrickMakeups) !==
+              JSON.stringify(project.brickMakeups)
+          if (makeupsChanged || piersChanged || brickChanged) {
+            await saveProject({
+              ...project,
+              makeups: nextMakeups ?? project.makeups,
+              pierMakeups: nextPierMakeups ?? project.pierMakeups,
+              brickMakeups: nextBrickMakeups ?? project.brickMakeups,
+            })
+          }
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('Library-swap migration failed:', err)
+      }
+    })()
+
     onPicked(key)
   }
 

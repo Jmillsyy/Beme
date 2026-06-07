@@ -204,7 +204,6 @@ export interface DefaultsByRole {
   corner?: string
   half?: string
   base?: string
-  baseTile?: string
   top?: string
   pier?: string
   pierTie?: string

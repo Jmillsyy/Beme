@@ -1,7 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import type { BrickMakeup, BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
-import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
+import { useBrickLibrary } from '../data/brickLibrary'
 import { useUserSettings } from '../lib/userSettings'
 import { brickLintelWarnings } from '../lib/lintelCoverage'
 import LintelCoverageBand from './LintelCoverageBand'
@@ -59,8 +59,16 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
 
   const areaSqM = tally.totalAreaSqMm / 1_000_000
   const lengthM = tally.totalLinealMm / 1000
-  const typeBreakdown = Object.entries(tally.bricksByType).sort((a, b) => b[1] - a[1])
-  const hasBreakdown = typeBreakdown.length > 0
+  // Lineal-metre figures the export relies on. Surface them in the
+  // workspace tally too so the user sees the head / sill totals at
+  // a glance without generating the PDF first. Course substitute
+  // was removed in favour of the simpler "Total length" row above
+  // — the per-course-pitch math was confusing the user and the
+  // total wall lineal m gives them what they actually wanted.
+  const headLinealM =
+    Object.values(tally.headLinealMmByType).reduce((s, n) => s + n, 0) / 1000
+  const sillLinealM =
+    Object.values(tally.sillLinealMmByType).reduce((s, n) => s + n, 0) / 1000
 
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
@@ -74,7 +82,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
           </span>
           <h3 className="text-sm font-bold text-beme-300">Brick tally</h3>
           <span className="text-xs text-beme-300 tabular-nums truncate">
-            · {tally.brickCount.toLocaleString()} bricks
+            · {areaSqM.toFixed(2)} m²
           </span>
         </div>
         <span className="text-xs text-beme-300 tabular-nums flex-shrink-0">
@@ -97,9 +105,9 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
                 {lengthM.toFixed(2)} m
               </td>
             </tr>
-            <tr className="border-b border-ink-700/60">
-              <td className="px-3 py-1.5 text-ink-300">Brickwork area</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+            <tr className="border-b border-ink-700/60 bg-ink-700/30">
+              <td className="px-3 py-1.5 text-ink-200 font-medium">Brickwork area</td>
+              <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-300">
                 {areaSqM.toFixed(2)} m²
               </td>
             </tr>
@@ -109,34 +117,22 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
                 {tally.openingCount}
               </td>
             </tr>
-            <tr className={hasBreakdown ? 'border-b border-ink-700/60 bg-ink-700/30' : 'bg-ink-700/30'}>
-              <td className="px-3 py-1.5 text-ink-200 font-medium">
-                Bricks{' '}
-                {!hasBreakdown && (
-                  <span className="text-xs text-ink-400">
-                    ({settings.bricksPerSquareMetre}/m²)
-                  </span>
-                )}
-              </td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-300">
-                {tally.brickCount.toLocaleString()}
-              </td>
-            </tr>
-            {hasBreakdown &&
-              typeBreakdown.map(([code, count]) => {
-                const brick = BRICK_LIBRARY[code]
-                const label = brick?.name ?? code ?? 'Project default'
-                return (
-                  <tr key={`type-${code}`} className="border-b border-ink-700/60 last:border-b-0">
-                    <td className="px-3 py-1 pl-6 text-ink-300 text-xs">
-                      ↳ {label}
-                    </td>
-                    <td className="px-3 py-1 text-right tabular-nums text-ink-200 text-xs">
-                      {count.toLocaleString()}
-                    </td>
-                  </tr>
-                )
-              })}
+            {headLinealM > 0 && (
+              <tr className="border-b border-ink-700/60">
+                <td className="px-3 py-1.5 text-ink-300">Head courses</td>
+                <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+                  {headLinealM.toFixed(2)} m
+                </td>
+              </tr>
+            )}
+            {sillLinealM > 0 && (
+              <tr>
+                <td className="px-3 py-1.5 text-ink-300">Sill courses</td>
+                <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+                  {sillLinealM.toFixed(2)} m
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       )}

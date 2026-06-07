@@ -187,6 +187,47 @@ export interface WorkspaceView3DProps {
   pageWidthMm?: number
   pageHeightMm?: number
   pageScaleRatio?: number
+  /**
+   * The id of the currently-open project. Used to namespace the 3D
+   * snapshot queue in localStorage so captures from one project don't
+   * leak into another. When null/undefined the snapshots fall under a
+   * "no-project" bucket (legacy / draft mode).
+   */
+  projectId?: string | null
+  /**
+   * The currently-active trade ('block' vs 'brick'). The walls array
+   * passed in is already filtered to this trade by PdfWorkspace, but
+   * the 3D view uses this to tag captured snapshots and to namespace
+   * the snapshot queue per trade — so a block-mode capture doesn't
+   * appear in the brick-mode queue and vice versa. Undefined falls
+   * back to a shared bucket for legacy compatibility.
+   */
+  mode?: 'block' | 'brick'
+  /**
+   * Snapshot queue — lifted to PdfWorkspace so captures persist on
+   * the SavedProject and can't leak across projects. The 3D view
+   * becomes a controlled component for snapshots: it READS this
+   * list to render the right-side queue panel and CALLS
+   * onSnapshotsChange to push captures + deletions back up.
+   */
+  snapshots?: Array<{
+    id: string
+    dataUrl: string
+    createdAt: number
+    pageNumber?: number
+    trade?: 'block' | 'brick'
+    legend?: Array<{ code: string; label: string; color: string }>
+  }>
+  onSnapshotsChange?: (
+    next: Array<{
+      id: string
+      dataUrl: string
+      createdAt: number
+      pageNumber?: number
+      trade?: 'block' | 'brick'
+      legend?: Array<{ code: string; label: string; color: string }>
+    }>
+  ) => void
 }
 
 // ---------- Helpers ----------
@@ -450,16 +491,16 @@ interface WallSegmentWedge {
  * curve wedges) stand out from the regular body / corner / half blocks.
  *
  * Detection is two-pronged:
- *   1. ROLE — base-course, base-tile, lintel, top-course, curve-tight.
+ *   1. ROLE — base-course, lintel, top-course, curve-tight.
  *      Catches block codes the library has tagged for these roles.
  *   2. NAME pattern — anything containing Knockout / Cleanout / Lintel /
  *      Wedge / Bond Beam in its name. Catches blocks like 20.21 (Knockout
  *      Corner) whose role is just 'corner' but whose NAME identifies it
- *      as a specialty piece.
+ *      as a specialty piece, and the legacy 50.45 cleanout tile (no
+ *      special role since the base-tile role was removed).
  */
 const HIGHLIGHT_ROLES = new Set([
   'base-course',
-  'base-tile',
   'lintel',
   'top-course',
   'curve-tight',
@@ -780,36 +821,61 @@ function segmentsFromWallLayout(
       // the correct stretcher phase for this course.
       const bodyRegionStart = startS1 + MORTAR_M
       const bodyRegionEnd = endS0 - MORTAR_M
+
+      // Pass 1 — sum natural widths to know how much body region the
+      // unmodified layout would consume. The DIFFERENCE between
+      // bodyRegionEnd − bodyRegionStart and (sumNatural + mortar
+      // joints) is the gap that the per-course refit needs to absorb.
+      // On mixed-series corners (cube resized from wall-level 290 to
+      // per-course 190) this gap is typically ~100mm per resized end —
+      // up to ~200mm when both ends are non-owning corners.
+      let sumNatural = 0
+      let bodyCount = 0
+      for (let i = 1; i < courseBlocks.length - 1; i++) {
+        sumNatural += courseBlocks[i].block.widthMm / 1000
+        bodyCount++
+      }
+      const expectedSpan =
+        bodyCount > 0 ? sumNatural + (bodyCount - 1) * MORTAR_M : 0
+      const actualSpan = Math.max(0, bodyRegionEnd - bodyRegionStart)
+      const gap = actualSpan - expectedSpan
+
+      // Pass 2 — lay blocks contiguously. Each body block widens by
+      // `gap / bodyCount` so the gap is absorbed uniformly across the
+      // grid. Real masons cut blocks here too — but cutting many small
+      // pieces vs one big stretch reads as cleaner and keeps no single
+      // block ballooning to 500-600 mm.
+      //
+      // For negative gap (per-course region SMALLER than natural, e.g.
+      // shift INWARD without a cube resize), per-block delta is
+      // negative — each body block trims slightly. Same uniform-spread
+      // logic applies.
+      const perBlockDelta = bodyCount > 0 ? gap / bodyCount : 0
       let cursor = bodyRegionStart
       let lastPlacedIdx = -1
       for (let i = 1; i < courseBlocks.length - 1; i++) {
         const w = courseBlocks[i]
-        const naturalWidthM = (w.block.widthMm) / 1000
+        const naturalWidthM = w.block.widthMm / 1000
+        const adjustedWidthM = Math.max(0, naturalWidthM + perBlockDelta)
         const room = bodyRegionEnd - cursor
         if (room < 0.02) {
-          // No room left — collapse this block (will be skipped at emit).
           w.s0 = bodyRegionEnd
           w.s1 = bodyRegionEnd
           continue
         }
-        const w_M = Math.min(naturalWidthM, room)
+        const w_M = Math.min(adjustedWidthM, room)
         w.s0 = cursor
         w.s1 = cursor + w_M
         cursor += w_M + MORTAR_M
         lastPlacedIdx = i
       }
-      // Close any leftover gap between the last placed body block and
-      // the end block by extending the last body block. The gap arises
-      // when the per-course body region is LONGER than what the
-      // original body blocks (sized for the wall-level layout) consume
-      // — this happens on non-owning courses where the cube was
-      // resized from wall-level 290 down to per-course 190, leaving
-      // the body grid an extra ~100 mm of room. Without this fill the
-      // gap shows on every second course as a clean stripe between
-      // the body and the end block.
+      // Belt-and-braces: if rounding error leaves a sub-mortar gap
+      // between the last body and the end block, nudge the last
+      // block's s1 out to close it. Always a few mm, never the 100+mm
+      // balloon the previous rule produced.
       if (lastPlacedIdx >= 0) {
         const last = courseBlocks[lastPlacedIdx]
-        if (bodyRegionEnd - last.s1 > 0.02) {
+        if (bodyRegionEnd - last.s1 > 0.02 && bodyRegionEnd - last.s1 < 0.05) {
           last.s1 = bodyRegionEnd
         }
       }
@@ -2178,13 +2244,27 @@ function segmentsForCurvedWall(
       z: -(centreY_mm + radiusMm * Math.sin(theta)) / 1000,
     })
 
+    // Per-block radii — buildBox in segmentsForStraightWall sets
+    // box.thickness to the BLOCK's library depth (200 = 0.190, 300 =
+    // 0.290), so a mixed-series curved wall gets per-course outer
+    // faces stepped correctly. Without using box.thickness here every
+    // wedge sat at the wall-LEVEL outer/inner radii, so a 200-on-300
+    // curved wall rendered as if all courses were the 300-series
+    // depth — the upper 200 courses bulged past their true face. The
+    // wall centreline stays at R_mm; outer = R + boxT/2, inner = R −
+    // boxT/2. Each course centres on the same centreline as straight
+    // walls.
+    const boxT_mm = box.thickness * 1000
+    const wedgeOuterR_mm = R_mm + boxT_mm / 2
+    const wedgeInnerR_mm = R_mm - boxT_mm / 2
+
     const tA = isCW ? theta1 : theta0
     const tB = isCW ? theta0 : theta1
     wedges.push({
-      outerStart: toWorld(outerR_mm, tA),
-      outerEnd: toWorld(outerR_mm, tB),
-      innerEnd: toWorld(innerR_mm, tB),
-      innerStart: toWorld(innerR_mm, tA),
+      outerStart: toWorld(wedgeOuterR_mm, tA),
+      outerEnd: toWorld(wedgeOuterR_mm, tB),
+      innerEnd: toWorld(wedgeInnerR_mm, tB),
+      innerStart: toWorld(wedgeInnerR_mm, tA),
       y0: box.cy - box.heightM / 2,
       y1: box.cy + box.heightM / 2,
       color: box.color,
@@ -3271,35 +3351,29 @@ function Scene({
       for (const c of wr.courses) {
         allCodes.push(c.bodyCode, c.cornerCode, c.halfCode)
       }
-      // ALSO walk the makeup's bands (explicit coursePattern OR
-      // synthesised via convertMakeupToBands) so every band blockCode
-      // lands in allCodes — including height-makeup bands (20.71 /
-      // 20.140) and any specialty bands.
+      // Walk BOTH the user's explicit coursePattern (when set) AND the
+      // synthesised band list from convertMakeupToBands. The synthesised
+      // list adds height-makeup bands (20.71 / 20.140) based on the
+      // wall's height remainder — these are what planWallLayout's
+      // buildCourses actually renders, even if the user's coursePattern
+      // didn't list them explicitly. Walking both guarantees every
+      // RENDERED code lands in allCodes WITHOUT polluting the legend
+      // with library codes that aren't actually used on the page.
       if (wr.makeup) {
-        const bandList =
-          wr.makeup.coursePattern && wr.makeup.coursePattern.length > 0
-            ? wr.makeup.coursePattern
-            : convertMakeupToBands(wr.makeup, undefined).bands
-        for (const band of bandList) {
-          if (band.blockCode) allCodes.push(band.blockCode)
+        if (wr.makeup.coursePattern) {
+          for (const band of wr.makeup.coursePattern) {
+            if (band.blockCode) allCodes.push(band.blockCode)
+          }
         }
-      }
-    }
-    // Belt-and-braces: push every library block tagged as a height-
-    // makeup block, BUT ONLY when there's at least one block wall in
-    // the project. planWallLayout's buildCourses adds height-makeup
-    // courses based on the wall's height remainder regardless of
-    // whether the user's coursePattern declares them, so the actual
-    // rendered blocks can carry a code (e.g. 20.71 / 20.140) that
-    // doesn't appear in the wall's coursePattern. Gating on walls
-    // existing keeps the legend empty when the user deletes all walls
-    // — otherwise the library's height-makeup blocks would linger in
-    // the legend even with nothing on the canvas.
-    const hasBlockWalls = walls.some((w) => w.trade !== 'brick')
-    if (hasBlockWalls) {
-      for (const [code, block] of Object.entries(library)) {
-        if (block.roles?.includes('height-makeup')) {
-          allCodes.push(code)
+        try {
+          const synth = convertMakeupToBands(wr.makeup, undefined).bands
+          for (const band of synth) {
+            if (band.blockCode) allCodes.push(band.blockCode)
+          }
+        } catch {
+          // convertMakeupToBands can throw on degenerate makeups —
+          // skip silently; the per-course bodyCode loop above usually
+          // covers the codes anyway.
         }
       }
     }
@@ -5241,7 +5315,30 @@ function loadNavStyle(): NavStyle {
 }
 
 const PALETTE_STORAGE_KEY = 'beme:3d-palette'
-const SNAPSHOTS_STORAGE_KEY = 'beme:3d-export-snapshots'
+const SNAPSHOTS_STORAGE_KEY_BASE = 'beme:3d-export-snapshots'
+
+/**
+ * Storage key for 3D snapshots — namespaced by projectId so captures
+ * from one project don't leak into another. Snapshots for ALL pages of
+ * a project live under the same key; each snapshot carries its own
+ * `pageNumber` so the 3D view can filter to the active page.
+ *
+ * Legacy mode (no projectId): falls back to a global "no-project"
+ * bucket so draft / offline workflows keep working.
+ */
+function snapshotsStorageKey(
+  projectId: string | null | undefined,
+  mode: 'block' | 'brick' | undefined
+): string {
+  // Storage key is namespaced by BOTH project and trade — a block-mode
+  // capture and a brick-mode capture on the same project go into
+  // different buckets so the queue the user sees in 3D matches the
+  // walls currently rendered. Older clients (pre-trade-split) used
+  // just the projectId; the legacy 'no-trade' bucket is reserved for
+  // those keys so reads don't accidentally overwrite them.
+  const tradeSegment = mode ?? 'no-trade'
+  return `${SNAPSHOTS_STORAGE_KEY_BASE}:${projectId ?? 'no-project'}:${tradeSegment}`
+}
 
 /** Read the persisted block-colour palette from localStorage, falling
  *  back to 'concrete' (the original masonry-grey set). */
@@ -5261,7 +5358,7 @@ function loadPalette(): PaletteName {
 }
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
-  const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio } = props
+  const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio, projectId, mode, snapshots: snapshotsProp, onSnapshotsChange } = props
   // Theme drives the scene clearColor + the PDF threshold pass colour
   // pair. We only read the value (the 3D view doesn't change the theme).
   // The Header has the picker; this view just re-renders when it flips.
@@ -5316,51 +5413,39 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
       .sort((a, b) => a.label.localeCompare(b.label))
   }, [resolvedCodes, props.library])
 
-  // Snapshots: list of captured 3D viewport PNGs the user queued for
-  // the export. Persisted to localStorage as a JSON array so the
-  // queue survives a page reload. Each entry has its own id + ISO
-  // timestamp so the UI can render distinct delete buttons. The
-  // export pipeline reads the same key and embeds each snapshot as a
-  // separate page in the PDF.
+  // Snapshots: captured 3D viewport PNGs the user queued for the
+  // export. STATE IS OWNED BY PdfWorkspace and threaded in through
+  // props so the captures live on the SavedProject and can't bleed
+  // across projects. This component is purely a controlled view
+  // over that list now — it reads `snapshotsProp` to render the
+  // right-side queue panel and calls `onSnapshotsChange` to push
+  // captures + deletions up.
   type SnapshotLegendItem = { code: string; label: string; color: string }
   type Snapshot = {
     id: string
     dataUrl: string
     createdAt: number
-    /** The legend items visible in the 3D view at the moment of
-     *  capture — saved alongside the image so the export PDF can
-     *  render them as a key next to the screenshot. The set is
-     *  frozen at capture time so deleting wall types later doesn't
-     *  invalidate older snapshots. */
+    pageNumber?: number
+    trade?: 'block' | 'brick'
     legend?: SnapshotLegendItem[]
   }
-  const [snapshots, setSnapshots] = useState<Snapshot[]>(() => {
-    try {
-      const raw = window.localStorage.getItem(SNAPSHOTS_STORAGE_KEY)
-      if (!raw) return []
-      const parsed = JSON.parse(raw) as Snapshot[]
-      return Array.isArray(parsed)
-        ? parsed.filter(
-            (s) =>
-              s &&
-              typeof s.id === 'string' &&
-              typeof s.dataUrl === 'string' &&
-              s.dataUrl.startsWith('data:image/')
-          )
-        : []
-    } catch {
-      return []
-    }
-  })
+  const snapshots: Snapshot[] = snapshotsProp ?? []
   const persistSnapshots = (next: Snapshot[]) => {
-    setSnapshots(next)
-    try {
-      window.localStorage.setItem(SNAPSHOTS_STORAGE_KEY, JSON.stringify(next))
-    } catch {
-      // localStorage can throw in private-browsing / quota issues;
-      // queue stays in React state so the current session works.
-    }
+    onSnapshotsChange?.(next)
   }
+  // Visible queue = snapshots for the ACTIVE page + active trade
+  // only. Legacy snapshots without a pageNumber / trade show
+  // unconditionally (back-compat with earlier builds).
+  const visibleSnapshots = useMemo(
+    () =>
+      snapshots.filter((s) => {
+        const pageOk =
+          s.pageNumber === undefined || s.pageNumber === currentPageNumber
+        const tradeOk = s.trade === undefined || s.trade === mode
+        return pageOk && tradeOk
+      }),
+    [snapshots, currentPageNumber, mode]
+  )
   // Visual feedback for the Capture button: short-lived "Saved" state
   // that flips back automatically. Avoids a toast dep here.
   const [captureFlash, setCaptureFlash] = useState(false)
@@ -5372,6 +5457,11 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
       dataUrl,
       createdAt: Date.now(),
+      pageNumber: currentPageNumber,
+      // Trade tag drives per-trade filtering in the export panel +
+      // the in-view queue. Read off `mode`; left undefined for the
+      // legacy unscoped case so older saves keep showing up.
+      ...(mode ? { trade: mode } : {}),
       legend: legendItems.map(({ code, label, color }) => ({ code, label, color })),
     }
     persistSnapshots([...snapshots, snap])
@@ -5625,9 +5715,9 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
           stack directly under the legend. Both hide when empty. */}
       <div className="absolute top-12 right-3 pointer-events-auto flex flex-col gap-2 max-w-[260px]">
         {legendItems.length > 0 && <BlockLegend items={legendItems} />}
-        {snapshots.length > 0 && (
+        {visibleSnapshots.length > 0 && (
           <SnapshotsPanel
-            snapshots={snapshots}
+            snapshots={visibleSnapshots}
             onDelete={handleDeleteSnapshot}
           />
         )}

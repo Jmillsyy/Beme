@@ -258,22 +258,22 @@ export async function exportCombinedEstimate(
       padding: 40px;
     }
     .divider-page .divider-eyebrow {
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.12em;
       color: #6b7280;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .divider-page .divider-title {
-      font-size: 32px;
+      font-size: 26px;
       font-weight: 700;
       color: #1f2937;
-      margin: 0 0 16px 0;
+      margin: 0 0 12px 0;
     }
     .divider-page .divider-sub {
-      font-size: 13px;
-      line-height: 1.5;
+      font-size: 11px;
+      line-height: 1.45;
       color: #4b5563;
     }
   `

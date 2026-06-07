@@ -105,7 +105,11 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     name: 'Cleanout Tile',
     description: 'Cleanout tile, paired with every 20.45 in the base course.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
-    roles: ['base-tile'],
+    // Library-level pairing (pairedWith on the 20.45) handles the tally
+    // automatically — no role needed. Tagged `legacy` so it stays in the
+    // library for the pairing but doesn't show up as a typical
+    // user-pickable block on first glance.
+    roles: ['legacy'],
     pairedWith: '20.45',
   },
   '20.02': {
@@ -1087,21 +1091,6 @@ export function pickBaseCourse(opts: ResolveByRoleOptions = {}): Block | undefin
 }
 
 /**
- * The base course tile (paired with base-course blocks). Picks the first
- * block with the `base-tile` role; returns undefined if the library
- * doesn't ship a base tile (some regions don't use one).
- */
-export function pickBaseTileIn(
-  library: Record<BlockCode, Block>,
-  opts: ResolveByRoleOptions = {}
-): Block | undefined {
-  return resolveBlockByRole('base-tile', library, opts) ?? undefined
-}
-export function pickBaseTile(opts: ResolveByRoleOptions = {}): Block | undefined {
-  return pickBaseTileIn(BLOCK_LIBRARY, opts)
-}
-
-/**
  * The top-course / bond-beam block. Picks the first block with the
  * `top-course` role; returns undefined if the library has no dedicated
  * top course block (then the makeup's bodyBlockCode is used).
@@ -1178,7 +1167,6 @@ export interface HealthCheck {
     | 'corner'
     | 'end-termination'
     | 'base-course'
-    | 'base-tile'
     | 'top-course'
     | 'pier'
     | 'lintel'

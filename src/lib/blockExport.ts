@@ -35,7 +35,7 @@ import {
 import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
 import { rasterisePdfPage } from './pdfRaster'
 import { downloadPdfFromHtml } from './pdfExport'
-import { getMakeupHeightMm } from './makeups'
+import { getEffectiveWallThicknessMm, getMakeupHeightMm } from './makeups'
 import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
 import { getCurrentOrgId } from './organisations'
@@ -771,9 +771,7 @@ function buildWallSpecsPage(
   // straddle a page edge.
   const cards = used
     .map(({ makeup, walls: wallsOfMakeup, totalLenMm }) => {
-      const baseLabel = makeup.baseCourseTileCode
-        ? `${makeup.baseCourseBlockCode} + ${makeup.baseCourseTileCode}`
-        : makeup.baseCourseBlockCode
+      const baseLabel = makeup.baseCourseBlockCode
       // End-termination blocks: full goes at corners + odd courses of
       // stretcher bond at free ends, half alternates with full on even
       // courses. Older makeups (no halfBlockCode set) fall back to 20.03.
@@ -864,7 +862,6 @@ function buildWallSpecsPage(
             if (r.cornerBlockCode) parts.push(`corner ${r.cornerBlockCode}`)
             if (r.halfBlockCode) parts.push(`half ${r.halfBlockCode}`)
             if (r.baseCourseBlockCode) parts.push(`base ${r.baseCourseBlockCode}`)
-            if (r.baseCourseTileCode) parts.push(`tile ${r.baseCourseTileCode}`)
             if (r.heightMakeup71BlockCode) parts.push(`90mm makeup ${r.heightMakeup71BlockCode}`)
             if (r.cornerLeadInBlockCode) {
               const count = r.cornerLeadInCount ?? 2
@@ -1227,8 +1224,11 @@ export async function buildBlockEstimateHtml(
   const wallsById: Record<string, Wall> = {}
   for (const w of walls) {
     const makeup = makeupsById[w.makeupId]
-    const block = makeup ? BLOCK_LIBRARY[makeup.bodyBlockCode] : undefined
-    thicknessByWallId[w.id] = block?.dimensions.depthMm ?? 190
+    // Wall envelope = max block depth across the makeup, so corner
+    // blocks deeper than the body sit inside the wall extent.
+    thicknessByWallId[w.id] = makeup
+      ? getEffectiveWallThicknessMm(makeup, BLOCK_LIBRARY)
+      : 190
     wallsById[w.id] = w
   }
 
@@ -1376,10 +1376,9 @@ export async function buildBlockEstimateHtml(
       rows.push(`<div><span>Reference</span> ${escapeHtml(referenceText)}</div>`)
     if (projectDetails.clientName.trim())
       rows.push(`<div><span>Client</span> ${escapeHtml(projectDetails.clientName)}</div>`)
-    if (projectDetails.estimatorName.trim())
-      rows.push(
-        `<div><span>Estimator</span> ${escapeHtml(projectDetails.estimatorName)}</div>`
-      )
+    // Estimator name intentionally omitted — the deliverable doesn't
+    // need it called out per page; the running header / footer carries
+    // the company brand which is what the client cares about.
     if (projectDetails.date)
       rows.push(`<div><span>Date</span> ${formatDate(projectDetails.date)}</div>`)
     if (rows.length === 0) return ''
@@ -1739,20 +1738,6 @@ export async function buildBlockEstimateHtml(
           </figure>
           ${legendHtml}
         </div>
-        <footer class="view3d-meta">
-          <div class="view3d-meta-block">
-            <div class="view3d-meta-label">Reference</div>
-            <div class="view3d-meta-value">${referenceText || '—'}</div>
-          </div>
-          <div class="view3d-meta-block">
-            <div class="view3d-meta-label">Client</div>
-            <div class="view3d-meta-value">${escapeHtml(projectDetails.clientName || '—')}</div>
-          </div>
-          <div class="view3d-meta-block">
-            <div class="view3d-meta-label">Date</div>
-            <div class="view3d-meta-value">${escapeHtml(formattedDate || '—')}</div>
-          </div>
-        </footer>
       </section>
     `
           })
@@ -1782,13 +1767,13 @@ export async function buildBlockEstimateHtml(
 
   const bodyContent = `
   ${assumptionsPage}
+  ${/* 3D snapshots come FIRST after the assumptions pages so the
+       reader sees the project in 3D as soon as they've finished
+       the cover/assumptions reading. Wall-type specs and the 2D
+       plan overview follow before the data tables. */ ''}
+  ${view3dPages}
   ${wallSpecsPage}
   ${planOverviewPage}
-  ${/* 3D view snapshots flow directly after the 2D plan overview —
-       same visual subject (the walls), different view. Reader gets
-       the plan as drawn, then the project rendered in 3D, before
-       diving into the data tables. */ ''}
-  ${view3dPages}
   ${breakdownPages}
   ${/* Grand Total sits just before the disclaimer so the customer's
        last data-bearing page is the actual order quantities — the page
@@ -1810,9 +1795,18 @@ export async function buildBlockEstimateHtml(
     color: #1f2937;
     margin: 0;
     background: #fff;
+    /* Base font size used by every element that doesn't declare its
+       own — sets the visual density of the whole document. Was the
+       browser default (16px), reduced to 11px so the same content
+       fits in noticeably less vertical space. */
+    font-size: 11px;
+    line-height: 1.4;
   }
   .page {
-    padding: 40px 48px;
+    /* Tighter padding so each page can hold more content. Was
+       40 48px; reduced to keep enough breathing room around the
+       header / footer without wasting vertical space. */
+    padding: 24px 32px;
     page-break-after: always;
     min-height: 100vh;
   }
@@ -1822,42 +1816,42 @@ export async function buildBlockEstimateHtml(
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 2px solid #1f2937;
-    padding-bottom: 12px;
-    margin-bottom: 24px;
+    border-bottom: 1.5px solid #1f2937;
+    padding-bottom: 8px;
+    margin-bottom: 16px;
   }
   .brand-name {
     color: #C5530A;
     font-weight: 700;
-    font-size: 28px;
+    font-size: 22px;
     line-height: 1;
   }
   .brand-tag {
     color: #ED7D31;
     font-style: italic;
-    font-size: 11px;
+    font-size: 10px;
     margin-top: 2px;
   }
   .brand-address {
     color: #4B5563;
-    font-size: 11px;
-    margin-top: 4px;
+    font-size: 10px;
+    margin-top: 3px;
     line-height: 1.4;
   }
   .brand-logo {
-    max-height: 56px;
-    max-width: 180px;
+    max-height: 46px;
+    max-width: 150px;
     display: block;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
   /* Logo used as the primary brand mark — bigger than the inline logo
      because no text name accompanies it. Capped at 80 px tall / 280 px
      wide so it doesn't dominate the header on tall / wide images. */
   .brand-logo-primary {
-    max-height: 80px;
-    max-width: 280px;
+    max-height: 64px;
+    max-width: 230px;
     display: block;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
 
   /* "Built with Beme" credit footer that appears on every page.
@@ -1901,57 +1895,57 @@ export async function buildBlockEstimateHtml(
   }
   .title-block { text-align: right; }
   .title-main {
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 700;
   }
   .title-sub {
-    font-size: 12px;
+    font-size: 10px;
     color: #6b7280;
     margin-top: 2px;
   }
 
   .meta {
     display: flex;
-    gap: 24px;
-    font-size: 12px;
+    gap: 20px;
+    font-size: 10px;
     color: #4b5563;
-    margin-bottom: 20px;
+    margin-bottom: 14px;
   }
   .meta span {
     color: #9ca3af;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-size: 10px;
+    font-size: 9px;
     margin-right: 4px;
   }
 
   h2 {
-    font-size: 16px;
-    margin: 24px 0 8px;
+    font-size: 13px;
+    margin: 16px 0 6px;
     color: #1f2937;
   }
   h3.wall-type-name {
-    font-size: 13px;
-    margin: 20px 0 6px;
+    font-size: 11px;
+    margin: 14px 0 4px;
     color: #1f2937;
     font-weight: 700;
   }
   .wall-type-meta {
     color: #6b7280;
     font-weight: 400;
-    font-size: 11px;
+    font-size: 10px;
   }
   .page-intro {
-    font-size: 12px;
+    font-size: 10px;
     color: #6b7280;
-    margin: 0 0 12px;
+    margin: 0 0 8px;
   }
 
-  ol.assumptions { padding-left: 22px; margin: 0; }
+  ol.assumptions { padding-left: 20px; margin: 0; }
   ol.assumptions li {
-    padding: 3px 0;
-    font-size: 12px;
-    line-height: 1.45;
+    padding: 2px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
   }
   /* Keep the whole list together so it doesn't split across pages —
      reading half the assumptions on each of two sheets reads worse than
@@ -1976,6 +1970,16 @@ export async function buildBlockEstimateHtml(
   .plan-overview-page .page-intro {
     margin-bottom: 6px;
   }
+  /* Force the wall-layout page (stats strip + diagram + legend) to
+     print as a SINGLE page even when the diagram is at its biggest
+     setting. Without this, the legend underneath the diagram tends
+     to spill onto a second page in landscape A4. */
+  .plan-overview-page {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    page-break-after: always;
+    break-after: page;
+  }
   .plan-overview-stats {
     display: flex;
     gap: 10px;
@@ -1991,7 +1995,7 @@ export async function buildBlockEstimateHtml(
     background: #fafafa;
   }
   .plan-stat-value {
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 700;
     color: #1f2937;
     font-variant-numeric: tabular-nums;
@@ -2013,7 +2017,12 @@ export async function buildBlockEstimateHtml(
 
   .plan-overview-wrap {
     width: 100%;
-    height: 95mm;
+    /* Hero diagram height — tuned so the whole page (header + stats
+       + diagram + legend + page footer credit) fits on a single
+       landscape A4. Was briefly 140mm which spilled the legend onto
+       a second page. ~120mm leaves headroom for the legend strip
+       (~12mm) and the bottom credit (~12mm). */
+    height: 120mm;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2092,21 +2101,21 @@ export async function buildBlockEstimateHtml(
     flex-wrap: wrap;
   }
   .wall-spec-name {
-    font-size: 13px;
+    font-size: 11.5px;
     font-weight: 700;
     color: #1f2937;
     margin: 0;
   }
   .wall-spec-meta {
-    font-size: 11px;
+    font-size: 10px;
     color: #6b7280;
     font-variant-numeric: tabular-nums;
   }
   .spec-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 4px 18px;
-    font-size: 12px;
+    gap: 3px 16px;
+    font-size: 10.5px;
   }
   .spec-row {
     display: flex;
@@ -2139,10 +2148,10 @@ export async function buildBlockEstimateHtml(
     width: 100%;
     border-collapse: collapse;
     margin: 0;
-    font-size: 11px;
+    font-size: 10px;
   }
   .spec-sub-table td {
-    padding: 3px 6px;
+    padding: 2px 5px;
     border-bottom: 1px dotted #e5e7eb;
   }
   .spec-sub-table .range-courses {
@@ -2159,18 +2168,18 @@ export async function buildBlockEstimateHtml(
   table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 16px;
-    font-size: 13px;
+    margin-bottom: 12px;
+    font-size: 10.5px;
   }
   th, td {
-    padding: 8px 12px;
+    padding: 5px 9px;
     border-bottom: 1px solid #e5e7eb;
     text-align: left;
   }
   thead th {
     background: #f3f4f6;
     font-weight: 600;
-    font-size: 12px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.03em;
     color: #4b5563;
@@ -2191,6 +2200,8 @@ export async function buildBlockEstimateHtml(
     position: relative;
     page-break-inside: avoid;
     break-inside: avoid;
+    page-break-after: always;
+    break-after: page;
   }
   .view3d-accent {
     width: 32mm;
@@ -2212,14 +2223,14 @@ export async function buildBlockEstimateHtml(
   }
   .view3d-title {
     margin: 0 0 1.5mm 0;
-    font-size: 26px;
+    font-size: 20px;
     font-weight: 700;
     color: #0f172a;
     letter-spacing: -0.02em;
     line-height: 1.1;
   }
   .view3d-subtitle {
-    font-size: 11px;
+    font-size: 10px;
     color: #475569;
     font-weight: 400;
   }
@@ -2227,13 +2238,13 @@ export async function buildBlockEstimateHtml(
     display: flex;
     align-items: stretch;
     gap: 5mm;
-    height: 102mm; /* hard cap — the bottom credit was moved down to
-                      0.3cm so we have ~22mm more usable vertical
-                      than before. Header chrome is ~23mm (taller
-                      title), accent/spacing ~6mm, meta footer
-                      ~14mm, page-header ~30mm, bottom slack ~10mm
-                      → ~83mm chrome on a ~185mm print area, leaving
-                      ~102mm for the hero shot. */
+    height: 125mm; /* hard cap — was 140mm but pushed the title onto a
+                      separate page on some plans. Budget: page-header
+                      ~22mm + accent ~5mm + view3d-header (eyebrow +
+                      title + subtitle) ~28mm + body 125mm + bottom
+                      credit ~12mm = ~192mm, leaving ~5mm slack
+                      against the 197mm content area (landscape A4
+                      minus 24mm top/bottom padding). */
   }
   .view3d-figure {
     flex: 1 1 auto;
@@ -2246,7 +2257,7 @@ export async function buildBlockEstimateHtml(
   }
   .view3d-image {
     max-width: 100%;
-    max-height: 102mm;
+    max-height: 125mm;
     object-fit: contain;
     border-radius: 8px;
     box-shadow:
@@ -2342,20 +2353,20 @@ export async function buildBlockEstimateHtml(
 
   .disclaimer {
     background: #fef9c3;
-    border-left: 4px solid #ca8a04;
-    padding: 16px 20px;
+    border-left: 3px solid #ca8a04;
+    padding: 12px 16px;
     border-radius: 4px;
   }
   .disclaimer-title {
     color: #854d0e;
     font-weight: 700;
-    margin-bottom: 8px;
-    font-size: 14px;
+    margin-bottom: 6px;
+    font-size: 11.5px;
   }
   .disclaimer p {
-    margin: 0 0 8px 0;
-    font-size: 12px;
-    line-height: 1.5;
+    margin: 0 0 6px 0;
+    font-size: 10px;
+    line-height: 1.45;
     color: #422006;
   }
   .disclaimer p:last-child { margin-bottom: 0; }

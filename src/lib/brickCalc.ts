@@ -51,12 +51,35 @@ export interface BrickTally {
    */
   bricksByType: Record<string, number>
   /**
-   * Per-opening "trim" bricks the makeup nominates for sill and head
-   * courses. One entry per (brick type, role) so multiple makeups
-   * sharing a sill type aggregate cleanly. Empty when no openings or
-   * no makeup carries sillBrickCode / headBrickCode.
+   * Lineal METRES of head course needed across every opening,
+   * keyed by the head brick code each makeup nominates. Per
+   * opening: width + 2 × overhang. Doors AND windows both
+   * contribute a head course. Empty when no makeup carries a
+   * headBrickCode (or no openings exist).
+   *
+   * Reported in MILLIMETRES — the export divides by 1000 to
+   * render as "X.X m" for the deliverable.
    */
-  openingTrimByType: Record<string, number>
+  headLinealMmByType: Record<string, number>
+  /**
+   * Lineal MILLIMETRES of sill course under every window. Same
+   * (width + 2 × overhang) formula. Doors are EXCLUDED — they sit
+   * on the floor, no sill course beneath. Empty when no makeup
+   * carries a sillBrickCode (or all openings are doors).
+   */
+  sillLinealMmByType: Record<string, number>
+  /**
+   * Lineal MILLIMETRES of "course substitute" — courses on a wall
+   * whose courseRanges nominates a brick type different from the
+   * wall's main brickTypeCode. Sum across all such courses on
+   * walls of (course count for this range) × wall length, keyed
+   * by the substitute brick code. Lets the estimator order the
+   * substitute brick separately from the body brick.
+   *
+   * A wall with no courseRanges (or whose courseRanges all match
+   * the main brick) contributes 0.
+   */
+  courseSubstituteLinealMmByType: Record<string, number>
   /**
    * Per wall-type (per-makeup) breakdown so the estimator can see how
    * much brickwork sits in each wall type and price each one
@@ -411,6 +434,125 @@ export function calculateBrickTally(
     bricksPerWall.set(wall.id, wallTotal)
   }
 
+  // ── Lineal-metre buckets for head / sill / course substitute ─────
+  //
+  // The export prices these in lineal metres rather than brick
+  // counts, so the bricklayer can multiply by their preferred
+  // bricks/m rate for each lay-up. Three buckets:
+  //
+  //   - headLinealMmByType: sum of (openingWidth + 2 × overhang) per
+  //       opening on walls whose makeup names a headBrickCode.
+  //   - sillLinealMmByType: same, but WINDOWS only (doors sit on
+  //       the floor → no sill course).
+  //   - courseSubstituteLinealMmByType: walls with courseRanges that
+  //       name a brick type different from the wall's MAIN brick get
+  //       (wall length) × (number of courses in the substitute range)
+  //       added to the substitute brick's bucket.
+  //
+  // No body-brick adjustment any more — the export ditched body
+  // brick counts in favour of total wall area m², so there's nothing
+  // to subtract from.
+  const headLinealMmByType: Record<string, number> = {}
+  const sillLinealMmByType: Record<string, number> = {}
+  const courseSubstituteLinealMmByType: Record<string, number> = {}
+  const DEFAULT_TRIM_OVERHANG_MM = 100
+  const wallByIdLocal = new Map<string, Wall>()
+  for (const w of walls) wallByIdLocal.set(w.id, w)
+
+  // Head + sill — per opening.
+  for (const op of openings) {
+    if (!op.wallId) continue
+    const wall = wallByIdLocal.get(op.wallId)
+    if (!wall) continue
+    const makeup = wall.makeupId ? makeupsById.get(wall.makeupId) : undefined
+    if (!makeup) continue
+    const overhang = makeup.openingTrimOverhangMm ?? DEFAULT_TRIM_OVERHANG_MM
+    const trimSpanMm = op.widthMm + 2 * overhang
+
+    // Sill — windows only. An opening is a door (no sill course
+    // underneath) when EITHER its explicit kind is 'door' OR its
+    // sill height is 0 (door sits on the floor). The geometry
+    // fallback matters because openings created in block mode
+    // don't persist a kind field — they only carry sill / head
+    // measurements, and a door is geometrically a sill=0 opening.
+    const isDoor =
+      op.kind === 'door' || (op.sillHeightMm ?? 0) <= 0
+    if (makeup.sillBrickCode && !isDoor) {
+      const code = makeup.sillBrickCode
+      sillLinealMmByType[code] = (sillLinealMmByType[code] ?? 0) + trimSpanMm
+    }
+    // Head — doors AND windows.
+    if (makeup.headBrickCode) {
+      const code = makeup.headBrickCode
+      headLinealMmByType[code] = (headLinealMmByType[code] ?? 0) + trimSpanMm
+    }
+  }
+
+  // Course substitute — per wall.
+  // A "substitute" is a courseRanges entry whose brickTypeCode
+  // differs from the wall makeup's primary brickTypeCode. Sum the
+  // wall length once per course that the range covers.
+  for (const wall of walls) {
+    if (!wall.makeupId) continue
+    const makeup = makeupsById.get(wall.makeupId)
+    if (!makeup) continue
+    const ranges = makeup.courseRanges
+    if (!ranges || ranges.length === 0) continue
+    const mainBrickCode =
+      makeup.brickTypeCode ?? settings.brickTypeCode ?? ''
+    const wallLenMm = wallLengthMm(wall)
+    const wallHeightMm =
+      wall.heightMmOverride ??
+      makeup.heightMm ??
+      settings.defaultWallHeightMm
+    if (wallLenMm < 1 || wallHeightMm < 1) continue
+    // Walk up the wall course-by-course using EACH course's own
+    // brick height to advance the y-cursor. The previous version
+    // used the MAIN brick's height for every step, which inflated
+    // the substitute count when the substitute brick was taller
+    // (a double-height course is 162mm vs standard's 76mm — using
+    // standard's pitch would record ~2× as many substitute courses
+    // as actually fit in the wall).
+    const sortedRanges = [...ranges]
+      .filter(
+        (r) =>
+          Number.isFinite(r.fromCourse) &&
+          r.fromCourse >= 1 &&
+          !!r.brickTypeCode,
+      )
+      .sort((a, b) => a.fromCourse - b.fromCourse)
+    if (sortedRanges.length === 0) continue
+    const brickForCourse = (courseNum: number): string => {
+      let active = mainBrickCode
+      for (const r of sortedRanges) {
+        if (r.fromCourse > courseNum) break
+        active = r.brickTypeCode
+      }
+      return active
+    }
+    const fallbackBrick = mainBrickCode
+      ? BRICK_LIBRARY[mainBrickCode]
+      : undefined
+    const fallbackPitch =
+      (fallbackBrick?.heightMm ?? 76) + (fallbackBrick?.mortarJointMm ?? 10)
+    let y = 0
+    let courseNum = 0
+    while (y < wallHeightMm) {
+      courseNum++
+      const code = brickForCourse(courseNum)
+      const brick = code ? BRICK_LIBRARY[code] : undefined
+      const pitch = brick
+        ? brick.heightMm + (brick.mortarJointMm ?? 10)
+        : fallbackPitch
+      if (pitch <= 0) break // defensive — avoid infinite loop
+      if (code && code !== mainBrickCode) {
+        courseSubstituteLinealMmByType[code] =
+          (courseSubstituteLinealMmByType[code] ?? 0) + wallLenMm
+      }
+      y += pitch
+    }
+  }
+
   const bricksByType: Record<string, number> = {}
   let brickCount = 0
   for (const [key, n] of Object.entries(bricksByTypeRaw)) {
@@ -466,48 +608,6 @@ export function calculateBrickTally(
     bucket.brickCount += bricksPerWall.get(entry.wallId) ?? 0
   }
 
-  // ── Opening trim bricks (sill / head courses) ────────────────────
-  //
-  // When a brick makeup nominates a sillBrickCode or headBrickCode,
-  // every opening on walls of that type gets ONE COURSE of that brick
-  // type across its width — plus a small bearing overhang at each end
-  // so the count covers the full opening trim zone, not just the void.
-  //
-  // Bricks per opening = ceil((openingWidth + 2 * overhang) / brickModular)
-  // where brickModular = brickWidth + 10mm mortar. We use the trim
-  // brick's actual width when it's in the library, falling back to
-  // the wall's main brick width otherwise.
-  //
-  // Sill + head are independent — a makeup can nominate one or both.
-  // Undefined codes skip silently so existing projects without these
-  // fields are unaffected.
-  const openingTrimByType: Record<string, number> = {}
-  const DEFAULT_TRIM_OVERHANG_MM = 100
-  const wallByIdLocal = new Map<string, Wall>()
-  for (const w of walls) wallByIdLocal.set(w.id, w)
-  for (const op of openings) {
-    if (!op.wallId) continue
-    const wall = wallByIdLocal.get(op.wallId)
-    if (!wall) continue
-    const makeup = wall.makeupId ? makeupsById.get(wall.makeupId) : undefined
-    if (!makeup) continue
-    const overhang = makeup.openingTrimOverhangMm ?? DEFAULT_TRIM_OVERHANG_MM
-    const trimSpanMm = op.widthMm + 2 * overhang
-    const fallbackBrickWidthMm =
-      (makeup.brickTypeCode ? BRICK_LIBRARY[makeup.brickTypeCode]?.widthMm : undefined) ??
-      230
-    const addTrim = (code: string | undefined) => {
-      if (!code) return
-      const trimBrick = BRICK_LIBRARY[code]
-      const brickWidthMm = trimBrick?.widthMm ?? fallbackBrickWidthMm
-      const modularMm = brickWidthMm + 10
-      const count = Math.max(1, Math.ceil(trimSpanMm / modularMm))
-      openingTrimByType[code] = (openingTrimByType[code] ?? 0) + count
-    }
-    addTrim(makeup.sillBrickCode)
-    addTrim(makeup.headBrickCode)
-  }
-
   return {
     wallCount: walls.length,
     openingCount: openings.length,
@@ -515,7 +615,9 @@ export function calculateBrickTally(
     totalAreaSqMm,
     brickCount,
     bricksByType: finalBricksByType,
-    openingTrimByType,
+    headLinealMmByType,
+    sillLinealMmByType,
+    courseSubstituteLinealMmByType,
     byMakeup,
   }
 }

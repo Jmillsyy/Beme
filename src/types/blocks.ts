@@ -61,7 +61,6 @@ export type BlockRole =
   | 'fraction' // length makeup (3/4, 7/8, 1/2)
   | 'height-makeup' // for non-200mm-multiple wall heights
   | 'base-course' // bottom course of a wall
-  | 'base-tile' // tile paired with cleanout blocks
   | 'top-course' // top course (e.g. bond beam)
   | 'cap' // capping tile that sits on top of the wall (e.g. 40mm tile across the top)
   | 'corner' // at a wall corner

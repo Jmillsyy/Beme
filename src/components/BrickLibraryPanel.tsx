@@ -72,10 +72,17 @@ function BrickLibraryPanelImpl({
         </div>
       )}
       {hideChrome && !readOnly && (
-        <div className="flex justify-end mb-2">
+        // Prominent add row — mirrors BlockLibraryPanel and the
+        // supply-items editor so every material-library tab opens
+        // with the "+ Add" button in the same place.
+        <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-ink-700">
+          <div className="text-xs text-ink-400">
+            <span className="font-semibold text-ink-200">{bricks.length}</span>{' '}
+            brick type{bricks.length === 1 ? '' : 's'} in your library
+          </div>
           <button
             onClick={() => setEditingCode('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors"
+            className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-sm whitespace-nowrap"
           >
             + Add brick
           </button>

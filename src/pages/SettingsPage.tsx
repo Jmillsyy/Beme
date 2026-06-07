@@ -14,6 +14,8 @@ import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { getLibraryTemplate } from '../data/libraryTemplates'
+import { computeAutoWallLengthSnapMm } from '../lib/wallLengthSnap'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import RegionPicker from '../components/RegionPicker'
 import {
   updateOrganisationLogo,
@@ -907,7 +909,6 @@ const ROLE_DEFAULT_ROWS: ReadonlyArray<{
   { key: 'corner', label: 'Corner block', hint: 'Full block at wall corners and odd-course free ends.' },
   { key: 'half', label: 'Half block', hint: 'End termination on alternating stretcher-bond courses.' },
   { key: 'base', label: 'Base course block', hint: 'Course 1 of every wall — the cleanout / starter block.' },
-  { key: 'baseTile', label: 'Base course tile', hint: 'Tile paired with the base course (leave blank if your region does not use one).' },
   { key: 'top', label: 'Top-course / bond-beam block', hint: 'Top course when "bond beam on top" is enabled.' },
   { key: 'pier', label: 'Pier block', hint: 'Default column block when you place a tied or freestanding pier.' },
   { key: 'lintel', label: 'Lintel block', hint: 'Default lintel when no head-height range matches the opening.' },
@@ -989,18 +990,48 @@ function DefaultsTab({
               suffix="mm"
             />
           </Field>
-          <Field
-            label="Wall length snap"
-            hint="When drawing a wall, the live length rounds to the nearest multiple of this. 50 mm fits the AU SEQ library cleanly (full / 7-8 / 3-4 / half blocks). Use 100 mm to limit walls to full + half only; use 25 mm or 10 mm for libraries with finer block widths."
-          >
-            <NumberInput
-              value={defaults.wallLengthSnapMm ?? 50}
-              onChange={(v) => set({ wallLengthSnapMm: Math.max(1, v) })}
-              min={1}
-              step={5}
-              suffix="mm"
-            />
-          </Field>
+          {(() => {
+            // The auto value is derived from the active block library
+            // + the user's mortar joint default. When the user hasn't
+            // explicitly set a snap, this is the value drawing uses.
+            const autoSnap = computeAutoWallLengthSnapMm(
+              blockLibrary,
+              defaults.defaultMortarJointMm ?? DEFAULT_MORTAR_JOINT_MM
+            )
+            const isAuto = defaults.wallLengthSnapMm === undefined
+            return (
+              <Field
+                label="Wall length snap"
+                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library — currently ${autoSnap} mm. Set a custom value (e.g. 100 mm to limit to full + half only) to override.`}
+              >
+                <div className="flex items-center gap-2">
+                  <NumberInput
+                    value={defaults.wallLengthSnapMm ?? autoSnap}
+                    onChange={(v) =>
+                      set({ wallLengthSnapMm: Math.max(1, v) })
+                    }
+                    min={1}
+                    step={5}
+                    suffix="mm"
+                  />
+                  {isAuto ? (
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-beme-500/20 text-beme-300 font-medium border border-beme-500/30">
+                      Auto
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => set({ wallLengthSnapMm: undefined })}
+                      className="text-[11px] px-2 py-0.5 rounded border border-ink-600 text-ink-300 hover:bg-ink-700 transition-colors"
+                      title={`Reset to auto-derived (${autoSnap} mm)`}
+                    >
+                      Use auto
+                    </button>
+                  )}
+                </div>
+              </Field>
+            )
+          })()}
           <Field
             label="Default brick type"
             hint="Used when starting a new brick estimate."

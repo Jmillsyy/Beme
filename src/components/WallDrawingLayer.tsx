@@ -7,6 +7,11 @@ import { formatLengthShort } from '../lib/units'
 import { useUserSettings } from '../lib/userSettings'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { hexToRgba } from '../lib/wallTypeColors'
+import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import {
+  computeAutoWallLengthSnapMm,
+  WALL_LENGTH_SNAP_FALLBACK_MM,
+} from '../lib/wallLengthSnap'
 
 interface Point {
   x: number
@@ -373,13 +378,16 @@ function snapRulerToAxis(
  * the rare measurement that genuinely needs an off-grid value.
  */
 /**
- * Fallback wall-length snap, used when the user's settings haven't been
- * loaded yet or don't carry a `wallLengthSnapMm` value (older accounts).
- * The active value comes from `userSettings.defaults.wallLengthSnapMm`
- * and defaults to 50 mm — which matches the AU SEQ block library's
- * modular GCD across full / 7-8 / 3-4 / half blocks.
+ * Hardcoded last-resort wall-length snap. Used only when both the user
+ * settings AND the auto-derivation from the active block library fail
+ * (e.g. an empty library). The active value comes from
+ * `userSettings.defaults.wallLengthSnapMm` first, then falls back to
+ * the derived value from {@link computeAutoWallLengthSnapMm}.
+ *
+ * 50 mm matches the AU SEQ block library's modular GCD across full /
+ * 7-8 / 3-4 / half blocks and is the historical default.
  */
-const WALL_LENGTH_SNAP_MM = 50
+const WALL_LENGTH_SNAP_MM = WALL_LENGTH_SNAP_FALLBACK_MM
 
 /**
  * Openings (doors / windows / brickwork voids) use a coarser 10 mm grid
@@ -2186,10 +2194,26 @@ function WallDrawingLayerInner({
   function formatMm(mm: number) {
     return formatLengthShort(mm, __userSettings.preferences.units)
   }
-  // Wall-length snap, configurable per-account. Falls back to the
-  // 50 mm SEQ default when the field is absent (older settings blobs).
-  const wallSnapMm =
-    __userSettings.defaults.wallLengthSnapMm ?? WALL_LENGTH_SNAP_MM
+  // Wall-length snap, configurable per-account. When the user hasn't
+  // explicitly set a value (older settings blobs / fresh accounts),
+  // derive a sensible default from the active block library + mortar
+  // so libraries with non-standard widths (e.g. 250 mm units) get a
+  // grid that actually lands on block multiples. The hardcoded
+  // WALL_LENGTH_SNAP_MM is only used if even the derivation fails
+  // (e.g. empty library on first boot).
+  const wallSnapMm = useMemo(() => {
+    const explicit = __userSettings.defaults.wallLengthSnapMm
+    if (typeof explicit === 'number' && explicit > 0) return explicit
+    return (
+      computeAutoWallLengthSnapMm(
+        BLOCK_LIBRARY,
+        __userSettings.defaults.defaultMortarJointMm ?? DEFAULT_MORTAR_JOINT_MM
+      ) || WALL_LENGTH_SNAP_MM
+    )
+  }, [
+    __userSettings.defaults.wallLengthSnapMm,
+    __userSettings.defaults.defaultMortarJointMm,
+  ])
 
   function effectiveEndpoint(wall: Wall, which: 'start' | 'end'): Point {
     if (dragPreview?.wallId === wall.id && dragPreview.which === which) {
@@ -2646,6 +2670,17 @@ function WallDrawingLayerInner({
           const isSelected =
             (selectedOpeningIds && selectedOpeningIds.has(opening.id)) ||
             opening.id === selectedOpeningId
+          // Render the opening at the host wall's THICKNESS, not a
+          // fixed 8px stroke. Matches what the user sees on a real
+          // architectural drawing — the opening fills the full width
+          // of the wall band, regardless of whether the wall is
+          // block (190mm) or brick (230mm). Clamped to a 4px minimum
+          // so very-low-zoom views still have a hittable target.
+          const wallThicknessMm = wallThicknessByWallId[wall.id] ?? 190
+          const openingStrokePx = Math.max(
+            4,
+            wallThicknessMm * pxPerMmAtCurrentZoom
+          )
 
           return (
             <Group
@@ -2677,26 +2712,74 @@ function WallDrawingLayerInner({
                 e.evt.stopPropagation()
               }}
             >
-              {/* Background "gap" rectangle covering the wall segment */}
+              {/* Background "gap" rectangle covering the wall segment.
+                  StrokeWidth scales with the wall's real thickness so
+                  the opening visually fills the full width of the wall
+                  band (block 190mm and brick 230mm both look correct
+                  at any zoom). */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
                 stroke={isSelected ? '#1e40af' : '#FEF3C7'}
-                strokeWidth={isSelected ? 8 : 8}
-                hitStrokeWidth={14}
+                strokeWidth={openingStrokePx}
+                hitStrokeWidth={Math.max(openingStrokePx + 6, 14)}
               />
-              {/* Outline */}
+              {/* Outline — also scales with the wall thickness so the
+                  dashed border traces the actual edges of the opening
+                  band, not a fixed 8px strip. */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
                 stroke={isSelected ? '#1e40af' : '#D97706'}
-                strokeWidth={2}
+                strokeWidth={openingStrokePx}
                 dash={[8, 4]}
                 listening={false}
+                fillEnabled={false}
+                // Konva tip: a dashed Line with strokeWidth equal to
+                // the band thickness gives the "two parallel dashed
+                // edges along the band" look without needing a
+                // separate Rect. The center of the line sits on the
+                // wall centerline, so the dashes appear on both faces.
+                opacity={0.0}
               />
+              {/* Faces — explicit parallel dashed lines along the
+                  two long edges of the opening band so the user
+                  reads the gap as a "doorway cut" rather than a
+                  shaded patch. */}
+              {(() => {
+                const dx = end.x - start.x
+                const dy = end.y - start.y
+                const len = Math.sqrt(dx * dx + dy * dy)
+                if (len < 0.5) return null
+                const nx = -dy / len
+                const ny = dx / len
+                const half = openingStrokePx / 2
+                const fStartA = { x: start.x + nx * half, y: start.y + ny * half }
+                const fEndA = { x: end.x + nx * half, y: end.y + ny * half }
+                const fStartB = { x: start.x - nx * half, y: start.y - ny * half }
+                const fEndB = { x: end.x - nx * half, y: end.y - ny * half }
+                return (
+                  <>
+                    <Line
+                      points={[fStartA.x, fStartA.y, fEndA.x, fEndA.y]}
+                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      strokeWidth={2}
+                      dash={[8, 4]}
+                      listening={false}
+                    />
+                    <Line
+                      points={[fStartB.x, fStartB.y, fEndB.x, fEndB.y]}
+                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      strokeWidth={2}
+                      dash={[8, 4]}
+                      listening={false}
+                    />
+                  </>
+                )
+              })()}
               <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
               <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
               <MeasurementChip
                 x={midX}
-                y={midY + 8}
+                y={midY + openingStrokePx / 2 + 6}
                 text={`${Math.round(opening.widthMm)} × ${Math.round(opening.heightMm)}`}
                 bg={isSelected ? 'rgba(30, 64, 175, 0.95)' : 'rgba(146, 64, 14, 0.95)'}
                 align="center"

@@ -98,9 +98,6 @@ export interface CourseSeriesRange {
   halfBlockCode?: BlockCode
   /** Base-course cleanout block. Only consulted when the range covers course 1. */
   baseCourseBlockCode?: BlockCode
-  /** Tile paired with the base-course cleanout. Only consulted when the range
-   *  covers course 1. */
-  baseCourseTileCode?: BlockCode
   /** 90 mm half-height makeup block (e.g. 30.71). Used when the height-makeup
    *  row for this wall falls inside this range. Falls back to 20.71. */
   heightMakeup71BlockCode?: BlockCode
@@ -171,8 +168,6 @@ export interface WallMakeup {
   // ---- Course composition ----
   /** Block used for the base (bottom) course. Default: 20.45 cleanout. */
   baseCourseBlockCode: BlockCode
-  /** Tile paired with every base course block. Default: 50.45. Omit if none. */
-  baseCourseTileCode?: BlockCode
   /** Default body block for the middle of the wall. Default: 20.48 H block. */
   bodyBlockCode: BlockCode
   /** Block used for the top course. 20.20 if a bond beam is required, otherwise 20.48. */

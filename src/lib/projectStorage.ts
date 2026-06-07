@@ -335,6 +335,34 @@ export interface SavedProject {
   activeBrickMakeupId?: string
   /** Brick export inclusion tickboxes. (Block has its own `blockExportInclusions`.) */
   exportInclusions?: BrickExportInclusions
+  /**
+   * 3D viewport snapshots the user has captured via the ▣ Capture
+   * button. Stored ON the project (rather than in localStorage / a
+   * window-level mirror) so captures are inseparable from their
+   * project: opening a different project can never surface another
+   * project's captures.
+   *
+   * Each entry carries the trade it was captured in so per-trade
+   * exports can filter accordingly, plus the PDF page number it was
+   * taken on so the 3D view's queue panel only shows captures
+   * relevant to the active page.
+   *
+   * Optional + defaulted-empty so projects saved before this field
+   * existed load cleanly.
+   */
+  view3dSnapshots?: Array<{
+    id: string
+    dataUrl: string
+    createdAt: number
+    /** PDF page the capture was taken from (1-indexed). */
+    pageNumber?: number
+    /** Trade the workspace was set to when the capture was taken. */
+    trade?: 'block' | 'brick'
+    /** Frozen legend at capture time so the export can render a
+     *  matching key beside the image even if the wall types have
+     *  changed since. */
+    legend?: Array<{ code: string; label: string; color: string }>
+  }>
 }
 
 export type SavedProjectSummary = Omit<SavedProject, 'pdfBlob'>

@@ -14,7 +14,6 @@ import type { BlockCode } from '../types/blocks'
 import {
   BLOCK_LIBRARY,
   pickBaseCourse,
-  pickBaseTile,
   pickBodyDefault,
   pickCornerBlock,
   pickCurveWedge,
@@ -39,6 +38,19 @@ import { bandColor } from '../lib/blockColors'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
+  /**
+   * Full project-wide wall makeups list — used SOLELY to compute the
+   * palette slot for each type's colour swatch, so the same wall
+   * type lights up the same colour regardless of which area filter
+   * is active. Without this, switching from "All areas" to a
+   * specific floor would reshuffle the filtered list and repaint
+   * existing walls with different colours.
+   *
+   * Defaults to {@link makeups} when not provided — keeps the
+   * single-area case working without callers having to pass the
+   * list twice.
+   */
+  paletteMakeups?: WallMakeup[]
   activeMakeupId: string
   wallCountsByMakeupId: Record<string, number>
   onSetActive: (id: string) => void
@@ -49,6 +61,12 @@ interface WallTypesPanelProps {
   /** Pier types live in this panel as a separate card group below wall
    *  types. Click a card to activate the type used when placing piers. */
   pierMakeups: PierMakeup[]
+  /**
+   * Full project-wide pier makeups list — see {@link paletteMakeups}.
+   * Used for the same reason: pier swatch colours should be stable
+   * across area filters.
+   */
+  palettePierMakeups?: PierMakeup[]
   pierCountsByMakeupId: Record<string, number>
   activePierMakeupId: string | null
   onSetActivePier: (id: string) => void
@@ -100,6 +118,7 @@ function blockLabel(code: BlockCode): string {
 
 export default function WallTypesPanel({
   makeups,
+  paletteMakeups,
   activeMakeupId,
   wallCountsByMakeupId,
   onSetActive,
@@ -107,6 +126,7 @@ export default function WallTypesPanel({
   onUpdateMakeup,
   onDeleteMakeup,
   pierMakeups,
+  palettePierMakeups,
   pierCountsByMakeupId,
   activePierMakeupId,
   onSetActivePier,
@@ -120,6 +140,11 @@ export default function WallTypesPanel({
   onToggleCurvedWall,
   activeTypeKind = 'wall',
 }: WallTypesPanelProps) {
+  // The colour palette is indexed by a type's position in the FULL
+  // project list — falls back to the filtered list when no palette
+  // arg was passed (single-area or legacy callers).
+  const colorMakeups = paletteMakeups ?? makeups
+  const colorPierMakeups = palettePierMakeups ?? pierMakeups
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
   /** When the pier editor swaps over to the wall modal via the Curved
@@ -229,8 +254,8 @@ export default function WallTypesPanel({
                     style={{
                       backgroundColor: masonryTypeColor(
                         m.id,
-                        makeups,
-                        pierMakeups
+                        colorMakeups,
+                        colorPierMakeups
                       ),
                     }}
                     title="Wall colour shown on the plan"
@@ -363,8 +388,8 @@ export default function WallTypesPanel({
                       style={{
                         backgroundColor: masonryTypeColor(
                           pm.id,
-                          makeups,
-                          pierMakeups
+                          colorMakeups,
+                          colorPierMakeups
                         ),
                       }}
                       title={`${
@@ -668,15 +693,13 @@ function WallTypeEditorModal({
     initialKind ?? 'wall'
   )
   const { library } = useBlockLibrary()
-  // Selectable blocks for the wall composition dropdowns. Filter out
-  // anything tagged 'base-tile' — tiles are paired with their cleanout
-  // block via Block.pairedWith / pairedPer, not picked manually for
-  // wall composition. Region-agnostic (any region's tile block gets
-  // tagged 'base-tile' and is excluded from these dropdowns).
+  // Selectable blocks for the wall composition dropdowns. Filters out
+  // 'legacy'-tagged blocks (e.g. paired tiles like 50.45 that are
+  // auto-tallied via Block.pairedWith and not user-picked).
   const selectableBlocks = useMemo<BlockCode[]>(
     () =>
       Object.values(library)
-        .filter((b) => !b.roles.includes('base-tile'))
+        .filter((b) => !b.roles.includes('legacy'))
         .map((b) => b.code)
         .sort(),
     [library]
@@ -717,13 +740,6 @@ function WallTypeEditorModal({
   const bodyFallback = pickBodyDefault()?.code ?? '20.48'
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
     existing?.baseCourseBlockCode ?? pickBaseCourse()?.code ?? bodyFallback
-  )
-  // Tile code is no longer user-editable on the makeup (pairing lives
-  // on the block in the library now), but we still round-trip it
-  // through save so older makeups keep their explicit tile code if
-  // the user hasn't migrated to library-level pairing yet.
-  const [baseCourseTileCode] = useState<BlockCode | ''>(
-    existing?.baseCourseTileCode ?? pickBaseTile()?.code ?? ''
   )
   const [bodyBlockCode, setBodyBlockCode] = useState<BlockCode>(
     existing?.bodyBlockCode ?? bodyFallback
@@ -800,7 +816,6 @@ function WallTypeEditorModal({
       bondType,
       heightMm,
       baseCourseBlockCode,
-      baseCourseTileCode: baseCourseTileCode || undefined,
       bodyBlockCode,
       topCourseBlockCode,
       cornerBlockCode,
@@ -928,7 +943,6 @@ function WallTypeEditorModal({
       bondType,
       heightMm,
       baseCourseBlockCode,
-      baseCourseTileCode: baseCourseTileCode || undefined,
       bodyBlockCode: resolvedBodyForPreview,
       topCourseBlockCode,
       cornerBlockCode,
@@ -944,7 +958,6 @@ function WallTypeEditorModal({
     bondType,
     heightMm,
     baseCourseBlockCode,
-    baseCourseTileCode,
     bodyBlockCode,
     topCourseBlockCode,
     cornerBlockCode,
@@ -974,7 +987,6 @@ function WallTypeEditorModal({
       bondType,
       heightMm,
       baseCourseBlockCode,
-      baseCourseTileCode: baseCourseTileCode || undefined,
       bodyBlockCode: resolvedBody,
       topCourseBlockCode,
       cornerBlockCode,
@@ -991,7 +1003,6 @@ function WallTypeEditorModal({
     bondType,
     heightMm,
     baseCourseBlockCode,
-    baseCourseTileCode,
     bodyBlockCode,
     topCourseBlockCode,
     cornerBlockCode,
@@ -1131,7 +1142,6 @@ function WallTypeEditorModal({
         r.cornerBlockCode ||
         r.halfBlockCode ||
         r.baseCourseBlockCode ||
-        r.baseCourseTileCode ||
         r.heightMakeup71BlockCode ||
         r.cornerLeadInBlockCode
       return !!anyOverride
@@ -1164,7 +1174,6 @@ function WallTypeEditorModal({
       bondType,
       heightMm: finalHeightMm,
       baseCourseBlockCode,
-      baseCourseTileCode: baseCourseTileCode || undefined,
       bodyBlockCode: resolvedBodyBlockCode,
       topCourseBlockCode,
       cornerBlockCode,
@@ -2733,12 +2742,6 @@ function RangeRow({ range, selectableBlocks, onChange, onRemove }: RangeRowProps
           onChange={(v) => onChange({ baseCourseBlockCode: v })}
         />
         <RangeFieldPicker
-          label="Base tile (paired)"
-          value={range.baseCourseTileCode}
-          options={['50.45'] as BlockCode[]}
-          onChange={(v) => onChange({ baseCourseTileCode: v })}
-        />
-        <RangeFieldPicker
           label="90 mm height makeup"
           value={range.heightMakeup71BlockCode}
           options={selectableBlocks}
@@ -2833,11 +2836,12 @@ function PierTypeEditorModal({
 
   // Block options for the pier-pattern dropdowns. Pier-tagged blocks
   // appear first (so US users see CMU8 at the top, AU sees 40.925),
-  // followed by corner-tagged, then the rest alphabetical. Base tiles
-  // are filtered out (they're never used in piers).
+  // followed by corner-tagged, then the rest alphabetical. Legacy
+  // blocks (e.g. paired tiles like 50.45 that are auto-tallied via
+  // Block.pairedWith) are filtered out — they aren't user-picked.
   const blockOptions = useMemo<BlockCode[]>(() => {
     const all = Object.values(library).filter(
-      (b) => !b.roles.includes('base-tile')
+      (b) => !b.roles.includes('legacy')
     )
     const pierTagged = all
       .filter((b) => b.roles.includes('pier'))
