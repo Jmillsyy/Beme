@@ -3926,6 +3926,12 @@ function Scene({
         // covers it explicitly. Same algorithm as
         // resolveBrickCourseSegments in brickCalc.ts so the 3D render
         // matches the tally bands exactly.
+        // BELOW-COURSE semantics: each range's `fromCourse` value
+        // (kept as the field name for back-compat with persistence)
+        // means "this brick applies to courses BELOW this number".
+        // Ranges sorted ascending; for each course, the FIRST range
+        // where courseNum < range.fromCourse wins. Courses above
+        // every range fall through to the makeup's default brick.
         const sortedRanges = [
           ...(brickMakeup?.courseRanges ?? []).filter(
             (r) =>
@@ -3935,12 +3941,10 @@ function Scene({
           ),
         ].sort((a, b) => a.fromCourse - b.fromCourse)
         const brickTypeForCourse = (courseNum: number): string => {
-          let active = brickMakeup?.brickTypeCode ?? ''
           for (const r of sortedRanges) {
-            if (r.fromCourse > courseNum) break
-            active = r.brickTypeCode
+            if (courseNum < r.fromCourse) return r.brickTypeCode
           }
-          return active
+          return brickMakeup?.brickTypeCode ?? ''
         }
         // Synthetic library + colour entries keyed per brick type so
         // segmentsForStraightWall reads the per-course brick width /
@@ -4411,17 +4415,53 @@ function Scene({
                 (coverCourse?.bodyCode &&
                   brickColorMap.get(coverCourse.bodyCode)) ??
                 DEFAULT_WALL_COLOR
+              // Other openings on the SAME wall, used to trim the
+              // cover so it can't extend INTO an adjacent opening.
+              // When two openings butt up against each other (shared
+              // jamb), the un-trimmed cover lands inside the next
+              // opening's void and renders as a body-colour column.
+              // Clip each cover to the nearest neighbouring opening
+              // edge to avoid that. When the cover collapses to zero
+              // we emit a thin BLACK divider bar at the shared jamb
+              // position so the reader can still see that there are
+              // two separate openings.
+              const siblingOps = brickOpenings.filter(
+                (o) => o.wallId === wall.id && o !== op,
+              )
+              // Detect a sibling touching on the LEFT or RIGHT
+              // (shared jamb). Used to emit the divider bar below.
+              const SHARED_JAMB_TOUCH_MM = 1 // tolerance for "touch"
+              const touchesLeft = siblingOps.some((so) => {
+                const soEnd = (so.startAlongWallMm ?? 0) + so.widthMm
+                return Math.abs(soEnd - opStartMmJ) < SHARED_JAMB_TOUCH_MM
+              })
+              const touchesRight = siblingOps.some(
+                (so) =>
+                  Math.abs((so.startAlongWallMm ?? 0) - opEndMmJ) <
+                  SHARED_JAMB_TOUCH_MM,
+              )
               // ── Left jamb cover ──
-              // From (opStart − brickWidth − 6 mm) to opStart.
-              // Covers the body/jamb joint, the jamb brick itself,
-              // and the jamb/opening edge gap.
+              // From (opStart − brickWidth − 6 mm) to opStart, clipped
+              // by the nearest sibling opening to the LEFT (if any).
               {
-                const leftStartMm = Math.max(
+                let leftStartMm = Math.max(
                   0,
                   opStartMmJ - brickWidthMm - COVER_EDGE_INSET_MM,
                 )
                 const leftEndMm = opStartMmJ
-                if (leftEndMm > leftStartMm) {
+                // Trim against any sibling opening whose RIGHT edge
+                // sits inside (leftStartMm, leftEndMm).
+                for (const so of siblingOps) {
+                  const soStart = so.startAlongWallMm ?? 0
+                  const soEnd = soStart + so.widthMm
+                  if (soEnd > leftStartMm && soEnd <= leftEndMm) {
+                    leftStartMm = Math.max(leftStartMm, soEnd)
+                  } else if (soStart < leftEndMm && soEnd >= leftEndMm) {
+                    // sibling fully covers cover — skip entirely
+                    leftStartMm = leftEndMm
+                  }
+                }
+                if (leftEndMm > leftStartMm + 0.5) {
                   const centreM = (leftStartMm + leftEndMm) / 2 / 1000
                   const lenM = (leftEndMm - leftStartMm) / 1000
                   out.push({
@@ -4438,14 +4478,26 @@ function Scene({
                 }
               }
               // ── Right jamb cover ──
-              // From opEnd to (opEnd + brickWidth + 6 mm).
+              // From opEnd to (opEnd + brickWidth + 6 mm), clipped by
+              // the nearest sibling opening to the RIGHT (if any).
               {
                 const rightStartMm = opEndMmJ
-                const rightEndMm = Math.min(
+                let rightEndMm = Math.min(
                   wallLenMJ * 1000,
                   opEndMmJ + brickWidthMm + COVER_EDGE_INSET_MM,
                 )
-                if (rightEndMm > rightStartMm) {
+                // Trim against any sibling opening whose LEFT edge
+                // sits inside (rightStartMm, rightEndMm).
+                for (const so of siblingOps) {
+                  const soStart = so.startAlongWallMm ?? 0
+                  const soEnd = soStart + so.widthMm
+                  if (soStart >= rightStartMm && soStart < rightEndMm) {
+                    rightEndMm = Math.min(rightEndMm, soStart)
+                  } else if (soStart <= rightStartMm && soEnd > rightStartMm) {
+                    rightEndMm = rightStartMm
+                  }
+                }
+                if (rightEndMm > rightStartMm + 0.5) {
                   const centreM = (rightStartMm + rightEndMm) / 2 / 1000
                   const lenM = (rightEndMm - rightStartMm) / 1000
                   out.push({
@@ -4461,6 +4513,32 @@ function Scene({
                   })
                 }
               }
+              // ── Shared-jamb divider bar ───────────────────────
+              // When this opening touches another on its RIGHT, emit
+              // a thin black mullion at the shared jamb so the reader
+              // can tell two openings apart even though there's no
+              // structural body between them. Only the LEFT-side of
+              // the pair emits (the RIGHT-side would otherwise
+              // emit a duplicate at the same position).
+              if (touchesRight) {
+                const DIVIDER_WIDTH_MM = 30
+                const dividerCentreMm = opEndMmJ
+                const centreM = dividerCentreMm / 1000
+                out.push({
+                  cx: sxJ + dirXJ * centreM,
+                  cy: (opSillM + opHeadM) / 2,
+                  cz: szJ + dirZJ * centreM,
+                  length: DIVIDER_WIDTH_MM / 1000,
+                  heightM,
+                  // Stand slightly proud of the wall plane so the
+                  // bar is visible through the opening void.
+                  thickness: thicknessMm / 1000 + 0.01,
+                  yRotation: yRotJ,
+                  color: '#0f172a',
+                  highlight: false,
+                })
+              }
+              void touchesLeft
             }
           }
         }
@@ -4494,13 +4572,23 @@ function Scene({
             const yRotT = Math.atan2(-dzT, dxT)
             const TRIM_MORTAR_MM = 10
             for (const z of trimYZones) {
-              // Trim brick thickness = its actual depth into the wall
-              // (from orientedFace). A header brick is longer than a
-              // standard wall is thick, so it extends past the wall
-              // face on BOTH sides equally. Centred on the wall axis
-              // by buildBox geometry below, so left-of-axis = right-
-              // of-axis automatically.
-              const trimThicknessM = z.brickFaceDepthMm / 1000
+              // Trim brick thickness = WALL thickness so the trim
+              // course always sits FLUSH with the wall face,
+              // regardless of orientation. The visible face width +
+              // height still come from orientedFace (so e.g. a
+              // header trim shows as a row of narrow tall bricks),
+              // but the brick's depth into the wall is clamped to
+              // the wall plane — no header bricks extending past
+              // the front / back of the wall, no rowlock bricks
+              // sitting inset from the wall face. Reads cleanly
+              // across orientations and matches the standard
+              // expectation that a course sits in plane with the
+              // bricks around it.
+              const trimThicknessM = thicknessMm / 1000
+              // Kept as a noop reference so callers reading this
+              // file see the orientation's actual depth is still
+              // computed (the tally / future logic can use it).
+              void z.brickFaceDepthMm
               const trimY0M = z.trimY0Mm / 1000
               const trimY1M = z.trimY1Mm / 1000
 
@@ -5433,19 +5521,18 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const persistSnapshots = (next: Snapshot[]) => {
     onSnapshotsChange?.(next)
   }
-  // Visible queue = snapshots for the ACTIVE page + active trade
-  // only. Legacy snapshots without a pageNumber / trade show
-  // unconditionally (back-compat with earlier builds).
-  const visibleSnapshots = useMemo(
-    () =>
-      snapshots.filter((s) => {
-        const pageOk =
-          s.pageNumber === undefined || s.pageNumber === currentPageNumber
-        const tradeOk = s.trade === undefined || s.trade === mode
-        return pageOk && tradeOk
-      }),
-    [snapshots, currentPageNumber, mode]
-  )
+  // Visible queue = ALL snapshots, regardless of which page / trade /
+  // area the user is currently viewing. Captures are project-level
+  // artefacts (the user took them deliberately and wants to be able
+  // to see them in the queue from anywhere). Previously we filtered
+  // by pageNumber + trade, which caused captures to disappear when
+  // switching area filters (the area change cascaded into mode
+  // switches when only one trade had walls in the new area). Showing
+  // them unconditionally also makes the export-side selection more
+  // intuitive — what's in the queue IS what goes into the export.
+  void currentPageNumber
+  void mode
+  const visibleSnapshots = snapshots
   // Visual feedback for the Capture button: short-lived "Saved" state
   // that flips back automatically. Avoids a toast dep here.
   const [captureFlash, setCaptureFlash] = useState(false)

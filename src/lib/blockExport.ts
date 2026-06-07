@@ -776,19 +776,20 @@ function buildWallSpecsPage(
   wallsById: Record<string, Wall>,
   pageHeader: string
 ): string {
-  // Only document makeups that are actually used on the project. A library
-  // of stale makeups left over from earlier iterations of the same project
-  // would otherwise clutter the spec sheet.
-  const used = makeups
-    .map((m) => {
-      const wallsOfMakeup = walls.filter((w) => w.makeupId === m.id)
-      const totalLenMm = wallsOfMakeup.reduce(
-        (s, w) => s + wallLengthMm(w, thicknessByWallId, wallsById),
-        0
-      )
-      return { makeup: m, walls: wallsOfMakeup, totalLenMm }
-    })
-    .filter((row) => row.walls.length > 0)
+  // Document EVERY wall type defined in the project — including
+  // unused ones and curved types. Previously we filtered to
+  // `wallsOfMakeup.length > 0`, which silently dropped curved wall
+  // types and any type the user had defined but not yet drawn with.
+  // The reader expects to see every type they configured in the
+  // project, not just the ones with walls already placed.
+  const used = makeups.map((m) => {
+    const wallsOfMakeup = walls.filter((w) => w.makeupId === m.id)
+    const totalLenMm = wallsOfMakeup.reduce(
+      (s, w) => s + wallLengthMm(w, thicknessByWallId, wallsById),
+      0,
+    )
+    return { makeup: m, walls: wallsOfMakeup, totalLenMm }
+  })
 
   if (used.length === 0) return ''
 
@@ -937,14 +938,20 @@ function buildWallSpecsPage(
           </div>`
       }
 
-      const wallCountLabel = `${wallsOfMakeup.length} wall${wallsOfMakeup.length === 1 ? '' : 's'}`
-      const totalLenLabel = `${(totalLenMm / 1000).toFixed(2)} m run`
+      const wallCountLabel =
+        wallsOfMakeup.length === 0
+          ? 'Not yet used on this plan'
+          : `${wallsOfMakeup.length} wall${wallsOfMakeup.length === 1 ? '' : 's'}`
+      const totalLenLabel =
+        wallsOfMakeup.length === 0
+          ? ''
+          : ` · ${(totalLenMm / 1000).toFixed(2)} m run`
 
       return `
         <div class="wall-spec-card">
           <div class="wall-spec-header">
             <h3 class="wall-spec-name">${escapeHtml(makeup.name)}</h3>
-            <span class="wall-spec-meta">${escapeHtml(wallCountLabel)} · ${escapeHtml(totalLenLabel)}</span>
+            <span class="wall-spec-meta">${escapeHtml(wallCountLabel)}${escapeHtml(totalLenLabel)}</span>
           </div>
           <div class="spec-grid">
             ${specGrid}

@@ -354,7 +354,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                 },
                 {
                   key: 'openings',
-                  label: 'Openings',
+                  label: 'Opening visuals',
                   badge:
                     (sillBrickCode ? 1 : 0) + (headBrickCode ? 1 : 0) > 0
                       ? `${(sillBrickCode ? 1 : 0) + (headBrickCode ? 1 : 0)}`
@@ -470,16 +470,17 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               </div>
               <button
                 onClick={() => {
-                  // New band defaults to "course after the last one"
-                  // with the makeup's main brick as the seed. User
-                  // typically tweaks both.
-                  const lastFrom = courseRanges.length > 0
+                  // New band defaults to "5 courses above the last
+                  // band's threshold" so the user has a sensible
+                  // starting point. The first band defaults to
+                  // "below course 5" (= courses 1-4).
+                  const lastBelow = courseRanges.length > 0
                     ? Math.max(...courseRanges.map((r) => r.fromCourse))
-                    : 1
+                    : 0
                   setCourseRanges([
                     ...courseRanges,
                     {
-                      fromCourse: courseRanges.length === 0 ? 1 : lastFrom + 1,
+                      fromCourse: lastBelow + 5,
                       brickTypeCode: brickTypeCode || brickTypes[0]?.code || '',
                     },
                   ])
@@ -498,7 +499,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                     className="flex items-center gap-2 p-2 border border-ink-700 rounded-lg bg-ink-900/40"
                   >
                     <div className="flex items-center gap-1.5 text-xs">
-                      <span className="text-ink-400">From course</span>
+                      <span className="text-ink-400">Below course</span>
                       <input
                         type="number"
                         min="1"
@@ -543,8 +544,9 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                   </div>
                 ))}
                 <div className="text-[11px] text-ink-500 italic">
-                  Bands are read in ascending order — the last one extends
-                  to the top of the wall.
+                  Each band's brick applies to courses BELOW the
+                  number shown. Courses above the highest band use
+                  the default brick from the Basics tab.
                 </div>
               </div>
             )}
@@ -785,43 +787,46 @@ function BrickWallPreview({
   headBrickOrientation = 'stretcher',
 }: BrickWallPreviewProps) {
   const segments = useMemo(() => {
-    // Build a normalised range list ordered by fromCourse. If the
-    // bottom course isn't covered explicitly, prepend the main brick
-    // so the wall starts somewhere.
+    // BELOW-COURSE semantics for the live preview. Each range's
+    // brick fills courses BELOW its fromCourse threshold (above
+    // the previous range's threshold). Top of the wall (above the
+    // highest threshold) uses the main brick — implicit, no
+    // explicit band needed.
     const ranges = (courseRanges ?? []).filter(
       (r) =>
         r.brickTypeCode && Number.isFinite(r.fromCourse) && r.fromCourse >= 1
     )
     const sorted = [...ranges].sort((a, b) => a.fromCourse - b.fromCourse)
     if (sorted.length === 0) {
-      // Pure single-brick wall.
       const brick = mainBrickCode ? library[mainBrickCode] : undefined
       if (!brick) return []
       return [{ brick, heightMm: wallHeightMm, bandIndex: 0 }]
     }
-    if (sorted[0].fromCourse !== 1) {
-      sorted.unshift({ fromCourse: 1, brickTypeCode: mainBrickCode })
-    }
     const out: Array<{ brick: BrickType; heightMm: number; bandIndex: number }> = []
     let cursorMm = 0
+    let cursorCourse = 1
     for (let i = 0; i < sorted.length; i++) {
       const range = sorted[i]
-      const next = sorted[i + 1]
       const brick = library[range.brickTypeCode]
       if (!brick) continue
       const pitch = brick.heightMm + (brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
       const remaining = wallHeightMm - cursorMm
       if (remaining <= 0) break
-      let bandHeight: number
-      if (next) {
-        const courses = Math.max(0, next.fromCourse - range.fromCourse)
-        bandHeight = Math.min(courses * pitch, remaining)
-      } else {
-        bandHeight = remaining
+      const bandCourses = Math.max(0, range.fromCourse - cursorCourse)
+      const bandHeight = Math.min(bandCourses * pitch, remaining)
+      if (bandHeight > 0) {
+        out.push({ brick, heightMm: bandHeight, bandIndex: i })
+        cursorMm += bandHeight
       }
-      if (bandHeight <= 0) continue
-      out.push({ brick, heightMm: bandHeight, bandIndex: i })
-      cursorMm += bandHeight
+      cursorCourse = range.fromCourse
+    }
+    // Above the highest threshold — fill with main brick.
+    const remaining = wallHeightMm - cursorMm
+    if (remaining > 0) {
+      const mainBrick = mainBrickCode ? library[mainBrickCode] : undefined
+      if (mainBrick) {
+        out.push({ brick: mainBrick, heightMm: remaining, bandIndex: sorted.length })
+      }
     }
     return out
   }, [wallHeightMm, mainBrickCode, courseRanges, library])

@@ -162,6 +162,11 @@ function resolveBrickCourseSegments(
   )
   if (ranges.length === 0) return null
 
+  // BELOW-COURSE semantics: ranges sorted ascending by their
+  // `fromCourse` threshold. Each range covers courses below its
+  // threshold but above the previous range's threshold (or 1 if
+  // it's the first). The makeup's main brick fills the top of the
+  // wall, covering all courses above the highest threshold.
   const sorted = [...ranges].sort((a, b) => a.fromCourse - b.fromCourse)
   const deduped: BrickCourseRange[] = []
   for (const r of sorted) {
@@ -172,37 +177,46 @@ function resolveBrickCourseSegments(
       deduped.push(r)
     }
   }
-  // Ensure the bottom course (1) has a band — fall back to the makeup's
-  // main brick if the user only added ranges starting above course 1.
-  if (deduped[0].fromCourse !== 1) {
-    deduped.unshift({ fromCourse: 1, brickTypeCode: makeup.brickTypeCode })
-  }
 
   const segments: ResolvedBrickSegment[] = []
   let cursorMm = 0
+  let cursorCourse = 1
   for (let i = 0; i < deduped.length; i++) {
     const range = deduped[i]
-    const next = deduped[i + 1]
     const brickType = library[range.brickTypeCode]
     const pitch = coursePitchMm(brickType)
     const remainingMm = wallHeightMm - cursorMm
     if (remainingMm <= 0) break
-
-    let bandHeight: number
-    if (next) {
-      const bandCourses = Math.max(0, next.fromCourse - range.fromCourse)
-      bandHeight = Math.min(bandCourses * pitch, remainingMm)
-    } else {
-      bandHeight = remainingMm
+    // Number of courses this range covers — from cursorCourse up to
+    // (but not including) range.fromCourse.
+    const bandCourses = Math.max(0, range.fromCourse - cursorCourse)
+    const bandHeight = Math.min(bandCourses * pitch, remainingMm)
+    if (bandHeight <= 0) {
+      cursorCourse = range.fromCourse
+      continue
     }
-    if (bandHeight <= 0) continue
-
     segments.push({
       brickTypeCode: range.brickTypeCode,
       heightMm: bandHeight,
       bricksPerSquareMetre: brickType ? bricksPerSquareMetreOf(brickType) : 0,
     })
     cursorMm += bandHeight
+    cursorCourse = range.fromCourse
+  }
+  // Top of wall — fill the remaining height with the makeup's main
+  // brick. This is the implicit "above all bands" region in the
+  // below-course model: courses above the highest threshold use
+  // the default brick instead of needing an explicit band.
+  const remainingMm = wallHeightMm - cursorMm
+  if (remainingMm > 0) {
+    const mainBrick = library[makeup.brickTypeCode]
+    if (mainBrick) {
+      segments.push({
+        brickTypeCode: makeup.brickTypeCode,
+        heightMm: remainingMm,
+        bricksPerSquareMetre: bricksPerSquareMetreOf(mainBrick),
+      })
+    }
   }
   return segments
 }
@@ -373,14 +387,15 @@ export function calculateBrickTally(
           !!r.brickTypeCode,
       )
       .sort((a, b) => a.fromCourse - b.fromCourse)
+    // BELOW-COURSE semantics: each range applies to courses BELOW
+    // its `fromCourse` value. The first range whose threshold is
+    // greater than the course number wins. Courses above every
+    // range fall through to the makeup's default brick.
     const brickTypeForCourse = (courseNum: number): string => {
-      let active =
-        wallMakeup?.brickTypeCode ?? settings.brickTypeCode ?? '__default__'
       for (const r of sortedRanges) {
-        if (r.fromCourse > courseNum) break
-        active = r.brickTypeCode
+        if (courseNum < r.fromCourse) return r.brickTypeCode
       }
-      return active
+      return wallMakeup?.brickTypeCode ?? settings.brickTypeCode ?? '__default__'
     }
     const wallOpenings = openings.filter((o) => o.wallId === wall.id)
     let wallTotal = 0
