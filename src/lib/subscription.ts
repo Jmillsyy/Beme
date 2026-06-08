@@ -1,0 +1,169 @@
+/**
+ * Subscription state for the current user.
+ *
+ * Reads from the public.subscriptions table populated by the
+ * stripe-webhook Edge Function. Two queries — one for the user's
+ * Individual subscription (if any), one for the current org's
+ * Organisation subscription (if any). The active one wins. If
+ * neither exists, the user has no subscription (treat as expired /
+ * not signed up).
+ */
+
+import { useEffect, useState } from 'react'
+import { isSupabaseConfigured, supabase } from './supabase'
+import { useAuth } from './auth'
+import { useOrganisations } from './organisations'
+
+export type SubscriptionStatus =
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'canceled'
+  | 'incomplete'
+  | 'unpaid'
+  | 'none'
+
+export interface SubscriptionState {
+  loading: boolean
+  /** True when the user has an active or trialing subscription. */
+  hasAccess: boolean
+  /** Raw status from Stripe (or 'none' if no row found). */
+  status: SubscriptionStatus
+  /** 'individual' | 'organisation' | null */
+  plan: 'individual' | 'organisation' | null
+  /** When the trial ends (null if not on trial). */
+  trialEndsAt: Date | null
+  /** When the current billing period ends. */
+  currentPeriodEnd: Date | null
+  /** True when the subscription is set to cancel at period end. */
+  cancelAtPeriodEnd: boolean
+  /** Seat count for Organisation plan (null for Individual). */
+  seatCount: number | null
+  /** Days remaining in trial — null if not trialing. */
+  trialDaysRemaining: number | null
+}
+
+const EMPTY: SubscriptionState = {
+  loading: false,
+  hasAccess: false,
+  status: 'none',
+  plan: null,
+  trialEndsAt: null,
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+  seatCount: null,
+  trialDaysRemaining: null,
+}
+
+/**
+ * Returns the current effective subscription. Checks the user's own
+ * subscription first; falls back to the current org's subscription.
+ */
+export function useSubscription(): SubscriptionState {
+  const { user, signedIn, loading: authLoading } = useAuth()
+  const { currentOrg } = useOrganisations()
+  const [state, setState] = useState<SubscriptionState>({
+    ...EMPTY,
+    loading: true,
+  })
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) {
+      setState(EMPTY)
+      return
+    }
+    if (authLoading) {
+      setState({ ...EMPTY, loading: true })
+      return
+    }
+    if (!signedIn || !user) {
+      setState(EMPTY)
+      return
+    }
+
+    let cancelled = false
+    setState({ ...EMPTY, loading: true })
+
+    void (async () => {
+      const client = supabase()
+
+      // 1. Try the org subscription first — if the user is in an org
+      // with an active subscription, that's the one that matters.
+      let row: SubscriptionRow | null = null
+      if (currentOrg) {
+        const { data } = await client
+          .from('subscriptions')
+          .select(
+            'plan, status, trial_ends_at, current_period_end, cancel_at_period_end, seat_count'
+          )
+          .eq('organisation_id', currentOrg.id)
+          .maybeSingle()
+        if (data) row = data as SubscriptionRow
+      }
+
+      // 2. Fall back to the individual subscription.
+      if (!row) {
+        const { data } = await client
+          .from('subscriptions')
+          .select(
+            'plan, status, trial_ends_at, current_period_end, cancel_at_period_end, seat_count'
+          )
+          .eq('user_id', user.id)
+          .maybeSingle()
+        if (data) row = data as SubscriptionRow
+      }
+
+      if (cancelled) return
+
+      if (!row) {
+        setState(EMPTY)
+        return
+      }
+
+      const trialEnd = row.trial_ends_at ? new Date(row.trial_ends_at) : null
+      const periodEnd = row.current_period_end
+        ? new Date(row.current_period_end)
+        : null
+      const trialDaysRemaining = trialEnd
+        ? Math.max(
+            0,
+            Math.ceil((trialEnd.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+          )
+        : null
+
+      setState({
+        loading: false,
+        hasAccess:
+          row.status === 'trialing' ||
+          row.status === 'active' ||
+          // past_due users still get access until current_period_end
+          // so they can update their card without losing work.
+          (row.status === 'past_due' &&
+            periodEnd !== null &&
+            periodEnd.getTime() > Date.now()),
+        status: row.status as SubscriptionStatus,
+        plan: row.plan as 'individual' | 'organisation',
+        trialEndsAt: trialEnd,
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: row.cancel_at_period_end ?? false,
+        seatCount: row.seat_count,
+        trialDaysRemaining,
+      })
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [authLoading, signedIn, user, currentOrg])
+
+  return state
+}
+
+interface SubscriptionRow {
+  plan: string
+  status: string
+  trial_ends_at: string | null
+  current_period_end: string | null
+  cancel_at_period_end: boolean | null
+  seat_count: number | null
+}

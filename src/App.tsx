@@ -8,6 +8,7 @@ import ProjectsPage from './pages/ProjectsPage'
 import MaterialLibraryPage from './pages/MaterialLibraryPage'
 import GuidePage from './pages/GuidePage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
+import WelcomePage from './pages/WelcomePage'
 import { useAuth } from './lib/auth'
 import { isSupabaseConfigured } from './lib/supabase'
 import ToastHost from './components/ToastHost'
@@ -18,11 +19,13 @@ import CommandPalette from './components/CommandPalette'
 import HelpFloatingButton from './components/HelpFloatingButton'
 
 /**
- * Routes that are reachable WITHOUT being signed in. The accept-invite flow
- * needs this so brand-new users can land on the page from a link and set
- * their password before they have an account at all.
+ * Routes that are reachable WITHOUT being signed in. Accept-invite is
+ * needed so brand-new users can land on a setup link before they have
+ * an account. /welcome is where Stripe Checkout redirects after a
+ * successful subscription — the user lands there before they've
+ * clicked the magic-link email, so it must be public too.
  */
-const PUBLIC_PATHS = new Set(['/accept-invite'])
+const PUBLIC_PATHS = new Set(['/accept-invite', '/welcome'])
 
 export default function App() {
   const { loading, signedIn } = useAuth()
@@ -61,6 +64,7 @@ export default function App() {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/accept-invite" element={<AcceptInvitePage />} />
+          <Route path="/welcome" element={<WelcomePage />} />
         </Routes>
       </ErrorBoundary>
       {/* Global toast host — single mount, floats over every page. */}

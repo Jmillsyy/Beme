@@ -2122,24 +2122,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   // ---------- Autosave ----------
   //
-  // Persist every 2 minutes while there are unsaved changes and the project
-  // is in a saveable state. We keep refs to the latest handler + flags so the
-  // interval (set up once) always reads the current version, avoiding stale
-  // closures over projectDetails / walls / etc.
-  const autosaveHandlerRef = useRef(handleSaveProject)
-  const autosaveCanSaveRef = useRef(false)
+  // Local-draft snapshot every 2 minutes. Cloud autosave was removed —
+  // user is responsible for hitting Save (Cmd/Ctrl+S or the Save
+  // button); the unsaved-changes prompts in useUnsavedChangesPrompt
+  // catch tab close / navigation. The local draft tick survives crashes
+  // (browser refresh, tab kill) so unsaved work is recoverable on
+  // re-entry. Refs are read by the draft tick so it doesn't close over
+  // stale projectDetails / walls / etc.
   const autosaveDirtyRef = useRef(false)
   const autosaveGateRef = useRef(false)
-  // Refs the localStorage draft writer reads — current project id, mode,
-  // and the data payload (walls/openings/etc.) frozen as a plain object.
-  // Kept as refs because the autosave interval is set up once and would
-  // otherwise close over stale values.
   const currentProjectIdRef = useRef<string | null>(currentProjectId)
   const modeRef = useRef<'block' | 'brick' | undefined>(mode)
   const draftDataRef = useRef<Record<string, unknown>>({})
   useEffect(() => {
-    autosaveHandlerRef.current = handleSaveProject
-    autosaveCanSaveRef.current = canSave
     autosaveDirtyRef.current = hasUnsavedChanges
     autosaveGateRef.current = startupGateOpen
     promptSaveHandlerRef.current = handleSaveProject
@@ -2171,32 +2166,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     }
   })
   useEffect(() => {
-    // 2-minute autosave tick. Local crash-recovery draft still
-    // snapshots on every dirty tick (see saveDraft below), so the
-    // user-recoverable window stays small; the longer cadence just
-    // cuts the cloud write rate. Was 30s — felt chatty for an
-    // estimator who's drawing for an hour straight.
-    const AUTOSAVE_INTERVAL_MS = 2 * 60 * 1000
+    // 2-minute LOCAL DRAFT tick — cloud autosave was removed. The
+    // user is now responsible for hitting Save (Cmd/Ctrl+S or the
+    // Save button); the in-app + browser exit prompts catch unsaved
+    // work via useUnsavedChangesPrompt.
+    //
+    // We keep snapshotting a localStorage draft on a 2-minute cadence
+    // so a tab crash / accidental refresh / browser death still has a
+    // recoverable copy of the in-progress work. The draft is cheap
+    // (single localStorage write) and never touches the network.
+    const DRAFT_INTERVAL_MS = 2 * 60 * 1000
     const id = window.setInterval(() => {
-      // Belt-and-braces: dirty + canSave guard each tick. If the project
-      // has no unsaved changes (idle workspace) we skip, so we don't grind
-      // through identical-content writes. canSave guards the same "name is
-      // required" rule the manual save uses. Gate-open means the user is
-      // still in the startup modal — autosaving a project that has nothing
-      // but a name in it isn't useful, so we hold off until they enter the
-      // workspace proper.
       if (autosaveGateRef.current) return
       if (!autosaveDirtyRef.current) return
-      // Always snapshot a draft when dirty, even if we can't reach the
-      // cloud save. localStorage survives tab close / refresh, so a
-      // crashed save still gives the user a recovery path.
       if (modeRef.current) {
         saveDraft(currentProjectIdRef.current, modeRef.current, draftDataRef.current)
       }
-      if (!autosaveCanSaveRef.current) return
-      if (savingRef.current) return
-      void autosaveHandlerRef.current({ silent: true })
-    }, AUTOSAVE_INTERVAL_MS)
+    }, DRAFT_INTERVAL_MS)
     return () => window.clearInterval(id)
   }, [])
 
