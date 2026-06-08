@@ -756,24 +756,99 @@ async function cloudSaveProject(p: SavedProject, userId: string): Promise<SavedP
 
   const projectForRow: SavedProject = { ...p, referencePdfs: refUploaded }
   const row = projectToCloudRow(projectForRow, userId, pdfPath)
-  // Ask Supabase to return the saved row so we can pick up server-allocated
-  // fields (referenceNumber, primarily). The .select().single() chain keeps
-  // the upsert atomic and avoids a follow-up SELECT round-trip.
-  const { data, error } = await client
-    .from('projects')
-    .upsert(row, { onConflict: 'id' })
-    .select()
-    .single()
-  if (error) throw new Error(`Project save failed: ${error.message}`)
-  const persisted = rowToProjectMeta(data as CloudProjectRow)
-  // Re-attach the in-memory blobs (the cloud row doesn't carry pdfBlob /
-  // referencePdfs.blob), so the caller gets a complete SavedProject with
-  // the new referenceNumber AND its existing file objects.
+
+  // Two-step save with retry-on-timeout. The previous single
+  // `.upsert(...).select().single()` chain made one heavy round-trip
+  // that would fail with "canceling statement due to statement
+  // timeout" on large projects (the JSONB write + RLS check + SELECT
+  // returning the big row, all in one query). Splitting the upsert
+  // and the readback into separate calls makes each individually
+  // smaller; retrying transient timeouts handles the rest.
+  //
+  // First-save case (no existing referenceNumber) — we still need
+  // the readback to pick up the DB-allocated reference_number. For
+  // updates of existing projects we can skip the readback entirely
+  // since reference_number is already on the in-memory project.
+  const isFirstSave = p.referenceNumber == null
+
+  await retryOnTimeout(async () => {
+    const { error } = await client.from('projects').upsert(row, { onConflict: 'id' })
+    if (error) throw new Error(`Project save failed: ${error.message}`)
+  })
+
+  // Fast path for repeat saves — caller already has the reference
+  // number, so we don't need to round-trip back to the DB.
+  if (!isFirstSave) {
+    return {
+      ...p,
+      pdfBlob: p.pdfBlob,
+      referencePdfs: refUploaded,
+    }
+  }
+
+  // First-save path — read back so we get the server-allocated
+  // reference_number. This is a small, indexed SELECT (PK lookup),
+  // unlikely to time out even on large projects.
+  const persisted = await retryOnTimeout(async () => {
+    const { data, error } = await client
+      .from('projects')
+      .select('id, type, status, organisation_id, owner_user_id, user_id, reference_number, created_at, updated_at, completed_at, pdf_file_name')
+      .eq('id', row.id)
+      .single()
+    if (error) throw new Error(`Project read-back failed: ${error.message}`)
+    return data as Omit<CloudProjectRow, 'data' | 'pdf_path'> & {
+      data?: never
+      pdf_path?: never
+    }
+  })
+
+  // Compose the SavedProject from the in-memory project + the freshly
+  // read metadata. Cheaper than reading the full JSONB back from the DB.
   return {
-    ...persisted,
+    ...p,
+    referenceNumber: persisted.reference_number ?? undefined,
+    organisationId: persisted.organisation_id ?? undefined,
+    ownerUserId: persisted.owner_user_id ?? persisted.user_id,
     pdfBlob: p.pdfBlob,
     referencePdfs: refUploaded,
   }
+}
+
+/**
+ * Run `op` and retry on Postgres statement-timeout errors with
+ * exponential backoff. Three attempts: 0ms, 600ms, 1500ms. Any other
+ * error is re-thrown immediately (don't retry permission failures,
+ * conflict errors, etc).
+ *
+ * The "canceling statement due to statement timeout" message comes
+ * from Postgres directly and Supabase surfaces it as a normal error.
+ * Matching on the substring is the documented way to detect it.
+ */
+async function retryOnTimeout<T>(op: () => Promise<T>): Promise<T> {
+  const delays = [0, 600, 1500]
+  let lastError: unknown
+  for (const ms of delays) {
+    if (ms > 0) await sleep(ms)
+    try {
+      return await op()
+    } catch (err) {
+      lastError = err
+      const msg = err instanceof Error ? err.message : String(err)
+      const isTimeout =
+        msg.includes('statement timeout') ||
+        msg.includes('canceling statement') ||
+        msg.includes('57014') // Postgres SQLSTATE for query cancelled
+      if (!isTimeout) throw err
+      // Otherwise loop and retry.
+    }
+  }
+  // Exhausted retries — throw the last timeout error so the toast
+  // explains what happened.
+  throw lastError
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function cloudGetProject(id: string, _userId: string): Promise<SavedProject | undefined> {
