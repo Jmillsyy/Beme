@@ -51,6 +51,10 @@ export interface CombinedExportParams {
    * user's modal adjustment consistently.
    */
   supplyItemAdjustments?: Record<string, number>
+  /** Per-export supply-item name overrides — forwarded unchanged to
+   *  both single-trade builders so a renamed supply (e.g. ties) gets
+   *  the same label in both sections of the combined PDF. */
+  supplyItemNameOverrides?: Record<string, string>
   business?: BusinessExportInfo
   pdfFile?: File
 
@@ -124,6 +128,7 @@ export async function exportCombinedEstimate(
     supplyItemSelections,
     supplyItemRateOverrides,
     supplyItemAdjustments,
+    supplyItemNameOverrides,
     business,
     pdfFile,
     blockInclusions,
@@ -163,6 +168,7 @@ export async function exportCombinedEstimate(
     supplyItemSelections,
     supplyItemRateOverrides,
     supplyItemAdjustments,
+    supplyItemNameOverrides,
     walls: blockWalls,
     makeups: blockMakeups,
     openings: blockOpenings,
@@ -182,6 +188,7 @@ export async function exportCombinedEstimate(
     supplyItemSelections,
     supplyItemRateOverrides,
     supplyItemAdjustments,
+    supplyItemNameOverrides,
     walls: brickWalls,
     openings: brickOpenings,
     settings: brickSettings,

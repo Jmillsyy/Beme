@@ -7593,35 +7593,63 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           // the surrounding chrome.
           style={{ backgroundColor: theme === 'light' ? '#f7f4ec' : '#1a1d24' }}
         >
-          <Suspense
-            fallback={
-              <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
-                Loading 3D view…
+          {isReferenceView ? (
+            // Reference PDFs are read-only — no walls can be drawn
+            // on them, so the 3D view has nothing to show. Render a
+            // blank panel with a short explainer instead of mounting
+            // the empty Canvas (which would just show the ground
+            // plane and confuse the user about why nothing's there).
+            <div className="absolute inset-0 flex items-center justify-center px-6">
+              <div className="max-w-sm text-center">
+                <div
+                  className={`text-sm font-medium mb-1 ${
+                    theme === 'light' ? 'text-ink-700' : 'text-ink-200'
+                  }`}
+                >
+                  3D view unavailable on reference PDFs
+                </div>
+                <div
+                  className={`text-xs leading-relaxed ${
+                    theme === 'light' ? 'text-ink-500' : 'text-ink-400'
+                  }`}
+                >
+                  Reference PDFs are read-only — they don't hold any
+                  walls. Switch back to your primary plan to see the
+                  3D view.
+                </div>
               </div>
-            }
-          >
-            <WorkspaceView3D
-              walls={currentPageWalls}
-              openings={currentPageOpenings}
-              makeupsById={makeupsById}
-              brickMakeupsById={brickMakeupsById}
-              wallThicknessByWallId={wallThicknessByWallId}
-              areas={areas}
-              library={BLOCK_LIBRARY}
-              piers={currentPagePiers}
-              pierMakeupsById={pierMakeupsById}
-              pierColorByPierId={pierColorByPierId}
-              pdfFile={pdfFile}
-              currentPageNumber={currentPage}
-              pageWidthMm={activePagesData[currentPage]?.pageWidthMm}
-              pageHeightMm={activePagesData[currentPage]?.pageHeightMm}
-              pageScaleRatio={activePagesData[currentPage]?.pageScaleRatio}
-              projectId={currentProjectId}
-              mode={mode}
-              snapshots={view3dSnapshots}
-              onSnapshotsChange={setView3dSnapshots}
-            />
-          </Suspense>
+            </div>
+          ) : (
+            <Suspense
+              fallback={
+                <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
+                  Loading 3D view…
+                </div>
+              }
+            >
+              <WorkspaceView3D
+                walls={currentPageWalls}
+                openings={currentPageOpenings}
+                makeupsById={makeupsById}
+                brickMakeupsById={brickMakeupsById}
+                wallThicknessByWallId={wallThicknessByWallId}
+                areas={areas}
+                library={BLOCK_LIBRARY}
+                piers={currentPagePiers}
+                pierMakeupsById={pierMakeupsById}
+                pierColorByPierId={pierColorByPierId}
+                pdfFile={pdfFile}
+                currentPageNumber={currentPage}
+                pageWidthMm={activePagesData[currentPage]?.pageWidthMm}
+                pageHeightMm={activePagesData[currentPage]?.pageHeightMm}
+                pageScaleRatio={activePagesData[currentPage]?.pageScaleRatio}
+                projectId={currentProjectId}
+                mode={mode}
+                snapshots={view3dSnapshots}
+                onSnapshotsChange={setView3dSnapshots}
+              />
+            </Suspense>
+          )}
         </div>
       )}
 

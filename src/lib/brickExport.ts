@@ -100,6 +100,15 @@ interface ExportParams {
    * rounding, then clamped to >= 0.
    */
   supplyItemAdjustments?: Record<string, number>
+  /**
+   * Per-export supply-item NAME overrides — keyed by supply item id,
+   * value is the renamed label to use in the PDF. Empty / missing
+   * value falls back to the library item's name. Lets the user
+   * rename a specific supply on a per-quote basis (e.g. "Galintel
+   * 1500" → "Lintel above front door") without mutating the master
+   * material library.
+   */
+  supplyItemNameOverrides?: Record<string, string>
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
@@ -852,8 +861,12 @@ export async function buildBrickEstimateHtml(
     const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
     const finalQty = Math.max(0, rounded - supplyAdj)
     if (finalQty <= 0) continue
+    // Apply per-export name override (if the user renamed this item
+    // in the export modal). Falls back to the library item's name
+    // when no override is set or the override is empty.
+    const overriddenName = params.supplyItemNameOverrides?.[item.id]?.trim()
     supplyRows.push({
-      name: item.name,
+      name: overriddenName || item.name,
       qty: finalQty,
       noteRate,
       category: item.category?.trim() || 'Uncategorised',

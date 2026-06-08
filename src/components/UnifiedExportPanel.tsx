@@ -510,6 +510,25 @@ function ExportEstimateModal({
     Record<string, number>
   >({})
   const setSupplyAdj = makeSetAdjustment(setSupplyItemAdjustments)
+  // Per-export supply-item NAME overrides — keyed by item id, value
+  // is the renamed label to display in the PDF. Empty string clears
+  // the override (falls back to the library item's name). Stays
+  // export-scoped (not persisted to the library) so the same item
+  // can read differently on a per-quote basis without polluting the
+  // master library.
+  const [supplyItemNameOverrides, setSupplyItemNameOverrides] = useState<
+    Record<string, string>
+  >({})
+  function setSupplyName(code: string, name: string | null) {
+    setSupplyItemNameOverrides((prev) => {
+      if (!name || !name.trim()) {
+        const { [code]: _drop, ...rest } = prev
+        void _drop
+        return rest
+      }
+      return { ...prev, [code]: name.trim() }
+    })
+  }
 
   // ── Source of truth for the supply item library, same precedence
   //    as the SupplyItemsPanel and the exporters: org-synced list
@@ -832,6 +851,7 @@ function ExportEstimateModal({
         supplyItemSelections,
         supplyItemRateOverrides,
         supplyItemAdjustments,
+        supplyItemNameOverrides,
         business: business(),
         pdfFile: pdfFile ?? undefined,
       }
@@ -1202,6 +1222,8 @@ function ExportEstimateModal({
                   addLabel="Add supply item"
                   hideCode
                   groupBy={categoryForSupply}
+                  nameOverrides={supplyItemNameOverrides}
+                  onSetNameOverride={setSupplyName}
                 />
               )}
               {hasBrickSupply && (
@@ -1216,6 +1238,8 @@ function ExportEstimateModal({
                     addLabel="Add supply item"
                     hideCode
                     groupBy={categoryForSupply}
+                    nameOverrides={supplyItemNameOverrides}
+                    onSetNameOverride={setSupplyName}
                   />
                 </div>
               )}
@@ -1293,6 +1317,20 @@ interface AdjustmentsTableProps {
    * library grows.
    */
   groupBy?: (code: string) => string | undefined
+  /**
+   * Optional per-row name overrides. When present, the row's
+   * displayed label uses `nameOverrides[code]` instead of
+   * `describe(code)`. Used by supply-item tables so the user can
+   * rename a row inline (e.g. "Galintel 1500" → "Lintel above
+   * front door") for THIS export only.
+   */
+  nameOverrides?: Record<string, string>
+  /**
+   * Optional setter for name overrides. When provided, the inline
+   * edit panel also surfaces a name input alongside the quantity
+   * input. Pass `null` for the second arg to clear the override.
+   */
+  onSetNameOverride?: (code: string, name: string | null) => void
 }
 
 function AdjustmentsTable({
@@ -1305,7 +1343,17 @@ function AdjustmentsTable({
   addLabel,
   hideCode = false,
   groupBy,
+  nameOverrides,
+  onSetNameOverride,
 }: AdjustmentsTableProps) {
+  // Resolve the label that should display for this row — prefer
+  // the per-export name override (if the caller passes one) over
+  // the library / calc engine's description.
+  function labelFor(code: string): string {
+    const overridden = nameOverrides?.[code]
+    if (overridden && overridden.trim()) return overridden
+    return describe(code)
+  }
   // Combine the auto-tally codes with any add-only adjustments so
   // user-added entries appear in the row list even when they're not
   // in the original tally.
@@ -1379,6 +1427,11 @@ function AdjustmentsTable({
   // restore without writing through to the parent.
   const [editingCode, setEditingCode] = useState<string | null>(null)
   const [draftValue, setDraftValue] = useState<string>('')
+  // Draft name for supply-item rename. Only surfaces in the edit
+  // panel when `onSetNameOverride` is supplied by the parent
+  // (currently: supply-item tables only). Persists the typed name
+  // independently from the qty draft so Cancel reverts both.
+  const [draftName, setDraftName] = useState<string>('')
   // Open-state for the "+ Add" picker — keeps the form inline below
   // the table without needing a separate modal.
   const [adding, setAdding] = useState(false)
@@ -1388,20 +1441,32 @@ function AdjustmentsTable({
   function beginEdit(code: string, final: number) {
     setEditingCode(code)
     setDraftValue(String(final))
+    // Seed the name draft with the CURRENT label (override or
+    // describe(code)) so the user sees what they're editing.
+    setDraftName(labelFor(code))
   }
   function commitEdit(base: number) {
     if (editingCode === null) return
     const parsed = parseInt(draftValue, 10)
-    if (!Number.isFinite(parsed)) {
-      // Treat empty / invalid as "no change" — exit edit without
-      // mutating the adjustment.
-      setEditingCode(null)
-      return
+    if (Number.isFinite(parsed)) {
+      const finalCount = Math.max(0, parsed)
+      // Signed delta = base - finalCount. Positive removes,
+      // negative adds. Zero means no override (drop the entry).
+      onSetAdjustment(editingCode, base - finalCount)
     }
-    const finalCount = Math.max(0, parsed)
-    // Signed delta = base - finalCount. Positive removes, negative
-    // adds. Zero means no override (drop the entry upstream).
-    onSetAdjustment(editingCode, base - finalCount)
+    // Name override — only meaningful when the parent supplied a
+    // setter. Pushing the bare describe(code) back as the "name"
+    // would create a noisy override; only persist when the user
+    // actually changed it.
+    if (onSetNameOverride) {
+      const trimmed = draftName.trim()
+      const base = describe(editingCode).trim()
+      if (!trimmed || trimmed === base) {
+        onSetNameOverride(editingCode, null)
+      } else {
+        onSetNameOverride(editingCode, trimmed)
+      }
+    }
     setEditingCode(null)
   }
   function cancelEdit() {
@@ -1448,12 +1513,33 @@ function AdjustmentsTable({
         className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-1.5 text-xs text-ink-100 items-center"
       >
         <span className="truncate">
-          {hideCode ? (
-            <span className="text-ink-200">{describe(code)}</span>
+          {isEditing && onSetNameOverride ? (
+            // Rename input — only when this row's table supports
+            // name overrides (currently supply-item tables only).
+            // Takes the full label column so the user can type a
+            // long descriptive name like "Lintel above front door".
+            <input
+              type="text"
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitEdit(base)
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelEdit()
+                }
+              }}
+              placeholder={describe(code)}
+              className="w-full px-2 py-0.5 bg-ink-900 border border-beme-400 rounded text-xs focus:outline-none text-ink-100"
+            />
+          ) : hideCode ? (
+            <span className="text-ink-200">{labelFor(code)}</span>
           ) : (
             <>
               <span className="font-mono text-ink-300">{code}</span>{' '}
-              <span className="text-ink-500">{describe(code)}</span>
+              <span className="text-ink-500">{labelFor(code)}</span>
             </>
           )}
         </span>
@@ -1462,7 +1548,11 @@ function AdjustmentsTable({
             type="number"
             min="0"
             step="1"
-            autoFocus
+            // Only autofocus qty when name editing isn't available
+            // — when name editing IS available, autofocus the
+            // name input (it's the new field and usually what the
+            // user is here to change).
+            autoFocus={!onSetNameOverride}
             value={draftValue}
             onChange={(e) => setDraftValue(e.target.value)}
             onKeyDown={(e) => {

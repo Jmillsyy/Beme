@@ -80,6 +80,14 @@ interface ExportParams {
    */
   supplyItemAdjustments?: Record<string, number>
   /**
+   * Per-export supply-item NAME overrides — keyed by supply item id,
+   * value is the renamed label to use in the PDF. Lets the user
+   * rename a supply on a per-quote basis without mutating the
+   * master material library. Empty / missing falls back to the
+   * library item's name.
+   */
+  supplyItemNameOverrides?: Record<string, string>
+  /**
    * Per-block quantity ADJUSTMENTS (a count to subtract from the
    * computed tally). Used when the user has some blocks already on
    * site or reused from another job and doesn't want them on the
@@ -1323,8 +1331,12 @@ export async function buildBlockEstimateHtml(
     const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
     const finalQty = Math.max(0, rounded - supplyAdj)
     if (finalQty <= 0) continue
+    // Apply per-export name override (set in the export modal) so
+    // a renamed supply item shows with the user's chosen label
+    // instead of the library default.
+    const overriddenName = params.supplyItemNameOverrides?.[item.id]?.trim()
     supplyRows.push({
-      name: item.name,
+      name: overriddenName || item.name,
       qty: finalQty,
       noteRate,
       category: item.category?.trim() || 'Uncategorised',
