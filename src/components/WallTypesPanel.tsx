@@ -35,6 +35,7 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { bandColor } from '../lib/blockColors'
+import LengthInput from './LengthInput'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -1560,14 +1561,12 @@ function BasicsTab({
             </span>
           )}
         </span>
-        <input
-          type="number"
-          min="200"
-          step="50"
-          value={hasCoursePattern ? patternTotalHeight : heightMm}
-          onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
+        <LengthInput
+          valueMm={hasCoursePattern ? patternTotalHeight : heightMm}
+          onChangeMm={(mm) => setHeightMm(Math.round(mm))}
+          minMm={200}
           disabled={hasCoursePattern}
-          className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 disabled:bg-ink-800 disabled:text-ink-400 disabled:cursor-not-allowed"
+          className="w-full"
         />
         {!hasCoursePattern && !wedgeDisablesCourseMix && (
           <p className="text-[11px] text-ink-500 mt-1.5">

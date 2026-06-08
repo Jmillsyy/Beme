@@ -346,20 +346,33 @@ function resolveWallCourses(
     for (let i = 0; i < band.count; i++) {
       const resolved = resolveCourseBlocks(scopedMakeup, courseNum)
       // Per-course body code resolution order:
-      //   - Course 1 (base course): baseCourseBlockCode from makeup /
-      //     series-range. Typically 20.45 cleanout (with internal
-      //     50.45 tile — not visualised separately).
-      //   - Last course (top course): topCourseBlockCode from makeup.
-      //     Typically 20.48 H block or 20.20 bond beam when a slab sits
-      //     above.
-      //   - Height-makeup courses: use band.blockCode (20.71 / 20.140)
-      //     directly so they render with their own height-makeup
-      //     colour and aren't overridden by the generic body code.
-      //   - Middle body courses: series-range body overlay, falling
-      //     through to band code (which is the makeup's bodyBlockCode
-      //     by default).
+      //   - Curved walls: ALL courses use the makeup's bodyBlockCode
+      //     (no base / top / height-makeup variation). Matches what
+      //     calculateCurvedWallTally counts — the curve tally
+      //     simplifies to "body-only" because base / top / height-
+      //     makeup blocks aren't built into the wedge math for v1.
+      //     The 3D used to keep the base / top variants here even on
+      //     a curve, which made a wall spec'd as "all 20.03CW" still
+      //     render the first course as the rectangular 20.45 cleanout
+      //     and the top as the 20.20 bond beam. Aligning the 3D with
+      //     the tally fixes that mismatch.
+      //   - Straight walls keep the standard variation:
+      //     - Course 1 (base course): baseCourseBlockCode from makeup /
+      //       series-range. Typically 20.45 cleanout (with internal
+      //       50.45 tile — not visualised separately).
+      //     - Last course (top course): topCourseBlockCode from makeup.
+      //       Typically 20.48 H block or 20.20 bond beam when a slab
+      //       sits above.
+      //     - Height-makeup courses: use band.blockCode (20.71 / 20.140)
+      //       directly so they render with their own height-makeup
+      //       colour and aren't overridden by the generic body code.
+      //     - Middle body courses: series-range body overlay, falling
+      //       through to band code (which is the makeup's bodyBlockCode
+      //       by default).
       let bodyCode: BlockCode
-      if (courseNum === 1) {
+      if (isCurvedWall(wall)) {
+        bodyCode = scopedMakeup.bodyBlockCode || resolved.bodyBlockCode || band.blockCode
+      } else if (courseNum === 1) {
         bodyCode = resolved.baseCourseBlockCode || resolved.bodyBlockCode || band.blockCode
       } else if (courseNum === totalCourses) {
         bodyCode = scopedMakeup.topCourseBlockCode || resolved.bodyBlockCode || band.blockCode
@@ -368,6 +381,20 @@ function resolveWallCourses(
       } else {
         bodyCode = resolved.bodyBlockCode || band.blockCode
       }
+      // Curved walls: every cell — body AND end terminations — uses the
+      // makeup's bodyBlockCode. Matches calculateCurvedWallTally, which
+      // tallies the whole curve as a single body block ('all 20.03CW',
+      // not 'mostly 20.03CW with 20.01 / 20.03 at the ends'). Without
+      // this, the virtual-straight-wall path in segmentsForCurvedWall
+      // still injects a standard corner/half at each alternating
+      // course, which the user saw as the "standard blocks" mixed
+      // into their curve.
+      const curveCorner = isCurvedWall(wall)
+        ? scopedMakeup.bodyBlockCode || resolved.cornerBlockCode
+        : resolved.cornerBlockCode
+      const curveHalf = isCurvedWall(wall)
+        ? scopedMakeup.bodyBlockCode || resolved.halfBlockCode
+        : resolved.halfBlockCode
       // Course height: size by the BLOCK actually being rendered in
       // this course, not the band's nominal blockCode. If the user
       // sets a 40mm capping tile as topCourseBlockCode (or a base
@@ -388,8 +415,8 @@ function resolveWallCourses(
         y0: y,
         y1: y + courseHeightM,
         bodyCode,
-        cornerCode: resolved.cornerBlockCode,
-        halfCode: resolved.halfBlockCode,
+        cornerCode: curveCorner,
+        halfCode: curveHalf,
       })
       y += courseHeightM
       courseNum++
@@ -1461,8 +1488,27 @@ function segmentsForStraightWall(
     //
     // In stack bond ownership doesn't alternate; the lower-id wall
     // always owns so widths stay constant and bodies don't offset.
-    const halfBlockW =
-      widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
+    // Half-end slot face width is dictated by the BOND, not by whichever
+    // block the user nominated for the slot. Stretcher bond's half-end
+    // position must offset the body grid by exactly half a body+mortar
+    // module — geometry-locked. So the slot face = (bodyFace − mortar)
+    // / 2 regardless of what block is in there. If the user picks a
+    // full block (e.g. 20.01 = 390 mm) for the half slot, the 3D
+    // caps the render width at the slot, visually cutting the block
+    // to fit. The bond is preserved no matter what; the block adapts.
+    //
+    // For 20.48 (390 mm body): half slot face = (390 − 10) / 2 = 190 mm
+    // For 30.48 (290 mm body): half slot face = (290 − 10) / 2 = 140 mm
+    //
+    // Stack bond never uses the half slot, so this only kicks in when
+    // useHalfLeft / useHalfRight is true. The library width still
+    // serves as the floor — if the user picks a 20.03 half (190 mm)
+    // for a 20.48 wall, library width = slot width, no cut visible.
+    const BLOCK_MORTAR_MM = 10
+    const bodyFaceMm = widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM)
+    const halfSlotFaceMm = Math.max(1, (bodyFaceMm - BLOCK_MORTAR_MM) / 2)
+    const halfBlockLibraryWMm = widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+    const halfBlockW = Math.min(halfBlockLibraryWMm, halfSlotFaceMm) / 1000
     const cornerWidth =
       widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
     // Corner cube depth on this wall's axis = perpendicular wall's
@@ -4051,6 +4097,48 @@ function Scene({
         // Also override this wall's own entry so any internal
         // lookups (e.g. fallback paths) see the same value.
         brickCubeThicknessMap[wall.id] = cubeHalfBrick
+
+        // ── Curved brick wall fast-path ───────────────────────────
+        //
+        // Curved walls bypass the straight-wall pipeline: no
+        // openings, no trim, no jamb-mortar cover (curves don't
+        // host openings yet — same constraint the block curve path
+        // has). We feed the brick courses + synthetic library into
+        // the shared segmentsForCurvedWall helper which lays the
+        // bricks out along the outer arc length, then collect a
+        // curved-mortar shell so the recessed joints read between
+        // adjacent brick wedges.
+        if (isCurvedWall(wall)) {
+          outWedges.push(
+            ...segmentsForCurvedWall(
+              wall,
+              thicknessMm,
+              brickCourses,
+              totalHeightM,
+              'stretcher',
+              brickColorMap,
+              brickLibrary,
+              brickCubeThicknessMap,
+            ),
+          )
+          // Mortar shell sized to the largest brick width across all
+          // courses — keeps the shell tucked behind the worst-case
+          // chord midpoint on tight radii. Single brick width is the
+          // common case; mixed-width course ranges pick up the max.
+          let maxBrickWidthMm = brickWidthMm
+          for (const c of brickCourses) {
+            const w = brickLibrary[c.bodyCode]?.dimensions.widthMm ?? 0
+            if (w > maxBrickWidthMm) maxBrickWidthMm = w
+          }
+          collectCurvedMortarShell(
+            wall,
+            thicknessMm,
+            totalHeightM,
+            maxBrickWidthMm,
+            outMortarShells,
+          )
+          return
+        }
 
         // ── Sill / head trim — anchored at opening edge ─────────────
         //

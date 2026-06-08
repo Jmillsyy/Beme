@@ -23,6 +23,7 @@ import type {
 import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
+import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 
 // ---------- Brick tally ----------
 //
@@ -113,7 +114,27 @@ export interface BrickTallyByMakeup {
   brickCount: number
 }
 
+/**
+ * Wall length in millimetres.
+ *
+ * Straight walls → Euclidean distance between start and end.
+ * Curved walls   → true arc length along the centreline. The arc is
+ *                  defined by the three points (start, mid, end), and
+ *                  arcLengthMm comes from the shared curveGeom helper
+ *                  that drives the block estimator + 3D renderer.
+ *
+ * Falls back to Euclidean distance if the curve geometry is degenerate
+ * (three collinear points) so the calc never returns NaN.
+ */
 function wallLengthMm(wall: Wall): number {
+  if (isCurvedWall(wall) && wall.midX !== undefined && wall.midY !== undefined) {
+    const geom = arcFromThreePoints(
+      { x: wall.startX, y: wall.startY },
+      { x: wall.midX, y: wall.midY },
+      { x: wall.endX, y: wall.endY },
+    )
+    if (geom) return geom.arcLengthMm
+  }
   const dx = wall.endX - wall.startX
   const dy = wall.endY - wall.startY
   return Math.sqrt(dx * dx + dy * dy)

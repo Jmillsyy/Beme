@@ -43,21 +43,48 @@ export default function AreaTabs({
   /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
 }) {
-  // expanded = panel body visible; creating = New area modal; editingId =
-  // Edit area modal pre-filled with that area's name. Defaults to
-  // EXPANDED so the user sees the area list on first load — same default
-  // as SupplyItemsPanel.
+  // expanded = panel body visible; editingId = Edit area modal pre-filled
+  // with that area's name. Defaults to EXPANDED so the user sees the area
+  // list on first load — same default as SupplyItemsPanel. The legacy
+  // "creating" modal flow was retired in favour of one-click create with
+  // an auto-numbered default name ("New Area 2", "New Area 3"…) — users
+  // rename via the existing ✎ affordance if they want a custom label.
   const [expanded, setExpanded] = useState(true)
-  const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const editingArea = editingId
     ? areas.find((a) => a.id === editingId) ?? null
     : null
 
-  const handleCreate = (name: string) => {
-    const trimmed = name.trim()
-    if (trimmed) onCreate(trimmed)
-    setCreating(false)
+  // handleCreate retired with the create modal — "+ New area" now
+  // calls onCreate(nextDefaultAreaName()) directly. Rename / edit
+  // still flows through handleRename + the AreaNameModal in 'edit'
+  // mode below.
+
+  /**
+   * Resolve the next default name for "+ New area".
+   *
+   *   - No existing area called "New Area" → use "New Area".
+   *   - "New Area" exists, no "New Area 2" → use "New Area 2".
+   *   - Highest suffix is N → use "New Area (N+1)".
+   *
+   * Comparison is case-insensitive against trimmed names so a manually-
+   * renamed "new area" still collides cleanly. Gaps are allowed
+   * (renaming "New Area 2" to "Balcony" leaves "New Area 3" as the
+   * next slot, since N+1 anchors on the max suffix not the count).
+   */
+  const nextDefaultAreaName = () => {
+    const norm = (s: string) => s.trim().toLowerCase()
+    const names = areas.map((a) => norm(a.name))
+    if (!names.includes('new area')) return 'New Area'
+    let maxN = 1
+    for (const n of names) {
+      const m = n.match(/^new area\s+(\d+)$/)
+      if (m) {
+        const num = parseInt(m[1], 10)
+        if (Number.isFinite(num) && num > maxN) maxN = num
+      }
+    }
+    return `New Area ${maxN + 1}`
   }
 
   const handleRename = (id: string, name: string) => {
@@ -142,13 +169,20 @@ export default function AreaTabs({
           aria-label="Project areas"
           className="mt-2 space-y-0.5"
         >
-          <AreaMenuRow
-            label="All areas"
-            active={activeAreaId === null}
-            onSelect={() => onSelect(null)}
-          />
-          {areas.length > 0 && (
-            <div className="border-t border-ink-700 my-1" />
+          {/* "All areas" pseudo-row only makes sense when there's more
+              than one area to span — with a single area it's just a
+              redundant duplicate of that one area's view. Hidden
+              entirely (along with the divider that separates it from
+              the area list) when areas.length < 2. */}
+          {areas.length >= 2 && (
+            <>
+              <AreaMenuRow
+                label="All areas"
+                active={activeAreaId === null}
+                onSelect={() => onSelect(null)}
+              />
+              <div className="border-t border-ink-700 my-1" />
+            </>
           )}
           {areas.map((area) => (
             <AreaMenuRow
@@ -174,9 +208,13 @@ export default function AreaTabs({
             />
           ))}
           <div className="border-t border-ink-700 my-1" />
+          {/* One-click create: skips the modal and creates an area
+              with the next auto-numbered "New Area N" name. Rename
+              via the row's ✎ button if a custom label is wanted —
+              the rename modal is still present below. */}
           <button
             type="button"
-            onClick={() => setCreating(true)}
+            onClick={() => onCreate(nextDefaultAreaName())}
             className="w-full text-left px-2 py-1.5 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded-md transition-colors"
           >
             + New area
@@ -184,15 +222,6 @@ export default function AreaTabs({
         </div>
       )}
 
-      {creating && (
-        <AreaNameModal
-          mode="create"
-          initialName=""
-          existingNames={existingNamesFor(null)}
-          onSubmit={handleCreate}
-          onCancel={() => setCreating(false)}
-        />
-      )}
       {editingArea && (
         <AreaNameModal
           mode="edit"

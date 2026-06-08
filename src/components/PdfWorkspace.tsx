@@ -57,6 +57,7 @@ import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickTypesPanel from './BrickTypesPanel'
+import LengthInput from './LengthInput'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
@@ -95,10 +96,33 @@ import {
 import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
 import { resolveBlockByRole } from '../lib/blockRoles'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
-import { getUserSettings } from '../lib/userSettings'
+import { getUserSettings, useUserSettings } from '../lib/userSettings'
+import {
+  lengthInputPlaceholder,
+  lengthInputSuffix,
+  parseLengthInput,
+} from '../lib/units'
 
 /** Fallback brick-wall thickness (mm) — single skin — used when no brick type is selected. */
 const DEFAULT_BRICK_WALL_THICKNESS_MM = 110
+
+/**
+ * Module-scope frozen empty array. Passed as a fallback to props that
+ * expect an array but currently have nothing (e.g. measurements on a
+ * fresh page). Sharing one instance keeps reference identity stable
+ * across renders — every `?? []` in JSX would otherwise create a new
+ * empty array each render and bust downstream React.memo() guards.
+ *
+ * Same instance is reused for openings / piers / measurements via the
+ * EMPTY_ARRAY const below — the per-type names above are aliases that
+ * read more clearly at call sites. Type assertion is safe because the
+ * array is frozen and only used for empty fallbacks.
+ */
+const EMPTY_ARRAY: readonly never[] = Object.freeze([])
+const EMPTY_MEASUREMENTS: readonly never[] = EMPTY_ARRAY
+const EMPTY_OPENINGS: readonly never[] = EMPTY_ARRAY
+const EMPTY_PIERS: readonly never[] = EMPTY_ARRAY
+const EMPTY_WALLS: readonly never[] = EMPTY_ARRAY
 
 /**
  * Per-wall physical thickness in mm. Block walls take their thickness from the makeup's
@@ -179,6 +203,7 @@ import {
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
 import { recomputeAllJunctions } from '../lib/junctions'
+import { arcFromThreePoints, splitArcAtParameter } from '../lib/curveGeom'
 import { masonryTypeColor, wallTypeColor } from '../lib/wallTypeColors'
 import { useTheme } from '../lib/theme'
 import { selectBlockLintel } from '../lib/lintels'
@@ -2389,6 +2414,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setShowActiveMakeupHighlight(false)
   }, [])
 
+  // Stable handler for measurement selection. Lives here (not inline
+  // on <WallDrawingLayer>) so the layer's memo() short-circuits on
+  // wheel-zoom commits. Selecting a measurement clears all other
+  // selections — they're mutually exclusive with walls / openings /
+  // piers so Delete targets the right thing.
+  const handleMeasurementSelect = useCallback((id: string | null) => {
+    setSelectedMeasurementId(id)
+    if (id) {
+      setSelectedWallId(null)
+      setSelectedOpeningId(null)
+      setSelectedPierId(null)
+    }
+  }, [])
+
   async function handleDeleteProject() {
     if (!currentProjectId) return
     const ok = await confirm({
@@ -2523,7 +2562,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     [wallsByPage]
   )
   const currentPageWalls = useMemo(
-    () => (wallsByPage[currentPage] ?? []).filter(matchesActiveView),
+    () => {
+      const list = wallsByPage[currentPage]
+      if (!list || list.length === 0) return EMPTY_WALLS as unknown as Wall[]
+      return list.filter(matchesActiveView)
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [wallsByPage, currentPage, mode, activeAreaId]
   )
@@ -2544,9 +2587,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const wallIds = new Set(allWalls.map((w) => w.id))
     return allOpenings.filter((o) => wallIds.has(o.wallId))
   }, [allOpenings, allWalls])
-  const currentPageOpenings = openingsByPage[currentPage] ?? []
+  // Memoised page-scoped slices. Falls back to module-scope frozen
+  // empty arrays so an empty page doesn't churn through new `[]`
+  // identities on each render — required for the WallDrawingLayer
+  // memo() to actually short-circuit during zoom commits.
+  const currentPageOpenings = useMemo(
+    () => openingsByPage[currentPage] ?? (EMPTY_OPENINGS as unknown as Opening[]),
+    [openingsByPage, currentPage],
+  )
   const allPiers = useMemo(() => Object.values(piersByPage).flat(), [piersByPage])
-  const currentPagePiers = piersByPage[currentPage] ?? []
+  const currentPagePiers = useMemo(
+    () => piersByPage[currentPage] ?? (EMPTY_PIERS as unknown as Pier[]),
+    [piersByPage, currentPage],
+  )
   const selectedPier = useMemo(
     () => (selectedPierId ? currentPagePiers.find((p) => p.id === selectedPierId) : null),
     [selectedPierId, currentPagePiers]
@@ -2855,6 +2908,73 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     return map
   }, [allWalls, makeups, brickMakeups, mode])
 
+  // ── Memoised props for <WallDrawingLayer> ─────────────────────────
+  //
+  // These were inlined as IIFEs in the JSX render below, which meant
+  // they recomputed on every render of PdfWorkspace — and more
+  // importantly returned (for the colour case) a new string ref on
+  // every render, defeating WallDrawingLayer's React.memo() shallow
+  // compare. The 80 ms debounced setZoom from the wheel handler was
+  // triggering a full Konva re-reconcile of every wall / opening /
+  // pier on each tick, which is the lag the user was feeling during
+  // pinch-zoom. Lifting them into useMemo with explicit deps means
+  // the wall layer only re-renders when something it actually cares
+  // about changes — not on every parent re-render.
+
+  /** Cursor preview thickness while drawing — see comment at JSX site. */
+  const activeWallThicknessMm = useMemo(() => {
+    if (mode === 'brick') {
+      const code = brickSettings.brickTypeCode
+      return (
+        (code ? BRICK_LIBRARY[code]?.depthMm : undefined) ??
+        DEFAULT_BRICK_WALL_THICKNESS_MM
+      )
+    }
+    const am = makeupsById[activeMakeupId]
+    return am ? getEffectiveWallThicknessMm(am, BLOCK_LIBRARY) : 190
+  }, [mode, brickSettings.brickTypeCode, makeupsById, activeMakeupId])
+
+  /** Active pier's first-course footprint (width × depth). */
+  const activePierBlock = useMemo(() => {
+    const activePier = activePierMakeupId
+      ? pierMakeups.find((p) => p.id === activePierMakeupId)
+      : null
+    const firstCode = activePier?.coursePattern?.[0]
+    return firstCode ? BLOCK_LIBRARY[firstCode] : undefined
+  }, [activePierMakeupId, pierMakeups])
+
+  const pierFootprintMm = useMemo(() => {
+    if (activePierBlock?.dimensions.widthMm) return activePierBlock.dimensions.widthMm
+    const pierBlock = pickPierBlock({ settings: getUserSettings() })
+    return pierBlock?.dimensions.widthMm ?? 390
+  }, [activePierBlock])
+
+  const pierFootprintDepthMm = useMemo(() => {
+    if (activePierBlock?.dimensions.depthMm) return activePierBlock.dimensions.depthMm
+    const pierBlock = pickPierBlock({ settings: getUserSettings() })
+    return pierBlock?.dimensions.depthMm ?? 190
+  }, [activePierBlock])
+
+  /** Active wall colour for the cursor preview. */
+  const activeWallColor = useMemo(() => {
+    if (mode === 'block' && activeMakeupId) return wallTypeColor(activeMakeupId, makeups)
+    if (mode === 'brick' && activeBrickMakeupId) return wallTypeColor(activeBrickMakeupId, brickMakeups)
+    return undefined
+  }, [mode, activeMakeupId, activeBrickMakeupId, makeups, brickMakeups])
+
+  /** Active-makeup highlight target — only when the highlight toggle is on. */
+  const activeMakeupIdForHighlight = useMemo(() => {
+    if (!showActiveMakeupHighlight) return null
+    return mode === 'brick' ? activeBrickMakeupId : activeMakeupId
+  }, [showActiveMakeupHighlight, mode, activeBrickMakeupId, activeMakeupId])
+
+  /** Stable measurements ref for the current page; falls back to the
+   *  module-scope EMPTY_MEASUREMENTS const so the array identity is
+   *  stable across renders when the page has no measurements. */
+  const currentPageMeasurements = useMemo(() => {
+    return activeMeasurementsByPage[currentPage] ?? EMPTY_MEASUREMENTS
+  }, [activeMeasurementsByPage, currentPage])
+
   // Per-pier colour from the shared wall+pier palette. Uses
   // masonryTypeColor so a pier's colour can never collide with a
   // wall's — the engine offsets pier indices by wall count, so
@@ -3029,7 +3149,59 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     midMm: { x: number; y: number },
     endMm: { x: number; y: number }
   ) {
-    if (mode !== 'block') return // Brick mode doesn't support curves yet
+    // Curved walls work in BOTH block and brick mode. Reject any
+    // other mode defensively.
+    if (mode !== 'block' && mode !== 'brick') return
+
+    // Brick curved walls — uses the active brick makeup id, trade =
+    // 'brick'. The 3D renderer + tally + export already handle
+    // curved brick walls (the brick render path's curve fast-path
+    // calls segmentsForCurvedWall with the brick courses, and
+    // brickCalc / brickExport use arc length via wallLengthMm).
+    if (mode === 'brick') {
+      const userActiveMakeup = brickMakeupsById[activeBrickMakeupId]
+      if (!userActiveMakeup) {
+        // No active brick wall type — nothing to attach the wall
+        // to. Bail rather than orphaning a wall with no makeup.
+        setDrawingCurveMode(false)
+        return
+      }
+      const newWallId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `wall-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const targetAreaId =
+        userActiveMakeup.areaId ??
+        activeAreaId ??
+        (areas.length > 0 ? areas[0].id : undefined)
+      const curvedWall: Wall = {
+        id: newWallId,
+        trade: 'brick',
+        ...(targetAreaId ? { areaId: targetAreaId } : {}),
+        makeupId: userActiveMakeup.id,
+        startX: startMm.x,
+        startY: startMm.y,
+        endX: endMm.x,
+        endY: endMm.y,
+        kind: 'curved',
+        midX: midMm.x,
+        midY: midMm.y,
+        startJunction: { type: 'free' },
+        endJunction: { type: 'free' },
+      }
+      const existing = wallsByPage[currentPage] ?? []
+      const newWalls = [...existing, curvedWall]
+      const thicknesses = computeWallThicknessByWallId(
+        newWalls,
+        makeupsById,
+        mode,
+        brickSettings.brickTypeCode,
+      )
+      const recomputed = recomputeAllJunctions(newWalls, thicknesses)
+      setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
+      setDrawingCurveMode(false)
+      return
+    }
 
     // Use the user's active wall type as-is when it's a normal
     // (user-configured) makeup — no `curveRadiusMm` means the user
@@ -3167,6 +3339,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     currentPage,
     makeups,
     makeupsById,
+    brickMakeupsById,
+    activeBrickMakeupId,
+    activeMakeupId,
     brickSettings,
     newCurveHeightMm,
     // Same reason as handleWallAdded: the curve stamps activeAreaId
@@ -3188,26 +3363,113 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * Curved walls are not split — control joints are a straight-wall concept here.
    */
   const handleControlJointPlaced = useCallback(function handleControlJointPlaced(wallId: string, alongMm: number) {
-    if (mode !== 'block') return
+    // Cut wall is now available in BOTH block and brick mode — the
+    // split itself is pure geometry and the per-half wall keeps the
+    // same makeup + trade as the original, so a brick wall produces
+    // two brick halves with a sealant gap and a block wall produces
+    // two block halves. Reject any other mode defensively.
+    if (mode !== 'block' && mode !== 'brick') return
     const existing = wallsByPage[currentPage] ?? []
     const wall = existing.find((w) => w.id === wallId)
     if (!wall) return
-    if (wall.kind === 'curved') return // not supported for curves
 
-    // Compute the split point in mm. Clamp away from the very ends so we don't make a
-    // zero-length sliver.
+    // Compute the split point + per-half geometry. Straight and curved
+    // walls share the same downstream logic (junction repointing,
+    // opening re-bucketing, control-joint tagging) — they only differ
+    // in how the split point is derived and what fields the two halves
+    // carry. Both branches produce:
+    //   - fullLengthMm   — full lineal length of the original wall
+    //   - clampedAlong   — split position in the same units, clamped
+    //                      away from the ends to avoid sliver halves
+    //   - firstGeom / secondGeom — { startX, startY, endX, endY, midX?, midY?, kind }
     const MIN_HALF_LENGTH_MM = 100
-    const dx = wall.endX - wall.startX
-    const dy = wall.endY - wall.startY
-    const fullLengthMm = Math.sqrt(dx * dx + dy * dy)
-    if (fullLengthMm < 2 * MIN_HALF_LENGTH_MM) return
-    const clampedAlong = Math.max(
-      MIN_HALF_LENGTH_MM,
-      Math.min(fullLengthMm - MIN_HALF_LENGTH_MM, alongMm)
-    )
-    const t = clampedAlong / fullLengthMm
-    const splitX = wall.startX + t * dx
-    const splitY = wall.startY + t * dy
+
+    type HalfGeom = {
+      startX: number
+      startY: number
+      endX: number
+      endY: number
+      kind: 'straight' | 'curved'
+      midX?: number
+      midY?: number
+    }
+
+    let fullLengthMm: number
+    let clampedAlong: number
+    let firstGeom: HalfGeom
+    let secondGeom: HalfGeom
+
+    if (
+      wall.kind === 'curved' &&
+      wall.midX !== undefined &&
+      wall.midY !== undefined
+    ) {
+      // Curved wall split: derive the arc geometry, find t along the
+      // arc (alongMm is in arc-length units thanks to the curve-aware
+      // projectOntoWall), and use splitArcAtParameter to produce the
+      // two sub-arcs that together trace the original exactly. Each
+      // half stays curved with its own (start, mid, end) triple.
+      const arc = arcFromThreePoints(
+        { x: wall.startX, y: wall.startY },
+        { x: wall.midX, y: wall.midY },
+        { x: wall.endX, y: wall.endY },
+      )
+      if (!arc) return // degenerate (collinear) — treat as not splittable
+      fullLengthMm = arc.arcLengthMm
+      if (fullLengthMm < 2 * MIN_HALF_LENGTH_MM) return
+      clampedAlong = Math.max(
+        MIN_HALF_LENGTH_MM,
+        Math.min(fullLengthMm - MIN_HALF_LENGTH_MM, alongMm),
+      )
+      const tArc = clampedAlong / fullLengthMm
+      const { first, second } = splitArcAtParameter(arc, tArc)
+      firstGeom = {
+        startX: first.start.x,
+        startY: first.start.y,
+        endX: first.end.x,
+        endY: first.end.y,
+        midX: first.mid.x,
+        midY: first.mid.y,
+        kind: 'curved',
+      }
+      secondGeom = {
+        startX: second.start.x,
+        startY: second.start.y,
+        endX: second.end.x,
+        endY: second.end.y,
+        midX: second.mid.x,
+        midY: second.mid.y,
+        kind: 'curved',
+      }
+    } else {
+      // Straight wall — Euclidean split (unchanged from the original
+      // implementation).
+      const dx = wall.endX - wall.startX
+      const dy = wall.endY - wall.startY
+      fullLengthMm = Math.sqrt(dx * dx + dy * dy)
+      if (fullLengthMm < 2 * MIN_HALF_LENGTH_MM) return
+      clampedAlong = Math.max(
+        MIN_HALF_LENGTH_MM,
+        Math.min(fullLengthMm - MIN_HALF_LENGTH_MM, alongMm),
+      )
+      const tStraight = clampedAlong / fullLengthMm
+      const splitX = wall.startX + tStraight * dx
+      const splitY = wall.startY + tStraight * dy
+      firstGeom = {
+        startX: wall.startX,
+        startY: wall.startY,
+        endX: splitX,
+        endY: splitY,
+        kind: 'straight',
+      }
+      secondGeom = {
+        startX: splitX,
+        startY: splitY,
+        endX: wall.endX,
+        endY: wall.endY,
+        kind: 'straight',
+      }
+    }
 
     function newId() {
       return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -3237,20 +3499,26 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       ...wall,
       id: firstId,
       // First half keeps the original start point + start junction.
-      startX: wall.startX,
-      startY: wall.startY,
-      endX: splitX,
-      endY: splitY,
+      startX: firstGeom.startX,
+      startY: firstGeom.startY,
+      endX: firstGeom.endX,
+      endY: firstGeom.endY,
+      kind: firstGeom.kind,
+      midX: firstGeom.midX,
+      midY: firstGeom.midY,
       startJunction: { ...wall.startJunction },
       endJunction: { type: 'control-joint', connectedWallIds: [secondId] },
     }
     const secondHalf: Wall = {
       ...wall,
       id: secondId,
-      startX: splitX,
-      startY: splitY,
-      endX: wall.endX,
-      endY: wall.endY,
+      startX: secondGeom.startX,
+      startY: secondGeom.startY,
+      endX: secondGeom.endX,
+      endY: secondGeom.endY,
+      kind: secondGeom.kind,
+      midX: secondGeom.midX,
+      midY: secondGeom.midY,
       startJunction: { type: 'control-joint', connectedWallIds: [firstId] },
       endJunction: { ...wall.endJunction },
     }
@@ -4333,6 +4601,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // hoisted up to the top of the component so the dirty-tracker effect
   // can include it in its dep array without hitting the TDZ.
 
+  // User settings (units preference, etc). Drives length input
+  // placeholders, suffixes and the imperial parser. Read via the
+  // hook so the component re-renders when the user toggles units in
+  // Settings; one-shot reads in callbacks still go through
+  // getUserSettings() to grab the freshest value without binding the
+  // callback identity to the hook.
+  const { settings: userSettings } = useUserSettings()
+
   // Click-to-calibrate state
   const [calibrating, setCalibrating] = useState(false)
   const [calPoint1, setCalPoint1] = useState<Point | null>(null)
@@ -4393,9 +4669,32 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const inputRef = useRef<HTMLInputElement>(null)
   const zoomRef = useRef(zoom)
 
+  /**
+   * Page-wrapper translate (CSS pixels). The page is absolutely
+   * positioned inside the container and its (left, top) is JS-
+   * controlled — flex centring was retired because it caused
+   * cursor drift through the page-smaller-vs-bigger-than-container
+   * threshold. The wheel handler updates these via pure cursor-
+   * anchor math (no layout reads); the pan handler updates them
+   * via drag delta. Refs (not state) so per-frame updates don't
+   * trigger React renders; a React state mirror commits on the
+   * 80 ms debounce so dependents (e.g. centre-on-load) see the
+   * settled value.
+   */
+  const viewTxRef = useRef(0)
+  const viewTyRef = useRef(0)
+  /**
+   * Whether the page has been positioned at least once. False on
+   * initial mount; flipped true by the centre-on-load effect once
+   * the container has real dimensions to centre against. Wheel /
+   * pan handlers skip their inline mutations until this is true so
+   * an early gesture doesn't apply a translate against (0, 0).
+   */
+  const viewInitialisedRef = useRef(false)
+
   // Pan (click-and-drag) state
   const isPanningRef = useRef(false)
-  const panStartRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null)
+  const panStartRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
   /**
    * True if a pan was activated during the current mouse press. Stays true until the next
    * mousedown resets it. Used to suppress the browser's `click` event from reaching Konva
@@ -4646,27 +4945,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       if (delta === 0) return
 
       const oldZoom = zoomRef.current
-      const sensitivity = pendingCtrlKey ? 0.01 : 0.002
+      // Wheel sensitivity. Default mouse-wheel: ~11% zoom per tick
+      // (roughly Bluebeam's feel). Ctrl+wheel (and trackpad pinch,
+      // which surfaces as ctrl+wheel on most platforms) stays
+      // aggressive — that's the explicit "I want to zoom fast"
+      // gesture, and trackpad pinches are continuous so per-event
+      // sensitivity matters less.
+      const sensitivity = pendingCtrlKey ? 0.01 : 0.0012
       const factor = Math.exp(-delta * sensitivity)
       const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM)
       if (newZoom === oldZoom) return
 
-      // ── Zoom-to-cursor anchor ──────────────────────────────────
-      // Read the page wrapper's actual DOM position via
-      // getBoundingClientRect so the anchor is robust against any
-      // flex / padding / centring layout the browser computed.
-      //
-      // Steps:
-      //   1. Capture the cursor's WORLD position over the page (in the
-      //      zoom-independent baseWidth units) at the current zoom.
-      //   2. Mutate the page wrapper's DOM dimensions + inner transform
-      //      DIRECTLY (no React) so the visual update lands this rAF
-      //      tick instead of waiting for a full PdfWorkspace re-render.
-      //   3. Re-read the page rect after mutation and shift scroll so
-      //      the same world point lands back under the cursor.
-      //   4. Debounce a setZoom() commit so the rest of the React tree
-      //      (sidebars, toolbar zoom %, etc.) updates ONCE when the
-      //      gesture pauses instead of on every frame.
       const pageEl = pageWrapperRef.current
       const innerEl = innerPageWrapperRef.current
       const container = containerRef.current
@@ -4678,63 +4967,68 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setZoom(newZoom)
         return
       }
-      const pageRect = pageEl.getBoundingClientRect()
-      // Cursor offset from page-start in visual pixels at the current zoom.
-      const cursorOnPageVisualX = pendingClientX - pageRect.left
-      const cursorOnPageVisualY = pendingClientY - pageRect.top
-      // Convert to world (base) units so the anchor is zoom-independent.
-      // oldZoom can't be zero (clamped to MIN_ZOOM > 0).
-      const worldX = cursorOnPageVisualX / oldZoom
-      const worldY = cursorOnPageVisualY / oldZoom
 
-      // 1) Synchronously bump the zoom ref so the NEXT wheel tick reads
-      //    our new zoom, not the (still-stale) React state.
+      // ── Pure transform-based cursor anchor ─────────────────────
+      //
+      // The container is overflow:hidden and the page sits inside it
+      // at absolute (left=0, top=0) with a transform applied via
+      // pageEl.style.transform. tx/ty refs track the translation in
+      // container-local coordinates. Zoom = scale. Cursor anchor
+      // math:
+      //
+      //   cursorInContainerX = pendingClientX - containerRect.left
+      //   pageLocalX_underCursor = (cursorInContainerX - oldTx) / oldZoom
+      //
+      // After zoom, we want the same page-local point under the
+      // cursor:
+      //
+      //   newTx = cursorInContainerX - pageLocalX_underCursor * newZoom
+      //
+      // Substituting and simplifying:
+      //
+      //   newTx = cursorInContainerX
+      //         - (cursorInContainerX - oldTx) * (newZoom / oldZoom)
+      //
+      // No DOM measurements, no layout passes, no scroll updates —
+      // pure arithmetic. The browser GPU-composites the transform
+      // change in <1ms.
+      // The container has a 1 px border, so its bounding rect's
+      // top-left points to the OUTER edge but the page wrapper
+      // (position: absolute; left: 0) is anchored to the INNER
+      // (padding/content) edge. clientLeft / clientTop return
+      // border-left-width and border-top-width respectively, so
+      // adding them gives the inner edge in viewport coords —
+      // matching the coordinate space tx/ty live in. Without this,
+      // every zoom step is off by ~1 px, compounding into a visible
+      // leftward (and upward) drift over a long gesture.
+      const containerRect = container.getBoundingClientRect()
+      const innerLeft = containerRect.left + container.clientLeft
+      const innerTop = containerRect.top + container.clientTop
+      const cursorInContainerX = pendingClientX - innerLeft
+      const cursorInContainerY = pendingClientY - innerTop
+      const oldTx = viewTxRef.current
+      const oldTy = viewTyRef.current
+      const newTx = cursorInContainerX - (cursorInContainerX - oldTx) * (newZoom / oldZoom)
+      const newTy = cursorInContainerY - (cursorInContainerY - oldTy) * (newZoom / oldZoom)
+
+      // 1) Bump refs synchronously so the next wheel tick reads our
+      //    fresh values (not stale React state).
       zoomRef.current = newZoom
+      viewTxRef.current = newTx
+      viewTyRef.current = newTy
 
-      // 2) Direct DOM mutation for the wrapper sizes + inner transform.
-      //    Bypasses React so each rAF tick gets a visual update in <1ms
-      //    instead of waiting for the (large) PdfWorkspace tree to
-      //    reconcile.
+      // 2) Direct DOM mutation. One transform write per frame, GPU
+      //    composited. No layout, no scroll, no paint outside the
+      //    page-wrapper compositor layer.
       const renderedZ = renderedZoomRef.current || 1
-      const renderedW = renderedPageWidthRef.current
-      const renderedH = renderedPageHeightRef.current
       const visualScaleNow = newZoom / renderedZ
-      const visualWidthNow = renderedW * visualScaleNow
-      const visualHeightNow = renderedH != null ? renderedH * visualScaleNow : null
-      pageEl.style.width = `${visualWidthNow}px`
-      if (visualHeightNow != null) {
-        pageEl.style.height = `${visualHeightNow}px`
-      }
-      innerEl.style.transform = `scale(${visualScaleNow})`
+      pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
 
-      // 3) Reconcile scroll so the cursor's world point stays put.
-      //    Re-reading the rect after the DOM mutation gives us the
-      //    actual new position (which depends on flex centring etc.).
-      const newPageRect = pageEl.getBoundingClientRect()
-      const currentWorldVisualLeft = newPageRect.left + worldX * newZoom
-      const currentWorldVisualTop = newPageRect.top + worldY * newZoom
-      const deltaX = currentWorldVisualLeft - pendingClientX
-      const deltaY = currentWorldVisualTop - pendingClientY
-      const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
-      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
-      container.scrollLeft = Math.max(0, Math.min(maxLeft, container.scrollLeft + deltaX))
-      container.scrollTop = Math.max(0, Math.min(maxTop, container.scrollTop + deltaY))
-
-      // 4) Debounce the React state commit so consumers that depend on
+      // 3) Debounce the React state commit so consumers that depend on
       //    `zoom` (toolbar %, layout effects, render of giant subtrees)
       //    only re-run once the user pauses. 80 ms is short enough to
       //    feel instantaneous when the gesture ends and long enough to
       //    coalesce a continuous trackpad pinch into a single render.
-      //
-      //    Also stash the anchor for the post-commit useLayoutEffect to
-      //    consume — it re-anchors after the PDF re-rasters at 300 ms,
-      //    keeping the cursor pinned through the canvas swap.
-      zoomAnchorRef.current = {
-        cursorClientX: pendingClientX,
-        cursorClientY: pendingClientY,
-        worldX,
-        worldY,
-      }
       if (zoomCommitTimerRef.current) clearTimeout(zoomCommitTimerRef.current)
       zoomCommitTimerRef.current = setTimeout(() => {
         zoomCommitTimerRef.current = null
@@ -4815,8 +5109,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         containerRef.current.classList.add('beme-pan-active')
       }
 
-      containerRef.current.scrollLeft = start.scrollLeft - dx
-      containerRef.current.scrollTop = start.scrollTop - dy
+      // Transform-based pan: shift the page's translate by the drag
+      // delta. No container scrolling involved — the container is
+      // overflow:hidden. One transform write per mousemove, GPU
+      // composited, no layout passes.
+      const pageEl = pageWrapperRef.current
+      if (!pageEl) return
+      const newTx = start.tx + dx
+      const newTy = start.ty + dy
+      viewTxRef.current = newTx
+      viewTyRef.current = newTy
+      const renderedZ = renderedZoomRef.current || 1
+      const visualScaleNow = zoomRef.current / renderedZ
+      pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
     }
 
     const handleDocMouseUp = (e: MouseEvent) => {
@@ -4896,11 +5201,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       container.classList.add('beme-pan-active')
     }
 
+    // Capture the page's current translate so drag deltas apply
+    // relative to where the page already was — the container's
+    // scroll position is no longer involved in zoom/pan (it's
+    // overflow:hidden and stays at scrollLeft=0).
+    void container
     panStartRef.current = {
       x: e.clientX,
       y: e.clientY,
-      scrollLeft: container.scrollLeft,
-      scrollTop: container.scrollTop,
+      tx: viewTxRef.current,
+      ty: viewTyRef.current,
     }
   }
 
@@ -4920,34 +5230,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // it survives the in-between render where zoom has changed but
   // renderedZoom is still catching up.
   useLayoutEffect(() => {
-    const anchor = zoomAnchorRef.current
-    const container = containerRef.current
+    // Re-apply the transform after the React commit, so the page
+    // wrapper stays positioned where the wheel handler last placed it
+    // (otherwise React's render would overwrite our DOM-mutated
+    // transform). Pure refresh — no anchor math, the wheel handler
+    // already anchored on every gesture frame.
     const pageEl = pageWrapperRef.current
-    if (!anchor || !container || !pageEl) return
-    // Only re-anchor after the FINAL pass (renderedZoom has caught up
-    // to the clamped target). The interactive wheel handler already
-    // anchored on every rAF tick via direct DOM mutation, so running
-    // again here on every intermediate `zoom` commit would double-
-    // shift the scroll and yank the page sideways. We only need this
-    // effect to handle the PDF re-raster snap that happens 300 ms
-    // after the gesture ends — the canvas swap can nudge the wrapper
-    // a sub-pixel amount and the anchor pulls the cursor back onto its
-    // world point.
-    // Compare against the QUANTISED target — renderedZoom now snaps to
-    // discrete RENDER_ZOOM_STOPS, not the raw clamped zoom, so a raw
-    // comparison would never agree once stops are in play.
-    if (renderedZoom !== quantiseRenderZoom(Math.min(zoom, MAX_RENDERED_ZOOM))) return
-    const pageRect = pageEl.getBoundingClientRect()
-    const currentWorldVisualLeft = pageRect.left + anchor.worldX * zoom
-    const currentWorldVisualTop = pageRect.top + anchor.worldY * zoom
-    const deltaX = currentWorldVisualLeft - anchor.cursorClientX
-    const deltaY = currentWorldVisualTop - anchor.cursorClientY
-    const targetLeft = container.scrollLeft + deltaX
-    const targetTop = container.scrollTop + deltaY
-    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
-    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
-    container.scrollLeft = Math.max(0, Math.min(maxLeft, targetLeft))
-    container.scrollTop = Math.max(0, Math.min(maxTop, targetTop))
+    if (!pageEl) return
+    if (!viewInitialisedRef.current) return
+    const renderedZ = renderedZoom || 1
+    const visualScaleNow = zoom / renderedZ
+    pageEl.style.transform = `translate(${viewTxRef.current}px, ${viewTyRef.current}px) scale(${visualScaleNow})`
+    // Anchor ref is no longer consumed (the wheel handler handles
+    // anchoring per-frame), but clear it so old references don't
+    // pile up.
     zoomAnchorRef.current = null
   }, [zoom, renderedZoom])
 
@@ -4965,31 +5261,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (!container) return
     if (!pdfFile && !isEmptyWorkspace) return
     const raf = requestAnimationFrame(() => {
-      if (!container) return
-      // Use the page wrapper's actual position in scroll-content coords to
-      // align the viewport centre with the page centre. pageEl.offsetLeft
-      // depends on offsetParent and isn't reliable when no ancestor is
-      // positioned — use bounding rects instead, taking the difference
-      // between page and container to get the scroll-content offset.
-      let targetLeft = 0
-      let targetTop = 0
-      if (pageEl) {
-        const pageRect = pageEl.getBoundingClientRect()
-        const containerRect = container.getBoundingClientRect()
-        // Page's left in scroll-content coords:
-        //   (page-left in viewport) - (container-left in viewport) + scrollLeft
-        const pageInScrollLeft = pageRect.left - containerRect.left + container.scrollLeft
-        const pageInScrollTop = pageRect.top - containerRect.top + container.scrollTop
-        targetLeft = pageInScrollLeft + pageRect.width / 2 - container.clientWidth / 2
-        targetTop = pageInScrollTop + pageRect.height / 2 - container.clientHeight / 2
-      } else {
-        targetLeft = (container.scrollWidth - container.clientWidth) / 2
-        targetTop = (container.scrollHeight - container.clientHeight) / 2
-      }
-      const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
-      const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
-      container.scrollLeft = Math.max(0, Math.min(maxLeft, targetLeft))
-      container.scrollTop = Math.max(0, Math.min(maxTop, targetTop))
+      if (!container || !pageEl) return
+      // Transform-based centring: compute the translate that puts
+      // the page's visual centre at the container's centre, then
+      // apply it directly. No scroll involved.
+      const renderedZ = renderedZoomRef.current || 1
+      const visualScaleNow = zoomRef.current / renderedZ
+      const visualW = renderedPageWidthRef.current * visualScaleNow
+      const visualH = (renderedPageHeightRef.current ?? renderedPageWidthRef.current) * visualScaleNow
+      const tx = (container.clientWidth - visualW) / 2
+      const ty = (container.clientHeight - visualH) / 2
+      viewTxRef.current = tx
+      viewTyRef.current = ty
+      pageEl.style.transform = `translate(${tx}px, ${ty}px) scale(${visualScaleNow})`
+      viewInitialisedRef.current = true
     })
     return () => cancelAnimationFrame(raf)
   }, [pdfFile, currentPage, isEmptyWorkspace])
@@ -5257,8 +5542,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   function submitCalibration() {
     if (!calPoint1 || !calPoint2) return
-    const mm = parseFloat(calInput)
-    if (!Number.isFinite(mm) || mm <= 0) return
+    // Accept both metric (5000, 5m, 5000mm) and imperial (16'-5", 197")
+    // notation. parseLengthInput returns mm or null on bad input.
+    const mm = parseLengthInput(
+      calInput,
+      getUserSettings().preferences.units,
+    )
+    if (mm === null || !Number.isFinite(mm) || mm <= 0) return
     // Click points are in the SVG's internal coord system, which spans
     // 0..renderedPageWidth (= baseWidth × renderedZoom). The full PDF page
     // is `pageWidthMm` mm wide on paper, so each canvas pixel represents
@@ -5731,6 +6021,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   onAddMakeup={handleAddBrickMakeup}
                   onUpdateMakeup={handleUpdateBrickMakeup}
                   onDeleteMakeup={handleDeleteBrickMakeup}
+                  onToggleCurvedWall={() => {
+                    setDrawingCurveMode(true)
+                    setDrawingMode(false)
+                    setPlacingOpening(false)
+                    setPlacingControlJoint(false)
+                    setPlacingTiedPier(false)
+                    setPlacingFreestandingPier(false)
+                    setSelectedWallId(null)
+                    setSelectedOpeningId(null)
+                    setSelectedPierId(null)
+                  }}
                 />
               )}
             </aside>
@@ -6481,18 +6782,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </span>
                 <input
                   ref={inputRef}
-                  type="number"
-                  min="1"
+                  type="text"
+                  inputMode="text"
                   value={calInput}
                   onChange={(e) => setCalInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') submitCalibration()
                     if (e.key === 'Escape') cancelCalibration()
                   }}
-                  placeholder="e.g. 5000"
-                  className="px-2 py-1 border border-beme-500/40 rounded text-sm w-28 bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                  placeholder={lengthInputPlaceholder(userSettings.preferences.units)}
+                  className="px-2 py-1 border border-beme-500/40 rounded text-sm w-32 bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                 />
-                <span>mm</span>
+                <span>{lengthInputSuffix(userSettings.preferences.units)}</span>
                 <button
                   onClick={submitCalibration}
                   disabled={!calInput || parseFloat(calInput) <= 0}
@@ -6725,12 +7026,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   // configured for curves (kind === 'curved' or has
                   // a legacy curveRadiusMm); otherwise straight-draw.
                   // Same button, the active type's kind decides which
-                  // draw mode toggles on.
-                  const m = makeupsById[activeMakeupId]
-                  const isCurveType =
-                    !!m &&
-                    (m.kind === 'curved' ||
-                      typeof m.curveRadiusMm === 'number')
+                  // draw mode toggles on. In brick mode the active
+                  // type lives in brickMakeupsById; in block mode it
+                  // lives in makeupsById. WallMakeup carries the
+                  // legacy curveRadiusMm field — BrickMakeup doesn't —
+                  // so the brick branch only inspects `kind`.
+                  let isCurveType = false
+                  if (mode === 'brick') {
+                    const m = brickMakeupsById[activeBrickMakeupId]
+                    isCurveType = !!m && m.kind === 'curved'
+                  } else {
+                    const m = makeupsById[activeMakeupId]
+                    isCurveType =
+                      !!m &&
+                      (m.kind === 'curved' ||
+                        typeof m.curveRadiusMm === 'number')
+                  }
                   if (isCurveType) {
                     setDrawingCurveMode((v) => !v)
                     setDrawingMode(false)
@@ -6816,7 +7127,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             >
               {placingOpening ? 'Cancel opening' : '+ Add opening'}
             </button>
-            {mode === 'block' && (
+            {/* Cut wall — splits the clicked wall at the cursor into
+                two independent walls with a sealant gap between. Now
+                available in BOTH block and brick mode (was block-only;
+                bricklayers use the same expansion-joint concept). The
+                underlying split logic is pure geometry — same
+                operation for either trade. */}
+            {(mode === 'block' || mode === 'brick') && (
               <button
                 onClick={() => {
                   setPlacingControlJoint((v) => !v)
@@ -7027,30 +7344,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   </h4>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
-                      <span className="block text-ink-300 text-xs mb-1">Head height (mm)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="50"
-                        value={blockOpeningHeadMm}
-                        onChange={(e) =>
-                          setBlockOpeningHeadMm(parseInt(e.target.value || '0', 10))
-                        }
-                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                        autoFocus
+                      <span className="block text-ink-300 text-xs mb-1">Head height</span>
+                      <LengthInput
+                        valueMm={blockOpeningHeadMm}
+                        onChangeMm={(mm) => setBlockOpeningHeadMm(Math.round(mm))}
+                        minMm={0}
+                        className="w-full"
                       />
                     </label>
                     <label className="block">
-                      <span className="block text-ink-300 text-xs mb-1">Sill height (mm)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="50"
-                        value={blockOpeningSillMm}
-                        onChange={(e) =>
-                          setBlockOpeningSillMm(parseInt(e.target.value || '0', 10))
-                        }
-                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      <span className="block text-ink-300 text-xs mb-1">Sill height</span>
+                      <LengthInput
+                        valueMm={blockOpeningSillMm}
+                        onChangeMm={(mm) => setBlockOpeningSillMm(Math.round(mm))}
+                        minMm={0}
+                        className="w-full"
                       />
                     </label>
                   </div>
@@ -7228,17 +7536,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     Dimensions
                   </h4>
                   <label className="block">
-                    <span className="block text-ink-300 text-xs mb-1">Opening height (mm)</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="50"
-                      value={brickOpeningHeightMm}
-                      onChange={(e) =>
-                        setBrickOpeningHeightMm(parseInt(e.target.value || '0', 10))
-                      }
-                      className="w-40 px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                      autoFocus
+                    <span className="block text-ink-300 text-xs mb-1">Opening height</span>
+                    <LengthInput
+                      valueMm={brickOpeningHeightMm}
+                      onChangeMm={(mm) => setBrickOpeningHeightMm(Math.round(mm))}
+                      minMm={0}
+                      className="w-40"
                     />
                     <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
                       Auto sill{' '}
@@ -7651,50 +7954,53 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
-        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-auto bg-ink-800 ${viewMode === '3d' ? 'hidden' : ''}`}
+        className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-hidden bg-ink-800 relative ${viewMode === '3d' ? 'hidden' : ''}`}
         style={{
-          cursor:
-            calibrating ||
-            drawingMode ||
-            placingOpening ||
-            placingControlJoint ||
-            placingTiedPier ||
-            placingFreestandingPier
-              ? 'crosshair'
-              : 'grab',
+          // Cursor is ALWAYS crosshair on the canvas — same as Bluebeam.
+          // The grab / open-hand cursor used to be the no-tool default;
+          // swapping to crosshair gives the user a precise pointer even
+          // when they're just navigating. The full-canvas crosshair
+          // GUIDE (the two long black lines) still only renders during
+          // an active placement tool; this just changes the OS cursor
+          // glyph at all other times. Active pan drags still flip to
+          // `grabbing` via the .beme-pan-active class set by the pan
+          // handler, so the visual feedback for "I'm panning" is intact.
+          cursor: 'crosshair',
         }}
       >
-        {/* Spacer wrapper with generous symmetric padding around the page so
-            the user can pan it freely in any direction past its natural
-            edges (Figma-style). Flex-centering keeps the page in the middle
-            of any "extra" scroll area when the spacer is forced wider than
-            its content (e.g. at low zoom where minWidth kicks in) — without
-            justify-center the page sticks to the spacer's left edge and the
-            extra space ends up only on the right, which is what made
-            panning feel one-sided.
-            min-width / min-height ensure the scroll area is bigger than
-            the viewport even at very low zoom, so scrolling still works. */}
+        {/* Bluebeam-style transform-based viewport.
+            The container is overflow:hidden (a clipping viewport),
+            NOT a scroll container. The page wrapper is absolutely
+            positioned inside it and translated by JS — left/top are
+            mutated directly by the wheel + pan handlers. Zooming
+            applies pure cursor-anchor math: no layout passes, no
+            scroll updates, no flex-centering discontinuity at the
+            page-smaller-vs-larger threshold. This is the same
+            architecture Bluebeam (and d3.zoom, and most native
+            CAD-ish viewers) use — `transform: translate scale` on
+            a single layer, GPU-composited each frame.
+            The initial position is set by the centre-on-load
+            useLayoutEffect once the container has real dimensions. */}
         <div
+          ref={pageWrapperRef}
+          className="absolute"
           style={{
-            minWidth: 'calc(100% + 1600px)',
-            minHeight: 'calc(100% + 1200px)',
-            padding: '600px 800px',
-            boxSizing: 'border-box',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            left: 0,
+            top: 0,
+            // Outer wrapper is sized at the RENDERED (canvas) dimensions
+            // — stable across interactive zoom. The visual zoom + pan
+            // are handled by a single transform applied via JS in the
+            // wheel + pan handlers. This is the Bluebeam pattern: one
+            // compositor layer, one transform, no layout changes per
+            // frame. Initial transform is set by the centre-on-load
+            // useLayoutEffect (before first paint).
+            width: renderedPageWidth || undefined,
+            height: renderedPageHeight ?? undefined,
+            lineHeight: 0,
+            transformOrigin: '0 0',
+            willChange: 'transform',
           }}
         >
-          {/* Outer wrapper holds the VISUAL (transformed) dimensions so scrolling sizes correctly */}
-          <div
-            ref={pageWrapperRef}
-            className="relative"
-            style={{
-              width: visualPageWidth || undefined,
-              height: visualPageHeight ?? undefined,
-              lineHeight: 0,
-            }}
-          >
             {/* Inner wrapper is at the rendered (canvas) resolution and gets CSS-scaled.
                 The PDF canvas, calibration overlay, AND the Konva wall layer all live INSIDE
                 this transformed wrapper — they all scale together with one transform. The
@@ -7714,12 +8020,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 width: renderedPageWidth,
                 height: renderedPageHeight ?? undefined,
                 position: 'relative',
-                // Always apply the transform (even at scale 1) so the element stays on its
-                // own GPU compositor layer across the whole gesture. Toggling the transform
-                // property on and off forces the compositor to rebuild the layer.
-                transform: `scale(${visualScale})`,
-                transformOrigin: '0 0',
-                willChange: 'transform',
+                // No transform on the inner — the OUTER wrapper now
+                // carries the single translate+scale transform that
+                // handles all zoom + pan. Stacking transforms here
+                // would double-apply the scale.
               }}
             >
               {isEmptyWorkspace ? (
@@ -7816,69 +8120,30 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 renderedPageHeight !== null &&
                 currentScale && (
                 <WallDrawingLayer
-                  walls={isReferenceView ? [] : currentPageWalls}
-                  openings={isReferenceView ? [] : currentPageOpenings}
+                  // Reference-view passes the frozen EMPTY_WALLS / EMPTY_OPENINGS
+                  // constants instead of a fresh `[]` so the wall layer's memo()
+                  // sees a stable identity (reference views typically stay
+                  // reference views, so memo can short-circuit).
+                  walls={isReferenceView ? (EMPTY_WALLS as unknown as Wall[]) : currentPageWalls}
+                  openings={isReferenceView ? (EMPTY_OPENINGS as unknown as Opening[]) : currentPageOpenings}
                   wallThicknessByWallId={wallThicknessByWallId}
                   // Live-preview thickness for the in-progress draw —
                   // active makeup's body block depth in block mode,
                   // active brick type's depth in brick mode. Falls
                   // back to 190 mm if neither resolves.
-                  activeWallThicknessMm={(() => {
-                    if (mode === 'brick') {
-                      // brickTypeCode can be empty / undefined for fresh
-                      // brick projects until the user picks a type — guard
-                      // the library index so tsc's strict undefined check
-                      // is satisfied. Empty code falls through to the
-                      // project default thickness.
-                      const code = brickSettings.brickTypeCode
-                      return (
-                        (code ? BRICK_LIBRARY[code]?.depthMm : undefined) ??
-                        DEFAULT_BRICK_WALL_THICKNESS_MM
-                      )
-                    }
-                    const am = makeupsById[activeMakeupId]
-                    // Cursor preview matches what the wall will actually
-                    // render at — MAX depth across the makeup so a 290mm
-                    // corner block on a 250mm body still shows the
-                    // 290mm footprint while drawing.
-                    return am ? getEffectiveWallThicknessMm(am, BLOCK_LIBRARY) : 190
-                  })()}
-                  // Pier footprint for on-canvas pier tiles — read from
-                  // the library's pier-tagged block (or the user's
-                  // Cursor footprint follows the ACTIVE pier type's first
-                  // course block — so swapping the modal to a 290 mm
-                  // pier block immediately shrinks the hover preview.
-                  // Width and depth resolved independently so non-cubic
-                  // blocks (e.g. 20.01 = 390 × 190) render as their
-                  // real long-and-thin shape, not a square.
-                  pierFootprintMm={(() => {
-                    const activePier = activePierMakeupId
-                      ? pierMakeups.find((p) => p.id === activePierMakeupId)
-                      : null
-                    const firstCode = activePier?.coursePattern?.[0]
-                    const firstBlock = firstCode
-                      ? BLOCK_LIBRARY[firstCode]
-                      : undefined
-                    if (firstBlock?.dimensions.widthMm) {
-                      return firstBlock.dimensions.widthMm
-                    }
-                    const pierBlock = pickPierBlock({ settings: getUserSettings() })
-                    return pierBlock?.dimensions.widthMm ?? 390
-                  })()}
-                  pierFootprintDepthMm={(() => {
-                    const activePier = activePierMakeupId
-                      ? pierMakeups.find((p) => p.id === activePierMakeupId)
-                      : null
-                    const firstCode = activePier?.coursePattern?.[0]
-                    const firstBlock = firstCode
-                      ? BLOCK_LIBRARY[firstCode]
-                      : undefined
-                    if (firstBlock?.dimensions.depthMm) {
-                      return firstBlock.dimensions.depthMm
-                    }
-                    const pierBlock = pickPierBlock({ settings: getUserSettings() })
-                    return pierBlock?.dimensions.depthMm ?? 190
-                  })()}
+                  // Memoised cursor-preview thickness. Brick mode uses
+                  // the active brick type's depth; block mode uses the
+                  // active makeup's max effective wall thickness. Lifted
+                  // out of the JSX (was an IIFE) so it doesn't recompute
+                  // — and the prop ref stays stable across renders.
+                  activeWallThicknessMm={activeWallThicknessMm}
+                  // Pier footprint for on-canvas pier tiles — width and
+                  // depth resolved independently so non-cubic blocks
+                  // (e.g. 20.01 = 390 × 190) render as their real
+                  // long-and-thin shape, not a square. Both lifted to
+                  // useMemo so the layer's memo() short-circuits.
+                  pierFootprintMm={pierFootprintMm}
+                  pierFootprintDepthMm={pierFootprintDepthMm}
                   visualWidth={renderedPageWidth}
                   visualHeight={renderedPageHeight}
                   pxPerMmAtCurrentZoom={currentScale * renderedZoom}
@@ -7905,20 +8170,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   placingFreestandingPier={placingFreestandingPier}
                   placingRuler={placingRuler}
                   rulerAnchorMm={rulerAnchorMm}
-                  measurements={activeMeasurementsByPage[currentPage] ?? []}
+                  // Stable empty-array fallback (EMPTY_MEASUREMENTS) so
+                  // pages without measurements don't bust memo() with a
+                  // fresh `[]` each render.
+                  measurements={currentPageMeasurements}
                   onRulerClick={handleRulerClick}
                   selectedMeasurementId={selectedMeasurementId}
-                  onMeasurementSelect={(id) => {
-                    setSelectedMeasurementId(id)
-                    if (id) {
-                      // Selecting a measurement clears any other selection
-                      // — measurements are mutually exclusive with walls /
-                      // openings / piers so Delete targets the right thing.
-                      setSelectedWallId(null)
-                      setSelectedOpeningId(null)
-                      setSelectedPierId(null)
-                    }
-                  }}
+                  onMeasurementSelect={handleMeasurementSelect}
                   piers={currentPagePiers}
                   selectedWallId={selectedWallId}
                   selectedOpeningId={selectedOpeningId}
@@ -7929,20 +8187,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   wallColorByWallId={wallColorByWallId}
                   pierColorByPierId={pierColorByPierId}
                   pierSizeByPierId={pierSizeByPierId}
-                  activeWallColor={
-                    mode === 'block' && activeMakeupId
-                      ? wallTypeColor(activeMakeupId, makeups)
-                      : mode === 'brick' && activeBrickMakeupId
-                        ? wallTypeColor(activeBrickMakeupId, brickMakeups)
-                        : undefined
-                  }
-                  activeMakeupIdForHighlight={
-                    showActiveMakeupHighlight
-                      ? mode === 'brick'
-                        ? activeBrickMakeupId
-                        : activeMakeupId
-                      : null
-                  }
+                  activeWallColor={activeWallColor}
+                  activeMakeupIdForHighlight={activeMakeupIdForHighlight}
                   onWallToggleSelect={toggleSelectedWallId}
                   onOpeningToggleSelect={toggleSelectedOpeningId}
                   onPierToggleSelect={toggleSelectedPierId}
@@ -8048,7 +8294,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             </div>
           </div>
         </div>
-      </div>
       </div>
 
       </div>
@@ -8187,15 +8432,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onDeletePier={handleDeletePier}
             onDeselectPier={() => setSelectedPierId(null)}
             // Curved-wall trigger lives in the editor modal's TYPE
-            // picker. Only wire in block mode (brick has no curves).
-            // Sets curve-draw mode ON unconditionally (was a toggle
-            // — but the only caller is the modal's Save handler post-
-            // configure, where the user has explicitly picked Curved
-            // and expects to land in curve-draw mode every time, not
-            // be flipped back off if curve mode happened to be on
+            // picker. Wired in BOTH block and brick mode — brick now
+            // supports curved walls (calc uses arc length, 3D
+            // renderer mirrors block's curve path). Sets curve-draw
+            // mode ON unconditionally (was a toggle — but the only
+            // caller is the modal's Save handler post-configure,
+            // where the user has explicitly picked Curved and
+            // expects to land in curve-draw mode every time, not be
+            // flipped back off if curve mode happened to be on
             // already).
             onToggleCurvedWall={
-              mode === 'block'
+              mode === 'block' || mode === 'brick'
                 ? () => {
                     setDrawingCurveMode(true)
                     setDrawingMode(false)
@@ -8232,6 +8479,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onAddMakeup={handleAddBrickMakeup}
             onUpdateMakeup={handleUpdateBrickMakeup}
             onDeleteMakeup={handleDeleteBrickMakeup}
+            // Wire curve-draw activator so the brick wall-type modal
+            // exposes the Wall shape (Straight / Curved) picker. The
+            // saved brick type's `kind` flag drives whether subsequent
+            // Draw clicks route to curve-draw mode.
+            onToggleCurvedWall={() => {
+              setDrawingCurveMode(true)
+              setDrawingMode(false)
+              setPlacingOpening(false)
+              setPlacingControlJoint(false)
+              setPlacingTiedPier(false)
+              setPlacingFreestandingPier(false)
+              setSelectedWallId(null)
+              setSelectedOpeningId(null)
+              setSelectedPierId(null)
+            }}
           />
         )}
 

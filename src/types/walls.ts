@@ -669,6 +669,14 @@ export interface BrickMakeup {
   /** Human-readable name, e.g. "Facework", "Rendered", "Common 76mm". */
   name: string
   /**
+   * Wall shape this brick type produces. Mirrors WallMakeup.kind on
+   * the block side: 'wall' (default, draws as a straight wall) or
+   * 'curved' (the panel labels it Curved and the Draw button routes
+   * to 3-click curve-draw). Optional so existing saved projects load
+   * unchanged — undefined reads as 'wall'.
+   */
+  kind?: 'wall' | 'curved'
+  /**
    * Optional area scope — same semantics as WallMakeup.areaId. Set on
    * creation to the current activeAreaId; legacy makeups without one
    * are migrated to the first area on project load.
