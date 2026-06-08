@@ -43,6 +43,28 @@ interface UnifiedExportPanelProps {
   supplyItemRateOverrides?: Record<string, number>
   pdfFile?: File | null
 
+  /**
+   * Currently-open project id. Retained for legacy callers; the
+   * snapshot pipeline no longer needs it because captures now come
+   * straight in via {@link view3dSnapshots} from PdfWorkspace.
+   */
+  projectId?: string | null
+  /**
+   * 3D captures to embed in the export. Owned by PdfWorkspace
+   * (lifted out of WorkspaceView3D + localStorage) so they're
+   * scoped to a single saved project and can't bleed across.
+   * Empty array (or omitted) means "no captures" and the export
+   * skips the 3D pages entirely.
+   */
+  view3dSnapshots?: Array<{
+    id: string
+    dataUrl: string
+    createdAt: number
+    pageNumber?: number
+    trade?: 'block' | 'brick'
+    legend?: Array<{ code: string; label: string; color: string }>
+  }>
+
   /** Raw walls across both trades / all areas — partitioned internally. */
   allWalls: Wall[]
   /** Raw openings across both trades. */
@@ -124,6 +146,8 @@ export default function UnifiedExportPanel({
   supplyItemSelections,
   supplyItemRateOverrides,
   pdfFile,
+  projectId,
+  view3dSnapshots: view3dSnapshotsProp,
   allWalls,
   allOpenings,
   allPiers = [],
@@ -245,30 +269,26 @@ function ExportEstimateModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  // Area selection. Default seed:
-  //   - One area → that area + Unassigned ticked, picker hidden.
-  //     We include Unassigned in the single-area case because legacy
-  //     projects can have walls drawn BEFORE the area was created,
-  //     leaving them with no areaId. Excluding them would empty the
-  //     tally and hide every adjustment row — confusingly making it
-  //     look like the modal can't change anything.
-  //   - activeAreaId → only that area ticked (current scope wins).
-  //   - Otherwise → every area + Unassigned ticked (everything export).
+  // Area selection. Default to EVERY area + Unassigned ticked so
+  // exports include the whole project by default — that matches how a
+  // builder reads an estimate (the whole job, not just one floor).
+  // Earlier this defaulted to just the active area when activeAreaId
+  // was set, which silently dropped every wall in other areas from
+  // the tally + wall types list. User had to remember to tick the
+  // others; if they didn't, the PDF was missing wall types they
+  // expected to see. Defaulting to all-on means the export always
+  // surfaces everything, and the user can deselect any area they
+  // want excluded.
   const initialSelectedAreas = useMemo(() => {
     const s = new Set<string>()
-    if (areas.length === 1) {
-      s.add(areas[0].id)
-      s.add(UNASSIGNED)
-    } else if (activeAreaId) {
-      s.add(activeAreaId)
-    } else {
-      for (const a of areas) s.add(a.id)
-      s.add(UNASSIGNED)
-    }
+    for (const a of areas) s.add(a.id)
+    s.add(UNASSIGNED)
     return s
     // Initial state only — see comment block above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  // activeAreaId intentionally not consumed here — see initialSelectedAreas.
+  void activeAreaId
   const [selectedAreas, setSelectedAreas] =
     useState<Set<string>>(initialSelectedAreas)
 
@@ -490,6 +510,25 @@ function ExportEstimateModal({
     Record<string, number>
   >({})
   const setSupplyAdj = makeSetAdjustment(setSupplyItemAdjustments)
+  // Per-export supply-item NAME overrides — keyed by item id, value
+  // is the renamed label to display in the PDF. Empty string clears
+  // the override (falls back to the library item's name). Stays
+  // export-scoped (not persisted to the library) so the same item
+  // can read differently on a per-quote basis without polluting the
+  // master library.
+  const [supplyItemNameOverrides, setSupplyItemNameOverrides] = useState<
+    Record<string, string>
+  >({})
+  function setSupplyName(code: string, name: string | null) {
+    setSupplyItemNameOverrides((prev) => {
+      if (!name || !name.trim()) {
+        const { [code]: _drop, ...rest } = prev
+        void _drop
+        return rest
+      }
+      return { ...prev, [code]: name.trim() }
+    })
+  }
 
   // ── Source of truth for the supply item library, same precedence
   //    as the SupplyItemsPanel and the exporters: org-synced list
@@ -812,58 +851,64 @@ function ExportEstimateModal({
         supplyItemSelections,
         supplyItemRateOverrides,
         supplyItemAdjustments,
+        supplyItemNameOverrides,
         business: business(),
         pdfFile: pdfFile ?? undefined,
       }
       // Read the 3D view snapshot queue (saved to localStorage by
       // the ▣ Capture button as a JSON array of {id, dataUrl,
-      // createdAt, legend}). Shared across all three export modes
-      // (block, brick, combined) so the snapshot pages appear in
-      // whichever PDF the user is generating.
-      let view3dSnapshots: Array<{
+      // createdAt, legend}). Storage is namespaced per-PROJECT AND
+      // per-TRADE so block-mode captures live under :block and
+      // brick-mode captures under :brick — that way the per-trade
+      // exports (block estimate / brick estimate) only embed
+      // snapshots that match their walls, and the combined export
+      // includes both. A legacy `:no-trade` bucket is also read so
+      // captures taken before the trade split still surface.
+      // 3D captures: try the prop FIRST (correct path — state lives
+      // on the SavedProject), fall back to window.__beme3dCurrentSnapshots
+      // which PdfWorkspace mirrors the current project's captures
+      // onto. The fallback exists because Vite HMR occasionally
+      // ships a closure where the destructured prop binding is gone,
+      // which previously made captures vanish silently. The window
+      // mirror always holds the live React state.
+      type Snap = {
+        id: string
         dataUrl: string
-        legend: Array<{ code: string; label: string; color: string }>
-      }> = []
+        createdAt: number
+        pageNumber?: number
+        trade?: 'block' | 'brick'
+        legend?: Array<{ code: string; label: string; color: string }>
+      }
+      let allSnapshots: Snap[] = []
       try {
-        const saved = window.localStorage.getItem(
-          'beme:3d-export-snapshots'
-        )
-        if (saved) {
-          const parsed = JSON.parse(saved) as Array<{
-            dataUrl?: string
-            legend?: Array<{ code?: string; label?: string; color?: string }>
-          }>
-          if (Array.isArray(parsed)) {
-            view3dSnapshots = parsed
-              .filter(
-                (s) =>
-                  s &&
-                  typeof s.dataUrl === 'string' &&
-                  s.dataUrl.startsWith('data:image/')
-              )
-              .map((s) => ({
-                dataUrl: s.dataUrl as string,
-                legend: Array.isArray(s.legend)
-                  ? s.legend
-                      .filter(
-                        (i) =>
-                          i &&
-                          typeof i.code === 'string' &&
-                          typeof i.label === 'string' &&
-                          typeof i.color === 'string'
-                      )
-                      .map((i) => ({
-                        code: i.code as string,
-                        label: i.label as string,
-                        color: i.color as string,
-                      }))
-                  : [],
-              }))
-          }
+        if (
+          typeof view3dSnapshotsProp !== 'undefined' &&
+          Array.isArray(view3dSnapshotsProp)
+        ) {
+          allSnapshots = view3dSnapshotsProp as Snap[]
         }
       } catch {
-        // localStorage / JSON parse failures fall back to no snapshots
+        // Stale closure — fall through to the window mirror below.
       }
+      if (allSnapshots.length === 0) {
+        try {
+          const fromWindow = (
+            window as Window & { __beme3dCurrentSnapshots?: Snap[] }
+          ).__beme3dCurrentSnapshots
+          if (Array.isArray(fromWindow)) allSnapshots = fromWindow
+        } catch {
+          // ignore
+        }
+      }
+      const view3dSnapshots = (
+        exportMode === 'combined'
+          ? allSnapshots
+          : exportMode === 'block'
+            ? allSnapshots.filter((s) => s.trade !== 'brick')
+            : exportMode === 'brick'
+              ? allSnapshots.filter((s) => s.trade !== 'block')
+              : []
+      ).map((s) => ({ dataUrl: s.dataUrl, legend: s.legend ?? [] }))
       if (exportMode === 'combined') {
         await exportCombinedEstimate({
           ...shared,
@@ -882,6 +927,7 @@ function ExportEstimateModal({
           brickSettings,
           brickPagesInfo,
           brickAdjustments,
+          areas,
           view3dSnapshots,
         })
       } else if (exportMode === 'block' || exportMode === 'brick') {
@@ -906,6 +952,10 @@ function ExportEstimateModal({
             openings: brickOpenings,
             settings: brickSettings,
             makeups: brickMakeups,
+            // Project areas pass through so the Brickwork by Wall Type
+            // table can group rows under area headings (First Floor /
+            // Second Floor / etc.).
+            areas,
             pagesInfo: brickPagesInfo,
             brickAdjustments,
             view3dSnapshots,
@@ -1093,10 +1143,10 @@ function ExportEstimateModal({
           </section>
           </div>
 
-          {/* Adjustments — block and brick share one section so the
-              header + intro copy don't repeat. Tables show the auto-
-              tally with an Edit button per row + an "+ Add" button to
-              introduce a code that's not in the tally. */}
+          {/* Quantity adjustments — Blocks + Bricks. The brick tally
+              now produces per-brick counts via grid walk in
+              calculateBrickTally, so per-code adjustments work the
+              same way as blocks (positive = reduce, negative = add). */}
           {(hasBlockTally ||
             hasBrickTally ||
             Object.keys(blockAdjustments).length > 0 ||
@@ -1108,13 +1158,13 @@ function ExportEstimateModal({
               <p className="text-[11px] text-ink-500 mb-3 leading-snug">
                 Each row shows the auto-tally quantity. Hit Edit to
                 override it with a different number — useful when you
-                want fewer (blocks on site, reused from another job)
-                or more (extras for breakage, future work). Use the
-                "+ Add" button to include a code that isn't on the
-                plan at all.
+                want fewer (blocks/bricks on site, reused from another
+                job) or more (extras for breakage, future work). Use
+                the "+ Add" button to include a code that isn't on the
+                plan at all. Tallies respect the area filter above —
+                untick areas to remove their bricks from the count.
               </p>
-              {(hasBlockTally ||
-                Object.keys(blockAdjustments).length > 0) && (
+              {hasBlockTally && (
                 <AdjustmentsTable
                   label="Blocks"
                   baseTally={blockBaseTally}
@@ -1125,16 +1175,8 @@ function ExportEstimateModal({
                   addLabel="Add block"
                 />
               )}
-              {(hasBrickTally ||
-                Object.keys(brickAdjustments).length > 0) && (
-                <div
-                  className={
-                    hasBlockTally ||
-                    Object.keys(blockAdjustments).length > 0
-                      ? 'mt-3'
-                      : ''
-                  }
-                >
+              {hasBrickTally && (
+                <div className={hasBlockTally ? 'mt-3' : ''}>
                   <AdjustmentsTable
                     label="Bricks"
                     baseTally={brickBaseTally}
@@ -1180,6 +1222,8 @@ function ExportEstimateModal({
                   addLabel="Add supply item"
                   hideCode
                   groupBy={categoryForSupply}
+                  nameOverrides={supplyItemNameOverrides}
+                  onSetNameOverride={setSupplyName}
                 />
               )}
               {hasBrickSupply && (
@@ -1194,6 +1238,8 @@ function ExportEstimateModal({
                     addLabel="Add supply item"
                     hideCode
                     groupBy={categoryForSupply}
+                    nameOverrides={supplyItemNameOverrides}
+                    onSetNameOverride={setSupplyName}
                   />
                 </div>
               )}
@@ -1271,6 +1317,20 @@ interface AdjustmentsTableProps {
    * library grows.
    */
   groupBy?: (code: string) => string | undefined
+  /**
+   * Optional per-row name overrides. When present, the row's
+   * displayed label uses `nameOverrides[code]` instead of
+   * `describe(code)`. Used by supply-item tables so the user can
+   * rename a row inline (e.g. "Galintel 1500" → "Lintel above
+   * front door") for THIS export only.
+   */
+  nameOverrides?: Record<string, string>
+  /**
+   * Optional setter for name overrides. When provided, the inline
+   * edit panel also surfaces a name input alongside the quantity
+   * input. Pass `null` for the second arg to clear the override.
+   */
+  onSetNameOverride?: (code: string, name: string | null) => void
 }
 
 function AdjustmentsTable({
@@ -1283,7 +1343,17 @@ function AdjustmentsTable({
   addLabel,
   hideCode = false,
   groupBy,
+  nameOverrides,
+  onSetNameOverride,
 }: AdjustmentsTableProps) {
+  // Resolve the label that should display for this row — prefer
+  // the per-export name override (if the caller passes one) over
+  // the library / calc engine's description.
+  function labelFor(code: string): string {
+    const overridden = nameOverrides?.[code]
+    if (overridden && overridden.trim()) return overridden
+    return describe(code)
+  }
   // Combine the auto-tally codes with any add-only adjustments so
   // user-added entries appear in the row list even when they're not
   // in the original tally.
@@ -1357,6 +1427,11 @@ function AdjustmentsTable({
   // restore without writing through to the parent.
   const [editingCode, setEditingCode] = useState<string | null>(null)
   const [draftValue, setDraftValue] = useState<string>('')
+  // Draft name for supply-item rename. Only surfaces in the edit
+  // panel when `onSetNameOverride` is supplied by the parent
+  // (currently: supply-item tables only). Persists the typed name
+  // independently from the qty draft so Cancel reverts both.
+  const [draftName, setDraftName] = useState<string>('')
   // Open-state for the "+ Add" picker — keeps the form inline below
   // the table without needing a separate modal.
   const [adding, setAdding] = useState(false)
@@ -1366,20 +1441,32 @@ function AdjustmentsTable({
   function beginEdit(code: string, final: number) {
     setEditingCode(code)
     setDraftValue(String(final))
+    // Seed the name draft with the CURRENT label (override or
+    // describe(code)) so the user sees what they're editing.
+    setDraftName(labelFor(code))
   }
   function commitEdit(base: number) {
     if (editingCode === null) return
     const parsed = parseInt(draftValue, 10)
-    if (!Number.isFinite(parsed)) {
-      // Treat empty / invalid as "no change" — exit edit without
-      // mutating the adjustment.
-      setEditingCode(null)
-      return
+    if (Number.isFinite(parsed)) {
+      const finalCount = Math.max(0, parsed)
+      // Signed delta = base - finalCount. Positive removes,
+      // negative adds. Zero means no override (drop the entry).
+      onSetAdjustment(editingCode, base - finalCount)
     }
-    const finalCount = Math.max(0, parsed)
-    // Signed delta = base - finalCount. Positive removes, negative
-    // adds. Zero means no override (drop the entry upstream).
-    onSetAdjustment(editingCode, base - finalCount)
+    // Name override — only meaningful when the parent supplied a
+    // setter. Pushing the bare describe(code) back as the "name"
+    // would create a noisy override; only persist when the user
+    // actually changed it.
+    if (onSetNameOverride) {
+      const trimmed = draftName.trim()
+      const base = describe(editingCode).trim()
+      if (!trimmed || trimmed === base) {
+        onSetNameOverride(editingCode, null)
+      } else {
+        onSetNameOverride(editingCode, trimmed)
+      }
+    }
     setEditingCode(null)
   }
   function cancelEdit() {
@@ -1426,12 +1513,33 @@ function AdjustmentsTable({
         className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-1.5 text-xs text-ink-100 items-center"
       >
         <span className="truncate">
-          {hideCode ? (
-            <span className="text-ink-200">{describe(code)}</span>
+          {isEditing && onSetNameOverride ? (
+            // Rename input — only when this row's table supports
+            // name overrides (currently supply-item tables only).
+            // Takes the full label column so the user can type a
+            // long descriptive name like "Lintel above front door".
+            <input
+              type="text"
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitEdit(base)
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  cancelEdit()
+                }
+              }}
+              placeholder={describe(code)}
+              className="w-full px-2 py-0.5 bg-ink-900 border border-beme-400 rounded text-xs focus:outline-none text-ink-100"
+            />
+          ) : hideCode ? (
+            <span className="text-ink-200">{labelFor(code)}</span>
           ) : (
             <>
               <span className="font-mono text-ink-300">{code}</span>{' '}
-              <span className="text-ink-500">{describe(code)}</span>
+              <span className="text-ink-500">{labelFor(code)}</span>
             </>
           )}
         </span>
@@ -1440,7 +1548,11 @@ function AdjustmentsTable({
             type="number"
             min="0"
             step="1"
-            autoFocus
+            // Only autofocus qty when name editing isn't available
+            // — when name editing IS available, autofocus the
+            // name input (it's the new field and usually what the
+            // user is here to change).
+            autoFocus={!onSetNameOverride}
             value={draftValue}
             onChange={(e) => setDraftValue(e.target.value)}
             onKeyDown={(e) => {

@@ -16,6 +16,7 @@ import type {
   ProjectDetails,
   Wall,
 } from '../types/walls'
+import type { ProjectArea } from './projectStorage'
 import { calculateBrickTally } from './brickCalc'
 import { downloadPdfFromHtml } from './pdfExport'
 import { rasterisePdfPage } from './pdfRaster'
@@ -99,12 +100,30 @@ interface ExportParams {
    * rounding, then clamped to >= 0.
    */
   supplyItemAdjustments?: Record<string, number>
+  /**
+   * Per-export supply-item NAME overrides — keyed by supply item id,
+   * value is the renamed label to use in the PDF. Empty / missing
+   * value falls back to the library item's name. Lets the user
+   * rename a specific supply on a per-quote basis (e.g. "Galintel
+   * 1500" → "Lintel above front door") without mutating the master
+   * material library.
+   */
+  supplyItemNameOverrides?: Record<string, string>
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
   /** Brick wall types — used to colour the Wall Layout diagrams and group
    *  walls for the legend. Optional + defaulted-empty for older callers. */
   makeups?: BrickMakeup[]
+  /**
+   * Project areas (e.g. "First Floor", "Second Floor"). Optional so older
+   * callers stay valid. When provided, the Brickwork by Wall Type table
+   * groups rows under area headings so the estimator can see at a glance
+   * which wall types live on which floor — and any wall whose areaId
+   * doesn't resolve gets surfaced under an "Unassigned" group so missing
+   * area data isn't silently buried.
+   */
+  areas?: ProjectArea[]
   /**
    * Per brick-type quantity adjustments — same semantics as
    * `blockAdjustments` in blockExport: positive number = bricks of
@@ -216,10 +235,9 @@ function buildBrickPlanOverviewPage(
       value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`,
       sub: openings.length > 0 ? 'net of openings' : 'gross area',
     },
-    {
-      label: 'Bricks',
-      value: formatNumber(brickwork.brickCount),
-    },
+    // "Bricks" tile intentionally removed — the deliverable now
+    // reports total wall area + lineal m for trim courses; the
+    // estimator applies their own bricks/m² rate from the library.
   ]
   if (openings.length > 0) {
     summaryTiles.push({
@@ -419,9 +437,45 @@ function buildBrickPlanOverviewPage(
     })
     .join('')
 
+  // Opening keys — break out by door / window kind so the reader
+  // can match the cream-break markers on the plan to "opening of
+  // kind X" in the legend. Inline SVG swatch shows the same cream
+  // body + dark jamb tick treatment the plan uses, so the key is
+  // visually grounded to the markers above.
+  const windowCount = openings.filter((o) => o.kind !== 'door').length
+  const doorCount = openings.filter((o) => o.kind === 'door').length
+  const openingSwatch = `
+    <svg viewBox="0 0 24 12" xmlns="http://www.w3.org/2000/svg" class="legend-opening-swatch" aria-hidden="true">
+      <rect x="0" y="3" width="24" height="6" fill="#cbb89a" stroke="#0f172a" stroke-width="0.5"/>
+      <rect x="3" y="3" width="18" height="6" fill="#fef3c7"/>
+      <line x1="3" y1="1" x2="3" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+      <line x1="21" y1="1" x2="21" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+    </svg>
+  `
+  const openingKeyItems: string[] = []
+  if (windowCount > 0) {
+    openingKeyItems.push(`
+      <span class="legend-item">
+        ${openingSwatch}
+        <strong>Window</strong>
+        <span class="legend-sub">${windowCount} on this page</span>
+      </span>
+    `)
+  }
+  if (doorCount > 0) {
+    openingKeyItems.push(`
+      <span class="legend-item">
+        ${openingSwatch}
+        <strong>Door</strong>
+        <span class="legend-sub">${doorCount} on this page</span>
+      </span>
+    `)
+  }
+
   const legend = `
     <div class="plan-overview-legend">
       ${legendItems}
+      ${openingKeyItems.join('')}
       <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan scaled to fit page.</span>
     </div>
   `
@@ -503,6 +557,24 @@ function formatDate(iso: string): string {
   }
 }
 
+/**
+ * Categorised assumption groups for the brick export. Mirrors the
+ * block side's structure (Materials → Geometry → Openings → Waste →
+ * Project-specific) so the deliverable reads consistently across
+ * trades.
+ */
+export type BrickAssumptionCategory =
+  | 'materials'
+  | 'geometry'
+  | 'openings'
+  | 'waste'
+  | 'project'
+export interface BrickAssumptionGroup {
+  category: BrickAssumptionCategory
+  title: string
+  items: string[]
+}
+
 function buildAssumptions(
   inclusions: BrickExportInclusions,
   settings: BrickSettings,
@@ -516,49 +588,81 @@ function buildAssumptions(
    * height line that quotes settings.defaultWallHeightMm, which is what
    * older projects (single makeup, no per-wall overrides) want anyway.
    */
-  wallHeightSummary: string = ''
-): string[] {
+  wallHeightSummary: string = '',
+  /**
+   * True when the project has at least one opening on a brick wall.
+   * Used to gate the Openings group — no point telling the reader
+   * about opening deductions when there are none.
+   */
+  hasOpenings: boolean = false,
+): BrickAssumptionGroup[] {
   if (!inclusions.assumptions) return []
 
-  const items: string[] = [
-    'All brick dimensions are nominal and include mortar joint.',
-    wallHeightSummary ||
-      `Wall heights are uniform at ${formatNumber(settings.defaultWallHeightMm)}mm for all walls unless otherwise noted.`,
-    'Wall lengths are taken from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
-    'Openings (doors and windows) have been deducted from gross wall areas as indicated on the drawings.',
-    'No waste allowance has been applied. Quantities are net as measured.',
-  ]
+  const groups: BrickAssumptionGroup[] = []
 
-  // Brick-tie + plascourse + lintel assumption notes used to be hand-
-  // crafted here from BrickSettings + a hardcoded lintel catalogue. All
-  // three moved to the supply-items catalogue, so the lines now come in
-  // through `supplyItemNotes` below in the same rate-and-quantity style
-  // ('Brick Ties allowance at 2 per m² — 25 included.'). The previous
-  // hand-crafted paths have been deleted; nothing to suppress here.
+  // ── Materials ──
+  groups.push({
+    category: 'materials',
+    title: 'Materials',
+    items: [
+      'All brick dimensions are nominal and include mortar joint.',
+    ],
+  })
 
-  // Lintel assumption text removed — lintels are now per-opening supply
-  // items the user defines themselves (with optional opening-width
-  // ranges). Each lintel supply item's note appears below in the
-  // supply-items section of the assumption list, so the reader still
-  // knows what's being priced.
+  // ── Geometry ──
+  groups.push({
+    category: 'geometry',
+    title: 'Wall geometry',
+    items: [
+      wallHeightSummary ||
+        `Wall heights are uniform at ${formatNumber(settings.defaultWallHeightMm)}mm for all walls unless otherwise noted.`,
+      'Wall lengths are taken from the dimensions shown on the drawings supplied by the client. All dimensions are in millimetres unless otherwise noted.',
+    ],
+  })
 
-  // Per-item supply notes are NOT appended any more. With 16+
-  // Galintel SKUs (and ties / cement / rebar etc.) the assumptions
-  // section became dominated by allowance-rate lines. The Accessories
-  // table on the tally page already lists every supply with its
-  // quantity and is grouped by category, so the reader gets the same
-  // information in a cleaner format. supplyItemNotes is left in the
-  // signature for caller back-compat; nothing consumes it here.
+  // ── Openings ──
+  // Only when the project actually has any — no point telling the
+  // reader about opening deductions on a wall with no openings.
+  if (hasOpenings) {
+    groups.push({
+      category: 'openings',
+      title: 'Openings',
+      items: [
+        'Openings (doors and windows) have been deducted from gross wall areas as indicated on the drawings.',
+      ],
+    })
+  }
+
+  // ── Waste / supply ──
+  groups.push({
+    category: 'waste',
+    title: 'Waste & supply',
+    items: ['No waste allowance has been applied. Quantities are net as measured.'],
+  })
+
+  // Per-item supply notes are NOT appended here. With 16+ Galintel
+  // SKUs configured the assumptions section became dominated by
+  // allowance-rate lines. Each supply item is already listed in the
+  // Accessories table with its quantity grouped by category.
   void supplyItemNotes
 
-  // Custom notes from the user — split on newlines, ignore blank lines
+  // ── Project-specific ──
+  // User-typed lines from Project details → Notes. Anything not
+  // covered by the canned categories above lives here, one bullet
+  // per non-empty line so the user can cover ANY scenario.
   const customLines = customNotes
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter(Boolean)
-  items.push(...customLines)
+  if (customLines.length > 0) {
+    groups.push({
+      category: 'project',
+      title: 'Project-specific notes',
+      items: customLines,
+    })
+  }
 
-  return items
+  return groups
 }
 
 // groupLintels + LintelGroup removed — brick lintels now flow through
@@ -587,6 +691,7 @@ export async function buildBrickEstimateHtml(
     settings,
     business,
     makeups = [],
+    areas,
     pdfFile,
     pagesInfo,
     view3dSnapshots,
@@ -756,8 +861,12 @@ export async function buildBrickEstimateHtml(
     const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
     const finalQty = Math.max(0, rounded - supplyAdj)
     if (finalQty <= 0) continue
+    // Apply per-export name override (if the user renamed this item
+    // in the export modal). Falls back to the library item's name
+    // when no override is set or the override is empty.
+    const overriddenName = params.supplyItemNameOverrides?.[item.id]?.trim()
     supplyRows.push({
-      name: item.name,
+      name: overriddenName || item.name,
       qty: finalQty,
       noteRate,
       category: item.category?.trim() || 'Uncategorised',
@@ -806,7 +915,8 @@ export async function buildBrickEstimateHtml(
     settings,
     projectDetails.notes,
     supplyItemNotes,
-    wallHeightSummary
+    wallHeightSummary,
+    openings.length > 0,
   )
 
   // ---------- HTML pieces ----------
@@ -874,10 +984,7 @@ export async function buildBrickEstimateHtml(
       rows.push(`<div><span>Reference</span> ${escapeHtml(referenceText)}</div>`)
     if (projectDetails.clientName.trim())
       rows.push(`<div><span>Client</span> ${escapeHtml(projectDetails.clientName)}</div>`)
-    if (projectDetails.estimatorName.trim())
-      rows.push(
-        `<div><span>Estimator</span> ${escapeHtml(projectDetails.estimatorName)}</div>`
-      )
+    // Estimator name intentionally omitted — see blockExport.ts.
     if (projectDetails.date) rows.push(`<div><span>Date</span> ${formatDate(projectDetails.date)}</div>`)
     if (rows.length === 0) return ''
     return `<div class="meta">${rows.join('')}</div>`
@@ -945,16 +1052,26 @@ export async function buildBrickEstimateHtml(
   }
   const planOverviewPages = planOverviewPagesArr.join('\n')
 
-  // Page 1: Assumptions
+  // Page 1: Assumptions — categorised groups with subheadings so
+  // the reader can scan to the relevant area (Geometry vs Openings
+  // vs Project-specific) rather than reading one long flat list.
   const assumptionsPage = inclusions.assumptions
     ? `
       <section class="page">
         ${pageHeader}
         ${metaBlock}
         <h2 class="section-title">Assumptions</h2>
-        <ol class="assumptions">
-          ${assumptions.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
-        </ol>
+        ${assumptions
+          .map(
+            (g) => `
+          <div class="assumption-group">
+            <h3 class="assumption-group-title">${escapeHtml(g.title)}</h3>
+            <ul class="assumption-list">
+              ${g.items.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
+            </ul>
+          </div>`,
+          )
+          .join('')}
       </section>
     `
     : ''
@@ -980,45 +1097,181 @@ export async function buildBrickEstimateHtml(
     `
     : ''
 
-  // Brick type breakdown — only printed when at least one wall type uses
-  // course bands (single bottom course + double-height above, etc.).
-  // For single-brick projects the tally returns an empty `bricksByType`
-  // and this section drops out entirely, leaving the simpler old layout.
-  const typeBreakdownRows = Object.entries(tally.bricksByType).sort((a, b) => b[1] - a[1])
-  const typeBreakdownTable = typeBreakdownRows.length > 0
-    ? `
-      <h2 class="section-title">Brick Type Breakdown</h2>
+  // Brick type breakdown — removed in favour of the lineal-metre
+  // tables below. The deliverable used to count individual bricks
+  // per type; now we surface total wall area and lineal metres for
+  // each special course (head / sill / substitute) so the estimator
+  // applies their own bricks/m² rate from the brick library.
+  const typeBreakdownTable = ''
+
+  // Trim courses + course substitute — all reported in lineal METRES
+  // so the bricklayer can price by their own per-metre rates. One
+  // table per category, each hidden when its bucket is empty so
+  // projects without trim / substitute bricks see no blank sections.
+  const renderLinealTable = (
+    title: string,
+    blurb: string,
+    entries: [string, number][]
+  ): string => {
+    if (entries.length === 0) return ''
+    return `
+      <h2 class="section-title">${escapeHtml(title)}</h2>
+      <p style="margin: 4px 0 8px; color: #555; font-size: 12px;">
+        ${blurb}
+      </p>
       <table>
         <thead>
-          <tr><th>Brick</th><th class="right">Quantity</th></tr>
+          <tr><th>Brick</th><th class="right">Lineal m</th></tr>
         </thead>
         <tbody>
-          ${typeBreakdownRows
-            .map(([code, count]) => {
+          ${entries
+            .map(([code, mm]) => {
               const brick = BRICK_LIBRARY[code]
               const label = brick?.name ?? code ?? 'Project default'
-              return `<tr><td>${escapeHtml(label)}</td><td class="right">${count.toLocaleString()}</td></tr>`
+              const metres = (mm / 1000).toFixed(2)
+              return `<tr><td>${escapeHtml(label)}</td><td class="right">${metres}</td></tr>`
             })
             .join('')}
-          <tr class="bold"><td>Total bricks</td><td class="right">${tally.brickCount.toLocaleString()}</td></tr>
         </tbody>
       </table>
     `
-    : ''
+  }
+  const headEntries = Object.entries(tally.headLinealMmByType ?? {}).sort(
+    (a, b) => b[1] - a[1],
+  )
+  const sillEntries = Object.entries(tally.sillLinealMmByType ?? {}).sort(
+    (a, b) => b[1] - a[1],
+  )
+  // Course substitute section removed — the per-course lineal m
+  // value was confusing on walls with mixed brick heights (e.g. a
+  // double-height substitute would surface a count that didn't
+  // match wall coursing intuition). The simpler "Total length" tile
+  // on the assumptions summary now carries the total-walls-lineal-m
+  // figure, which is what the estimator actually wanted.
+  const trimTable =
+    renderLinealTable(
+      'Head courses',
+      `Lineal metres of head course above every opening (doors and
+       windows). Span is opening width plus bearing overhang at each
+       end. Multiply by your per-metre lay rate for the head brick.`,
+      headEntries,
+    ) +
+    renderLinealTable(
+      'Sill courses',
+      `Lineal metres of sill course under every window. Doors are
+       excluded (no sill course). Multiply by your per-metre lay rate
+       for the sill brick.`,
+      sillEntries,
+    )
 
-  // Per-wall-type (per-makeup) breakdown. Each wall makeup gets its
-  // own row showing gross area / openings deducted / net area /
-  // bricks needed — so the estimator can price each wall type
-  // independently (Common $X/m², Facework $Y/m², etc.) without
-  // re-doing the deduction maths by hand.
+  const brickMakeupsById = new Map(makeups.map((m) => [m.id, m]))
+  void brickMakeupsById // retained for `byMakeup` consumers below
+  // Per-wall-type (per-makeup) breakdown — REMOVED.
+  // The output now reports a single total wall area + lineal metre
+  // figures for head / sill / course substitute. The per-makeup
+  // grouping was useful when the deliverable counted bricks per
+  // wall type, but with the lineal-metre model the estimator
+  // already has the per-trim-course figures they need to price.
   //
-  // Hidden when there's only ONE makeup on the project (or no
-  // makeups at all), since a one-row table just duplicates the
-  // Brick Area Summary above.
-  const makeupBuckets = Object.values(tally.byMakeup ?? {})
-    .filter((b) => b.grossAreaSqMm > 0)
-    .sort((a, b) => b.grossAreaSqMm - a.grossAreaSqMm)
-  const makeupBreakdownTable = makeupBuckets.length > 1
+  // The block below still computes `allRows` for back-compat with
+  // any export consumer that read those values, but the rendered
+  // table is empty so the deliverable doesn't show it.
+  type AreaMakeupRow = {
+    areaId: string | null
+    makeupId: string
+    wallCount: number
+    grossAreaSqMm: number
+    openingAreaSqMm: number
+    netAreaSqMm: number
+    brickCount: number
+  }
+  const rowsByKey: Record<string, AreaMakeupRow> = {}
+  const openingsByWallId = new Map<string, Opening[]>()
+  for (const op of openings) {
+    if (!op.wallId) continue
+    const arr = openingsByWallId.get(op.wallId) ?? []
+    arr.push(op)
+    openingsByWallId.set(op.wallId, arr)
+  }
+  for (const w of walls) {
+    const areaKey = w.areaId ?? ''
+    const makeupKey = w.makeupId || '__none__'
+    const key = `${areaKey}|${makeupKey}`
+    const row =
+      rowsByKey[key] ??
+      (rowsByKey[key] = {
+        areaId: w.areaId ?? null,
+        makeupId: makeupKey,
+        wallCount: 0,
+        grossAreaSqMm: 0,
+        openingAreaSqMm: 0,
+        netAreaSqMm: 0,
+        brickCount: 0,
+      })
+    const makeup = brickMakeupsById.get(w.makeupId)
+    const height =
+      w.heightMmOverride ??
+      makeup?.heightMm ??
+      settings.defaultWallHeightMm
+    // Brick walls don't have corner extensions like block walls do, so
+    // a simple Euclidean length matches what calculateBrickTally does
+    // for the same wall.
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    const len = Math.sqrt(dx * dx + dy * dy)
+    const gross = len * height
+    const wallOps = openingsByWallId.get(w.id) ?? []
+    const opArea = wallOps.reduce(
+      (s, o) => s + o.widthMm * o.heightMm,
+      0,
+    )
+    const net = Math.max(0, gross - opArea)
+    row.wallCount += 1
+    row.grossAreaSqMm += gross
+    row.openingAreaSqMm += opArea
+    row.netAreaSqMm += net
+    // Brick count for this wall using its own makeup's rate (falls
+    // back to project default when the makeup carries no rate).
+    const rate = settings.bricksPerSquareMetre
+    row.brickCount += Math.ceil((net / 1_000_000) * rate)
+  }
+  const allRows = Object.values(rowsByKey).filter((r) => r.grossAreaSqMm > 0)
+  // Order areas: project order first, then any 'Unassigned' / unknown
+  // area at the bottom. Within an area, sort wall-type rows by net
+  // area DESC so the biggest contributor leads.
+  const areaIdOrder = new Map<string, number>()
+  if (areas) {
+    for (let i = 0; i < areas.length; i++) areaIdOrder.set(areas[i].id, i)
+  }
+  const areaOrder = (id: string | null): number =>
+    id === null
+      ? Number.POSITIVE_INFINITY
+      : areaIdOrder.get(id) ?? Number.POSITIVE_INFINITY - 1
+  allRows.sort((a, b) => {
+    const ao = areaOrder(a.areaId)
+    const bo = areaOrder(b.areaId)
+    if (ao !== bo) return ao - bo
+    return b.netAreaSqMm - a.netAreaSqMm
+  })
+  // Group by area for rendering.
+  const groupedByArea: Array<{
+    areaName: string
+    rows: AreaMakeupRow[]
+  }> = []
+  for (const row of allRows) {
+    const areaName =
+      row.areaId === null
+        ? 'Unassigned'
+        : areas?.find((a) => a.id === row.areaId)?.name ?? 'Unknown area'
+    const last = groupedByArea[groupedByArea.length - 1]
+    if (last && last.areaName === areaName) last.rows.push(row)
+    else groupedByArea.push({ areaName, rows: [row] })
+  }
+  // Per-makeup breakdown table — disabled. See the comment block
+  // above explaining why this section was removed from the
+  // deliverable. The computed rows above stay around so any
+  // downstream consumer reading allRows still works.
+  const makeupBreakdownTable = false && allRows.length > 1
     ? `
       <h2 class="section-title">Brickwork by Wall Type</h2>
       <table>
@@ -1033,41 +1286,59 @@ export async function buildBrickEstimateHtml(
           </tr>
         </thead>
         <tbody>
-          ${makeupBuckets
-            .map((b) => {
-              const makeup =
-                b.makeupId === '__none__'
-                  ? null
-                  : makeups.find((m) => m.id === b.makeupId) ?? null
-              const label = makeup?.name ?? 'No wall type'
-              const gross = b.grossAreaSqMm / 1_000_000
-              const opening = b.openingAreaSqMm / 1_000_000
-              const net = b.netAreaSqMm / 1_000_000
-              return `<tr>
-                <td>${escapeHtml(label)}</td>
-                <td class="right">${b.wallCount}</td>
-                <td class="right">${formatNumber(gross, 3)}</td>
-                <td class="right">${opening > 0 ? `-${formatNumber(opening, 3)}` : '0'}</td>
-                <td class="right">${formatNumber(net, 3)}</td>
-                <td class="right">${b.brickCount.toLocaleString()}</td>
+          ${groupedByArea
+            .map((group) => {
+              const groupGross = group.rows.reduce((s, r) => s + r.grossAreaSqMm, 0)
+              const groupOpening = group.rows.reduce((s, r) => s + r.openingAreaSqMm, 0)
+              const groupNet = group.rows.reduce((s, r) => s + r.netAreaSqMm, 0)
+              const groupBricks = group.rows.reduce((s, r) => s + r.brickCount, 0)
+              const groupWallCount = group.rows.reduce((s, r) => s + r.wallCount, 0)
+              const header = `<tr class="area-header">
+                <td colspan="6" style="background: #f3f0ea; font-weight: 600; padding-top: 6px;">${escapeHtml(group.areaName)}</td>
               </tr>`
+              const rowsHtml = group.rows
+                .map((r) => {
+                  const makeup =
+                    r.makeupId === '__none__'
+                      ? null
+                      : makeups.find((m) => m.id === r.makeupId) ?? null
+                  const label = makeup?.name ?? 'No wall type'
+                  return `<tr>
+                    <td>${escapeHtml(label)}</td>
+                    <td class="right">${r.wallCount}</td>
+                    <td class="right">${formatNumber(r.grossAreaSqMm / 1_000_000, 3)}</td>
+                    <td class="right">${r.openingAreaSqMm > 0 ? `-${formatNumber(r.openingAreaSqMm / 1_000_000, 3)}` : '0'}</td>
+                    <td class="right">${formatNumber(r.netAreaSqMm / 1_000_000, 3)}</td>
+                    <td class="right">${r.brickCount.toLocaleString()}</td>
+                  </tr>`
+                })
+                .join('')
+              const subtotal = groupedByArea.length > 1
+                ? `<tr class="area-subtotal" style="font-style: italic;">
+                    <td>${escapeHtml(group.areaName)} subtotal</td>
+                    <td class="right">${groupWallCount}</td>
+                    <td class="right">${formatNumber(groupGross / 1_000_000, 3)}</td>
+                    <td class="right">-${formatNumber(groupOpening / 1_000_000, 3)}</td>
+                    <td class="right">${formatNumber(groupNet / 1_000_000, 3)}</td>
+                    <td class="right">${groupBricks.toLocaleString()}</td>
+                  </tr>`
+                : ''
+              return header + rowsHtml + subtotal
             })
             .join('')}
           <tr class="bold">
             <td>Total</td>
             <td class="right">${tally.wallCount}</td>
             <td class="right">${formatNumber(
-              makeupBuckets.reduce((s, b) => s + b.grossAreaSqMm, 0) /
-                1_000_000,
+              allRows.reduce((s, r) => s + r.grossAreaSqMm, 0) / 1_000_000,
               3
             )}</td>
             <td class="right">-${formatNumber(
-              makeupBuckets.reduce((s, b) => s + b.openingAreaSqMm, 0) /
-                1_000_000,
+              allRows.reduce((s, r) => s + r.openingAreaSqMm, 0) / 1_000_000,
               3
             )}</td>
             <td class="right">${formatNumber(
-              makeupBuckets.reduce((s, b) => s + b.netAreaSqMm, 0) / 1_000_000,
+              allRows.reduce((s, r) => s + r.netAreaSqMm, 0) / 1_000_000,
               3
             )}</td>
             <td class="right">${tally.brickCount.toLocaleString()}</td>
@@ -1129,6 +1400,7 @@ export async function buildBrickEstimateHtml(
     summaryTable ||
     makeupBreakdownTable ||
     typeBreakdownTable ||
+    trimTable ||
     accessoriesTable
       ? `
       <section class="page">
@@ -1136,6 +1408,7 @@ export async function buildBrickEstimateHtml(
         ${summaryTable}
         ${makeupBreakdownTable}
         ${typeBreakdownTable}
+        ${trimTable}
         ${accessoriesTable}
       </section>
     `
@@ -1196,20 +1469,9 @@ export async function buildBrickEstimateHtml(
           </figure>
           ${legendHtml}
         </div>
-        <footer class="view3d-meta">
-          <div class="view3d-meta-block">
-            <div class="view3d-meta-label">Reference</div>
-            <div class="view3d-meta-value">${referenceText || '—'}</div>
-          </div>
-          <div class="view3d-meta-block">
-            <div class="view3d-meta-label">Client</div>
-            <div class="view3d-meta-value">${escapeHtml(projectDetails.clientName || '—')}</div>
-          </div>
-          <div class="view3d-meta-block">
-            <div class="view3d-meta-label">Date</div>
-            <div class="view3d-meta-value">${escapeHtml(formattedDate || '—')}</div>
-          </div>
-        </footer>
+        <!-- Footer Reference/Client/Date row removed — same info
+             already sits at the top of the page meta block, and the
+             reclaimed vertical space goes to the hero image. -->
       </section>
     `
           })
@@ -1237,11 +1499,13 @@ export async function buildBrickEstimateHtml(
 
   const bodyContent = `
   ${assumptionsPage}
-  ${planOverviewPages}
-  ${/* 3D snapshots flow directly after the 2D plan overview — same
-       visual subject (the walls), different view. Same ordering as
-       the block export so combined exports read consistently. */ ''}
+  ${/* 3D snapshots come FIRST after the assumptions pages so the
+       reader sees the project in 3D as soon as they've finished
+       the cover/assumptions reading. The 2D plan overview then
+       follows for the plan-on-plan layout details, with the tally
+       tables landing at the back. */ ''}
   ${view3dPages}
+  ${planOverviewPages}
   ${tablesPage}
   ${disclaimerPage}
 `
@@ -1258,9 +1522,13 @@ export async function buildBrickEstimateHtml(
     color: #1f2937;
     margin: 0;
     background: #fff;
+    /* Tighter base font for a denser layout — see blockExport for
+       the same rationale. */
+    font-size: 11px;
+    line-height: 1.4;
   }
   .page {
-    padding: 40px 48px;
+    padding: 24px 32px;
     page-break-after: always;
     min-height: 100vh;
   }
@@ -1270,6 +1538,14 @@ export async function buildBrickEstimateHtml(
      so brick and block exports look like siblings rather than cousins. */
   .plan-overview-page h2.section-title { margin: 12px 0 4px; }
   .plan-overview-page .page-intro { margin-bottom: 6px; }
+  /* Force wall-layout page to print as a single sheet — see
+     blockExport.ts for the same rule. */
+  .plan-overview-page {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    page-break-after: always;
+    break-after: page;
+  }
   .plan-overview-stats {
     display: flex;
     gap: 10px;
@@ -1285,7 +1561,7 @@ export async function buildBrickEstimateHtml(
     background: #fafafa;
   }
   .plan-stat-value {
-    font-size: 16px;
+    font-size: 13px;
     font-weight: 700;
     color: #1f2937;
     font-variant-numeric: tabular-nums;
@@ -1302,7 +1578,10 @@ export async function buildBrickEstimateHtml(
   .plan-stat-sub { font-size: 9px; color: #6b7280; margin-top: 1px; }
   .plan-overview-wrap {
     width: 100%;
-    height: 95mm;
+    /* Sized to fit the whole wall-layout page on one sheet of
+       landscape A4 (stats + diagram + legend). See blockExport
+       for the per-chrome budget. */
+    height: 120mm;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1331,46 +1610,52 @@ export async function buildBrickEstimateHtml(
     height: 10px;
     border-radius: 2px;
   }
+  .legend-opening-swatch {
+    display: inline-block;
+    width: 22px;
+    height: 11px;
+    vertical-align: middle;
+  }
   .legend-note { color: #9ca3af; font-style: italic; }
 
   .page-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 2px solid #1f2937;
-    padding-bottom: 12px;
-    margin-bottom: 24px;
+    border-bottom: 1.5px solid #1f2937;
+    padding-bottom: 8px;
+    margin-bottom: 16px;
   }
   .brand-name {
     color: #C5530A;
     font-weight: 700;
-    font-size: 28px;
+    font-size: 22px;
     line-height: 1;
   }
   .brand-tag {
     color: #ED7D31;
     font-style: italic;
-    font-size: 11px;
+    font-size: 10px;
     margin-top: 2px;
   }
   .brand-address {
     color: #4B5563;
-    font-size: 11px;
-    margin-top: 4px;
+    font-size: 10px;
+    margin-top: 3px;
     line-height: 1.4;
   }
   .brand-logo {
-    max-height: 56px;
-    max-width: 180px;
+    max-height: 46px;
+    max-width: 150px;
     display: block;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
   /* Primary brand mark — used when no text name accompanies the logo. */
   .brand-logo-primary {
-    max-height: 80px;
-    max-width: 280px;
+    max-height: 64px;
+    max-width: 230px;
     display: block;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
 
   /* "Built with Beme" credit footer on every page. Pulled tight
@@ -1399,6 +1684,8 @@ export async function buildBrickEstimateHtml(
     position: relative;
     page-break-inside: avoid;
     break-inside: avoid;
+    page-break-after: always;
+    break-after: page;
   }
   .view3d-accent {
     width: 32mm;
@@ -1420,14 +1707,14 @@ export async function buildBrickEstimateHtml(
   }
   .view3d-title {
     margin: 0 0 1.5mm 0;
-    font-size: 26px;
+    font-size: 20px;
     font-weight: 700;
     color: #0f172a;
     letter-spacing: -0.02em;
     line-height: 1.1;
   }
   .view3d-subtitle {
-    font-size: 11px;
+    font-size: 10px;
     color: #475569;
     font-weight: 400;
   }
@@ -1435,7 +1722,11 @@ export async function buildBrickEstimateHtml(
     display: flex;
     align-items: stretch;
     gap: 5mm;
-    height: 102mm;
+    /* Hero shot height — reduced from 140mm to 125mm so the page
+       header + view3d-header stay on the same page as the image
+       even when the title block runs over its expected 28mm. See
+       blockExport.ts for the full chrome budget. */
+    height: 125mm;
   }
   .view3d-figure {
     flex: 1 1 auto;
@@ -1448,7 +1739,7 @@ export async function buildBrickEstimateHtml(
   }
   .view3d-image {
     max-width: 100%;
-    max-height: 102mm;
+    max-height: 125mm;
     object-fit: contain;
     border-radius: 8px;
     box-shadow:
@@ -1552,61 +1843,90 @@ export async function buildBrickEstimateHtml(
   }
   .title-block { text-align: right; }
   .title-main {
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 700;
   }
   .title-sub {
-    font-size: 12px;
+    font-size: 10px;
     color: #6b7280;
     margin-top: 2px;
   }
 
   .meta {
     display: flex;
-    gap: 24px;
-    font-size: 12px;
+    gap: 20px;
+    font-size: 10px;
     color: #4b5563;
-    margin-bottom: 20px;
+    margin-bottom: 14px;
   }
   .meta span {
     color: #9ca3af;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-size: 10px;
+    font-size: 9px;
     margin-right: 4px;
   }
 
   h2 {
-    font-size: 16px;
-    margin: 24px 0 12px;
+    font-size: 13px;
+    margin: 16px 0 8px;
     color: #1f2937;
   }
 
   ol.assumptions {
-    padding-left: 24px;
+    padding-left: 20px;
     margin: 0;
   }
   ol.assumptions li {
-    padding: 6px 0;
-    font-size: 13px;
-    line-height: 1.5;
+    padding: 3px 0;
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+  /* Categorised assumption groups — same structure as the block
+     export so the trade-combined PDF reads consistently. */
+  .assumption-group {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-top: 10px;
+  }
+  .assumption-group:first-of-type { margin-top: 0; }
+  .assumption-group-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #1f2937;
+    margin: 0 0 4px 0;
+    padding-bottom: 2px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  ul.assumption-list {
+    list-style: disc;
+    padding-left: 18px;
+    margin: 0;
+  }
+  ul.assumption-list li {
+    padding: 1.5px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: #374151;
   }
 
   table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 20px;
-    font-size: 13px;
+    margin-bottom: 12px;
+    font-size: 10.5px;
   }
   th, td {
-    padding: 9px 12px;
+    padding: 5px 9px;
     border-bottom: 1px solid #e5e7eb;
     text-align: left;
   }
   thead th {
     background: #f3f4f6;
     font-weight: 600;
-    font-size: 12px;
+    font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.03em;
     color: #4b5563;
@@ -1616,20 +1936,20 @@ export async function buildBrickEstimateHtml(
 
   .disclaimer {
     background: #fef9c3;
-    border-left: 4px solid #ca8a04;
-    padding: 16px 20px;
+    border-left: 3px solid #ca8a04;
+    padding: 12px 16px;
     border-radius: 4px;
   }
   .disclaimer-title {
     color: #854d0e;
     font-weight: 700;
-    margin-bottom: 8px;
-    font-size: 14px;
+    margin-bottom: 6px;
+    font-size: 11.5px;
   }
   .disclaimer p {
-    margin: 0 0 8px 0;
-    font-size: 12px;
-    line-height: 1.5;
+    margin: 0 0 6px 0;
+    font-size: 10px;
+    line-height: 1.45;
     color: #422006;
   }
   .disclaimer p:last-child { margin-bottom: 0; }

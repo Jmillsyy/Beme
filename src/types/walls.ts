@@ -98,9 +98,6 @@ export interface CourseSeriesRange {
   halfBlockCode?: BlockCode
   /** Base-course cleanout block. Only consulted when the range covers course 1. */
   baseCourseBlockCode?: BlockCode
-  /** Tile paired with the base-course cleanout. Only consulted when the range
-   *  covers course 1. */
-  baseCourseTileCode?: BlockCode
   /** 90 mm half-height makeup block (e.g. 30.71). Used when the height-makeup
    *  row for this wall falls inside this range. Falls back to 20.71. */
   heightMakeup71BlockCode?: BlockCode
@@ -171,8 +168,6 @@ export interface WallMakeup {
   // ---- Course composition ----
   /** Block used for the base (bottom) course. Default: 20.45 cleanout. */
   baseCourseBlockCode: BlockCode
-  /** Tile paired with every base course block. Default: 50.45. Omit if none. */
-  baseCourseTileCode?: BlockCode
   /** Default body block for the middle of the wall. Default: 20.48 H block. */
   bodyBlockCode: BlockCode
   /** Block used for the top course. 20.20 if a bond beam is required, otherwise 20.48. */
@@ -268,6 +263,24 @@ export interface WallMakeup {
    * copy in WallTypesPanel uses region-neutral language.
    */
   useFractions: boolean
+
+  /**
+   * Which course types the "match exact length" rule applies to when
+   * `useFractions` is true. Each entry switches on fraction / cut-block
+   * fitting for that course type; absent entries fall back to whole-
+   * block rounding for that course type.
+   *
+   *   - 'base'           → the cleanout / starter course
+   *   - 'body'           → standard 200mm-modular body courses
+   *   - 'height-makeup'  → the 20.71 / 20.140 rows that absorb
+   *                         odd wall heights
+   *   - 'top'            → the top course (bond beam / capping)
+   *
+   * Undefined means "all course types" (legacy behaviour on older
+   * saved projects). Empty array means "no course types" (equivalent
+   * to turning useFractions off entirely).
+   */
+  exactLengthCourses?: Array<'base' | 'body' | 'height-makeup' | 'top'>
 
   // ---- Pier ----
   /** If walls of this makeup contain piers, what type. */
@@ -476,6 +489,42 @@ export interface Opening {
   sillHeightMm: number
   /** Height of the head — typically derived from wall height − sillHeight − openingHeight. */
   headHeightMm?: number
+  /**
+   * Window vs door — purely a 3D rendering hint. A door has no sill
+   * (the opening reaches the floor or the wall base), so the sill
+   * trim emission is skipped on brick walls. Defaults to 'window'
+   * when undefined (existing data) so older projects render unchanged.
+   */
+  kind?: 'window' | 'door'
+  /**
+   * Head course override — the block code laid in the row of blocks
+   * that borders the TOP of the opening. When undefined, the head
+   * course is whatever block the wall naturally puts there (= the
+   * body block) and the 3D / tally treats it as a continuation of
+   * the wall body. When set, the row of cells at the head's y-range
+   * (within the opening's x-span) is overridden to this block code.
+   *
+   * Replaces the older auto-`selectBlockLintel` behaviour — by
+   * default openings no longer get an auto-lintel; the user picks
+   * the block when they want one (typical AU residential masonry
+   * has a steel / concrete lintel separate from the masonry, so
+   * the head course IS just body blocks).
+   */
+  headCourseBlockCode?: BlockCode
+  /**
+   * Head course orientation hint. `running` = laid flat (default,
+   * indistinguishable from normal body blocks). `soldier` = block
+   * on end (rotated 90° in elevation; narrow face visible, takes
+   * up height equal to the block's natural width).
+   */
+  headCourseOrientation?: 'running' | 'soldier'
+  /**
+   * Sill course override — same as headCourseBlockCode but for the
+   * row of blocks that borders the BOTTOM of the opening (windows
+   * only; doors sit on the floor with no sill course).
+   */
+  sillCourseBlockCode?: BlockCode
+  sillCourseOrientation?: 'running' | 'soldier'
 }
 
 /**
@@ -655,6 +704,50 @@ export interface BrickMakeup {
    * {@link brickTypeCode} brick (backward-compatible default).
    */
   courseRanges?: BrickCourseRange[]
+  /**
+   * Optional brick type for the SILL COURSE under every opening on
+   * walls of this type — typically a soldier or rowlock brick that
+   * forms the windowsill. The tally adds one course of this brick
+   * across each opening's width (plus a small overhang at each end
+   * for the bearing). Undefined → no sill line item, sill area
+   * remains part of the main brick deduction.
+   */
+  sillBrickCode?: string
+  /**
+   * Orientation of the sill brick relative to the wall face. Drives
+   * BOTH the rendered face dimensions AND the count modular.
+   *
+   *   - `'stretcher'` (default): brick laid flat with its long face
+   *     visible — face is widthMm × heightMm.
+   *   - `'soldier'`: brick stood on its end, long edge vertical —
+   *     face is heightMm × widthMm (tall and narrow).
+   *   - `'rowlock'`: brick on its long edge, depth showing as the
+   *     visible height — face is widthMm × depthMm.
+   *   - `'header'`: brick laid horizontal going INTO the wall
+   *     lengthwise, rolled so the TYPICAL long face (the one you'd
+   *     see in stretcher bond) is pointing UP. The brick's end
+   *     profile faces out, rotated 90° from the wider rowlock —
+   *     face is heightMm × depthMm (narrow and tall), and the
+   *     brick extends along the wall length direction.
+   */
+  sillBrickOrientation?: 'stretcher' | 'soldier' | 'rowlock' | 'header'
+  /**
+   * Optional brick type for the HEAD COURSE above every opening on
+   * walls of this type — typically a soldier course (flat arch) or
+   * rowlock above the lintel that the bricklayer lays distinctly.
+   * Tally adds one course of this brick across each opening's width
+   * (plus bearing overhang). Undefined → no head line item.
+   */
+  headBrickCode?: string
+  /** Orientation of the head brick — see {@link sillBrickOrientation}. */
+  headBrickOrientation?: 'stretcher' | 'soldier' | 'rowlock' | 'header'
+  /**
+   * Optional overhang (mm) at each end of the sill / head course,
+   * defaulting to 100 mm. Real openings tuck the sill / head bricks
+   * a touch past the jamb so the count covers the full bearing zone,
+   * not just the opening void width.
+   */
+  openingTrimOverhangMm?: number
 }
 
 /**

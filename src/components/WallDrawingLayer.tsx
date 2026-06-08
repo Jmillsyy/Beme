@@ -5,7 +5,13 @@ import type { Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
 import { formatLengthShort } from '../lib/units'
 import { useUserSettings } from '../lib/userSettings'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { hexToRgba } from '../lib/wallTypeColors'
+import { BLOCK_LIBRARY } from '../data/blockLibrary'
+import {
+  computeAutoWallLengthSnapMm,
+  WALL_LENGTH_SNAP_FALLBACK_MM,
+} from '../lib/wallLengthSnap'
 
 interface Point {
   x: number
@@ -371,7 +377,17 @@ function snapRulerToAxis(
  * overridden, and bypassed by holding Shift the same way axis-snap is, for
  * the rare measurement that genuinely needs an off-grid value.
  */
-const WALL_LENGTH_SNAP_MM = 5
+/**
+ * Hardcoded last-resort wall-length snap. Used only when both the user
+ * settings AND the auto-derivation from the active block library fail
+ * (e.g. an empty library). The active value comes from
+ * `userSettings.defaults.wallLengthSnapMm` first, then falls back to
+ * the derived value from {@link computeAutoWallLengthSnapMm}.
+ *
+ * 50 mm matches the AU SEQ block library's modular GCD across full /
+ * 7-8 / 3-4 / half blocks and is the historical default.
+ */
+const WALL_LENGTH_SNAP_MM = WALL_LENGTH_SNAP_FALLBACK_MM
 
 /**
  * Openings (doors / windows / brickwork voids) use a coarser 10 mm grid
@@ -385,12 +401,18 @@ const WALL_LENGTH_SNAP_MM = 5
 const OPENING_SNAP_MM = 10
 
 /**
- * Round a mm length to the nearest WALL_LENGTH_SNAP_MM. Shared by all the
- * placement code paths (walls, openings, control joints, piers) so the user
- * sees a consistent grid no matter what they're dropping onto the plan.
+ * Round a mm length to the nearest snap increment. Shared by every
+ * placement path (wall length, control joint position, tied/freestanding
+ * pier coords) so the user sees a consistent grid no matter what they're
+ * dropping onto the plan.
+ *
+ * `snapMm` defaults to WALL_LENGTH_SNAP_MM (50). Callers inside the
+ * component override it with the live user-settings value so a user who
+ * changes the snap in Settings sees the new grid take effect on the
+ * next draw.
  */
-function snapMmToGrid(mm: number): number {
-  return Math.round(mm / WALL_LENGTH_SNAP_MM) * WALL_LENGTH_SNAP_MM
+function snapMmToGrid(mm: number, snapMm: number = WALL_LENGTH_SNAP_MM): number {
+  return Math.round(mm / snapMm) * snapMm
 }
 
 /** Round to the coarser opening grid — see OPENING_SNAP_MM. */
@@ -983,16 +1005,23 @@ function WallDrawingLayerInner({
             }
           }
         } else if (junction.type === 'free') {
-          // Pull the snap target halfThickness in from the data endpoint along the wall
-          // direction, into the body — that's where the centre of the corner block sits
-          // for clean masonry alignment.
+          // Pull the snap target HALF-MODULAR in from the data endpoint
+          // along the wall direction — that's (thickness + mortar) / 2,
+          // not just thickness / 2. The extra 5 mm puts the snap line
+          // on the modular grid where the NEW wall's first mortar joint
+          // would sit when it corners against this wall. For AU 190 mm
+          // walls that's 100 mm in (not 95 mm), which keeps every new
+          // corner clean on the 50 mm wall-length grid. Drawing snaps to
+          // halfThickness was a 5 mm off-grid error that propagated
+          // through every wall drawn off another wall's corner.
           const farX = end === 'start' ? w.endX : w.startX
           const farY = end === 'start' ? w.endY : w.startY
           const dx = dataX - farX
           const dy = dataY - farY
           const len = Math.sqrt(dx * dx + dy * dy)
           if (len > 0) {
-            const offset = Math.min(thickness / 2, len)
+            const halfModularMm = (thickness + DEFAULT_MORTAR_JOINT_MM) / 2
+            const offset = Math.min(halfModularMm, len)
             const ux = dx / len
             const uy = dy / len
             snapX = dataX - ux * offset
@@ -1635,7 +1664,11 @@ function WallDrawingLayerInner({
   function cornerLengthAdjustAt(pointMm: Point): number {
     for (const w of walls) {
       if (isCurvedWall(w)) continue
-      const halfT = (wallThicknessByWallId[w.id] ?? 190) / 2
+      // Half-modular = (thickness + mortar) / 2. Matches the snap-target
+      // offset above so the live preview length stays consistent with
+      // where the user is actually clicking.
+      const halfModular =
+        ((wallThicknessByWallId[w.id] ?? 190) + DEFAULT_MORTAR_JOINT_MM) / 2
       for (const which of ['start' as const, 'end' as const]) {
         const junction = which === 'start' ? w.startJunction : w.endJunction
         if (junction.type !== 'free') continue
@@ -1647,13 +1680,13 @@ function WallDrawingLayerInner({
         const ddy = dataY - farY
         const len = Math.sqrt(ddx * ddx + ddy * ddy)
         if (len < 0.001) continue
-        const insetX = dataX - (ddx / len) * halfT
-        const insetY = dataY - (ddy / len) * halfT
+        const insetX = dataX - (ddx / len) * halfModular
+        const insetY = dataY - (ddy / len) * halfModular
         if (
           Math.abs(pointMm.x - insetX) < 1 &&
           Math.abs(pointMm.y - insetY) < 1
         ) {
-          return halfT
+          return halfModular
         }
       }
     }
@@ -1715,8 +1748,8 @@ function WallDrawingLayerInner({
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     if (lenPx <= 0) return { point: axisSnapped, snap: null }
     const lenMm = pxToMm(lenPx)
-    const snappedMm = snapMmToGrid(lenMm)
-    if (snappedMm < WALL_LENGTH_SNAP_MM) {
+    const snappedMm = snapMmToGrid(lenMm, wallSnapMm)
+    if (snappedMm < wallSnapMm) {
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
@@ -1792,11 +1825,13 @@ function WallDrawingLayerInner({
       //     the next wall should chain from there as-is.
       //   - Otherwise the click is a free end. resolveDrawSnap returned
       //     the data endpoint, but the visual corner / corner-block-
-      //     centre sits halfThickness IN from there along the wall's
-      //     direction (see endpointsPx for the matching snap target on
-      //     existing walls). Pull back by halfThickness so the chained
-      //     anchor lines up with where the user would have clicked if
-      //     they'd manually snapped to the new wall's free corner.
+      //     centre sits halfMODULAR (= (thickness + mortar) / 2 = 100mm
+      //     for 200-series) IN from there along the wall's direction —
+      //     matching endpointsPx's snap target for existing walls AND
+      //     junctions.ts's endpointsFormCorner check. Using halfThickness
+      //     here (95mm) puts the chained anchor 5mm off-grid, and the
+      //     next wall placed off it lands outside the corner detection
+      //     window — corners don't form, the two free ends just overlap.
       let chainAnchor: Point = posMm
       if (!clickSnap) {
         const dx = posMm.x - startMm.x
@@ -1805,10 +1840,11 @@ function WallDrawingLayerInner({
         if (dist > 0.001) {
           const ux = dx / dist
           const uy = dy / dist
-          const halfT = activeWallThicknessMm / 2
+          const halfMod =
+            (activeWallThicknessMm + DEFAULT_MORTAR_JOINT_MM) / 2
           chainAnchor = {
-            x: posMm.x - ux * halfT,
-            y: posMm.y - uy * halfT,
+            x: posMm.x - ux * halfMod,
+            y: posMm.y - uy * halfMod,
           }
         }
       }
@@ -1859,7 +1895,7 @@ function WallDrawingLayerInner({
       if (!wall || isCurvedWall(wall)) return
       onControlJointPlaced?.(
         proj.wallId,
-        useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm
       )
       setControlJointHover(null)
       return
@@ -1872,7 +1908,7 @@ function WallDrawingLayerInner({
       if (!wall || isCurvedWall(wall)) return
       onTiedPierPlaced?.(
         proj.wallId,
-        useGrid ? snapMmToGrid(proj.alongMm) : proj.alongMm
+        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm
       )
       setTiedPierHover(null)
       return
@@ -1903,14 +1939,14 @@ function WallDrawingLayerInner({
       if (tiedWallId !== null) {
         onTiedPierPlaced?.(
           tiedWallId,
-          useGrid ? snapMmToGrid(tiedAlongMm) : tiedAlongMm
+          useGrid ? snapMmToGrid(tiedAlongMm, wallSnapMm) : tiedAlongMm
         )
       } else {
         const xMm = pxToMm(raw.x)
         const yMm = pxToMm(raw.y)
         onFreestandingPierPlaced?.(
-          useGrid ? snapMmToGrid(xMm) : xMm,
-          useGrid ? snapMmToGrid(yMm) : yMm
+          useGrid ? snapMmToGrid(xMm, wallSnapMm) : xMm,
+          useGrid ? snapMmToGrid(yMm, wallSnapMm) : yMm
         )
       }
       setFreestandingPierHoverMm(null)
@@ -2158,6 +2194,26 @@ function WallDrawingLayerInner({
   function formatMm(mm: number) {
     return formatLengthShort(mm, __userSettings.preferences.units)
   }
+  // Wall-length snap, configurable per-account. When the user hasn't
+  // explicitly set a value (older settings blobs / fresh accounts),
+  // derive a sensible default from the active block library + mortar
+  // so libraries with non-standard widths (e.g. 250 mm units) get a
+  // grid that actually lands on block multiples. The hardcoded
+  // WALL_LENGTH_SNAP_MM is only used if even the derivation fails
+  // (e.g. empty library on first boot).
+  const wallSnapMm = useMemo(() => {
+    const explicit = __userSettings.defaults.wallLengthSnapMm
+    if (typeof explicit === 'number' && explicit > 0) return explicit
+    return (
+      computeAutoWallLengthSnapMm(
+        BLOCK_LIBRARY,
+        __userSettings.defaults.defaultMortarJointMm ?? DEFAULT_MORTAR_JOINT_MM
+      ) || WALL_LENGTH_SNAP_MM
+    )
+  }, [
+    __userSettings.defaults.wallLengthSnapMm,
+    __userSettings.defaults.defaultMortarJointMm,
+  ])
 
   function effectiveEndpoint(wall: Wall, which: 'start' | 'end'): Point {
     if (dragPreview?.wallId === wall.id && dragPreview.which === which) {
@@ -2614,6 +2670,17 @@ function WallDrawingLayerInner({
           const isSelected =
             (selectedOpeningIds && selectedOpeningIds.has(opening.id)) ||
             opening.id === selectedOpeningId
+          // Render the opening at the host wall's THICKNESS, not a
+          // fixed 8px stroke. Matches what the user sees on a real
+          // architectural drawing — the opening fills the full width
+          // of the wall band, regardless of whether the wall is
+          // block (190mm) or brick (230mm). Clamped to a 4px minimum
+          // so very-low-zoom views still have a hittable target.
+          const wallThicknessMm = wallThicknessByWallId[wall.id] ?? 190
+          const openingStrokePx = Math.max(
+            4,
+            wallThicknessMm * pxPerMmAtCurrentZoom
+          )
 
           return (
             <Group
@@ -2645,26 +2712,74 @@ function WallDrawingLayerInner({
                 e.evt.stopPropagation()
               }}
             >
-              {/* Background "gap" rectangle covering the wall segment */}
+              {/* Background "gap" rectangle covering the wall segment.
+                  StrokeWidth scales with the wall's real thickness so
+                  the opening visually fills the full width of the wall
+                  band (block 190mm and brick 230mm both look correct
+                  at any zoom). */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
                 stroke={isSelected ? '#1e40af' : '#FEF3C7'}
-                strokeWidth={isSelected ? 8 : 8}
-                hitStrokeWidth={14}
+                strokeWidth={openingStrokePx}
+                hitStrokeWidth={Math.max(openingStrokePx + 6, 14)}
               />
-              {/* Outline */}
+              {/* Outline — also scales with the wall thickness so the
+                  dashed border traces the actual edges of the opening
+                  band, not a fixed 8px strip. */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
                 stroke={isSelected ? '#1e40af' : '#D97706'}
-                strokeWidth={2}
+                strokeWidth={openingStrokePx}
                 dash={[8, 4]}
                 listening={false}
+                fillEnabled={false}
+                // Konva tip: a dashed Line with strokeWidth equal to
+                // the band thickness gives the "two parallel dashed
+                // edges along the band" look without needing a
+                // separate Rect. The center of the line sits on the
+                // wall centerline, so the dashes appear on both faces.
+                opacity={0.0}
               />
+              {/* Faces — explicit parallel dashed lines along the
+                  two long edges of the opening band so the user
+                  reads the gap as a "doorway cut" rather than a
+                  shaded patch. */}
+              {(() => {
+                const dx = end.x - start.x
+                const dy = end.y - start.y
+                const len = Math.sqrt(dx * dx + dy * dy)
+                if (len < 0.5) return null
+                const nx = -dy / len
+                const ny = dx / len
+                const half = openingStrokePx / 2
+                const fStartA = { x: start.x + nx * half, y: start.y + ny * half }
+                const fEndA = { x: end.x + nx * half, y: end.y + ny * half }
+                const fStartB = { x: start.x - nx * half, y: start.y - ny * half }
+                const fEndB = { x: end.x - nx * half, y: end.y - ny * half }
+                return (
+                  <>
+                    <Line
+                      points={[fStartA.x, fStartA.y, fEndA.x, fEndA.y]}
+                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      strokeWidth={2}
+                      dash={[8, 4]}
+                      listening={false}
+                    />
+                    <Line
+                      points={[fStartB.x, fStartB.y, fEndB.x, fEndB.y]}
+                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      strokeWidth={2}
+                      dash={[8, 4]}
+                      listening={false}
+                    />
+                  </>
+                )
+              })()}
               <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
               <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
               <MeasurementChip
                 x={midX}
-                y={midY + 8}
+                y={midY + openingStrokePx / 2 + 6}
                 text={`${Math.round(opening.widthMm)} × ${Math.round(opening.heightMm)}`}
                 bg={isSelected ? 'rgba(30, 64, 175, 0.95)' : 'rgba(146, 64, 14, 0.95)'}
                 align="center"

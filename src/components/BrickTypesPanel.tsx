@@ -7,6 +7,13 @@ import { wallTypeColor } from '../lib/wallTypeColors'
 
 interface BrickTypesPanelProps {
   makeups: BrickMakeup[]
+  /**
+   * Full project-wide brick makeups list — used SOLELY to compute the
+   * palette slot for each type's colour swatch, so the same brick
+   * type lights up the same colour regardless of which area filter
+   * is active. Defaults to {@link makeups} when not provided.
+   */
+  paletteMakeups?: BrickMakeup[]
   activeMakeupId: string
   wallCountsByMakeupId: Record<string, number>
   onSetActive: (id: string) => void
@@ -34,6 +41,7 @@ function generateMakeupId(): string {
  */
 export default function BrickTypesPanel({
   makeups,
+  paletteMakeups,
   activeMakeupId,
   wallCountsByMakeupId,
   onSetActive,
@@ -41,6 +49,10 @@ export default function BrickTypesPanel({
   onUpdateMakeup,
   onDeleteMakeup,
 }: BrickTypesPanelProps) {
+  // Palette colours come from the FULL project list (or `makeups`
+  // when no separate palette arg was passed). See WallTypesPanel for
+  // the same rationale — keeps colours stable across area filters.
+  const colorMakeups = paletteMakeups ?? makeups
   const [editingId, setEditingId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const editingMakeup =
@@ -106,7 +118,7 @@ export default function BrickTypesPanel({
                 <div className="flex items-start gap-2 mb-1 pr-12">
                   <span
                     className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
-                    style={{ backgroundColor: wallTypeColor(m.id, makeups) }}
+                    style={{ backgroundColor: wallTypeColor(m.id, colorMakeups) }}
                     aria-hidden
                   />
                   {/* Wrap the name onto multiple lines rather than truncate —
@@ -218,6 +230,30 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
   const [courseRanges, setCourseRanges] = useState<BrickCourseRange[]>(
     existing?.courseRanges ?? []
   )
+  // Optional sill / head brick types for openings on this wall type.
+  // Empty string = "use project default brick" (no separate line item
+  // in the tally — the opening trim is absorbed in the body brick
+  // deduction). Selecting a brick type adds a dedicated trim line per
+  // opening so the bricklayer can order solider / rowlock courses
+  // distinctly.
+  const [sillBrickCode, setSillBrickCode] = useState<string>(
+    existing?.sillBrickCode ?? '',
+  )
+  const [sillBrickOrientation, setSillBrickOrientation] = useState<
+    'stretcher' | 'soldier' | 'rowlock' | 'header'
+  >(existing?.sillBrickOrientation ?? 'stretcher')
+  const [headBrickCode, setHeadBrickCode] = useState<string>(
+    existing?.headBrickCode ?? '',
+  )
+  const [headBrickOrientation, setHeadBrickOrientation] = useState<
+    'stretcher' | 'soldier' | 'rowlock' | 'header'
+  >(existing?.headBrickOrientation ?? 'stretcher')
+  // Left-rail tabs — mirrors the multi-tab block wall type modal so
+  // the two editors feel uniform. Basics = name + height + main brick.
+  // Course pattern = bands of different bricks across courses. Openings
+  // = sill / head bricks + orientation.
+  type TabKey = 'basics' | 'composition' | 'openings'
+  const [activeTab, setActiveTab] = useState<TabKey>('basics')
 
   // Esc closes — mirrors WallTypeEditorModal so the keyboard UX is uniform.
   useEffect(() => {
@@ -244,6 +280,19 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
       heightMm,
       brickTypeCode,
       ...(cleanRanges.length > 0 ? { courseRanges: cleanRanges } : {}),
+      // Opening trim — only persist when the user actually nominated a
+      // brick type. Empty strings stay absent so the tally treats the
+      // opening as plain body brickwork. Orientation only persists
+      // alongside its brick code (no point persisting orientation
+      // when no trim brick is set).
+      ...(sillBrickCode ? { sillBrickCode } : {}),
+      ...(sillBrickCode && sillBrickOrientation !== 'stretcher'
+        ? { sillBrickOrientation }
+        : {}),
+      ...(headBrickCode ? { headBrickCode } : {}),
+      ...(headBrickCode && headBrickOrientation !== 'stretcher'
+        ? { headBrickOrientation }
+        : {}),
       // Preserve area assignment across edits. Same bug we hit on the
       // block side: this editor builds the result object explicitly and
       // never copied areaId, so every edit demoted a per-area brick wall
@@ -263,7 +312,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
       aria-label={existing ? `Edit brick wall type ${existing.name}` : 'New brick wall type'}
     >
       <div
-        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col overflow-hidden"
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-6xl h-[90vh] max-h-[960px] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -276,8 +325,9 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               )}
             </h2>
             <p className="text-[11px] text-ink-500 mt-0.5">
-              Name, default height, and brick library entry for walls of
-              this category.
+              {courseRanges.length > 0
+                ? `Pattern-driven · ${courseRanges.length} band${courseRanges.length === 1 ? '' : 's'} · ${heightMm} mm`
+                : `${heightMm} mm`}
             </p>
           </div>
           <button
@@ -289,11 +339,55 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
           </button>
         </header>
 
-        {/* Body — two columns on lg+: form on the left, live wall
-            preview on the right. Stacks on smaller widths so phones /
-            narrow split-screen still work. */}
-        <div className="flex flex-col lg:flex-row flex-1 min-h-0 overflow-auto">
-          <div className="p-5 space-y-5 flex-1 min-w-0">
+        {/* Tabs + content — same shell as the blockwork modal: left tab
+            rail, scrollable content area, right rail with live preview. */}
+        <div className="flex flex-1 min-h-0">
+          {/* Left tab rail */}
+          <nav className="w-44 border-r border-ink-600 bg-ink-900/30 p-2 flex flex-col gap-1">
+            {(
+              [
+                { key: 'basics', label: 'Basics' },
+                {
+                  key: 'composition',
+                  label: 'Course pattern',
+                  badge: courseRanges.length > 0 ? `${courseRanges.length}` : undefined,
+                },
+                {
+                  key: 'openings',
+                  label: 'Opening visuals',
+                  badge:
+                    (sillBrickCode ? 1 : 0) + (headBrickCode ? 1 : 0) > 0
+                      ? `${(sillBrickCode ? 1 : 0) + (headBrickCode ? 1 : 0)}`
+                      : undefined,
+                },
+              ] as { key: TabKey; label: string; badge?: string }[]
+            ).map((t) => {
+              const isActive = activeTab === t.key
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setActiveTab(t.key)}
+                  className={`text-left text-sm px-3 py-2 rounded-lg transition-colors flex items-center justify-between gap-2 ${
+                    isActive
+                      ? 'bg-beme-500/15 text-beme-200 border border-beme-500/40'
+                      : 'text-ink-300 hover:bg-ink-700/60 border border-transparent'
+                  }`}
+                >
+                  <span>{t.label}</span>
+                  {t.badge && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-700 text-ink-300">
+                      {t.badge}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </nav>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto p-6 min-w-0 space-y-5">
+          {activeTab === 'basics' && (
+            <>
           {/* ─── Basics ───
               Name, default wall height, and the brick this wall type is
               based on. Same section grouping as the block editor so the
@@ -343,11 +437,15 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               <span className="text-[11px] text-ink-400 mt-1 block">
                 {courseRanges.length === 0
                   ? 'The brick used for the whole wall.'
-                  : 'Fallback brick — used for any course not covered by a band below.'}
+                  : 'Fallback brick — used for any course not covered by a band on the Course pattern tab.'}
               </span>
             </label>
           </section>
+            </>
+          )}
 
+          {activeTab === 'composition' && (
+            <>
           {/* ─── Course composition ───
               Optional. Each entry: from course X, use brick Y. Last
               entry runs to the top of the wall. Single-brick walls
@@ -372,16 +470,17 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               </div>
               <button
                 onClick={() => {
-                  // New band defaults to "course after the last one"
-                  // with the makeup's main brick as the seed. User
-                  // typically tweaks both.
-                  const lastFrom = courseRanges.length > 0
+                  // New band defaults to "5 courses above the last
+                  // band's threshold" so the user has a sensible
+                  // starting point. The first band defaults to
+                  // "below course 5" (= courses 1-4).
+                  const lastBelow = courseRanges.length > 0
                     ? Math.max(...courseRanges.map((r) => r.fromCourse))
-                    : 1
+                    : 0
                   setCourseRanges([
                     ...courseRanges,
                     {
-                      fromCourse: courseRanges.length === 0 ? 1 : lastFrom + 1,
+                      fromCourse: lastBelow + 5,
                       brickTypeCode: brickTypeCode || brickTypes[0]?.code || '',
                     },
                   ])
@@ -400,7 +499,7 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                     className="flex items-center gap-2 p-2 border border-ink-700 rounded-lg bg-ink-900/40"
                   >
                     <div className="flex items-center gap-1.5 text-xs">
-                      <span className="text-ink-400">From course</span>
+                      <span className="text-ink-400">Below course</span>
                       <input
                         type="number"
                         min="1"
@@ -445,26 +544,171 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                   </div>
                 ))}
                 <div className="text-[11px] text-ink-500 italic">
-                  Bands are read in ascending order — the last one extends
-                  to the top of the wall.
+                  Each band's brick applies to courses BELOW the
+                  number shown. Courses above the highest band use
+                  the default brick from the Basics tab.
                 </div>
               </div>
             )}
           </section>
+            </>
+          )}
+
+          {activeTab === 'openings' && (
+            <>
+          {/* ─── Sill course ───
+              Brick + orientation for the course immediately below
+              every opening on this wall type. */}
+          <section className="space-y-3">
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Sill course
+            </h4>
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1">Brick type</span>
+              <select
+                value={sillBrickCode}
+                onChange={(e) => setSillBrickCode(e.target.value)}
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              >
+                <option value="">— none (absorbed in body) —</option>
+                {brickTypes.map((t) => (
+                  <option key={t.code} value={t.code}>
+                    {t.name} ({t.heightMm}mm tall)
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-ink-400 mt-1 block">
+                Brick laid under each window/door sill on this wall type.
+                Adds one course across the opening width to the tally per
+                opening.
+              </span>
+            </label>
+            {sillBrickCode && (
+              <div className="text-sm">
+                <span className="block text-ink-300 mb-1">Orientation</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['stretcher', 'soldier', 'rowlock', 'header'] as const).map((o) => {
+                    const isActive = sillBrickOrientation === o
+                    const label =
+                      o === 'stretcher'
+                        ? 'Stretcher'
+                        : o === 'soldier'
+                          ? 'Soldier'
+                          : o === 'rowlock'
+                            ? 'Rowlock'
+                            : 'Header'
+                    const sub =
+                      o === 'stretcher'
+                        ? 'Long face out, flat'
+                        : o === 'soldier'
+                          ? 'On end, long edge up'
+                          : o === 'rowlock'
+                            ? 'On edge, depth showing'
+                            : 'Rolled, typical face up'
+                    return (
+                      <button
+                        key={o}
+                        onClick={() => setSillBrickOrientation(o)}
+                        className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+                          isActive
+                            ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10 text-ink-100'
+                            : 'border-ink-600 hover:border-beme-500/50 bg-ink-900/40 text-ink-300'
+                        }`}
+                      >
+                        <div className="font-medium">{label}</div>
+                        <div className="text-[10px] text-ink-500 mt-0.5">{sub}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* ─── Head course ─── */}
+          <section className="space-y-3">
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+              Head course
+            </h4>
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1">Brick type</span>
+              <select
+                value={headBrickCode}
+                onChange={(e) => setHeadBrickCode(e.target.value)}
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              >
+                <option value="">— none (absorbed in body) —</option>
+                {brickTypes.map((t) => (
+                  <option key={t.code} value={t.code}>
+                    {t.name} ({t.heightMm}mm tall)
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-ink-400 mt-1 block">
+                Brick laid above each opening (soldier or rowlock course
+                over the lintel). Adds one course across the opening
+                width per opening.
+              </span>
+            </label>
+            {headBrickCode && (
+              <div className="text-sm">
+                <span className="block text-ink-300 mb-1">Orientation</span>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['stretcher', 'soldier', 'rowlock', 'header'] as const).map((o) => {
+                    const isActive = headBrickOrientation === o
+                    const label =
+                      o === 'stretcher'
+                        ? 'Stretcher'
+                        : o === 'soldier'
+                          ? 'Soldier'
+                          : o === 'rowlock'
+                            ? 'Rowlock'
+                            : 'Header'
+                    const sub =
+                      o === 'stretcher'
+                        ? 'Long face out, flat'
+                        : o === 'soldier'
+                          ? 'On end, long edge up'
+                          : o === 'rowlock'
+                            ? 'On edge, depth showing'
+                            : 'Rolled, typical face up'
+                    return (
+                      <button
+                        key={o}
+                        onClick={() => setHeadBrickOrientation(o)}
+                        className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+                          isActive
+                            ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10 text-ink-100'
+                            : 'border-ink-600 hover:border-beme-500/50 bg-ink-900/40 text-ink-300'
+                        }`}
+                      >
+                        <div className="font-medium">{label}</div>
+                        <div className="text-[10px] text-ink-500 mt-0.5">{sub}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
+            </>
+          )}
           </div>
 
-          {/* Right rail: live wall preview. Stacks bottom-to-top so the
-              first band (course 1) sits at the floor exactly like a real
-              wall. Single-brick types still get a preview — it just shows
-              one band of the main brick. */}
-          <aside className="hidden lg:flex w-72 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4">
+          {/* Right rail: live wall preview. Same shell as the block
+              modal so the user reads the two editors the same way.
+              Width / padding / typography all match for direct visual
+              continuity when switching between trades. */}
+          <aside className="hidden lg:flex w-80 flex-shrink-0 border-l border-ink-600 bg-ink-900/30 flex-col p-4 min-h-0">
             <div className="flex items-baseline justify-between mb-2">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400">
                 Wall preview
               </h3>
-              <span className="text-[10px] text-ink-500 font-mono tabular-nums">
-                {heightMm} mm
-              </span>
+              {courseRanges.length > 0 ? (
+                <span className="text-[10px] text-beme-300 font-mono">pattern</span>
+              ) : (
+                <span className="text-[10px] text-ink-500 font-mono">auto</span>
+              )}
             </div>
             <p className="text-[10px] text-ink-500 mb-3 leading-snug">
               {courseRanges.length === 0
@@ -477,6 +721,10 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
                 mainBrickCode={brickTypeCode}
                 courseRanges={courseRanges}
                 library={library}
+                sillBrickCode={sillBrickCode || undefined}
+                sillBrickOrientation={sillBrickOrientation}
+                headBrickCode={headBrickCode || undefined}
+                headBrickOrientation={headBrickOrientation}
               />
             </div>
           </aside>
@@ -510,6 +758,13 @@ interface BrickWallPreviewProps {
   mainBrickCode: string
   courseRanges: BrickCourseRange[]
   library: Record<BrickCode, BrickType>
+  /** Optional sill / head trim — shown as bricks of the chosen type
+   *  laid at the opening edge so the user can preview the soldier /
+   *  rowlock / stretcher orientation before committing. */
+  sillBrickCode?: string
+  sillBrickOrientation?: 'stretcher' | 'soldier' | 'rowlock' | 'header'
+  headBrickCode?: string
+  headBrickOrientation?: 'stretcher' | 'soldier' | 'rowlock' | 'header'
 }
 
 /**
@@ -526,58 +781,109 @@ function BrickWallPreview({
   mainBrickCode,
   courseRanges,
   library,
+  sillBrickCode,
+  sillBrickOrientation = 'stretcher',
+  headBrickCode,
+  headBrickOrientation = 'stretcher',
 }: BrickWallPreviewProps) {
   const segments = useMemo(() => {
-    // Build a normalised range list ordered by fromCourse. If the
-    // bottom course isn't covered explicitly, prepend the main brick
-    // so the wall starts somewhere.
+    // BELOW-COURSE semantics for the live preview. Each range's
+    // brick fills courses BELOW its fromCourse threshold (above
+    // the previous range's threshold). Top of the wall (above the
+    // highest threshold) uses the main brick — implicit, no
+    // explicit band needed.
     const ranges = (courseRanges ?? []).filter(
       (r) =>
         r.brickTypeCode && Number.isFinite(r.fromCourse) && r.fromCourse >= 1
     )
     const sorted = [...ranges].sort((a, b) => a.fromCourse - b.fromCourse)
     if (sorted.length === 0) {
-      // Pure single-brick wall.
       const brick = mainBrickCode ? library[mainBrickCode] : undefined
       if (!brick) return []
       return [{ brick, heightMm: wallHeightMm, bandIndex: 0 }]
     }
-    if (sorted[0].fromCourse !== 1) {
-      sorted.unshift({ fromCourse: 1, brickTypeCode: mainBrickCode })
-    }
     const out: Array<{ brick: BrickType; heightMm: number; bandIndex: number }> = []
     let cursorMm = 0
+    let cursorCourse = 1
     for (let i = 0; i < sorted.length; i++) {
       const range = sorted[i]
-      const next = sorted[i + 1]
       const brick = library[range.brickTypeCode]
       if (!brick) continue
       const pitch = brick.heightMm + (brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)
       const remaining = wallHeightMm - cursorMm
       if (remaining <= 0) break
-      let bandHeight: number
-      if (next) {
-        const courses = Math.max(0, next.fromCourse - range.fromCourse)
-        bandHeight = Math.min(courses * pitch, remaining)
-      } else {
-        bandHeight = remaining
+      const bandCourses = Math.max(0, range.fromCourse - cursorCourse)
+      const bandHeight = Math.min(bandCourses * pitch, remaining)
+      if (bandHeight > 0) {
+        out.push({ brick, heightMm: bandHeight, bandIndex: i })
+        cursorMm += bandHeight
       }
-      if (bandHeight <= 0) continue
-      out.push({ brick, heightMm: bandHeight, bandIndex: i })
-      cursorMm += bandHeight
+      cursorCourse = range.fromCourse
+    }
+    // Above the highest threshold — fill with main brick.
+    const remaining = wallHeightMm - cursorMm
+    if (remaining > 0) {
+      const mainBrick = mainBrickCode ? library[mainBrickCode] : undefined
+      if (mainBrick) {
+        out.push({ brick: mainBrick, heightMm: remaining, bandIndex: sorted.length })
+      }
     }
     return out
   }, [wallHeightMm, mainBrickCode, courseRanges, library])
 
-  // Width of the preview wall section — wide enough to show ~2.5 bricks
-  // so the stretcher bond reads as a pattern. Fixed in mm-space so the
-  // SVG scales naturally; the parent container handles fit-to-fill.
+  // Width of the preview wall section — wide enough to fit a sample
+  // window opening with body bricks on either side. Real-world mm so
+  // the SVG scales naturally; the parent container handles fit-to-fill.
   const widestFaceMm = Math.max(
     ...segments.map((s) => s.brick.widthMm + (s.brick.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM)),
     230
   )
-  const viewWidth = Math.max(widestFaceMm * 2.5, 400)
+  const viewWidth = Math.max(widestFaceMm * 6, 1500)
   const viewHeight = Math.max(wallHeightMm, 100)
+
+  // ── Sample window opening — drawn into the preview when there's
+  // enough wall height to host one. Sized roughly half the viewWidth
+  // and at typical residential sill / head positions. Skipped on
+  // very short walls (< 1500 mm) where a window wouldn't fit.
+  const hasWindow = wallHeightMm >= 1500
+  const windowSillMm = hasWindow ? Math.max(600, wallHeightMm * 0.3) : 0
+  const windowHeightMm = hasWindow
+    ? Math.min(1200, wallHeightMm - windowSillMm - 300)
+    : 0
+  const windowHeadMm = windowSillMm + windowHeightMm
+  const windowWidthMm = Math.min(viewWidth * 0.55, 1200)
+  const windowX0Mm = (viewWidth - windowWidthMm) / 2
+  const windowX1Mm = windowX0Mm + windowWidthMm
+  // SVG mm-space is Y-DOWN, so y0 = top of opening in SVG = top of
+  // wall − head height.
+  const windowSvgTopY = wallHeightMm - windowHeadMm
+  const windowSvgBotY = wallHeightMm - windowSillMm
+
+  // Resolve a brick + orientation into the visible face dimensions
+  // and a colour. Mirrors the 3D rendering's orientedFace() helper.
+  const orientedFace = (
+    brick: BrickType | undefined,
+    orientation: 'stretcher' | 'soldier' | 'rowlock' | 'header',
+  ): { faceWMm: number; faceHMm: number } | null => {
+    if (!brick) return null
+    const w = brick.widthMm
+    const h = brick.heightMm
+    const d = brick.depthMm ?? 110
+    switch (orientation) {
+      case 'soldier':
+        return { faceWMm: h, faceHMm: w }
+      case 'rowlock':
+        return { faceWMm: w, faceHMm: d }
+      case 'header':
+        return { faceWMm: h, faceHMm: d }
+      default:
+        return { faceWMm: w, faceHMm: h }
+    }
+  }
+  const sillBrick = sillBrickCode ? library[sillBrickCode] : undefined
+  const headBrick = headBrickCode ? library[headBrickCode] : undefined
+  const sillFace = hasWindow ? orientedFace(sillBrick, sillBrickOrientation) : null
+  const headFace = hasWindow ? orientedFace(headBrick, headBrickOrientation) : null
 
   // Band palette — matches the spirit of WallTypesPanel's wall-type
   // colours so an estimator switching between block / brick projects
@@ -590,6 +896,10 @@ function BrickWallPreview({
     { fill: '#db2777', stroke: '#831843' },
     { fill: '#0891b2', stroke: '#164e63' },
   ]
+  // Dedicated trim palette — distinct from the body bands so the
+  // sill / head visually stand apart.
+  const SILL_TRIM_COLOUR = { fill: '#a3e635', stroke: '#3f6212' }
+  const HEAD_TRIM_COLOUR = { fill: '#f59e0b', stroke: '#7c2d12' }
 
   if (segments.length === 0) {
     return (
@@ -731,12 +1041,157 @@ function BrickWallPreview({
             }
             return <g key={`grid-${i}`}>{lines}</g>
           })}
+          {/* 3. Sample window opening + sill / head trim bricks.
+                Rendered AFTER the body so it visually overrides the
+                bricks where the void / trim sit. The window void
+                shows the ink-900 background colour like the rest of
+                the workspace's empty-space colour. */}
+          {hasWindow && (
+            <g>
+              {/* Window void — punches through the body bricks */}
+              <rect
+                x={windowX0Mm}
+                y={windowSvgTopY}
+                width={windowWidthMm}
+                height={windowSvgBotY - windowSvgTopY}
+                fill="#0b0d10"
+                stroke="#1f2937"
+                strokeWidth={4}
+              />
+              {/* Sill trim band — sits IMMEDIATELY below the window,
+                  spans the window width. Each brick is drawn at the
+                  oriented face width with a 10 mm mortar gap. */}
+              {sillFace && (
+                <g>
+                  {(() => {
+                    const trimY1 = windowSvgBotY
+                    const trimY0 = trimY1 - sillFace.faceHMm
+                    const TRIM_MORTAR_MM = 10
+                    const modular = sillFace.faceWMm + TRIM_MORTAR_MM
+                    const count = Math.max(
+                      1,
+                      Math.ceil(windowWidthMm / modular),
+                    )
+                    const bricks: ReactElement[] = []
+                    // Backing band so the 10 mm gaps between trim
+                    // bricks read as mortar joints, not voids.
+                    bricks.push(
+                      <rect
+                        key="sill-back"
+                        x={windowX0Mm}
+                        y={trimY0}
+                        width={windowWidthMm}
+                        height={sillFace.faceHMm}
+                        fill={SILL_TRIM_COLOUR.stroke}
+                      />,
+                    )
+                    let cursor = windowX0Mm
+                    for (let i = 0; i < count; i++) {
+                      const remain = windowX1Mm - cursor
+                      if (remain < 1) break
+                      const w = Math.min(sillFace.faceWMm, remain)
+                      bricks.push(
+                        <rect
+                          key={`sill-${i}`}
+                          x={cursor}
+                          y={trimY0}
+                          width={w}
+                          height={sillFace.faceHMm}
+                          fill={SILL_TRIM_COLOUR.fill}
+                          stroke={SILL_TRIM_COLOUR.stroke}
+                          strokeWidth={4}
+                        />,
+                      )
+                      cursor += modular
+                    }
+                    return bricks
+                  })()}
+                </g>
+              )}
+              {/* Head trim band — sits IMMEDIATELY above the window */}
+              {headFace && (
+                <g>
+                  {(() => {
+                    const trimY1 = windowSvgTopY
+                    const trimY0 = trimY1 - headFace.faceHMm
+                    const TRIM_MORTAR_MM = 10
+                    const modular = headFace.faceWMm + TRIM_MORTAR_MM
+                    const count = Math.max(
+                      1,
+                      Math.ceil(windowWidthMm / modular),
+                    )
+                    const bricks: ReactElement[] = []
+                    bricks.push(
+                      <rect
+                        key="head-back"
+                        x={windowX0Mm}
+                        y={trimY0}
+                        width={windowWidthMm}
+                        height={headFace.faceHMm}
+                        fill={HEAD_TRIM_COLOUR.stroke}
+                      />,
+                    )
+                    let cursor = windowX0Mm
+                    for (let i = 0; i < count; i++) {
+                      const remain = windowX1Mm - cursor
+                      if (remain < 1) break
+                      const w = Math.min(headFace.faceWMm, remain)
+                      bricks.push(
+                        <rect
+                          key={`head-${i}`}
+                          x={cursor}
+                          y={trimY0}
+                          width={w}
+                          height={headFace.faceHMm}
+                          fill={HEAD_TRIM_COLOUR.fill}
+                          stroke={HEAD_TRIM_COLOUR.stroke}
+                          strokeWidth={4}
+                        />,
+                      )
+                      cursor += modular
+                    }
+                    return bricks
+                  })()}
+                </g>
+              )}
+            </g>
+          )}
         </svg>
       </div>
       {/* Legend ordered TOP → BOTTOM so the rows in the swatch list
-          line up with what the eye reads in the preview above.
-          `segments` is bottom-to-top, so reverse for display. */}
+          line up with what the eye reads in the preview above. Trim
+          rows appear when a sill / head brick is configured. */}
       <div className="flex flex-col gap-1">
+        {headBrick && hasWindow && (
+          <div className="flex items-center gap-2 text-[11px]">
+            <span
+              className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+              style={{ backgroundColor: HEAD_TRIM_COLOUR.fill }}
+              aria-hidden
+            />
+            <span className="text-ink-200 flex-1 truncate">
+              {headBrick.name}
+            </span>
+            <span className="text-ink-500 text-[10px] flex-shrink-0">
+              head ({headBrickOrientation})
+            </span>
+          </div>
+        )}
+        {sillBrick && hasWindow && (
+          <div className="flex items-center gap-2 text-[11px]">
+            <span
+              className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30"
+              style={{ backgroundColor: SILL_TRIM_COLOUR.fill }}
+              aria-hidden
+            />
+            <span className="text-ink-200 flex-1 truncate">
+              {sillBrick.name}
+            </span>
+            <span className="text-ink-500 text-[10px] flex-shrink-0">
+              sill ({sillBrickOrientation})
+            </span>
+          </div>
+        )}
         {[...segments].reverse().map((seg, i) => {
           const colour = PALETTE[seg.bandIndex % PALETTE.length]
           const pitch =

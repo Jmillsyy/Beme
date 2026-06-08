@@ -89,6 +89,7 @@ import {
   createDefaultFreestandingPierMakeup,
   createDefaultTiedPierMakeup,
   createDefaultWallMakeup,
+  getEffectiveWallThicknessMm,
   getMakeupHeightMm,
 } from '../lib/makeups'
 import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
@@ -160,27 +161,14 @@ function computeWallThicknessByWallId(
     // (UK 100 mm block, US 4" CMU, etc.) ignored the library entirely and
     // rendered as 190 mm AU walls. Now the floor only kicks in when there's
     // genuinely nothing to read.
-    let depth: number | null = null
-    if (makeup) {
-      const candidateCodes = [
-        makeup.bodyBlockCode,
-        makeup.baseCourseBlockCode,
-        makeup.topCourseBlockCode,
-        ...(makeup.courseSeriesRanges?.flatMap((r) => [
-          r.bodyBlockCode,
-          r.cornerBlockCode,
-          r.baseCourseBlockCode,
-          r.heightMakeup71BlockCode,
-        ]) ?? []),
-      ].filter((c): c is string => !!c)
-      for (const code of candidateCodes) {
-        const d = BLOCK_LIBRARY[code]?.dimensions.depthMm
-        if (typeof d === 'number' && (depth === null || d > depth)) {
-          depth = d
-        }
-      }
-    }
-    map[w.id] = depth ?? 190
+    // Wall envelope = MAX block depth across the makeup. Includes the
+    // top-level corner / half / cap / coursePattern bands and every
+    // courseSeriesRange override, so a makeup with (say) a 250mm body
+    // and a 290mm corner block draws at 290mm without the corner
+    // overhanging the wall extent.
+    map[w.id] = makeup
+      ? getEffectiveWallThicknessMm(makeup, BLOCK_LIBRARY)
+      : 190
   }
   return map
 }
@@ -983,16 +971,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       return next
     })
   }, [])
+  /** The opening currently being edited in the New/Edit modal. When
+   *  set, the modal renders pre-filled with these values + any
+   *  user-edited state (height, sill, kind) and saves either as a NEW
+   *  opening (editingId undefined — fresh placement) or as an UPDATE
+   *  to an existing opening (editingId set — re-clicked from canvas). */
   const [pendingOpening, setPendingOpening] = useState<{
     wallId: string
     startAlongWallMm: number
     widthMm: number
+    /** Set when editing an existing opening (re-opened from a canvas
+     *  click). Save patches this opening in place instead of pushing
+     *  a new one. */
+    editingId?: string
   } | null>(null)
   const placingOpeningRef = useRef(false)
-  const [openingSillHeightMm, setOpeningSillHeightMm] = useState(0)
-  const [openingHeadHeightMm, setOpeningHeadHeightMm] = useState(300)
-  /** Brick-mode opening height — user types it directly, no sill/head math needed. */
+  /** Block-mode head height — distance from the TOP of the opening
+   *  to the top of the wall (the lintel allowance). The opening
+   *  height itself is DERIVED: openingH = wallH − sill − head.
+   *  Default 600 mm = 2700 mm wall − 2100 mm door − 0 mm sill, so
+   *  a freshly drawn standard door opening on a standard wall
+   *  comes out at the right size without the user typing anything. */
+  const [blockOpeningHeadMm, setBlockOpeningHeadMm] = useState(600)
+  /** Block-mode sill height — typed directly. Block walls don't
+   *  carry a door/window distinction (no sill-course concept), so
+   *  the sill is just a free dimension the user sets manually.
+   *  Default 0 = door-style opening reaching the floor. */
+  const [blockOpeningSillMm, setBlockOpeningSillMm] = useState(0)
+  /** Brick-mode opening height — user types it directly, sill is
+   *  derived from kind via deriveSillMm at save time. */
   const [brickOpeningHeightMm, setBrickOpeningHeightMm] = useState(2100)
+  /** Brick-mode opening kind — drives the auto-derived sill (door=0,
+   *  window=wallH-300-openingH) and sill-trim suppression in 3D. */
+  const [brickOpeningKind, setBrickOpeningKind] = useState<'window' | 'door'>('window')
 
   // ---------- Undo / redo ----------
   // A snapshot is the tuple of every page-keyed data state we let the user
@@ -1132,6 +1143,47 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     Record<string, number>
   >({})
 
+  // ---------- 3D capture snapshots ----------
+  /**
+   * Snapshots captured via the 3D viewport's ▣ Capture button.
+   * Lifted up from WorkspaceView3D so they can be:
+   *   1. Persisted to the SavedProject on every save / hydrated on
+   *      load — captures are inseparable from their project.
+   *   2. Read by UnifiedExportPanel directly from React state
+   *      instead of localStorage / window mirrors (which leaked
+   *      across projects).
+   *
+   * Tagged with the trade the workspace was in at capture time so
+   * per-trade exports can filter. `pageNumber` filters the 3D view's
+   * visible queue to the active page.
+   */
+  type View3DSnapshot = {
+    id: string
+    dataUrl: string
+    createdAt: number
+    pageNumber?: number
+    trade?: 'block' | 'brick'
+    legend?: Array<{ code: string; label: string; color: string }>
+  }
+  const [view3dSnapshots, setView3dSnapshots] = useState<View3DSnapshot[]>([])
+  // Mirror the current project's snapshots onto a window reference so
+  // the export panel can read them even when an HMR-stale closure
+  // drops the prop binding. The mirror is overwritten wholesale on
+  // every state change (no project-key namespacing), so only the
+  // ACTIVE project's captures are ever there — no cross-project
+  // bleed risk. Cleared when the workspace unmounts.
+  useEffect(() => {
+    type Win = Window & { __beme3dCurrentSnapshots?: View3DSnapshot[] }
+    ;(window as Win).__beme3dCurrentSnapshots = view3dSnapshots
+    return () => {
+      try {
+        delete (window as Win).__beme3dCurrentSnapshots
+      } catch {
+        // ignore
+      }
+    }
+  }, [view3dSnapshots])
+
   // ---------- Saved-project tracking ----------
   /** ID of the currently-loaded saved project (null if this is a fresh, unsaved workspace). */
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(projectId ?? null)
@@ -1194,6 +1246,45 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * controlled-mode UnifiedExportPanel reads it as `open`.
    */
   const [exportModalOpen, setExportModalOpen] = useState(false)
+
+  // When the workspace switches to a different saved project (within
+  // the same browser tab), wipe the in-memory 3D snapshot mirror so
+  // captures from the previous project don't bleed into the new
+  // project's export. The window mirror is per-tab and persists
+  // across project loads, so without this cleanup, exporting project
+  // B after viewing project A would include A's captures.
+  //
+  // The `:no-project` bucket is preserved — that's the catch-all
+  // for unsaved drafts; the export pipeline includes it deliberately
+  // so captures taken before a save still surface.
+  useEffect(() => {
+    if (!currentProjectId) return
+    try {
+      type Win = Window & {
+        __beme3dSnapshots?: Record<string, unknown>
+      }
+      const w = window as Win
+      const mirror = w.__beme3dSnapshots
+      if (!mirror) return
+      const projectPrefix = `beme:3d-export-snapshots:${currentProjectId}`
+      for (const key of Object.keys(mirror)) {
+        // Keep keys belonging to THIS project + the `no-project`
+        // catch-all. Anything tagged for a DIFFERENT project gets
+        // dropped from the mirror.
+        const isThisProject =
+          key === projectPrefix || key.startsWith(projectPrefix + ':')
+        const isNoProject = key.startsWith(
+          'beme:3d-export-snapshots:no-project',
+        )
+        if (!isThisProject && !isNoProject) {
+          delete mirror[key]
+        }
+      }
+    } catch {
+      // Mutating window globals can throw in sandboxed iframes; not
+      // fatal — the export still scopes by projectId on the read path.
+    }
+  }, [currentProjectId])
 
   // Load a saved project on mount if projectId was provided
   useEffect(() => {
@@ -1412,6 +1503,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             ...proj.blockExportInclusions,
           })
         }
+        // Hydrate 3D captures saved on the project. Earlier builds put
+        // these in localStorage / a window-level mirror; now they live
+        // directly on the SavedProject so they can't bleed into other
+        // projects. Reset to empty when the project carries no
+        // snapshots — important when switching from a project that
+        // had captures to one that doesn't.
+        setView3dSnapshots(proj.view3dSnapshots ?? [])
 
         setCurrentProjectId(proj.id)
         setProjectOrganisationId(proj.organisationId ?? null)
@@ -1929,6 +2027,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       brickMakeups,
       activeBrickMakeupId,
       exportInclusions,
+      // Persist 3D captures alongside the project — they're scoped
+      // to this project's id and can never leak into another.
+      view3dSnapshots,
     }
     try {
       const persisted = await saveProjectToStore(project)
@@ -2179,6 +2280,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickMakeups,
         activeBrickMakeupId,
         exportInclusions,
+        view3dSnapshots,
       }
       try {
         const persisted = await saveProjectToStore(project)
@@ -2231,8 +2333,54 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (id) {
       setSelectedWallId(null)
       setSelectedMeasurementId(null)
+      // Clicking an opening re-opens the same modal the user saw at
+      // creation time, this time pre-filled and in "edit" mode. The
+      // banner that used to sit above the canvas is gone — all
+      // opening-level controls (height / sill / kind / delete) live
+      // inside the modal now so block and brick get the same flow.
+      //
+      // We resolve the opening directly from openingsByPage[currentPage]
+      // instead of a derived `currentPageOpenings` const because the
+      // useCallback is declared earlier in the file than that const
+      // — closing over the const would trigger a temporal-dead-zone
+      // runtime error.
+      const pageOpenings = openingsByPage[currentPage] ?? []
+      const opening = pageOpenings.find((o) => o.id === id)
+      if (opening) {
+        setPendingOpening({
+          wallId: opening.wallId,
+          startAlongWallMm: opening.startAlongWallMm,
+          widthMm: opening.widthMm,
+          editingId: opening.id,
+        })
+        // Seed the modal state from the opening's persisted values
+        // so the user sees the actual numbers when the modal opens.
+        if (mode === 'brick') {
+          setBrickOpeningHeightMm(opening.heightMm)
+          setBrickOpeningKind(opening.kind ?? 'window')
+        } else {
+          // Block modal asks for HEAD, not opening height. Derive
+          // head from the persisted (sill, openingH) + the wall's
+          // current height.
+          const pageWalls = wallsByPage[currentPage] ?? []
+          const editWall = pageWalls.find((w) => w.id === opening.wallId)
+          const editMakeup = editWall
+            ? makeupsById[editWall.makeupId]
+            : undefined
+          const editWallH =
+            editWall?.heightMmOverride ??
+            (editMakeup ? getMakeupHeightMm(editMakeup) : 0)
+          const derivedHead = Math.max(
+            0,
+            editWallH - opening.sillHeightMm - opening.heightMm,
+          )
+          setBlockOpeningHeadMm(derivedHead)
+          setBlockOpeningSillMm(opening.sillHeightMm)
+        }
+      }
     }
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openingsByPage, currentPage, mode])
   const handleCancelDraw = useCallback(() => {
     setDrawingMode(false)
     setPlacingOpening(false)
@@ -2394,6 +2542,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     [wallsByPage, currentPage, mode, activeAreaId]
   )
   const allOpenings = useMemo(() => Object.values(openingsByPage).flat(), [openingsByPage])
+  // Openings restricted to those on walls in the current view. The
+  // tally panels are area / trade-scoped via `allWalls`, but the raw
+  // `allOpenings` would still subtract opening area for openings on
+  // walls in OTHER areas — calculateBrickTally / calculateBlockTally
+  // sum every opening's area against the project totalAreaSqMm
+  // regardless of whether their wall is in scope. That caused the
+  // per-area square-metre figure to under-count by the wrong-area
+  // opening area: FF area = FF walls − (FF + SF openings),
+  // SF area = SF walls − (FF + SF openings), so FF + SF was less than
+  // All by exactly one extra deduction of every opening. Filtering
+  // openings here so they share the same scope as the walls fixes
+  // both panels in one place.
+  const openingsForActiveView = useMemo(() => {
+    const wallIds = new Set(allWalls.map((w) => w.id))
+    return allOpenings.filter((o) => wallIds.has(o.wallId))
+  }, [allOpenings, allWalls])
   const currentPageOpenings = openingsByPage[currentPage] ?? []
   const allPiers = useMemo(() => Object.values(piersByPage).flat(), [piersByPage])
   const currentPagePiers = piersByPage[currentPage] ?? []
@@ -2411,10 +2575,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   )
 
   const wallCountsByMakeupId = useMemo(() => {
+    // Count across EVERY wall in the project, not just the area-filtered
+    // view. The Wall Types panel's "X walls using this" / Delete gate
+    // needs to reflect global truth so a wall type that's still in use
+    // by walls in another area can't be silently deleted — that would
+    // orphan those walls (dangling makeupId). The visible count then
+    // also accurately reads "1 wall using this" even when the user is
+    // viewing a different area.
     const counts: Record<string, number> = {}
-    for (const w of allWalls) counts[w.makeupId] = (counts[w.makeupId] ?? 0) + 1
+    for (const w of allWallsRaw) counts[w.makeupId] = (counts[w.makeupId] ?? 0) + 1
     return counts
-  }, [allWalls])
+  }, [allWallsRaw])
 
   /** Brick makeups keyed by id. Used by the calc engine + the wall-rendering
    *  layer to resolve wall.heightMmOverride defaults and per-wall brick types. */
@@ -2470,6 +2641,63 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }, [wallCountsByMakeupId])
 
+  // ── Migrate legacy UNASSIGNED walls to the first area ──────────────
+  //
+  // Old projects (or any wall drawn before areas were created) could
+  // sit without an areaId. That left walls invisible when filtering by
+  // any specific area and only countable under the "Unassigned" toggle
+  // in the export modal — confusing because individual-area sums then
+  // didn't equal the all-areas total. Going forward, every wall is
+  // stamped with an areaId at creation (see handleWallPlaced /
+  // handleCurvedWallAdded). This migration repairs already-stored data.
+  //
+  // Rule: any wall without areaId AND with at least one area defined
+  // gets the first area's id. If no areas exist yet, a 'Main' area
+  // is auto-created so unassigned walls have somewhere to land.
+  // Runs whenever wallsByPage or areas changes; the early-return when
+  // nothing needs migrating keeps it cheap on every commit.
+  useEffect(() => {
+    const pages = Object.keys(wallsByPage).map((n) => Number(n))
+    let hasUnassigned = false
+    for (const p of pages) {
+      const pageWalls = wallsByPage[p] ?? []
+      for (const w of pageWalls) {
+        if (!w.areaId) {
+          hasUnassigned = true
+          break
+        }
+      }
+      if (hasUnassigned) break
+    }
+    if (!hasUnassigned) return
+    let firstAreaId = areas[0]?.id
+    if (!firstAreaId) {
+      // No areas at all — create a default 'Main' area so the walls
+      // have somewhere to live.
+      const newAreaId =
+        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setAreas((prev) => [...prev, { id: newAreaId, name: 'Main' }])
+      firstAreaId = newAreaId
+    }
+    const targetAreaId: string = firstAreaId
+    setWallsByPage((prev) => {
+      const next: typeof prev = {}
+      let changed = false
+      for (const k of Object.keys(prev)) {
+        const pageNum = Number(k)
+        const pageWalls = prev[pageNum] ?? []
+        const fixed = pageWalls.map((w) =>
+          w.areaId ? w : { ...w, areaId: targetAreaId }
+        )
+        if (fixed.some((w, i) => w !== pageWalls[i])) changed = true
+        next[pageNum] = fixed
+      }
+      return changed ? next : prev
+    })
+  }, [wallsByPage, areas])
+
   // Migrate legacy wedge curve makeups in-place. Old wedge curves were
   // created with the default 20.45 cleanout + 50.45 tile base course
   // because createDefaultWallMakeup seeds them and the wedge override
@@ -2487,14 +2715,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           typeof m.curveRadiusMm === 'number' && m.bodyBlockCode === '20.03CW'
         if (!isWedge) return m
         const needsBaseFix = m.baseCourseBlockCode !== '20.03CW'
-        const needsTileFix = m.baseCourseTileCode !== undefined
         const needsCornerFix = m.cornerBlockCode !== '20.03CW'
         const needsHalfFix = m.halfBlockCode !== '20.03CW'
         const needsTopFix = m.topCourseBlockCode !== '20.03CW'
         const needsBondFix = m.bondType !== 'stack'
         if (
           !needsBaseFix &&
-          !needsTileFix &&
           !needsCornerFix &&
           !needsHalfFix &&
           !needsTopFix &&
@@ -2506,7 +2732,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         return {
           ...m,
           baseCourseBlockCode: '20.03CW' as const,
-          baseCourseTileCode: undefined,
           cornerBlockCode: '20.03CW' as const,
           halfBlockCode: '20.03CW' as const,
           topCourseBlockCode: '20.03CW' as const,
@@ -2730,6 +2955,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // forever, so subsequent wall-type height edits looked like they
     // did nothing on existing brick walls — same bug we already fixed
     // in calculateBrickTally's precedence chain.
+    // Every wall belongs to an area. Resolution chain:
+    //   1. activeAreaId (user is viewing a specific area — draw into it)
+    //   2. areas[0].id (user is on All-areas view but areas exist —
+    //      drop into the first area as a sensible default)
+    //   3. auto-create a 'Main' area (no areas exist at all — the user
+    //      shouldn't be able to leave a wall un-bucketed)
+    // After this chain runs, targetAreaId is guaranteed non-null and
+    // can be stamped on the wall unconditionally.
+    let targetWallAreaId: string = activeAreaId ?? ''
+    if (!targetWallAreaId) {
+      if (areas.length > 0) {
+        targetWallAreaId = areas[0].id
+      } else {
+        const newAreaId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        setAreas((prev) => [...prev, { id: newAreaId, name: 'Main' }])
+        setActiveAreaId(newAreaId)
+        targetWallAreaId = newAreaId
+      }
+    }
     const rawWall: Wall = {
       id:
         typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -2740,10 +2987,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // to look the id up in, and so switching trades doesn't make this
       // wall disappear into the wrong filter.
       trade: isBrick ? 'brick' : 'block',
-      // Stamp the active area (if any) so the wall lives in that bucket.
-      // Drawn while the "All" tab is active → no area → only visible
-      // under All going forward. User can bulk-reassign later (v2 work).
-      ...(activeAreaId ? { areaId: activeAreaId } : {}),
+      // Walls always belong to an area (see chain above) so the export
+      // / panel counts can never silently drop them.
+      areaId: targetWallAreaId,
       startX: snappedStart.x,
       startY: snappedStart.y,
       endX: snappedEnd.x,
@@ -3325,6 +3571,32 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setPlacingOpening(false)
   }, [])
 
+  /**
+   * Derive the sill height for a new opening from its kind, height,
+   * and the host wall's height. Replaces the old "type the sill"
+   * input — the user only specifies the opening height now and the
+   * sill falls out:
+   *
+   *   - Door: sits on the floor. Sill is always 0.
+   *   - Window: top of the opening sits 300mm below the wall top
+   *     (matches the typical residential lintel allowance), so
+   *     sill = wallHeight − 300 − openingHeight. Clamped at 0 in case
+   *     the opening is taller than the wall minus the lintel band —
+   *     the modal's "doesn't fit" error catches that case anyway.
+   */
+  function deriveSillMm(
+    kind: 'window' | 'door',
+    openingHeightMm: number,
+    wallHeightMm: number
+  ): number {
+    if (kind === 'door') return 0
+    const WINDOW_HEAD_RESERVE_MM = 300
+    return Math.max(
+      0,
+      wallHeightMm - WINDOW_HEAD_RESERVE_MM - openingHeightMm
+    )
+  }
+
   function handleSavePendingOpening() {
     if (!pendingOpening) return
     const wall = currentPageWalls.find((w) => w.id === pendingOpening.wallId)
@@ -3334,39 +3606,95 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     let sillForSave: number
 
     if (mode === 'brick') {
-      // Brick mode: user types height directly; sill irrelevant for
-      // tally (just stored as 0). 0mm is allowed — lintel-only
-      // marker (counts the per-opening supply item without removing
-      // any wall area). Reject negative only.
+      // Brick mode: user types the OPENING HEIGHT. Sill is derived
+      // from the door/window picker via deriveSillMm — no more
+      // separate "distance from floor" input. 0mm height is allowed
+      // (lintel-only marker — counts the per-opening supply item
+      // without removing any wall area). Reject negative only.
       if (brickOpeningHeightMm < 0) return
+      const brickMakeup = wall.makeupId
+        ? brickMakeups.find((m) => m.id === wall.makeupId)
+        : undefined
+      const brickWallHeightMm =
+        wall.heightMmOverride ??
+        brickMakeup?.heightMm ??
+        brickSettings.defaultWallHeightMm
       openingHeightForSave = brickOpeningHeightMm
-      sillForSave = 0
+      sillForSave = deriveSillMm(
+        brickOpeningKind,
+        brickOpeningHeightMm,
+        brickWallHeightMm
+      )
     } else {
-      // Block mode: opening height = wall − sill − head. 0 allowed
-      // (lintel-only marker — same rationale as brick mode).
+      // Block mode: user types HEAD HEIGHT (lintel allowance) and
+      // SILL height directly. Opening height is DERIVED so the user
+      // can specify the head allowance — what's typically called
+      // out on plans — instead of having to back-calculate the
+      // opening height. No door/window kind here; block walls don't
+      // have a sill-trim concept.
       const makeup = makeupsById[wall.makeupId]
       const wallHeightMm = wall.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
-      const computed = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
-      if (computed < 0) return
-      openingHeightForSave = computed
-      sillForSave = openingSillHeightMm
+      if (blockOpeningHeadMm < 0) return
+      if (blockOpeningSillMm < 0) return
+      const derivedOpeningMm =
+        wallHeightMm - blockOpeningSillMm - blockOpeningHeadMm
+      if (derivedOpeningMm < 0) return
+      openingHeightForSave = derivedOpeningMm
+      sillForSave = blockOpeningSillMm
     }
 
-    const newOpening: Opening = {
-      id:
-        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-          ? crypto.randomUUID()
-          : `o-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      wallId: pendingOpening.wallId,
-      startAlongWallMm: pendingOpening.startAlongWallMm,
-      widthMm: pendingOpening.widthMm,
-      heightMm: openingHeightForSave,
-      sillHeightMm: sillForSave,
+    // Persist the door/window classification ONLY in brick mode —
+    // block walls don't have a sill-trim concept. (See the kind
+    // picker gate on the creation modal for the same rule.)
+    const kindForSave = mode === 'brick' ? brickOpeningKind : undefined
+
+    if (pendingOpening.editingId) {
+      // EDIT path — patch the existing opening in place. Wall
+      // assignment, start-along-wall position, and width are
+      // preserved (the user can't change those from the modal; they
+      // come from the original click placement and stay locked when
+      // re-editing). Only heightMm / sillHeightMm / kind can change.
+      const editingId = pendingOpening.editingId
+      setOpeningsByPage((prev) => {
+        const pageOpenings = prev[currentPage] ?? []
+        const next = pageOpenings.map((o) =>
+          o.id === editingId
+            ? {
+                ...o,
+                heightMm: openingHeightForSave,
+                sillHeightMm: sillForSave,
+                // In brick mode, write the user's chosen kind. In
+                // block mode, EXPLICITLY strip kind (in case the
+                // opening was previously created in brick and the
+                // user has now switched modes — we keep block
+                // openings clean of brick-only fields).
+                ...(mode === 'brick'
+                  ? { kind: kindForSave }
+                  : { kind: undefined }),
+              }
+            : o
+        )
+        return { ...prev, [currentPage]: next }
+      })
+    } else {
+      // CREATE path — push a new opening.
+      const newOpening: Opening = {
+        id:
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `o-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        wallId: pendingOpening.wallId,
+        startAlongWallMm: pendingOpening.startAlongWallMm,
+        widthMm: pendingOpening.widthMm,
+        heightMm: openingHeightForSave,
+        sillHeightMm: sillForSave,
+        ...(kindForSave ? { kind: kindForSave } : {}),
+      }
+      setOpeningsByPage((prev) => ({
+        ...prev,
+        [currentPage]: [...(prev[currentPage] ?? []), newOpening],
+      }))
     }
-    setOpeningsByPage((prev) => ({
-      ...prev,
-      [currentPage]: [...(prev[currentPage] ?? []), newOpening],
-    }))
     setPendingOpening(null)
   }
 
@@ -3380,6 +3708,31 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       return { ...prev, [currentPage]: pageOpenings.filter((o) => o.id !== openingId) }
     })
     setSelectedOpeningId(null)
+  }
+
+  /**
+   * Flip the door/window classification on the currently-selected
+   * opening. Drives the brick wall renderer (doors have no sill brick
+   * so the sill-course emission is skipped) and shows up in exports.
+   * Keeps existing geometry (width, height, sill, head) intact — only
+   * the `kind` field changes. Default is 'window' if the opening has
+   * never been classified.
+   */
+  function handleSetOpeningKind(openingId: string, kind: 'window' | 'door') {
+    setOpeningsByPage((prev) => {
+      const pageOpenings = prev[currentPage] ?? []
+      const next = pageOpenings.map((o) =>
+        o.id === openingId ? { ...o, kind } : o
+      )
+      // Skip re-render when the click didn't actually change the kind
+      // (clicked Window while already a window). Cheap reference check.
+      if (next === pageOpenings) return prev
+      const same =
+        next.length === pageOpenings.length &&
+        next.every((o, i) => o === pageOpenings[i])
+      if (same) return prev
+      return { ...prev, [currentPage]: next }
+    })
   }
 
   function clearAllWalls() {
@@ -5352,6 +5705,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       ? makeups.filter((m) => m.areaId === activeAreaId)
                       : makeups
                   }
+                  // paletteMakeups / palettePierMakeups always pass the
+                  // FULL project list so each type's colour swatch
+                  // stays at the same palette slot regardless of which
+                  // area the user is viewing — a green wall stays
+                  // green on every floor.
+                  paletteMakeups={makeups}
+                  palettePierMakeups={pierMakeups}
                   activeMakeupId={activeMakeupId}
                   wallCountsByMakeupId={wallCountsByMakeupId}
                   onSetActive={handleActivateMakeup}
@@ -5375,6 +5735,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       ? brickMakeups.filter((m) => m.areaId === activeAreaId)
                       : brickMakeups
                   }
+                  // Always pass the FULL brick makeups list as the
+                  // palette source so swatch colours stay stable
+                  // across area filters.
+                  paletteMakeups={brickMakeups}
                   activeMakeupId={activeBrickMakeupId}
                   wallCountsByMakeupId={wallCountsByMakeupId}
                   onSetActive={handleActivateBrickMakeup}
@@ -6555,27 +6919,40 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           wall-drawing toolbar's left slot. Chrome height stays the same
           regardless of which mode the user is in. */}
 
-      {/* Pending opening form — block mode (sill + head, opening height computed) */}
+      {/* Pending opening form — block mode (opening height + sill,
+          NO door/window kind — that's a brick-only concept and would
+          leak brick UI into block work) */}
       {pendingOpening && pendingOpeningWall && mode === 'block' && (() => {
         const pendingMakeup = makeupsById[pendingOpeningWall.makeupId]
         const wallHeightMm =
           pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
-        const computedOpeningHeightMm = wallHeightMm - openingSillHeightMm - openingHeadHeightMm
+        // Derived opening height — falls out of wallH − sill − head.
+        // Shown in the input hint so the user can see the resulting
+        // opening height live as they type the head allowance.
+        const derivedOpeningMm = Math.max(
+          0,
+          wallHeightMm - blockOpeningSillMm - blockOpeningHeadMm
+        )
         // 0mm openings are explicitly allowed — lets the user place a
         // lintel-only marker (counts toward the lintel supply item but
-        // doesn't remove any wall area). Anything negative is still
-        // invalid (sill + head exceeds the wall height).
-        const tooSmall = computedOpeningHeightMm < 0
-        // Common opening presets — each spec'd as (sillMm, openingMm). Head is
-        // computed at render time from the actual wall height so the same
-        // preset works on a 2400 wall or a 3000 wall. Filtered to presets that
-        // actually fit (opening + sill ≤ wall height − 100 for the lintel area).
-        const blockOpeningPresets: Array<{ label: string; sillMm: number; openingMm: number }> = [
-          { label: 'Door 2100', sillMm: 0, openingMm: 2100 },
-          { label: 'Door 2040', sillMm: 0, openingMm: 2040 },
-          { label: 'Window 1500 (sill 900)', sillMm: 900, openingMm: 1500 },
-          { label: 'Window 1200 (sill 900)', sillMm: 900, openingMm: 1200 },
-          { label: 'Window 1800 (sill 600)', sillMm: 600, openingMm: 1800 },
+        // doesn't remove any wall area).
+        const tooSmall = blockOpeningHeadMm < 0 || blockOpeningSillMm < 0
+        const tooTall =
+          blockOpeningSillMm + blockOpeningHeadMm > wallHeightMm
+        // Presets specify the (opening height, sill) pair the user
+        // is choosing — head is derived from the current wall height
+        // when the preset is applied, so the same preset works
+        // across walls of different heights.
+        const blockOpeningPresets: Array<{
+          label: string
+          openingMm: number
+          sillMm: number
+        }> = [
+          { label: 'Door 2100', openingMm: 2100, sillMm: 0 },
+          { label: 'Door 2040', openingMm: 2040, sillMm: 0 },
+          { label: 'Window 1500 (sill 900)', openingMm: 1500, sillMm: 900 },
+          { label: 'Window 1200 (sill 900)', openingMm: 1200, sillMm: 900 },
+          { label: 'Window 1800 (sill 600)', openingMm: 1800, sillMm: 600 },
         ]
         return (
           <div
@@ -6583,7 +6960,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onClick={handleCancelPendingOpening}
             role="dialog"
             aria-modal="true"
-            aria-label="New opening"
+            aria-label={pendingOpening.editingId ? 'Edit opening' : 'New opening'}
           >
             <div
               className="w-full max-w-2xl bg-ink-800 border border-ink-600 rounded-xl shadow-xl shadow-black/40 overflow-hidden flex flex-col max-h-[90vh]"
@@ -6593,7 +6970,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   title + subtitle on the left, close button on the right. */}
               <header className="px-6 py-3.5 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
                 <div className="min-w-0">
-                  <h3 className="font-semibold text-ink-50">New opening</h3>
+                  <h3 className="font-semibold text-ink-50">{pendingOpening.editingId ? 'Edit opening' : 'New opening'}</h3>
                   <p className="text-[11px] text-ink-500 mt-0.5">
                     On a {Math.round(wallHeightMm)} mm wall · {Math.round(pendingOpening.widthMm)} mm wide
                   </p>
@@ -6608,28 +6985,37 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </header>
 
               <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
-                {/* Presets — same blockOpeningPresets list as before, one
-                    click sets both sill + head. Disabled when the preset
-                    can't fit on this wall. */}
+                {/* Presets — one click sets opening height + sill in
+                    a single tap. No door/window concept here; block
+                    walls don't carry a sill-trim distinction. */}
                 <section>
                   <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                     Presets
                   </h4>
                   <div className="flex flex-wrap gap-1.5">
                     {blockOpeningPresets.map((p) => {
-                      const computedHead = wallHeightMm - p.sillMm - p.openingMm
-                      const fits = computedHead >= 0
+                      const fits = p.openingMm + p.sillMm <= wallHeightMm
+                      // Derive head from the preset's opening height
+                      // against the current wall height — same preset
+                      // produces different head allowances on walls
+                      // of different heights, which is correct: a
+                      // 2100mm door on a 2700mm wall has 600mm head,
+                      // on a 3000mm wall it has 900mm.
+                      const derivedHead = Math.max(
+                        0,
+                        wallHeightMm - p.sillMm - p.openingMm,
+                      )
                       return (
                         <button
                           key={p.label}
                           onClick={() => {
-                            setOpeningSillHeightMm(p.sillMm)
-                            setOpeningHeadHeightMm(Math.max(0, computedHead))
+                            setBlockOpeningHeadMm(derivedHead)
+                            setBlockOpeningSillMm(p.sillMm)
                           }}
                           disabled={!fits}
                           title={
                             fits
-                              ? `Sill ${p.sillMm} · Head ${computedHead} · Opening ${p.openingMm}`
+                              ? `${p.openingMm}mm tall, sill ${p.sillMm}mm, head ${derivedHead}mm`
                               : `Doesn't fit on a ${Math.round(wallHeightMm)}mm wall`
                           }
                           className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -6641,49 +7027,61 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   </div>
                 </section>
 
-                {/* Sill + Head inputs — manual override on top of (or
-                    instead of) a preset. */}
+                {/* Dimensions — HEAD (lintel allowance) + SILL,
+                    both editable. Opening height is derived
+                    (wallH − sill − head) and shown as a hint so the
+                    user can see what the resulting opening height
+                    will be. Head matches what's typically called
+                    out on plans (lintel allowance from wall top to
+                    top of opening). AutoFocus on head so the
+                    Enter-then-type flow works after the modal pops. */}
                 <section>
                   <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                     Dimensions
                   </h4>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
-                      <span className="block text-ink-300 text-xs mb-1">Sill height (mm)</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="50"
-                        value={openingSillHeightMm}
-                        onChange={(e) => setOpeningSillHeightMm(parseInt(e.target.value || '0', 10))}
-                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                      />
-                    </label>
-                    <label className="block">
                       <span className="block text-ink-300 text-xs mb-1">Head height (mm)</span>
                       <input
                         type="number"
                         min="0"
                         step="50"
-                        value={openingHeadHeightMm}
-                        onChange={(e) => setOpeningHeadHeightMm(parseInt(e.target.value || '0', 10))}
+                        value={blockOpeningHeadMm}
+                        onChange={(e) =>
+                          setBlockOpeningHeadMm(parseInt(e.target.value || '0', 10))
+                        }
+                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                        autoFocus
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="block text-ink-300 text-xs mb-1">Sill height (mm)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="50"
+                        value={blockOpeningSillMm}
+                        onChange={(e) =>
+                          setBlockOpeningSillMm(parseInt(e.target.value || '0', 10))
+                        }
                         className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                       />
                     </label>
                   </div>
+                  <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                    Opening height {Math.round(derivedOpeningMm)}mm on a {Math.round(wallHeightMm)}mm wall.
+                    Use sill 0 for door-style openings.
+                  </p>
                 </section>
 
-                {/* Inline error when the sill + head exceed the wall
-                    height — same signal that disables the Save button.
-                    A 0mm opening is allowed (lintel-only marker) so
-                    only negative space triggers the error. */}
-                {tooSmall && (
+                {/* Validation states */}
+                {tooTall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Sill + Head exceed the {Math.round(wallHeightMm)}mm wall height.
+                    Sill + head exceeds the {Math.round(wallHeightMm)}mm wall.
                     Reduce one of them.
                   </p>
                 )}
-                {!tooSmall && computedOpeningHeightMm === 0 && (
+                {!tooTall && derivedOpeningMm === 0 && (
                   <p className="text-[11px] text-ink-400 leading-relaxed">
                     0mm opening — counts toward lintel supply items but no
                     wall area is removed.
@@ -6691,8 +7089,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 )}
               </div>
 
-              {/* Footer — Cancel / Save matches the wall type modal. */}
-              <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex justify-end gap-2">
+              {/* Footer — Cancel / Save, plus a left-aligned Delete
+                  button when editing an existing opening (replaces
+                  the old selection-banner Delete). Save label
+                  swaps to "Save changes" in edit mode. */}
+              <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex items-center justify-end gap-2">
+                {pendingOpening.editingId && (
+                  <button
+                    onClick={() => {
+                      const id = pendingOpening.editingId
+                      if (id) handleOpeningDelete(id)
+                      setPendingOpening(null)
+                    }}
+                    className="mr-auto px-4 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+                  >
+                    Delete opening
+                  </button>
+                )}
                 <button
                   onClick={handleCancelPendingOpening}
                   className="px-4 py-1.5 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
@@ -6701,10 +7114,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </button>
                 <button
                   onClick={handleSavePendingOpening}
-                  disabled={tooSmall}
+                  disabled={tooSmall || tooTall}
                   className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
                 >
-                  Save opening
+                  {pendingOpening.editingId ? 'Save changes' : 'Save opening'}
                 </button>
               </footer>
             </div>
@@ -6758,21 +7171,62 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </header>
 
               <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
+                {/* Door vs window — drives 3D sill suppression. Door
+                    openings render without a sill trim band, since
+                    they typically reach the floor or wall base. */}
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                    Type
+                  </h4>
+                  <div
+                    className="inline-flex border border-ink-600 rounded-lg overflow-hidden bg-ink-900"
+                    role="radiogroup"
+                    aria-label="Opening type"
+                  >
+                    {(['window', 'door'] as const).map((k, i) => {
+                      const isActive = brickOpeningKind === k
+                      return (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setBrickOpeningKind(k)}
+                          aria-pressed={isActive}
+                          className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
+                            isActive
+                              ? 'bg-beme-500 text-black'
+                              : 'bg-ink-800 text-ink-300 hover:bg-ink-700 hover:text-ink-100'
+                          } ${i > 0 ? 'border-l border-ink-600' : ''}`}
+                        >
+                          {k}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[10px] text-ink-500 mt-1.5 leading-snug">
+                    {brickOpeningKind === 'door'
+                      ? 'Door: sits on the floor (sill = 0). No sill trim in 3D.'
+                      : 'Window: top of the opening sits 300mm below the wall top. Sill is computed from the wall height.'}
+                  </p>
+                </section>
+
                 <section>
                   <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                     Presets
                   </h4>
                   <div className="flex flex-wrap gap-1.5">
                     {[
-                      { label: 'Door 2100', h: 2100 },
-                      { label: 'Door 2040', h: 2040 },
-                      { label: 'Window 1500', h: 1500 },
-                      { label: 'Window 1200', h: 1200 },
-                      { label: 'Window 1800', h: 1800 },
+                      { label: 'Door 2100', h: 2100, kind: 'door' as const },
+                      { label: 'Door 2040', h: 2040, kind: 'door' as const },
+                      { label: 'Window 1500', h: 1500, kind: 'window' as const },
+                      { label: 'Window 1200', h: 1200, kind: 'window' as const },
+                      { label: 'Window 1800', h: 1800, kind: 'window' as const },
                     ].map((p) => (
                       <button
                         key={p.label}
-                        onClick={() => setBrickOpeningHeightMm(p.h)}
+                        onClick={() => {
+                          setBrickOpeningHeightMm(p.h)
+                          setBrickOpeningKind(p.kind)
+                        }}
                         disabled={p.h > wallHeightMm}
                         title={`${p.h}mm tall`}
                         className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -6801,8 +7255,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       autoFocus
                     />
                     <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
-                      Use 0mm to place a lintel-only marker (counts the
-                      lintel supply item without removing wall area).
+                      Auto sill{' '}
+                      {Math.round(
+                        deriveSillMm(
+                          brickOpeningKind,
+                          brickOpeningHeightMm,
+                          wallHeightMm
+                        )
+                      )}
+                      mm on a {Math.round(wallHeightMm)}mm wall. Use 0mm height
+                      to place a lintel-only marker.
                     </span>
                   </label>
                 </section>
@@ -6819,7 +7281,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 )}
               </div>
 
-              <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex justify-end gap-2">
+              <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex items-center justify-end gap-2">
+                {pendingOpening.editingId && (
+                  <button
+                    onClick={() => {
+                      const id = pendingOpening.editingId
+                      if (id) handleOpeningDelete(id)
+                      setPendingOpening(null)
+                    }}
+                    className="mr-auto px-4 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+                  >
+                    Delete opening
+                  </button>
+                )}
                 <button
                   onClick={handleCancelPendingOpening}
                   className="px-4 py-1.5 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
@@ -6831,7 +7305,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   disabled={tooSmall || tooTall}
                   className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
                 >
-                  Save opening
+                  {pendingOpening.editingId ? 'Save changes' : 'Save opening'}
                 </button>
               </footer>
             </div>
@@ -6839,8 +7313,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         )
       })()}
 
-      {/* Selected opening banner — same banner, mode-aware lintel info */}
-      {(mode === 'block' || mode === 'brick') &&
+      {/* Selected opening banner — DISABLED.
+          The banner used to surface dimensions + the brick-only
+          door/window picker above the canvas when an opening was
+          selected. We've replaced it with re-opening the same
+          editor modal the user saw at creation time — see
+          handleOpeningSelect: clicking an opening now sets
+          pendingOpening with editingId, which pops the modal
+          pre-filled with the opening's values. That keeps the
+          block / brick flows visually identical and avoids
+          showing brick-only UI on block openings via a shared
+          banner. Gated on `false` so the JSX stays compiled
+          (easy to revert) without rendering. */}
+      {false &&
+        (mode === 'block' || mode === 'brick') &&
         selectedOpening &&
         !placingOpening &&
         !drawingMode &&
@@ -6861,18 +7347,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             selMakeup?.heightMm ??
             (mode === 'brick' ? brickSettings.defaultWallHeightMm : 0)
           const selHead = selWallHeightMm - selectedOpening.sillHeightMm - selectedOpening.heightMm
+          const selWallMod200 = Math.round(selWallHeightMm) % 200
+          const selExtras: number[] =
+            selWallMod200 === 100
+              ? [100]
+              : selWallMod200 === 150
+                ? [150]
+                : []
           const selBlockLintel =
             mode === 'block' && selHead > 0
-              ? selectBlockLintel(selHead)?.code ?? null
+              ? selectBlockLintel(selHead, selExtras)?.code ?? null
               : null
           return (
-            <div className="mb-3 px-4 py-3 bg-sky-500/10 border border-sky-500/40 rounded-lg text-sm text-sky-200 flex items-center justify-between flex-wrap gap-3">
+            <div className="mb-3 px-4 py-3 bg-ink-700/40 border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3">
               <div>
                 <div className="font-medium">
                   Opening: {Math.round(selectedOpening.widthMm)} ×{' '}
                   {Math.round(selectedOpening.heightMm)} mm
                 </div>
-                <div className="text-xs text-sky-300 mt-0.5">
+                <div className="text-xs text-ink-400 mt-0.5">
                   Sill {Math.round(selectedOpening.sillHeightMm)}mm · Head{' '}
                   {Math.round(selHead)}mm
                   {mode === 'block' && selBlockLintel && (
@@ -6880,15 +7373,51 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   )}{' '}
                   · on a {Math.round(selWallHeightMm)}mm wall
                 </div>
-                <div className="text-xs text-sky-300 mt-0.5">
+                <div className="text-xs text-ink-400 mt-0.5">
                   Press{' '}
-                  <kbd className="px-1.5 py-0.5 rounded border border-sky-500/40 bg-ink-900 text-ink-100 text-xs font-mono">
+                  <kbd className="px-1.5 py-0.5 rounded border border-ink-500 bg-ink-900 text-ink-100 text-xs font-mono">
                     Del
                   </kbd>{' '}
                   to remove.
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Window / Door picker — BRICK ONLY. Block walls
+                    don't have a sill-trim concept, so showing this
+                    picker on a block-mode opening leaks brick-only
+                    UI into block work. Brick-mode openings continue
+                    to expose it so the user can flip the kind after
+                    creation (drives the sill-course suppression
+                    rule in brickCalc). */}
+                {mode === 'brick' && (
+                  <div
+                    className="inline-flex rounded-lg border border-ink-500 overflow-hidden text-xs bg-ink-900"
+                    role="radiogroup"
+                    aria-label="Opening type"
+                  >
+                    {(['window', 'door'] as const).map((kind) => {
+                      const isActive =
+                        (selectedOpening.kind ?? 'window') === kind
+                      return (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() =>
+                            handleSetOpeningKind(selectedOpening.id, kind)
+                          }
+                          aria-pressed={isActive}
+                          className={`px-3 py-1.5 font-medium capitalize transition-colors ${
+                            isActive
+                              ? 'bg-ink-100 text-ink-900'
+                              : 'text-ink-300 hover:bg-ink-800 hover:text-ink-100'
+                          }`}
+                        >
+                          {kind}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
                 <button
                   onClick={() => handleOpeningDelete(selectedOpening.id)}
                   className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
@@ -7064,31 +7593,63 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           // the surrounding chrome.
           style={{ backgroundColor: theme === 'light' ? '#f7f4ec' : '#1a1d24' }}
         >
-          <Suspense
-            fallback={
-              <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
-                Loading 3D view…
+          {isReferenceView ? (
+            // Reference PDFs are read-only — no walls can be drawn
+            // on them, so the 3D view has nothing to show. Render a
+            // blank panel with a short explainer instead of mounting
+            // the empty Canvas (which would just show the ground
+            // plane and confuse the user about why nothing's there).
+            <div className="absolute inset-0 flex items-center justify-center px-6">
+              <div className="max-w-sm text-center">
+                <div
+                  className={`text-sm font-medium mb-1 ${
+                    theme === 'light' ? 'text-ink-700' : 'text-ink-200'
+                  }`}
+                >
+                  3D view unavailable on reference PDFs
+                </div>
+                <div
+                  className={`text-xs leading-relaxed ${
+                    theme === 'light' ? 'text-ink-500' : 'text-ink-400'
+                  }`}
+                >
+                  Reference PDFs are read-only — they don't hold any
+                  walls. Switch back to your primary plan to see the
+                  3D view.
+                </div>
               </div>
-            }
-          >
-            <WorkspaceView3D
-              walls={currentPageWalls}
-              openings={currentPageOpenings}
-              makeupsById={makeupsById}
-              brickMakeupsById={brickMakeupsById}
-              wallThicknessByWallId={wallThicknessByWallId}
-              areas={areas}
-              library={BLOCK_LIBRARY}
-              piers={currentPagePiers}
-              pierMakeupsById={pierMakeupsById}
-              pierColorByPierId={pierColorByPierId}
-              pdfFile={pdfFile}
-              currentPageNumber={currentPage}
-              pageWidthMm={activePagesData[currentPage]?.pageWidthMm}
-              pageHeightMm={activePagesData[currentPage]?.pageHeightMm}
-              pageScaleRatio={activePagesData[currentPage]?.pageScaleRatio}
-            />
-          </Suspense>
+            </div>
+          ) : (
+            <Suspense
+              fallback={
+                <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
+                  Loading 3D view…
+                </div>
+              }
+            >
+              <WorkspaceView3D
+                walls={currentPageWalls}
+                openings={currentPageOpenings}
+                makeupsById={makeupsById}
+                brickMakeupsById={brickMakeupsById}
+                wallThicknessByWallId={wallThicknessByWallId}
+                areas={areas}
+                library={BLOCK_LIBRARY}
+                piers={currentPagePiers}
+                pierMakeupsById={pierMakeupsById}
+                pierColorByPierId={pierColorByPierId}
+                pdfFile={pdfFile}
+                currentPageNumber={currentPage}
+                pageWidthMm={activePagesData[currentPage]?.pageWidthMm}
+                pageHeightMm={activePagesData[currentPage]?.pageHeightMm}
+                pageScaleRatio={activePagesData[currentPage]?.pageScaleRatio}
+                projectId={currentProjectId}
+                mode={mode}
+                snapshots={view3dSnapshots}
+                onSnapshotsChange={setView3dSnapshots}
+              />
+            </Suspense>
+          )}
         </div>
       )}
 
@@ -7290,10 +7851,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       )
                     }
                     const am = makeupsById[activeMakeupId]
-                    const body =
-                      am?.bodyBlockCode &&
-                      BLOCK_LIBRARY[am.bodyBlockCode]?.dimensions.depthMm
-                    return body ?? 190
+                    // Cursor preview matches what the wall will actually
+                    // render at — MAX depth across the makeup so a 290mm
+                    // corner block on a 250mm body still shows the
+                    // 290mm footprint while drawing.
+                    return am ? getEffectiveWallThicknessMm(am, BLOCK_LIBRARY) : 190
                   })()}
                   // Pier footprint for on-canvas pier tiles — read from
                   // the library's pier-tagged block (or the user's
@@ -7614,6 +8176,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ? makeups.filter((m) => m.areaId === activeAreaId)
                 : makeups
             }
+            // paletteMakeups / palettePierMakeups always pass the
+            // FULL project list so each type's colour swatch stays at
+            // the same palette slot regardless of which area is
+            // active — a green wall stays green on every floor.
+            paletteMakeups={makeups}
+            palettePierMakeups={pierMakeups}
             activeMakeupId={activeMakeupId}
             wallCountsByMakeupId={wallCountsByMakeupId}
             onSetActive={handleActivateMakeup}
@@ -7669,6 +8237,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ? brickMakeups.filter((m) => m.areaId === activeAreaId)
                 : brickMakeups
             }
+            // Always pass the FULL brick makeups list as the palette
+            // source so swatch colours stay stable across area filters.
+            paletteMakeups={brickMakeups}
             activeMakeupId={activeBrickMakeupId}
             wallCountsByMakeupId={wallCountsByMakeupId}
             onSetActive={handleActivateBrickMakeup}
@@ -7707,7 +8278,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           <BlockTallyPanel
             walls={allWalls}
             makeupsById={makeupsById}
-            openings={allOpenings}
+            openings={openingsForActiveView}
             piers={allPiers}
             pierMakeupsById={pierMakeupsById}
           />
@@ -7717,7 +8288,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         {mode === 'brick' && (
           <BrickTallyPanel
             walls={allWalls}
-            openings={allOpenings}
+            openings={openingsForActiveView}
             settings={brickSettings}
             makeups={brickMakeups}
           />
@@ -7733,6 +8304,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           supplyItemSelections={supplyItemSelections}
           supplyItemRateOverrides={supplyItemRateOverrides}
           pdfFile={pdfFile}
+          projectId={currentProjectId}
+          view3dSnapshots={view3dSnapshots}
           open={exportModalOpen}
           onOpenChange={setExportModalOpen}
           allWalls={allWallsRaw}

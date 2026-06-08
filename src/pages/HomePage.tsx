@@ -1135,19 +1135,26 @@ function ProjectInProgressRow({
           className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
         />
         <div className="min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-ink-50 truncate">
+          <div className="flex items-center gap-2 min-w-0">
+            {/* Title takes the leftover space; truncates with
+                ellipsis when the project name is longer than the
+                row can fit. Removing flex-wrap means the reference
+                and trade badges always stay on the top line beside
+                the (possibly truncated) name. */}
+            <span className="font-semibold text-ink-50 truncate flex-1 min-w-0">
               {name}
             </span>
             {typeof project.referenceNumber === 'number' && (
               <span
-                className="text-[11px] tabular-nums font-semibold text-beme-500"
+                className="text-[11px] tabular-nums font-semibold text-beme-500 flex-shrink-0"
                 title="Reference number — quote this when looking the project up."
               >
                 #{formatRef(project.referenceNumber)}
               </span>
             )}
-            <TradeBadges trades={trades} />
+            <span className="flex-shrink-0">
+              <TradeBadges trades={trades} />
+            </span>
           </div>
           {/* Subtitle slot always rendered so rows of varying content
               (with/without an address line) keep an identical height.
@@ -1218,19 +1225,21 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
         className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
       />
       <div className="min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-semibold text-ink-50 truncate">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-semibold text-ink-50 truncate flex-1 min-w-0">
             {title}
           </span>
           {typeof project.referenceNumber === 'number' && (
             <span
-              className="text-[11px] tabular-nums font-semibold text-beme-500"
+              className="text-[11px] tabular-nums font-semibold text-beme-500 flex-shrink-0"
               title="Reference number — quote this when looking the project up."
             >
               #{formatRef(project.referenceNumber)}
             </span>
           )}
-          <TradeBadges trades={trades} />
+          <span className="flex-shrink-0">
+            <TradeBadges trades={trades} />
+          </span>
         </div>
         {/* Subtitle slot always rendered so rows of varying content
             (with/without a site-address line) keep an identical

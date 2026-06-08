@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import Header from '../components/Header'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
@@ -48,23 +48,22 @@ export default function MaterialLibraryPage() {
    */
   const [membersLoaded, setMembersLoaded] = useState<boolean>(!currentOrg)
 
-  // SPA navigation doesn't auto-scroll to a URL fragment the way a full
-  // page load does, so we do it ourselves: when the location hash changes
-  // (or on first mount with a hash present), find the matching element
-  // and scroll it into view. The `scroll-mt-24` utility on each Section
-  // leaves room for the sticky header so the heading isn't tucked under
-  // it after the scroll lands.
+  // Tab routing: a URL hash (#blocks, #bricks, #supply-items) selects
+  // the active tab. Falls back to 'blocks' when no hash is set.
+  // Legacy deep links from before the tab refactor (#supply-items)
+  // keep working unchanged — the hash is the source of truth.
   const location = useLocation()
-  useEffect(() => {
-    if (!location.hash) return
-    const id = location.hash.slice(1)
-    // Wait one frame so the Sections have laid out before we measure.
-    const raf = requestAnimationFrame(() => {
-      const el = document.getElementById(id)
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    })
-    return () => cancelAnimationFrame(raf)
+  const navigate = useNavigate()
+  const activeTabId: LibraryTabId = useMemo(() => {
+    const hash = location.hash.slice(1)
+    const tab = LIBRARY_TABS.find((t) => t.id === hash)
+    return tab ? tab.id : 'blocks'
   }, [location.hash])
+  function setActiveTab(id: LibraryTabId) {
+    // Replace (not push) so the back button doesn't have to undo every
+    // tab toggle the user did while exploring.
+    navigate({ hash: `#${id}` }, { replace: true })
+  }
 
   // Load members so we can resolve the current user's role inside the org.
   // No-op for personal accounts.
@@ -147,69 +146,157 @@ export default function MaterialLibraryPage() {
           )}
         </div>
 
-        {/* Top-level template controls + master reset. Sits above every
-            section so the user can pick / switch / wipe their whole
-            library in one place. Per-section reset chips live inside
-            LibrarySectionControls below. */}
-        <div className="mt-6">
-          <LibraryTemplateControls readOnly={readOnly} />
+        {/* Trade selector — sits immediately under the page header so
+            the active scope (Blocks / Bricks / Supply items) is the
+            first thing the user sees. Card style: each trade is a
+            full-width clickable card with title + kindLabel, active
+            card lights up with the brand border + background tint
+            and a left accent stripe. Reads as "pick a section" rather
+            than a row of tabs. Adding a new trade is a matter of
+            appending to LIBRARY_TABS below; this grid responds to the
+            count automatically (auto-fit columns). */}
+        <div
+          className="mt-6 grid gap-3"
+          style={{
+            gridTemplateColumns: `repeat(${LIBRARY_TABS.length}, minmax(0, 1fr))`,
+          }}
+          role="tablist"
+          aria-label="Material library section"
+        >
+          {LIBRARY_TABS.map((tab) => {
+            const isActive = tab.id === activeTabId
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`relative text-left rounded-xl border p-4 transition-colors ${
+                  isActive
+                    ? 'border-beme-500 bg-beme-500/10 ring-2 ring-beme-500/30'
+                    : 'border-ink-600 bg-ink-800/60 hover:border-ink-500 hover:bg-ink-700/60'
+                }`}
+                aria-selected={isActive}
+                role="tab"
+              >
+                {/* Left accent stripe — only on the active card. Gives
+                    the selection a strong visual anchor without
+                    needing colour-only contrast (works in colourblind
+                    cases too). */}
+                {isActive && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute left-0 top-3 bottom-3 w-1 bg-beme-500 rounded-r"
+                  />
+                )}
+                <div
+                  className={`text-[10px] uppercase tracking-wider font-medium ${
+                    isActive ? 'text-beme-300' : 'text-ink-500'
+                  }`}
+                >
+                  {tab.kindLabel}
+                </div>
+                <div
+                  className={`mt-1 text-base font-semibold ${
+                    isActive ? 'text-ink-50' : 'text-ink-200'
+                  }`}
+                >
+                  {tab.label}
+                </div>
+              </button>
+            )
+          })}
         </div>
 
-        <div className="space-y-8 mt-2">
-          {/* Blocks */}
-          <Section
-            title="Blocks"
-            description="Concrete blocks you supply. Code, dimensions, and what each block is used for (body, end, corner, fraction, lintel, pier, etc.). The wall-type editor pulls from this list."
-          >
-            {/* Per-section controls — shows the empty-state hero with
-                regional preset chips when the section is empty, and
-                a small Reset chip when populated. */}
-            <LibrarySectionControls kind="block" readOnly={readOnly} />
-            {/* Library health: flags missing required + advisory roles
-                so the user knows their library is set up correctly
-                before the calc engine surprises them with a fallback
-                or a missing block. Auto-hides when everything's green. */}
-            <LibraryHealthBanner />
-            <BlockLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
-          </Section>
+        {/* Library-wide template controls — picking a regional preset
+            seeds BOTH the block and brick libraries in one go. Sits
+            below the trade selector so it reads as "context for the
+            selected trade" rather than a separate competing control.
+            Hidden on the Supply items tab (templates don't seed
+            supply items). */}
+        {activeTabId !== 'supply-items' && (
+          <div className="mt-4">
+            <LibraryTemplateControls readOnly={readOnly} />
+          </div>
+        )}
 
-          {/* Bricks */}
-          <Section
-            title="Bricks"
-            description="Brick types you supply. Dimensions, mortar joint, and the auto-calculated bricks-per-square-metre rate."
-          >
-            <LibrarySectionControls kind="brick" readOnly={readOnly} />
-            <BrickLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
-          </Section>
+        {/* Active tab content. Each tab renders its own section header
+            + per-section controls + body. */}
+        <div className="mt-5">
+          {activeTabId === 'blocks' && (
+            <TabSection
+              title="Blocks"
+              description="Concrete blocks you supply. Code, dimensions, and what each block is used for (body, end, corner, fraction, lintel, pier, etc.). The wall-type editor pulls from this list."
+            >
+              <LibrarySectionControls kind="block" readOnly={readOnly} />
+              <LibraryHealthBanner />
+              <BlockLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
+            </TabSection>
+          )}
 
-          {/* Supply items */}
-          <Section
-            id="supply-items"
-            title="Supply items"
-            description="Anything you add to estimates by rate — cement, ties, rebar, flashings, sealants, etc. Pick a unit (per block, per m², per lineal m…), set a rate, and we'll add the count to every applicable estimate."
-          >
-            <LibrarySectionControls kind="supply" readOnly={readOnly} />
-            <SupplyItemsEditor readOnly={readOnly} />
-          </Section>
+          {activeTabId === 'bricks' && (
+            <TabSection
+              title="Bricks"
+              description="Brick types you supply. Dimensions, mortar joint, and the auto-calculated bricks-per-square-metre rate."
+            >
+              <LibrarySectionControls kind="brick" readOnly={readOnly} />
+              <BrickLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
+            </TabSection>
+          )}
+
+          {activeTabId === 'supply-items' && (
+            <TabSection
+              title="Supply items"
+              description="Cross-trade items you add to estimates by rate — cement, ties, rebar, flashings, sealants, etc. Pick a unit (per block, per m², per lineal m…), set a rate, and we'll add the count to every applicable estimate, regardless of trade."
+            >
+              <LibrarySectionControls kind="supply" readOnly={readOnly} />
+              <SupplyItemsEditor readOnly={readOnly} />
+            </TabSection>
+          )}
         </div>
       </main>
     </div>
   )
 }
 
-function Section({
+/**
+ * Registry of tabs the material library exposes. Trade-specific tabs
+ * come first; the cross-trade Supply items tab sits at the end with a
+ * separator hint so it reads as the catch-all bucket.
+ *
+ * To add a new trade (e.g. cladding):
+ *   1. Append `{ id: 'cladding', label: 'Cladding', kindLabel: 'Trade' }`.
+ *   2. Add a matching `activeTabId === 'cladding' && <TabSection …>`
+ *      branch in the render above.
+ *   3. Add a new `kind: 'cladding'` to LibrarySectionControls if you
+ *      want a per-tab reset/empty-state.
+ *
+ * No other call site iterates this list — it's purely the tab UI's
+ * driver — but keeping it a const array makes "what's a trade tab vs
+ * a cross-trade tab" inspectable in one place.
+ */
+const LIBRARY_TABS = [
+  { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Trade' },
+  { id: 'bricks' as const, label: 'Bricks', kindLabel: 'Trade' },
+  { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Cross-trade' },
+]
+type LibraryTabId = (typeof LIBRARY_TABS)[number]['id']
+
+/**
+ * Inner section wrapper used by each tab — gives every panel the same
+ * heading + description + container chrome without forcing scroll
+ * anchors (the tab is the anchor now, via the URL hash).
+ */
+function TabSection({
   title,
   description,
   children,
-  id,
 }: {
   title: string
   description?: string
   children: React.ReactNode
-  id?: string
 }) {
   return (
-    <section id={id} className="scroll-mt-24">
+    <section>
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-ink-100">{title}</h3>
         {description && (
@@ -334,14 +421,34 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
 
   return (
     <div className="space-y-3">
+      {/* Prominent add row — pinned to the top of the panel so the
+          primary action (add a supply item) is always one glance away.
+          Mirrors BlockLibraryPanel and BrickLibraryPanel so every
+          material-library tab opens with the same "+ Add" affordance
+          in the same place. Hidden while the form is open below so
+          two adds can't race. */}
+      {!readOnly && editingId === null && !itemsLoading && (
+        <div className="flex items-center justify-between gap-3 mb-1 pb-3 border-b border-ink-700">
+          <div className="text-xs text-ink-400">
+            <span className="font-semibold text-ink-200">{items.length}</span>{' '}
+            supply item{items.length === 1 ? '' : 's'} in your library
+          </div>
+          <button
+            onClick={() => setEditingId('new')}
+            className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-sm whitespace-nowrap"
+          >
+            + Add item
+          </button>
+        </div>
+      )}
       {itemsLoading && (
         <p className="text-sm text-ink-400 italic">Loading supply items…</p>
       )}
       {!itemsLoading && items.length === 0 && (
         <p className="text-sm text-ink-400 italic">
-          No supply items yet. Click <strong>+ Add item</strong> to add the
-          first one — e.g. brick ties at 2 per m², cement at 0.3 bags per m²,
-          or rebar at 1 bar per 20 blocks.
+          No supply items yet. Click <strong>+ Add item</strong> above to add
+          the first one — e.g. brick ties at 2 per m², cement at 0.3 bags per
+          m², or rebar at 1 bar per 20 blocks.
         </p>
       )}
 
@@ -408,15 +515,6 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
           )
         })
       })()}
-
-      {!readOnly && editingId === null && (
-        <button
-          onClick={() => setEditingId('new')}
-          className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 transition-colors"
-        >
-          + Add item
-        </button>
-      )}
 
       {editingId !== null && !readOnly && (
         <SupplyItemForm
@@ -557,13 +655,44 @@ function SupplyItemForm({
     })
   }
 
-  return (
-    <div className="mt-3 p-4 border border-ink-600 rounded-lg bg-ink-700/40">
-      <h4 className="text-sm font-semibold mb-3 text-ink-200">
-        {existing ? `Edit "${existing.name}"` : 'New supply item'}
-      </h4>
+  // Esc closes the modal — matches the block / brick editor pattern.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+  return (
+    // Backdrop. Click-outside dismisses (stopPropagation on the inner
+    // card prevents form clicks from closing).
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label={existing ? `Edit ${existing.name}` : 'New supply item'}
+    >
+      <div
+        className="w-full max-w-2xl bg-ink-800 border border-ink-600 rounded-xl shadow-xl shadow-black/40 overflow-hidden flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-6 py-3.5 border-b border-ink-600 flex items-center justify-between">
+          <h3 className="font-semibold text-ink-50">
+            {existing ? `Edit "${existing.name}"` : 'Add a supply item'}
+          </h3>
+          <button
+            onClick={onCancel}
+            className="text-ink-400 hover:text-ink-100 text-xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4 text-sm">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <label className="text-sm">
           <span className="block text-ink-300 mb-1">Name</span>
           <input
@@ -720,20 +849,23 @@ function SupplyItemForm({
             wire it back up when per-project opt-in lands. */}
       </div>
 
-      <div className="flex gap-2 mt-4">
-        <button
-          onClick={handleSave}
-          disabled={!canSave}
-          className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {existing ? 'Save changes' : 'Add item'}
-        </button>
-        <button
-          onClick={onCancel}
-          className="px-4 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-        >
-          Cancel
-        </button>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-ink-600 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            className="px-3 py-1.5 rounded-md bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+          >
+            {existing ? 'Save changes' : 'Add item'}
+          </button>
+        </footer>
       </div>
     </div>
   )

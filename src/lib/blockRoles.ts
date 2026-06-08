@@ -54,7 +54,6 @@ const ROLE_TO_DEFAULT_KEY: Partial<Record<BlockRole, keyof DefaultsByRole>> = {
   corner: 'corner',
   'end-termination': 'half', // closest semantic neighbour
   'base-course': 'base',
-  'base-tile': 'baseTile',
   'top-course': 'top',
   pier: 'pier',
   lintel: 'lintel',

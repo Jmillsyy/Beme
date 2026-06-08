@@ -80,6 +80,38 @@ export interface EstimatingDefaults {
   defaultMortarJointMm: number
   /** Default brick type code — references a code in the user's BrickLibrary. */
   defaultBrickTypeCode: string
+  /**
+   * Wall-length snap increment (mm). When the user draws a wall, the live
+   * preview rounds the wall length to the nearest multiple of this value
+   * (after axis + endpoint snaps have run). 50 mm fits the AU SEQ block
+   * library cleanly — every combination of full / 7-8 / 3-4 / half blocks
+   * lands on a 50 mm grid. Set lower (e.g. 25 or 10) for libraries with
+   * finer block widths; set higher (e.g. 100) to discourage 7-8 / 3-4
+   * cuts and limit walls to full + half compositions.
+   *
+   * Optional — older accounts without this field treated 5 mm as default;
+   * new accounts get 50 mm and the snap function falls back to 50 when
+   * the field is missing.
+   */
+  wallLengthSnapMm?: number
+
+  /**
+   * Whether new wall makeups default to "match exact wall length" (use
+   * fraction-tagged blocks / cut blocks to absorb leftover length).
+   * Most users set this once for their region's practice and forget it,
+   * so it lives here as a user preference rather than per-makeup. Older
+   * accounts default to `true` to preserve the previous behaviour where
+   * every makeup turned this on at creation.
+   */
+  defaultMatchExactLength?: boolean
+
+  /**
+   * When "match exact wall length" is on, which course types it applies
+   * to. Each entry switches on fraction / cut-block fitting for that
+   * course type; absent entries fall back to whole-block rounding for
+   * that course type. Undefined = all course types (default).
+   */
+  defaultExactLengthCourses?: Array<'base' | 'body' | 'height-makeup' | 'top'>
 }
 
 /**
@@ -172,7 +204,6 @@ export interface DefaultsByRole {
   corner?: string
   half?: string
   base?: string
-  baseTile?: string
   top?: string
   pier?: string
   pierTie?: string
@@ -237,6 +268,13 @@ export function createDefaultUserSettings(): UserSettings {
       defaultBondType: 'stretcher',
       defaultMortarJointMm: 10,
       defaultBrickTypeCode: 'standard',
+      // 50 mm matches the AU SEQ block library's modular GCD —
+      // any combination of full / 7-8 / 3-4 / half blocks composes
+      // cleanly on this grid. Customisable in Settings.
+      wallLengthSnapMm: 50,
+      defaultMatchExactLength: true,
+      // undefined = all course types (same as ['base', 'body',
+      // 'height-makeup', 'top'])
     },
     supplyItems: createDefaultSupplyItems(),
   }

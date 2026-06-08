@@ -36,6 +36,7 @@ import {
 } from './blockExport'
 import { buildBrickEstimateHtml } from './brickExport'
 import { downloadPdfFromHtml } from './pdfExport'
+import type { ProjectArea } from './projectStorage'
 
 export interface CombinedExportParams {
   projectDetails: ProjectDetails
@@ -50,6 +51,10 @@ export interface CombinedExportParams {
    * user's modal adjustment consistently.
    */
   supplyItemAdjustments?: Record<string, number>
+  /** Per-export supply-item name overrides — forwarded unchanged to
+   *  both single-trade builders so a renamed supply (e.g. ties) gets
+   *  the same label in both sections of the combined PDF. */
+  supplyItemNameOverrides?: Record<string, string>
   business?: BusinessExportInfo
   pdfFile?: File
 
@@ -75,6 +80,12 @@ export interface CombinedExportParams {
   brickPagesInfo?: PageInfo[]
   /** Per-brick-type quantity adjustments — see brickExport ExportParams. */
   brickAdjustments?: Record<string, number>
+
+  /**
+   * Project areas (e.g. First Floor / Second Floor). Forwarded to both
+   * trade builders so the per-wall-type tables can group rows by area.
+   */
+  areas?: ProjectArea[]
 
   /**
    * Optional 3D viewport snapshots shared across BOTH trade sections.
@@ -117,6 +128,7 @@ export async function exportCombinedEstimate(
     supplyItemSelections,
     supplyItemRateOverrides,
     supplyItemAdjustments,
+    supplyItemNameOverrides,
     business,
     pdfFile,
     blockInclusions,
@@ -134,6 +146,7 @@ export async function exportCombinedEstimate(
     brickSettings,
     brickPagesInfo,
     brickAdjustments,
+    areas,
     view3dSnapshots,
   } = params
 
@@ -155,6 +168,7 @@ export async function exportCombinedEstimate(
     supplyItemSelections,
     supplyItemRateOverrides,
     supplyItemAdjustments,
+    supplyItemNameOverrides,
     walls: blockWalls,
     makeups: blockMakeups,
     openings: blockOpenings,
@@ -174,10 +188,12 @@ export async function exportCombinedEstimate(
     supplyItemSelections,
     supplyItemRateOverrides,
     supplyItemAdjustments,
+    supplyItemNameOverrides,
     walls: brickWalls,
     openings: brickOpenings,
     settings: brickSettings,
     makeups: brickMakeups,
+    areas,
     business,
     pdfFile,
     pagesInfo: brickPagesInfo,
@@ -249,22 +265,22 @@ export async function exportCombinedEstimate(
       padding: 40px;
     }
     .divider-page .divider-eyebrow {
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.12em;
       color: #6b7280;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .divider-page .divider-title {
-      font-size: 32px;
+      font-size: 26px;
       font-weight: 700;
       color: #1f2937;
-      margin: 0 0 16px 0;
+      margin: 0 0 12px 0;
     }
     .divider-page .divider-sub {
-      font-size: 13px;
-      line-height: 1.5;
+      font-size: 11px;
+      line-height: 1.45;
       color: #4b5563;
     }
   `

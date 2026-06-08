@@ -27,7 +27,6 @@ const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
   { value: 'fraction', label: 'Fraction (length makeup)' },
   { value: 'height-makeup', label: 'Height makeup' },
   { value: 'base-course', label: 'Base course' },
-  { value: 'base-tile', label: 'Base tile (paired with cleanout)' },
   { value: 'top-course', label: 'Top course (bond beam)' },
   { value: 'cap', label: 'Capping tile (sits on top of the wall)' },
   { value: 'pier', label: 'Pier' },
@@ -119,10 +118,22 @@ export default function BlockLibraryPanel({
         </div>
       )}
       {hideChrome && !readOnly && (
-        <div className="flex justify-end mb-2">
+        // Prominent add row — pinned to the top of the panel so the
+        // primary action (add a block to the library) is always one
+        // glance away, never buried below the catalogue. Mirrored by
+        // BrickLibraryPanel and the supply-items editor so each
+        // material-library tab opens with the same "+ Add" affordance
+        // in the same place.
+        <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-ink-700">
+          <div className="text-xs text-ink-400">
+            <span className="font-semibold text-ink-200">
+              {Object.keys(library).length}
+            </span>{' '}
+            block{Object.keys(library).length === 1 ? '' : 's'} in your library
+          </div>
           <button
             onClick={() => setEditingCode('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors"
+            className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-sm whitespace-nowrap"
           >
             + Add block
           </button>
