@@ -4,6 +4,8 @@ import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { Link } from 'react-router-dom'
 import { useBrickLibrary } from '../data/brickLibrary'
+import { confirm } from '../lib/confirm'
+import { toast } from '../lib/toast'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import LengthInput from './LengthInput'
 import LibraryGuidance from './LibraryGuidance'
@@ -209,11 +211,17 @@ export default function BrickTypesPanel({
                     <span
                       role="button"
                       tabIndex={0}
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation()
-                        if (window.confirm(`Delete brick wall type "${m.name}"?`)) {
-                          onDeleteMakeup(m.id)
-                        }
+                        const ok = await confirm({
+                          title: `Delete brick wall type "${m.name}"?`,
+                          message:
+                            'Brick walls currently using this type will ' +
+                            'fall back to the default.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDeleteMakeup(m.id)
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                     >
@@ -278,9 +286,15 @@ export default function BrickTypesPanel({
           }
           onCancel={() => setEditingId(null)}
           onSave={(m) => {
-            if (editingId === 'new') onAddMakeup(m)
+            const isNew = editingId === 'new'
+            if (isNew) onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
+            toast.success(
+              isNew
+                ? `Brick wall type "${m.name}" added`
+                : `Brick wall type "${m.name}" updated`
+            )
             // The saved brick type sits in the panel labelled "Curved"
             // (kind flag on the makeup). The user selects it like any
             // other type and hits Draw — the toolbar's draw routing

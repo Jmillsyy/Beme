@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
-import Header from '../components/Header'
+import LeftNav from '../components/LeftNav'
 import PdfWorkspace from '../components/PdfWorkspace'
 
 export default function BlockEstimatePage() {
@@ -7,17 +7,22 @@ export default function BlockEstimatePage() {
   const projectId = searchParams.get('id')
 
   return (
-    // Page is taller than the viewport: the Beme header + ProjectBar sit
-    // in normal flow above the workspace, and the workspace area inside
-    // PdfWorkspace uses `position: sticky` so it stays pinned to the top
-    // of the viewport while the header + project bar scroll OFF when the
-    // user scrolls down. min-h-[100vh/0.88] is the visual viewport (with
-    // html zoom 0.88), so the page is at least viewport-tall and grows
-    // by the height of the header + project bar — that's the scroll
-    // budget. No overflow-hidden so the scroll actually works.
-    <div className="min-h-[calc(100vh/0.88)] bg-ink-900 text-ink-50">
-      <Header />
-      <PdfWorkspace mode="block" projectId={projectId} />
+    // Workspace page = focus mode. LeftNav defaults to collapsed
+    // (icon-only) so the canvas gets maximum horizontal room; the
+    // user can toggle it open via the chevron on the rail edge.
+    // ProjectBar inside PdfWorkspace handles project-specific
+    // chrome (Save / Mark complete / Export); LeftNav handles app
+    // navigation.
+    //
+    // `pt-3` on the right column gives the ProjectBar breathing
+    // room from the top of the viewport — without the old Header
+    // there's nothing else absorbing that whitespace, so the bar
+    // would otherwise sit flush against the browser chrome.
+    <div className="min-h-screen bg-ink-900 text-ink-50 flex">
+      <LeftNav defaultCollapsed />
+      <div className="flex-1 min-w-0 pt-3">
+        <PdfWorkspace mode="block" projectId={projectId} />
+      </div>
     </div>
   )
 }

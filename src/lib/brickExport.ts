@@ -133,6 +133,18 @@ interface ExportParams {
    * material library.
    */
   supplyItemNameOverrides?: Record<string, string>
+  /**
+   * Per-export cover page text overrides — title, subtitle, intro.
+   * Same shape as the block exporter. When ALL three are missing /
+   * empty, no cover page is rendered. When any field is set, a
+   * dedicated cover page is prepended using `projectDetails` as
+   * fallback for the title.
+   */
+  coverOverrides?: {
+    title?: string
+    subtitle?: string
+    intro?: string
+  }
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
@@ -1104,6 +1116,42 @@ export async function buildBrickEstimateHtml(
   }
   const planOverviewPages = planOverviewPagesArr.join('\n')
 
+  // Page 0: Cover page — emitted only when the user customised any
+  // of the cover fields via the export modal. Mirrors the block
+  // exporter's cover (same CSS classes for cross-trade
+  // consistency).
+  const coverTitle = params.coverOverrides?.title?.trim() ?? ''
+  const coverSubtitle = params.coverOverrides?.subtitle?.trim() ?? ''
+  const coverIntro = params.coverOverrides?.intro?.trim() ?? ''
+  const hasCover = !!(coverTitle || coverSubtitle || coverIntro)
+  const coverTitleResolved =
+    coverTitle ||
+    projectDetails.projectName.trim() ||
+    projectDetails.siteAddress.trim() ||
+    'Brick Estimate'
+  const coverPage = hasCover
+    ? `
+      <section class="page cover-page">
+        ${pageHeader}
+        <div class="cover-body">
+          <div class="cover-eyebrow">Brick estimate${referenceText ? ` · ${escapeHtml(referenceText)}` : ''}</div>
+          <div class="cover-head">
+            <div>
+              <h1 class="cover-title">${escapeHtml(coverTitleResolved)}</h1>
+              ${coverSubtitle ? `<p class="cover-subtitle">${escapeHtml(coverSubtitle)}</p>` : ''}
+            </div>
+            <dl class="cover-meta">
+              ${projectDetails.siteAddress.trim() && projectDetails.siteAddress.trim() !== coverTitleResolved ? `<div><dt>Site</dt><dd>${escapeHtml(projectDetails.siteAddress)}</dd></div>` : ''}
+              ${projectDetails.clientName.trim() ? `<div><dt>Client</dt><dd>${escapeHtml(projectDetails.clientName)}</dd></div>` : ''}
+              ${projectDetails.date ? `<div><dt>Date</dt><dd>${formatDate(projectDetails.date)}</dd></div>` : ''}
+            </dl>
+          </div>
+          ${coverIntro ? `<div class="cover-intro">${escapeHtml(coverIntro).replace(/\n/g, '<br/>')}</div>` : ''}
+        </div>
+      </section>
+    `
+    : ''
+
   // Page 1: Assumptions — categorised groups with subheadings so
   // the reader can scan to the relevant area (Geometry vs Openings
   // vs Project-specific) rather than reading one long flat list.
@@ -1216,183 +1264,92 @@ export async function buildBrickEstimateHtml(
       sillEntries,
     )
 
-  const brickMakeupsById = new Map(makeups.map((m) => [m.id, m]))
-  void brickMakeupsById // retained for `byMakeup` consumers below
-  // Per-wall-type (per-makeup) breakdown — REMOVED.
-  // The output now reports a single total wall area + lineal metre
-  // figures for head / sill / course substitute. The per-makeup
-  // grouping was useful when the deliverable counted bricks per
-  // wall type, but with the lineal-metre model the estimator
-  // already has the per-trim-course figures they need to price.
+  // Per-wall-type breakdown — mirrors the headline aggregates (area,
+  // run, head, sill) one wall type at a time so the estimator can
+  // price each makeup separately. Net area = gross area minus any
+  // openings landing on walls of this type, same calc the headline
+  // uses. Head/sill totals come from the per-makeup maps the calc
+  // produces alongside the per-brick-code ones (the calc tracks
+  // both so this table doesn't have to re-walk openings).
   //
-  // The block below still computes `allRows` for back-compat with
-  // any export consumer that read those values, but the rendered
-  // table is empty so the deliverable doesn't show it.
-  type AreaMakeupRow = {
-    areaId: string | null
+  // Walls without a makeup pool under "No wall type" so they're not
+  // hidden from the breakdown. Wall types with zero area (created
+  // but never drawn on) are dropped so the table only lists types
+  // actually contributing brickwork.
+  type MakeupRow = {
     makeupId: string
+    label: string
     wallCount: number
-    grossAreaSqMm: number
-    openingAreaSqMm: number
+    totalLinealMm: number
     netAreaSqMm: number
-    brickCount: number
+    headLinealMm: number
+    sillLinealMm: number
   }
-  const rowsByKey: Record<string, AreaMakeupRow> = {}
-  const openingsByWallId = new Map<string, Opening[]>()
-  for (const op of openings) {
-    if (!op.wallId) continue
-    const arr = openingsByWallId.get(op.wallId) ?? []
-    arr.push(op)
-    openingsByWallId.set(op.wallId, arr)
-  }
-  for (const w of walls) {
-    const areaKey = w.areaId ?? ''
-    const makeupKey = w.makeupId || '__none__'
-    const key = `${areaKey}|${makeupKey}`
-    const row =
-      rowsByKey[key] ??
-      (rowsByKey[key] = {
-        areaId: w.areaId ?? null,
-        makeupId: makeupKey,
-        wallCount: 0,
-        grossAreaSqMm: 0,
-        openingAreaSqMm: 0,
-        netAreaSqMm: 0,
-        brickCount: 0,
-      })
-    const makeup = brickMakeupsById.get(w.makeupId)
-    const height =
-      w.heightMmOverride ??
-      makeup?.heightMm ??
-      settings.defaultWallHeightMm
-    // Brick walls don't have corner extensions like block walls do.
-    // Length comes from the shared arc-aware helper so curved brick
-    // walls report their true centreline arc length here — same
-    // value calculateBrickTally uses for the headline totalLinealMm.
-    const len = wallLinealMm(w)
-    const gross = len * height
-    const wallOps = openingsByWallId.get(w.id) ?? []
-    const opArea = wallOps.reduce(
-      (s, o) => s + o.widthMm * o.heightMm,
-      0,
-    )
-    const net = Math.max(0, gross - opArea)
-    row.wallCount += 1
-    row.grossAreaSqMm += gross
-    row.openingAreaSqMm += opArea
-    row.netAreaSqMm += net
-    // Brick count for this wall using its own makeup's rate (falls
-    // back to project default when the makeup carries no rate).
-    const rate = settings.bricksPerSquareMetre
-    row.brickCount += Math.ceil((net / 1_000_000) * rate)
-  }
-  const allRows = Object.values(rowsByKey).filter((r) => r.grossAreaSqMm > 0)
-  // Order areas: project order first, then any 'Unassigned' / unknown
-  // area at the bottom. Within an area, sort wall-type rows by net
-  // area DESC so the biggest contributor leads.
-  const areaIdOrder = new Map<string, number>()
-  if (areas) {
-    for (let i = 0; i < areas.length; i++) areaIdOrder.set(areas[i].id, i)
-  }
-  const areaOrder = (id: string | null): number =>
-    id === null
-      ? Number.POSITIVE_INFINITY
-      : areaIdOrder.get(id) ?? Number.POSITIVE_INFINITY - 1
-  allRows.sort((a, b) => {
-    const ao = areaOrder(a.areaId)
-    const bo = areaOrder(b.areaId)
-    if (ao !== bo) return ao - bo
-    return b.netAreaSqMm - a.netAreaSqMm
-  })
-  // Group by area for rendering.
-  const groupedByArea: Array<{
-    areaName: string
-    rows: AreaMakeupRow[]
-  }> = []
-  for (const row of allRows) {
-    const areaName =
-      row.areaId === null
-        ? 'Unassigned'
-        : areas?.find((a) => a.id === row.areaId)?.name ?? 'Unknown area'
-    const last = groupedByArea[groupedByArea.length - 1]
-    if (last && last.areaName === areaName) last.rows.push(row)
-    else groupedByArea.push({ areaName, rows: [row] })
-  }
-  // Per-makeup breakdown table — disabled. See the comment block
-  // above explaining why this section was removed from the
-  // deliverable. The computed rows above stay around so any
-  // downstream consumer reading allRows still works.
-  const makeupBreakdownTable = false && allRows.length > 1
+  const makeupRows: MakeupRow[] = Object.values(tally.byMakeup ?? {})
+    .filter((b) => b.grossAreaSqMm > 0 || b.netAreaSqMm > 0)
+    .map((b) => {
+      const makeup =
+        b.makeupId === '__none__'
+          ? null
+          : makeups.find((m) => m.id === b.makeupId) ?? null
+      return {
+        makeupId: b.makeupId,
+        label: makeup?.name ?? 'No wall type',
+        wallCount: b.wallCount,
+        totalLinealMm: b.totalLinealMm,
+        netAreaSqMm: b.netAreaSqMm,
+        headLinealMm: tally.headLinealMmByMakeup?.[b.makeupId] ?? 0,
+        sillLinealMm: tally.sillLinealMmByMakeup?.[b.makeupId] ?? 0,
+      }
+    })
+    .sort((a, b) => b.netAreaSqMm - a.netAreaSqMm)
+
+  const makeupBreakdownTable = makeupRows.length > 0
     ? `
       <h2 class="section-title">Brickwork by Wall Type</h2>
+      <p style="margin: 4px 0 8px; color: #555; font-size: 12px;">
+        Per wall type: total brickwork area (after opening deductions),
+        wall lineal length, and the head &amp; sill course metres the
+        type contributes. Multiply each by the bricklayer's per-metre
+        or per-m² rate to price each type independently.
+      </p>
       <table>
         <thead>
           <tr>
             <th>Wall type</th>
-            <th class="right" style="width: 80px">Walls</th>
-            <th class="right" style="width: 110px">Gross (m²)</th>
-            <th class="right" style="width: 110px">Openings (m²)</th>
-            <th class="right" style="width: 110px">Net (m²)</th>
-            <th class="right" style="width: 110px">Bricks</th>
+            <th class="right" style="width: 70px">Walls</th>
+            <th class="right" style="width: 100px">Length (m)</th>
+            <th class="right" style="width: 100px">Area (m²)</th>
+            <th class="right" style="width: 90px">Head (m)</th>
+            <th class="right" style="width: 90px">Sill (m)</th>
           </tr>
         </thead>
         <tbody>
-          ${groupedByArea
-            .map((group) => {
-              const groupGross = group.rows.reduce((s, r) => s + r.grossAreaSqMm, 0)
-              const groupOpening = group.rows.reduce((s, r) => s + r.openingAreaSqMm, 0)
-              const groupNet = group.rows.reduce((s, r) => s + r.netAreaSqMm, 0)
-              const groupBricks = group.rows.reduce((s, r) => s + r.brickCount, 0)
-              const groupWallCount = group.rows.reduce((s, r) => s + r.wallCount, 0)
-              const header = `<tr class="area-header">
-                <td colspan="6" style="background: #f3f0ea; font-weight: 600; padding-top: 6px;">${escapeHtml(group.areaName)}</td>
+          ${makeupRows
+            .map((r) => {
+              return `<tr>
+                <td>${escapeHtml(r.label)}</td>
+                <td class="right">${r.wallCount}</td>
+                <td class="right">${formatNumber(r.totalLinealMm / 1000, 2)}</td>
+                <td class="right">${formatNumber(r.netAreaSqMm / 1_000_000, 2)}</td>
+                <td class="right">${r.headLinealMm > 0 ? formatNumber(r.headLinealMm / 1000, 2) : '—'}</td>
+                <td class="right">${r.sillLinealMm > 0 ? formatNumber(r.sillLinealMm / 1000, 2) : '—'}</td>
               </tr>`
-              const rowsHtml = group.rows
-                .map((r) => {
-                  const makeup =
-                    r.makeupId === '__none__'
-                      ? null
-                      : makeups.find((m) => m.id === r.makeupId) ?? null
-                  const label = makeup?.name ?? 'No wall type'
-                  return `<tr>
-                    <td>${escapeHtml(label)}</td>
-                    <td class="right">${r.wallCount}</td>
-                    <td class="right">${formatNumber(r.grossAreaSqMm / 1_000_000, 3)}</td>
-                    <td class="right">${r.openingAreaSqMm > 0 ? `-${formatNumber(r.openingAreaSqMm / 1_000_000, 3)}` : '0'}</td>
-                    <td class="right">${formatNumber(r.netAreaSqMm / 1_000_000, 3)}</td>
-                    <td class="right">${r.brickCount.toLocaleString()}</td>
-                  </tr>`
-                })
-                .join('')
-              const subtotal = groupedByArea.length > 1
-                ? `<tr class="area-subtotal" style="font-style: italic;">
-                    <td>${escapeHtml(group.areaName)} subtotal</td>
-                    <td class="right">${groupWallCount}</td>
-                    <td class="right">${formatNumber(groupGross / 1_000_000, 3)}</td>
-                    <td class="right">-${formatNumber(groupOpening / 1_000_000, 3)}</td>
-                    <td class="right">${formatNumber(groupNet / 1_000_000, 3)}</td>
-                    <td class="right">${groupBricks.toLocaleString()}</td>
-                  </tr>`
-                : ''
-              return header + rowsHtml + subtotal
             })
             .join('')}
           <tr class="bold">
             <td>Total</td>
             <td class="right">${tally.wallCount}</td>
+            <td class="right">${formatNumber(tally.totalLinealMm / 1000, 2)}</td>
+            <td class="right">${formatNumber(tally.totalAreaSqMm / 1_000_000, 2)}</td>
             <td class="right">${formatNumber(
-              allRows.reduce((s, r) => s + r.grossAreaSqMm, 0) / 1_000_000,
-              3
-            )}</td>
-            <td class="right">-${formatNumber(
-              allRows.reduce((s, r) => s + r.openingAreaSqMm, 0) / 1_000_000,
-              3
+              makeupRows.reduce((s, r) => s + r.headLinealMm, 0) / 1000,
+              2
             )}</td>
             <td class="right">${formatNumber(
-              allRows.reduce((s, r) => s + r.netAreaSqMm, 0) / 1_000_000,
-              3
+              makeupRows.reduce((s, r) => s + r.sillLinealMm, 0) / 1000,
+              2
             )}</td>
-            <td class="right">${tally.brickCount.toLocaleString()}</td>
           </tr>
         </tbody>
       </table>
@@ -1549,6 +1506,7 @@ export async function buildBrickEstimateHtml(
   // callers get the full assembled doc just like before.
 
   const bodyContent = `
+  ${coverPage}
   ${assumptionsPage}
   ${/* 3D snapshots come FIRST after the assumptions pages so the
        reader sees the project in 3D as soon as they've finished
@@ -1701,6 +1659,75 @@ export async function buildBrickEstimateHtml(
     display: block;
     margin-bottom: 4px;
   }
+
+  /* Cover page — A4 landscape layout, same as the block exporter so
+     a combined deliverable reads as one document. See
+     blockExport.ts for the design notes. */
+  .cover-page .cover-body {
+    padding: 28px 12px 0 12px;
+    max-width: 100%;
+  }
+  .cover-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 10px;
+    color: #6B7280;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .cover-head {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    column-gap: 36px;
+    align-items: start;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #E5E7EB;
+  }
+  .cover-title {
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+    color: #111827;
+    margin: 0 0 6px 0;
+  }
+  .cover-subtitle {
+    font-size: 15px;
+    color: #4B5563;
+    margin: 8px 0 0 0;
+    line-height: 1.45;
+    max-width: 540px;
+  }
+  .cover-meta {
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 10px;
+    margin: 4px 0 0 0;
+    padding: 0 0 0 24px;
+    border-left: 1px solid #E5E7EB;
+  }
+  .cover-meta dt {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 9px;
+    color: #6B7280;
+    margin-bottom: 2px;
+  }
+  .cover-meta dd {
+    font-size: 12px;
+    color: #1F2937;
+    font-weight: 500;
+    margin: 0;
+  }
+  .cover-intro {
+    font-size: 12px;
+    color: #374151;
+    line-height: 1.6;
+    margin-top: 24px;
+    max-width: 100%;
+    white-space: pre-wrap;
+  }
+
   /* Primary brand mark — used when no text name accompanies the logo. */
   .brand-logo-primary {
     max-height: 64px;

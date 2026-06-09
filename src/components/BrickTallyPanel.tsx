@@ -5,26 +5,37 @@ import { useBrickLibrary } from '../data/brickLibrary'
 import { useUserSettings } from '../lib/userSettings'
 import { brickLintelWarnings } from '../lib/lintelCoverage'
 import LintelCoverageBand from './LintelCoverageBand'
+import AnimatedNumber from './AnimatedNumber'
 
 interface BrickTallyPanelProps {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
-  /** Brick wall types — needed for per-makeup course composition. */
+  /** Brick wall types — needed for per-wall heights when the calc
+   *  derives area. */
   makeups?: BrickMakeup[]
 }
 
 /**
- * Right-rail tally for brick estimates — wall count, total length,
- * total brickwork area, brick count. Supply items (ties, plascourse,
- * lintels, flashings, etc.) live in the SupplyItemsPanel and are
- * managed via the material library.
+ * Right-rail tally for brick estimates — intentionally minimal.
  *
- * When at least one brick wall type uses `courseRanges`, the panel
- * shows a per-brick-type breakdown (e.g. "↳ Standard 230×76 — 540 /
- * ↳ Double-height 230×162 — 1,210") under the headline brick count so
- * the reader can see the mix at a glance. Single-brick projects keep
- * the old single-line look.
+ * Two numbers, surfaced loud:
+ *   - Total brickwork area (m²) — drives every quantity downstream
+ *     when multiplied by the brick rate
+ *   - Total wall lineal m — the run figure for spec-by-the-metre items
+ *     (ties, plascourse, flashing)
+ *
+ * The per-wall-type breakdown (area, head lineals, sill lineals) lives
+ * in the EXPORT PDF, not in the workspace rail. Reasoning: the rail
+ * is glanceable headline-only feedback while the estimator's drawing;
+ * the export is the deliverable where the breakdown actually gets
+ * used. Stuffing both into the rail makes the most-used affordance
+ * (the headline area) compete with information that belongs on
+ * paper.
+ *
+ * Lintel coverage warnings still surface here because they're a
+ * data-quality nudge — the estimator needs to know about misconfigured
+ * openings WHILE they're still drawing, not when they generate the PDF.
  *
  * Memoised so re-renders driven by zoom / pan don't recompute the tally.
  */
@@ -35,6 +46,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   // off each band's brick type at calc time).
   const { version: brickLibraryVersion } = useBrickLibrary()
   const { settings: userSettings } = useUserSettings()
+  void userSettings
 
   const tally = useMemo(() => {
     void brickLibraryVersion
@@ -51,7 +63,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
 
   if (walls.length === 0) {
     return (
-      <div className="border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm">
+      <div className="border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm bg-ink-800/50">
         Draw your first wall to see the brick tally.
       </div>
     )
@@ -59,16 +71,6 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
 
   const areaSqM = tally.totalAreaSqMm / 1_000_000
   const lengthM = tally.totalLinealMm / 1000
-  // Lineal-metre figures the export relies on. Surface them in the
-  // workspace tally too so the user sees the head / sill totals at
-  // a glance without generating the PDF first. Course substitute
-  // was removed in favour of the simpler "Total length" row above
-  // — the per-course-pitch math was confusing the user and the
-  // total wall lineal m gives them what they actually wanted.
-  const headLinealM =
-    Object.values(tally.headLinealMmByType).reduce((s, n) => s + n, 0) / 1000
-  const sillLinealM =
-    Object.values(tally.sillLinealMmByType).reduce((s, n) => s + n, 0) / 1000
 
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
@@ -77,15 +79,15 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
         className="w-full bg-ink-700 px-3 py-2 border-b border-ink-600 flex items-center justify-between gap-2 text-left group"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-beme-400 group-hover:text-beme-300 text-xs">
+          <span className="text-ink-400 group-hover:text-ink-200 text-xs">
             {expanded ? '▾' : '▸'}
           </span>
-          <h3 className="text-sm font-bold text-beme-300">Brick tally</h3>
+          <h3 className="text-sm font-bold text-ink-50">Brick tally</h3>
           <span className="text-xs text-beme-300 tabular-nums truncate">
-            · {areaSqM.toFixed(2)} m²
+            · <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
           </span>
         </div>
-        <span className="text-xs text-beme-300 tabular-nums flex-shrink-0">
+        <span className="text-xs text-ink-400 tabular-nums flex-shrink-0">
           {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
         </span>
       </button>
@@ -97,44 +99,41 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
       )}
 
       {expanded && (
-        <table className="w-full text-sm">
-          <tbody>
-            <tr className="border-b border-ink-700/60">
-              <td className="px-3 py-1.5 text-ink-300">Total length</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                {lengthM.toFixed(2)} m
-              </td>
-            </tr>
-            <tr className="border-b border-ink-700/60 bg-ink-700/30">
-              <td className="px-3 py-1.5 text-ink-200 font-medium">Brickwork area</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-300">
-                {areaSqM.toFixed(2)} m²
-              </td>
-            </tr>
-            <tr className="border-b border-ink-700/60">
-              <td className="px-3 py-1.5 text-ink-300">Openings</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                {tally.openingCount}
-              </td>
-            </tr>
-            {headLinealM > 0 && (
-              <tr className="border-b border-ink-700/60">
-                <td className="px-3 py-1.5 text-ink-300">Head courses</td>
-                <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                  {headLinealM.toFixed(2)} m
-                </td>
-              </tr>
-            )}
-            {sillLinealM > 0 && (
-              <tr>
-                <td className="px-3 py-1.5 text-ink-300">Sill courses</td>
-                <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                  {sillLinealM.toFixed(2)} m
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <>
+          {/* Big total card — orange hero, exact same structure as
+              BlockTallyPanel: uppercase eyebrow, big extrabold
+              headline number, single-line subtitle stacking the
+              supporting figures. Keeps the brand-colour real estate
+              tight to the headline so the panel reads as "one
+              feature card on a neutral surface" rather than "all
+              orange". */}
+          <div className="px-4 py-4 bg-gradient-to-br from-beme-500 to-beme-600 text-ink-900">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] opacity-85">
+              Total brickwork area
+            </div>
+            <div className="text-3xl font-extrabold tracking-tight leading-none mt-1 tabular-nums">
+              <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
+            </div>
+            <div className="text-xs opacity-85 mt-1 tabular-nums">
+              {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'} ·{' '}
+              <AnimatedNumber value={lengthM} format={(n) => n.toFixed(2)} /> m run
+            </div>
+          </div>
+
+          {/* Metadata strip — same visual rhythm as BlockTallyPanel:
+              neutral ink-800 surface, ink-400 text, single line. The
+              brick rail is intentionally headline-only (head/sill
+              breakdowns live in the export PDF), so this strip only
+              carries the openings count — keeps the structural
+              parity with the block panel without duplicating
+              numbers that are already in the export. */}
+          <div className="px-3 py-2 text-xs text-ink-400 border-t border-ink-600 flex justify-between gap-2 flex-wrap tabular-nums">
+            <span>
+              <AnimatedNumber value={tally.openingCount} /> opening
+              {tally.openingCount === 1 ? '' : 's'}
+            </span>
+          </div>
+        </>
       )}
     </div>
   )

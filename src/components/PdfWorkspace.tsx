@@ -60,6 +60,8 @@ import BrickTypesPanel from './BrickTypesPanel'
 import MaterialLibraryGate from './MaterialLibraryGate'
 import LibraryGuidance from './LibraryGuidance'
 import LengthInput from './LengthInput'
+import BemeLoader from './BemeLoader'
+import AnimatedNumber from './AnimatedNumber'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
@@ -70,6 +72,8 @@ import {
   type ProjectStatus,
   type SavedProject,
   deleteProject as deleteProjectFromStore,
+  fetchProjectPdf,
+  fetchReferencePdf,
   generateProjectId,
   getProject,
   saveProject as saveProjectToStore,
@@ -398,7 +402,7 @@ function promptCustomRatio(): number | null {
   if (raw === null) return null
   const n = parseInt(raw.replace(/[^\d]/g, ''), 10)
   if (!isFinite(n) || n < 1 || n > 100000) {
-    window.alert('Please enter a whole number between 1 and 100000.')
+    toast.error('Please enter a whole number between 1 and 100000.')
     return null
   }
   return n
@@ -526,6 +530,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * reloads land back in this mode instead of bouncing back to the upload zone.
    */
   const [isEmptyWorkspace, setIsEmptyWorkspace] = useState(false)
+  /**
+   * True while getProject(projectId) is in flight. Used to suppress
+   * the "Drop your building plan PDF here" upload zone during the
+   * loading window — without it the user would briefly see the
+   * upload zone on a project that actually has walls + PDF, before
+   * the load resolves and the canvas swaps in. Defaults to true
+   * when there's a projectId so the FIRST render after mount is
+   * loading-state instead of upload-zone.
+   */
+  const [isProjectLoading, setIsProjectLoading] = useState(!!projectId)
   /**
    * Per-page calibration + intrinsic dimensions. Has to be declared up here
    * with the rest of the workspace state so the dirty-tracker effect below
@@ -803,7 +817,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * deleted, because there's no undo for the wipe — the project would have
    * to be reloaded from a previous save to recover.
    */
-  function promoteReferenceToPrimary(index: number) {
+  async function promoteReferenceToPrimary(index: number) {
     if (index < 0 || index >= referencePdfFiles.length) return
     const newPrimary = referencePdfFiles[index]
     const oldPrimary = pdfFile
@@ -817,16 +831,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const pierCount = Object.values(piersByPage).reduce((s, ps) => s + ps.length, 0)
     const total = wallCount + openingCount + pierCount
 
-    const lines = [
-      `Make "${newPrimary.name}" the primary plan?`,
-      '',
+    const detail =
       total > 0
         ? `This will delete all ${total} drawn item${total === 1 ? '' : 's'} from the current primary (${wallCount} wall${wallCount === 1 ? '' : 's'}, ${openingCount} opening${openingCount === 1 ? '' : 's'}, ${pierCount} pier${pierCount === 1 ? '' : 's'}) because the new plan has its own scale and walls would land in the wrong places.`
-        : 'There are no drawn items on the current primary, so nothing will be lost.',
-      '',
-      'The current primary will move into the references list so it stays one click away.',
-    ]
-    if (!window.confirm(lines.join('\n'))) return
+        : 'There are no drawn items on the current primary, so nothing will be lost.'
+    const ok = await confirm({
+      title: `Make "${newPrimary.name}" the primary plan?`,
+      message: `${detail} The current primary will move into the references list so it stays one click away.`,
+      confirmLabel: total > 0 ? 'Switch and delete' : 'Switch plan',
+      variant: total > 0 ? 'destructive' : 'default',
+    })
+    if (!ok) return
 
     // Build the new references list: the selected ref gets removed (it's
     // being promoted), and the old primary slots in at the end (if there
@@ -1385,30 +1400,114 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     getProject(projectId)
       .then((proj) => {
         if (cancelled || !proj) return
-        // Reconstruct File from saved Blob (only when a PDF was actually saved — projects
-        // can now be created and saved before a PDF is uploaded).
-        if (proj.pdfBlob && proj.pdfFileName) {
-          const file = new File([proj.pdfBlob], proj.pdfFileName, {
-            type: proj.pdfBlob.type || 'application/pdf',
+        // Reconstruct File from saved Blob. The pdfFileName field is
+        // metadata only — when it's missing (older projects, blobs
+        // saved via a path that didn't stamp the name), fall back to
+        // a generic name so the File still constructs and the PDF
+        // renders. Without this fallback, a missing filename used to
+        // silently skip the setPdfFile call → no PDF → canvas blank.
+        // Primary PDF — three sources, in priority order:
+        //
+        //   1. proj.pdfBlob — present from the local (IndexedDB) load
+        //      path. Use directly.
+        //   2. proj.pdfPath — cloud project with the blob in remote
+        //      storage. Kick off a background `fetchProjectPdf` so the
+        //      workspace UI lands first and the bytes stream in a
+        //      moment later. While the fetch is in flight, isPdfFetching
+        //      suppresses the empty-workspace backstop so we don't
+        //      mistakenly flip into "blank canvas" mode just because
+        //      the download hasn't resolved yet.
+        //   3. Neither — the project genuinely has no PDF (either it
+        //      was created as an empty workspace, or upload failed on
+        //      the original save). Fall through to the backstop below.
+        //
+        // The pdfFileName field is metadata only — when it's missing
+        // (older projects, blobs saved via a path that didn't stamp
+        // the name), fall back to 'plan.pdf' so the File still
+        // constructs and the PDF renders.
+        const projHasAnyWalls =
+          !!proj.wallsByPage &&
+          Object.values(proj.wallsByPage).some((ws) => ws.length > 0)
+        const finalisePdf = (blob: Blob | undefined) => {
+          if (!blob) {
+            // Download failed or no blob exists. Apply the backstop so
+            // the workspace shows walls on a blank paper canvas
+            // rather than hijacking the view with the upload zone.
+            if (projHasAnyWalls) {
+              setIsEmptyWorkspace(true)
+              setNumPages(1)
+            }
+            return
+          }
+          // A blob arrived — clear any backstop that an earlier code
+          // path may have set, otherwise the canvas stays stuck in
+          // empty-workspace mode and the PDF never renders even though
+          // pdfFile is set. Also reset numPages so the Document
+          // component can populate it from the real PDF.
+          setIsEmptyWorkspace(false)
+          setNumPages(0)
+          const fileName = proj.pdfFileName || 'plan.pdf'
+          const file = new File([blob], fileName, {
+            type: blob.type || 'application/pdf',
           })
           setPdfFile(file)
         }
-        // Empty-workspace flag — hydrate so reload skips the upload zone. Also
-        // seed numPages = 1 since there's no Document.onLoadSuccess to do it.
-        if (proj.emptyWorkspace) {
+        // Background fetch helper — used by both the "we have a path"
+        // branch and the "recovery" branch (no path recorded but the
+        // blob may still be at the conventional storage location).
+        const kickOffBackgroundFetch = () => {
+          fetchProjectPdf(proj.id)
+            .then((blob) => {
+              if (cancelled) return
+              finalisePdf(blob)
+            })
+            .catch((err) => {
+              if (cancelled) return
+              console.error('Failed to fetch PDF blob', err)
+              finalisePdf(undefined)
+            })
+        }
+        if (proj.pdfBlob) {
+          // Local mode — blob already in memory from IndexedDB.
+          finalisePdf(proj.pdfBlob)
+        } else if (proj.pdfPath) {
+          // Cloud mode — fetch in the background. Don't await; the
+          // rest of the project state setup proceeds immediately so
+          // the UI can render walls/tally/etc. while bytes arrive.
+          kickOffBackgroundFetch()
+        } else if (proj.emptyWorkspace) {
+          // No blob, no path, project explicitly marked as empty
+          // workspace at create time. Honour the flag verbatim.
           setIsEmptyWorkspace(true)
           setNumPages(1)
+        } else if (projHasAnyWalls) {
+          // No blob, no path, but walls exist. Two possibilities:
+          //
+          //   a) The PDF was originally uploaded but the row's
+          //      pdf_path got nulled out by an earlier regression in
+          //      the save flow — the bytes are still in storage at
+          //      the conventional `{userId}/{projectId}.pdf` path.
+          //   b) The project genuinely never had a PDF (or the
+          //      original upload failed).
+          //
+          // fetchProjectPdf has a recovery branch that tries the
+          // conventional path when the recorded path is null. So fire
+          // the same background fetch — if it lands a blob we recover
+          // the project's plan; if it doesn't, finalisePdf falls
+          // through to the backstop and shows the blank-paper canvas.
+          kickOffBackgroundFetch()
         }
-        // Reference PDFs (engineering specs etc.) — reconstruct File objects
-        // from each saved Blob, parallel to a list of storage paths so re-
-        // saves don't re-upload bytes that haven't changed. Entries whose
-        // blob failed to download are skipped (the file isn't reachable, so
-        // showing a tab for it would just open a broken view).
+        // Reference PDFs (engineering specs etc.) — reconstruct File
+        // objects for every reference that has bytes available right
+        // now, AND queue background downloads for any reference whose
+        // blob isn't loaded yet but whose storage path is known. Tabs
+        // for the latter group flip from "loading" to "ready" as each
+        // download resolves.
         if (proj.referencePdfs && proj.referencePdfs.length > 0) {
-          const files: File[] = []
-          const paths: (string | undefined)[] = []
           const ids: string[] = []
+          const paths: (string | undefined)[] = []
           const selectedPagesList: (number[] | undefined)[] = []
+          const filesByIndex: (File | undefined)[] = []
           const pagesDataById: Record<string, Record<number, PageData>> = {}
           const measurementsById: Record<
             string,
@@ -1421,18 +1520,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               }>
             >
           > = {}
-          for (const ref of proj.referencePdfs) {
-            if (!ref.blob) continue
-            files.push(
-              new File([ref.blob], ref.fileName, {
-                type: ref.blob.type || 'application/pdf',
-              })
-            )
-            paths.push(ref.path)
-            // Generate an id for legacy references that pre-date the
-            // id field — once allocated client-side, the next save
-            // will persist it so the slice keys stay stable across
-            // reloads.
+          const pendingFetches: { index: number; path: string }[] = []
+          for (let i = 0; i < proj.referencePdfs.length; i++) {
+            const ref = proj.referencePdfs[i]
+            // References with neither a blob nor a path are dead
+            // entries — skip so they don't create ghost tabs.
+            if (!ref.blob && !ref.path) continue
             const refId =
               ref.id ??
               (typeof crypto !== 'undefined' &&
@@ -1440,10 +1533,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ? crypto.randomUUID()
                 : `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
             ids.push(refId)
-            // Empty array round-trips as "show all pages" so legacy
-            // projects predating the picker keep their existing
-            // behaviour (every page visible). selectedPages from a
-            // post-picker save is honoured verbatim.
+            paths.push(ref.path)
             selectedPagesList.push(
               ref.selectedPages && ref.selectedPages.length > 0
                 ? ref.selectedPages
@@ -1452,13 +1542,57 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             if (ref.pagesData) pagesDataById[refId] = ref.pagesData
             if (ref.measurementsByPage)
               measurementsById[refId] = ref.measurementsByPage
+            if (ref.blob) {
+              filesByIndex.push(
+                new File([ref.blob], ref.fileName, {
+                  type: ref.blob.type || 'application/pdf',
+                })
+              )
+            } else if (ref.path) {
+              // Placeholder File so the index stays aligned with the
+              // other parallel arrays. The Document component will
+              // get an empty File which renders nothing — fine
+              // because the user can't be on this tab yet anyway.
+              // Once the background fetch resolves we swap the real
+              // File into place.
+              filesByIndex.push(
+                new File([], ref.fileName || 'reference.pdf', {
+                  type: 'application/pdf',
+                })
+              )
+              pendingFetches.push({ index: filesByIndex.length - 1, path: ref.path })
+            }
           }
-          setReferencePdfFiles(files)
+          setReferencePdfFiles(filesByIndex.filter((f): f is File => !!f))
           setReferencePdfPaths(paths)
           setReferencePdfIds(ids)
           setReferencePdfSelectedPages(selectedPagesList)
           setReferencePdfPagesDataById(pagesDataById)
           setReferencePdfMeasurementsByPageById(measurementsById)
+          // Background fetch each pending reference PDF and swap the
+          // real File in once it lands. Sequential rather than
+          // parallel — Supabase storage handles concurrent downloads
+          // fine, but a single document is typically all the user
+          // looks at, and a serial loop is gentler on the connection
+          // when there are several refs.
+          ;(async () => {
+            for (const { index, path } of pendingFetches) {
+              const blob = await fetchReferencePdf(path)
+              if (cancelled) return
+              if (!blob) continue
+              const fileName =
+                proj.referencePdfs?.find((r) => r.path === path)?.fileName ||
+                'reference.pdf'
+              const file = new File([blob], fileName, {
+                type: blob.type || 'application/pdf',
+              })
+              setReferencePdfFiles((prev) => {
+                const next = [...prev]
+                next[index] = file
+                return next
+              })
+            }
+          })()
         }
         setProjectDetails(proj.projectDetails)
         // Loading a saved project bypasses the startup gate — the details
@@ -1630,6 +1764,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       })
       .catch((err) => {
         console.error('Failed to load project', err)
+      })
+      .finally(() => {
+        if (!cancelled) setIsProjectLoading(false)
       })
     return () => {
       cancelled = true
@@ -2366,8 +2503,32 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           setReferenceNumber(persisted.referenceNumber)
         }
         setLastSavedAt(now)
+        // Visible feedback for the status flip — the green "Mark as
+        // completed" button vanishes / changes label, but that's a
+        // subtle UI change next to the bigger meaning of the action
+        // ("this estimate is closed out" / "this estimate is open
+        // again"). Toast spells it out so the user knows the state
+        // landed in storage, not just in local UI.
+        toast.success(
+          nextStatus === 'completed'
+            ? 'Project marked complete'
+            : 'Project reopened',
+          {
+            description:
+              nextStatus === 'completed'
+                ? 'It moved to Recently Completed on the dashboard.'
+                : 'Back in your active projects.',
+          }
+        )
       } catch (err) {
         console.error('Failed to update project status', err)
+        // Roll back the optimistic state change so the bar doesn't lie
+        // about the project's actual status.
+        setProjectStatus(projectStatus)
+        if (nextStatus === 'completed') setProjectCompletedAt(projectCompletedAt)
+        toast.error('Could not update project status', {
+          description: (err as Error).message,
+        })
       }
     }
   }
@@ -4129,9 +4290,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }
 
-  function clearAllWalls() {
+  async function clearAllWalls() {
     if (allWalls.length === 0) return
-    if (!window.confirm(`Delete all ${allWalls.length} walls in this project?`)) return
+    const ok = await confirm({
+      title: `Delete all ${allWalls.length} walls?`,
+      message:
+        'Every wall, opening, and pier in this project will be removed. ' +
+        "This can't be undone.",
+      confirmLabel: 'Delete all',
+      variant: 'destructive',
+    })
+    if (!ok) return
     setWallsByPage({})
     setOpeningsByPage({})
     setPiersByPage({})
@@ -5718,6 +5887,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       },
     }))
     cancelCalibration()
+    // Calibration is the most-consequential silent state change in the
+    // app — wrong calibration silently breaks every length downstream.
+    // Toast confirms the ratio that landed so the user can sanity-check
+    // it against the drawing's title block ("Scale 1:100") before
+    // committing to a session of measuring.
+    toast.success(`Scale set to 1:${Math.round(ratio)}`, {
+      description: `Page ${currentPage} — 1mm on plan = ${Math.round(ratio)}mm real.`,
+    })
   }
 
   // ---------- Calibration: ratio ----------
@@ -5738,6 +5915,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       },
     }))
     cancelCalibration()
+    toast.success(`Scale set to 1:${Math.round(ratio)}`, {
+      description: `Page ${currentPage} — picked from common ratios.`,
+    })
   }
 
   /**
@@ -5965,6 +6145,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     )
   }
 
+  // ---------- Render: loading state ----------
+  //
+  // Suppress the upload zone while the project is loading from
+  // storage — without this, the user sees "Drop your PDF here" for
+  // the brief window between mount and getProject() resolving, even
+  // on projects that have a PDF saved. The upload zone is reserved
+  // for projects that actually have no PDF AND no walls.
+  if (isProjectLoading) {
+    return (
+      <div className="w-full">
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <BemeLoader caption="Loading project…" />
+        </div>
+      </div>
+    )
+  }
+
   // ---------- Render: upload zone ----------
 
   if (!pdfFile && !isEmptyWorkspace) {
@@ -6004,7 +6201,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           onClose={() => setDetailsDrawerOpen(false)}
         />
 
-        <div className="sticky top-0 h-[calc(100vh/0.88)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
+        <div className="sticky top-0 h-[calc(100vh/0.79)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
           <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
             {/* ── Canvas area: drop zone fills the height ── */}
@@ -6025,21 +6222,35 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
-                className={`flex-1 min-h-0 border-2 border-dashed rounded-xl flex items-center justify-center bg-ink-800 transition-colors ${
+                className={`flex-1 min-h-0 border-2 border-dashed rounded-xl flex items-center justify-center transition-all duration-200 ${
                   isDragging
-                    ? 'border-beme-500 bg-beme-500/10'
-                    : 'border-ink-600 hover:border-beme-400'
+                    ? 'border-beme-400 bg-beme-500/15 ring-4 ring-beme-500/30 scale-[1.01]'
+                    : 'border-ink-600 bg-ink-800 hover:border-beme-400'
                 }`}
               >
-                <div className="text-center max-w-md px-6 py-8">
-                  <div className="mx-auto w-12 h-12 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4 text-2xl">
-                    📄
+                <div
+                  className={`text-center max-w-md px-6 py-8 transition-transform duration-200 ${
+                    isDragging ? 'scale-110' : 'scale-100'
+                  }`}
+                >
+                  <div
+                    className={`mx-auto w-12 h-12 rounded-full flex items-center justify-center mb-4 text-2xl transition-all duration-200 ${
+                      isDragging
+                        ? 'bg-beme-500 border border-beme-300 text-black shadow-lg shadow-beme-500/40 animate-pulse'
+                        : 'bg-beme-500/15 border border-beme-500/40'
+                    }`}
+                  >
+                    {isDragging ? '⬇' : '📄'}
                   </div>
                   <p className="text-lg text-ink-100 mb-1 font-semibold">
-                    Drop your building plan PDF here
+                    {isDragging
+                      ? 'Drop to attach'
+                      : 'Drop your building plan PDF here'}
                   </p>
                   <p className="text-sm text-ink-400 mb-5">
-                    or upload a file to start drawing walls over the plan
+                    {isDragging
+                      ? 'Release to load it into the workspace.'
+                      : 'or upload a file to start drawing walls over the plan'}
                   </p>
                   <label className="inline-block px-6 py-2.5 bg-beme-500 text-black rounded-lg cursor-pointer hover:bg-beme-400 transition-colors font-semibold text-sm">
                     Choose a PDF
@@ -6262,7 +6473,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           and right rail below take up the full visible area once the
           header chrome has scrolled away. The PDF pan container still has
           its own internal scroll for the plan content. */}
-      <div className="sticky top-0 h-[calc(100vh/0.88)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
+      <div className="sticky top-0 h-[calc(100vh/0.79)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
 
       {/* Empty-library gate. Now controlled by materialPromptMode so it
           only fires when the user actively clicked a trade tab whose
@@ -6310,12 +6521,26 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           setIsDraggingReferenceFile(false)
           queueReferenceFiles(Array.from(e.dataTransfer.files))
         }}
-        className={`flex items-center mb-2 px-3 py-1.5 bg-ink-800 border rounded-lg gap-3 flex-wrap transition-colors ${
+        className={`relative flex items-center mb-2 px-3 py-1.5 bg-ink-800 border rounded-lg gap-3 flex-wrap transition-all duration-200 ${
           isDraggingReferenceFile
-            ? 'border-beme-500 bg-beme-500/10'
+            ? 'border-beme-400 bg-beme-500/15 ring-2 ring-beme-500/30'
             : 'border-ink-600'
         }`}
       >
+        {/* Drop-to-add overlay — sits over the whole toolbar while a
+            file is being dragged in so the user knows the bar IS the
+            drop target. Without this, the user sees the border light
+            up but isn't sure what to do — there's no visible "drop
+            here" affordance, just a tinted bar. Pointer-events: none
+            keeps the drop event bubbling to the underlying handlers. */}
+        {isDraggingReferenceFile && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-beme-500/20 backdrop-blur-[1px] z-10">
+            <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-beme-500 text-black text-sm font-semibold shadow-lg shadow-beme-500/40">
+              <span className="text-base leading-none">⬇</span>
+              Drop to add as a reference PDF
+            </span>
+          </div>
+        )}
 
         {/* File tabs OR empty-workspace label */}
         {isEmptyWorkspace ? (
@@ -6390,9 +6615,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     </span>
                   </button>
                   <button
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation()
-                      if (!window.confirm(`Remove "${f.name}" from this project?`)) return
+                      const ok = await confirm({
+                        title: `Remove "${f.name}"?`,
+                        message:
+                          'The reference PDF will be removed from this project. ' +
+                          'Walls drawn on the primary plan are untouched.',
+                        confirmLabel: 'Remove',
+                        variant: 'destructive',
+                      })
+                      if (!ok) return
                       // If we're currently viewing the one being removed, hop back
                       // to the primary first so we don't end up on a missing index.
                       if (activeReferenceIndex === i) switchPdf(null)
@@ -6721,15 +6954,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             starts clean. */}
         {!isReferenceView && !isEmptyWorkspace && pdfFile && (
           <button
-            onClick={() => {
+            onClick={async () => {
               const hasDrawnData =
                 Object.values(wallsByPage).some((ws) => ws.length > 0) ||
                 Object.values(openingsByPage).some((os) => os.length > 0) ||
                 Object.values(piersByPage).some((ps) => ps.length > 0)
               if (hasDrawnData) {
-                const ok = window.confirm(
-                  'Replace the plan? All walls, openings, piers, and page calibrations will be cleared so the new PDF starts fresh. Wall types and pier types stay.'
-                )
+                const ok = await confirm({
+                  title: 'Replace the plan?',
+                  message:
+                    'All walls, openings, piers, and page calibrations will ' +
+                    'be cleared so the new PDF starts fresh. Wall types ' +
+                    'and pier types stay.',
+                  confirmLabel: 'Replace plan',
+                  variant: 'destructive',
+                })
                 if (!ok) return
               }
               setPdfFile(null)
@@ -7092,32 +7331,37 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               const totalRunM = totalRunMm / 1000
               return (
                 <span className="text-ink-200">
-                  {currentPageWalls.length}{' '}
+                  <AnimatedNumber value={currentPageWalls.length} />{' '}
                   wall{currentPageWalls.length === 1 ? '' : 's'}
                   {currentPageWalls.length > 0 && (
                     <span className="text-ink-400">
                       {' '}
-                      · <span className="text-ink-100 font-medium">{totalRunM.toFixed(2)} m</span> run
+                      · <span className="text-ink-100 font-medium tabular-nums">
+                        <AnimatedNumber
+                          value={totalRunM}
+                          format={(n) => n.toFixed(2)}
+                        />{' '}m
+                      </span> run
                     </span>
                   )}
                   {currentPageOpenings.length > 0 && (
                     <span className="text-ink-400">
                       {' '}
-                      · {currentPageOpenings.length} opening
+                      · <AnimatedNumber value={currentPageOpenings.length} /> opening
                       {currentPageOpenings.length === 1 ? '' : 's'}
                     </span>
                   )}
                   {currentPagePiers.length > 0 && (
                     <span className="text-ink-400">
                       {' '}
-                      · {currentPagePiers.length} pier
+                      · <AnimatedNumber value={currentPagePiers.length} /> pier
                       {currentPagePiers.length === 1 ? '' : 's'}
                     </span>
                   )}
                   {allWalls.length !== currentPageWalls.length && (
                     <span className="text-ink-400">
                       {' '}
-                      · {allWalls.length} walls total in project
+                      · <AnimatedNumber value={allWalls.length} /> walls total in project
                     </span>
                   )}
                   {activeMakeup && canDraw && (
@@ -8219,8 +8463,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           ) : (
             <Suspense
               fallback={
-                <div className="absolute inset-0 flex items-center justify-center text-ink-400 text-sm">
-                  Loading 3D view…
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <BemeLoader caption="Loading 3D view…" />
                 </div>
               }
             >
@@ -8264,16 +8508,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         onMouseDown={handlePanMouseDown}
         className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-hidden bg-ink-800 relative ${viewMode === '3d' ? 'hidden' : ''}`}
         style={{
-          // Cursor is ALWAYS crosshair on the canvas — same as Bluebeam.
-          // The grab / open-hand cursor used to be the no-tool default;
-          // swapping to crosshair gives the user a precise pointer even
-          // when they're just navigating. The full-canvas crosshair
-          // GUIDE (the two long black lines) still only renders during
-          // an active placement tool; this just changes the OS cursor
-          // glyph at all other times. Active pan drags still flip to
-          // `grabbing` via the .beme-pan-active class set by the pan
-          // handler, so the visual feedback for "I'm panning" is intact.
-          cursor: 'crosshair',
+          // Cursor changes per tool: crosshair when an active placement
+          // tool is engaged (calibrate / draw / opening / control-joint
+          // / pier / ruler), open-hand grab otherwise so the user has a
+          // tangible "I'm panning the canvas" affordance when no tool
+          // is active. Active pan drags additionally flip to `grabbing`
+          // via .beme-pan-active applied by the pan handler.
+          cursor:
+            calibrating ||
+            drawingMode ||
+            placingOpening ||
+            placingControlJoint ||
+            placingTiedPier ||
+            placingFreestandingPier
+              ? 'crosshair'
+              : 'grab',
         }}
       >
         {/* Bluebeam-style transform-based viewport.
@@ -8630,13 +8879,42 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             horizontal Y as the "Draw wall / Ruler / etc." toolbar to
             its left. The rail's space-y-4 owns the gap to the next
             panel below, so no extra bottom margin here. */}
-        {(mode === 'block' || mode === 'brick') && viewMode !== '3d' && (
+        {(mode === 'block' || mode === 'brick') && (
           <div className="pt-1 pb-1">
             <AreaTabs
               areas={areas}
               activeAreaId={activeAreaId}
-              onSelect={setActiveAreaId}
-              onCreate={(name) => {
+              onSelect={(areaId) => {
+                setActiveAreaId(areaId)
+                // When picking a real area (not "All"), jump to the
+                // PDF page that has the most walls of the active trade
+                // in that area. Without this, switching area in 3D
+                // would leave the camera on whatever page was open
+                // before, which often has zero walls in the new area
+                // → empty 3D scene → user thinks the area is empty.
+                // "All" doesn't trigger a jump — the current page is
+                // a fine starting point for "show me everything".
+                if (areaId === null) return
+                let bestPage = currentPage
+                let bestCount = -1
+                for (const [pageStr, walls] of Object.entries(wallsByPage)) {
+                  const pageNum = Number(pageStr)
+                  if (!Number.isFinite(pageNum)) continue
+                  const count = walls.filter(
+                    (w) =>
+                      w.areaId === areaId &&
+                      (mode === 'brick' ? w.trade === 'brick' : w.trade !== 'brick'),
+                  ).length
+                  if (count > bestCount) {
+                    bestCount = count
+                    bestPage = pageNum
+                  }
+                }
+                if (bestPage !== currentPage && bestCount > 0) {
+                  setCurrentPage(bestPage)
+                }
+              }}
+              onCreate={(name, copyWalls) => {
                 // Generate the id client-side — uses the same UUID helper
                 // as project ids so it's stable across saves and unique
                 // across users in the cloud.
@@ -8644,19 +8922,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
                     ? crypto.randomUUID()
                     : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-                // Auto-assign a colour from the area palette so the
-                // preview-line tinting (and any future per-area visual
-                // signals) work without the user having to pick a
-                // colour. Cycles through the palette by current area
-                // count so the first area gets red, second blue, etc.
                 const colorHex = AREA_PALETTE[areas.length % AREA_PALETTE.length]
                 const newArea: ProjectArea = { id, name, colorHex }
                 setAreas((prev) => [...prev, newArea])
                 // Seed one baseline wall type per trade so the new area
                 // opens with a working starting wall instead of an
                 // empty panel. Block and brick each get a single
-                // generic makeup scoped to this area. The user can
-                // edit / rename / add more from the panel afterwards.
+                // generic makeup scoped to this area.
                 const seededBlock = createDefaultWallMakeup({})
                 seededBlock.areaId = id
                 const seededBrick = createDefaultBrickMakeup({
@@ -8666,17 +8938,77 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 seededBrick.areaId = id
                 setMakeups((prev) => [...prev, seededBlock])
                 setBrickMakeups((prev) => [...prev, seededBrick])
+
+                // Clone-walls path. If the user picked "Copy existing
+                // walls" in the choose-modal, duplicate every wall on
+                // the current page that the user is currently looking
+                // at (filtered by activeAreaId / trade) into the new
+                // area. New wall ids, fresh makeup, same geometry —
+                // useful when a building plan repeats per floor.
+                // Openings are intentionally NOT cloned in v1; the
+                // user can re-add them after picking each clone's
+                // makeup. Junctions get recomputed downstream by the
+                // recompute pass once the next render lands.
+                if (copyWalls) {
+                  const sourceWalls = (wallsByPage[currentPage] ?? []).filter(
+                    (w) => {
+                      const tradeMatch = mode === 'brick' ? w.trade === 'brick' : w.trade !== 'brick'
+                      if (!tradeMatch) return false
+                      // Respect the active scope: when an area is active,
+                      // clone only that area's walls; when on All,
+                      // clone everything visible.
+                      if (activeAreaId && w.areaId !== activeAreaId) return false
+                      return true
+                    },
+                  )
+                  if (sourceWalls.length > 0) {
+                    const cloned = sourceWalls.map((w) => ({
+                      ...w,
+                      id:
+                        typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                          ? crypto.randomUUID()
+                          : `wall-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                      makeupId: mode === 'brick' ? seededBrick.id : seededBlock.id,
+                      areaId: id,
+                      // Reset junctions to free — the recompute pass
+                      // will re-derive them based on the new wall set's
+                      // geometry. Without this, cloned walls would
+                      // reference the SOURCE wall's neighbour ids in
+                      // connectedWallIds, which point at the old wall
+                      // ids — recomputeAllJunctions would then downgrade
+                      // every junction to free anyway, so we just do it
+                      // up-front to be tidy.
+                      startJunction: { type: 'free' as const },
+                      endJunction: { type: 'free' as const },
+                    }))
+                    setWallsByPage((prev) => ({
+                      ...prev,
+                      [currentPage]: [...(prev[currentPage] ?? []), ...cloned],
+                    }))
+                  }
+                }
+
                 // Activate the freshly-created area + its seed wall
                 // type so new walls flow into it immediately. Most
                 // common workflow: "+ New area", type name, start
-                // drawing — without these activations the user would
-                // have to pick both manually.
+                // drawing.
                 setActiveAreaId(id)
                 if (mode === 'brick') {
                   setActiveBrickMakeupId(seededBrick.id)
                 } else {
                   setActiveMakeupId(seededBlock.id)
                 }
+                // Friendly success toast — the tab appears in the area
+                // strip but the user has just dismissed a modal and
+                // their eye may not catch the new tab right away. Toast
+                // calls out the new area by name and confirms the
+                // copy-walls choice so the user can sanity-check it
+                // landed as expected.
+                toast.success(`Area "${name}" created`, {
+                  description: copyWalls
+                    ? 'Walls from the previous view were copied over.'
+                    : 'Starting fresh — draw walls to fill it in.',
+                })
               }}
               onRename={(areaId, newName) => {
                 setAreas((prev) =>
@@ -8684,6 +9016,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 )
               }}
               onDelete={(areaId) => {
+                const removed = areas.find((a) => a.id === areaId)
                 setAreas((prev) => prev.filter((a) => a.id !== areaId))
                 // If the deleted area was active, fall back to All so the
                 // user doesn't land on a now-empty filter that hides
@@ -8693,6 +9026,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 // simple delete click; user can re-create an area and
                 // bulk-assign in v2.
                 if (activeAreaId === areaId) setActiveAreaId(null)
+                if (removed) {
+                  toast.success(`Area "${removed.name}" removed`, {
+                    description:
+                      'Walls in it are visible under All until you reassign them.',
+                  })
+                }
               }}
             />
           </div>
@@ -9023,11 +9362,17 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                 </button>
                 {canClear && (
                   <button
-                    onClick={(e) => {
+                    onClick={async (e) => {
                       e.stopPropagation()
-                      const ok = window.confirm(
-                        `Clear all walls, openings and piers from Page ${pageNum}? This can't be undone via the Undo button.`
-                      )
+                      const ok = await confirm({
+                        title: `Clear Page ${pageNum}?`,
+                        message:
+                          'All walls, openings and piers on this page will ' +
+                          "be removed. This can't be undone via the Undo " +
+                          'button.',
+                        confirmLabel: 'Clear page',
+                        variant: 'destructive',
+                      })
                       if (ok) onClearPage?.(pageNum)
                     }}
                     title="Clear walls on this page"

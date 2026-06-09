@@ -248,6 +248,25 @@ function parseInchesFragment(s: string): number | null {
 }
 
 /**
+ * Format a length for display INSIDE a LengthInput field.
+ *
+ * Differs from formatLengthMm in two ways:
+ *   1. Metric mode shows the raw mm value as an integer — no "mm"
+ *      suffix in the string, no auto-switch to meters above 1000 mm.
+ *      The suffix chip beside the input already says "mm", so adding
+ *      it inside the value would be a contradiction (the user reported
+ *      "2.44 m" sitting next to a "mm" chip — visually wrong).
+ *   2. Imperial mode keeps the feet-inches notation since there's no
+ *      unitless equivalent — the chip says "ft-in" and the value
+ *      shows e.g. `8'-0"` which the parser round-trips cleanly.
+ */
+export function formatLengthInputValue(mm: number, units: Units = 'metric'): string {
+  if (!Number.isFinite(mm)) return ''
+  if (units === 'imperial') return formatLengthImperial(mm)
+  return `${Math.round(mm)}`
+}
+
+/**
  * Placeholder hint for a length input, customised per the user's units
  * preference. Use as the `placeholder` prop on a length input so users
  * see an example of the expected format.

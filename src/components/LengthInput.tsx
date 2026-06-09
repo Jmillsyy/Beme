@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  formatLengthMm,
+  formatLengthInputValue,
   lengthInputPlaceholder,
   lengthInputSuffix,
   parseLengthInput,
@@ -60,12 +60,12 @@ export default function LengthInput({
   // Local string state — what the user is typing right now.
   // Initialised from valueMm in canonical form and re-synced whenever
   // valueMm or units change (e.g. parent reset, units toggle).
-  const [text, setText] = useState(() => formatLengthMm(valueMm, units))
+  const [text, setText] = useState(() => formatLengthInputValue(valueMm, units))
   const [focused, setFocused] = useState(false)
   useEffect(() => {
     // Don't clobber the user's keystrokes while they're editing —
     // only re-format when the field is not focused.
-    if (!focused) setText(formatLengthMm(valueMm, units))
+    if (!focused) setText(formatLengthInputValue(valueMm, units))
   }, [valueMm, units, focused])
 
   const handleChange = (next: string) => {
@@ -93,7 +93,7 @@ export default function LengthInput({
           // Re-format from the canonical parent value on blur so the
           // user sees the tidy form ("8'-6 1/2\"") even if they typed
           // a sloppy version ("8' 6.5").
-          setText(formatLengthMm(valueMm, units))
+          setText(formatLengthInputValue(valueMm, units))
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && onEnter) {

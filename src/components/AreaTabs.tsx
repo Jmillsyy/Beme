@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ProjectArea } from '../lib/projectStorage'
+import { confirm } from '../lib/confirm'
 
 /**
  * Area selector — collapsible panel that matches the chrome of the
@@ -36,9 +37,13 @@ export default function AreaTabs({
   /** null = the "All" view. */
   activeAreaId: string | null
   onSelect: (areaId: string | null) => void
-  /** Called with the new area's display name. Workspace generates the id,
-   *  pushes onto `areas`, and switches activeAreaId to the new id. */
-  onCreate: (name: string) => void
+  /** Called with the new area's display name + a flag indicating whether
+   *  to clone the walls from the current view into the new area.
+   *  Workspace generates the id, pushes onto `areas`, and switches
+   *  activeAreaId to the new id. When `copyWalls` is true the workspace
+   *  also clones every wall currently visible (geometry only — new ids,
+   *  new makeup) into the new area. */
+  onCreate: (name: string, copyWalls: boolean) => void
   onRename: (areaId: string, newName: string) => void
   /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
@@ -51,6 +56,10 @@ export default function AreaTabs({
   // rename via the existing ✎ affordance if they want a custom label.
   const [expanded, setExpanded] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
+  // creating = small modal asking whether to start fresh or clone the
+  // existing walls into the new area. Holds the resolved default name
+  // so it can be passed back to onCreate when the user picks.
+  const [creating, setCreating] = useState<{ name: string } | null>(null)
   const editingArea = editingId
     ? areas.find((a) => a.id === editingId) ?? null
     : null
@@ -194,14 +203,16 @@ export default function AreaTabs({
               onRename={() => setEditingId(area.id)}
               onDelete={
                 onDelete
-                  ? () => {
-                      if (
-                        window.confirm(
-                          `Delete area "${area.name}"? Walls in it become unassigned (still visible in All).`
-                        )
-                      ) {
-                        onDelete(area.id)
-                      }
+                  ? async () => {
+                      const ok = await confirm({
+                        title: `Delete area "${area.name}"?`,
+                        message:
+                          'Walls in this area become unassigned but stay ' +
+                          'visible in the All tab. The area itself is removed.',
+                        confirmLabel: 'Delete area',
+                        variant: 'destructive',
+                      })
+                      if (ok) onDelete(area.id)
                     }
                   : undefined
               }
@@ -214,7 +225,7 @@ export default function AreaTabs({
               the rename modal is still present below. */}
           <button
             type="button"
-            onClick={() => onCreate(nextDefaultAreaName())}
+            onClick={() => setCreating({ name: nextDefaultAreaName() })}
             className="w-full text-left px-2 py-1.5 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded-md transition-colors"
           >
             + New area
@@ -229,6 +240,17 @@ export default function AreaTabs({
           existingNames={existingNamesFor(editingArea.id)}
           onSubmit={(name) => handleRename(editingArea.id, name)}
           onCancel={() => setEditingId(null)}
+        />
+      )}
+      {creating && (
+        <AreaCreateChoiceModal
+          name={creating.name}
+          onChoose={(copyWalls) => {
+            const pending = creating
+            setCreating(null)
+            onCreate(pending.name, copyWalls)
+          }}
+          onCancel={() => setCreating(null)}
         />
       )}
     </div>
@@ -301,6 +323,100 @@ function AreaMenuRow({
           ×
         </button>
       )}
+    </div>
+  )
+}
+
+// ---------- Internal: AreaCreateChoiceModal ----------
+
+/**
+ * Two-option dialog shown when the user adds a new area. Picks
+ * whether the new area should:
+ *   - Start fresh (empty — current behaviour, the canvas clears
+ *     down to just the new area's walls which is zero).
+ *   - Copy current walls — clones every wall currently visible in
+ *     the active view (active-area or All) into the new area as a
+ *     starting point. Geometry only; new ids, new makeup. Useful
+ *     when a building plan repeats per-floor (Ground Floor → First
+ *     Floor with the same layout).
+ *
+ * Mirrors the existing AreaNameModal shell so the area-creation
+ * flows feel uniform. Esc / backdrop click cancels.
+ */
+function AreaCreateChoiceModal({
+  name,
+  onChoose,
+  onCancel,
+}: {
+  name: string
+  onChoose: (copyWalls: boolean) => void
+  onCancel: () => void
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onCancel()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label="New area"
+    >
+      <div
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-ink-100">New area</h2>
+            <p className="text-[11px] text-ink-500 mt-0.5 truncate">
+              Creating <span className="text-ink-300">{name}</span>
+            </p>
+          </div>
+          <button
+            onClick={onCancel}
+            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="p-5 space-y-3">
+          <button
+            type="button"
+            onClick={() => onChoose(false)}
+            className="w-full text-left rounded-lg border border-ink-600 hover:border-beme-500 bg-ink-900/40 hover:bg-ink-700/40 transition-colors px-4 py-3"
+          >
+            <div className="text-sm font-semibold text-ink-50">Start fresh</div>
+            <div className="text-xs text-ink-400 mt-1 leading-relaxed">
+              Empty canvas. Draw walls from scratch — none of your existing
+              walls are copied over.
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => onChoose(true)}
+            className="w-full text-left rounded-lg border border-ink-600 hover:border-beme-500 bg-ink-900/40 hover:bg-ink-700/40 transition-colors px-4 py-3"
+          >
+            <div className="text-sm font-semibold text-ink-50">Copy existing walls</div>
+            <div className="text-xs text-ink-400 mt-1 leading-relaxed">
+              Clone every wall currently on screen into this new area. Same
+              geometry, fresh wall types. Useful when the layout repeats
+              (e.g. ground floor → first floor).
+            </div>
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

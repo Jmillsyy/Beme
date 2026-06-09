@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import BemeMark from './BemeMark'
 import { useTheme } from '../lib/theme'
 import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
@@ -68,9 +69,9 @@ export default function Header() {
           monitors of any width. */}
       <div className="px-20 py-6 flex items-center justify-between gap-6">
         <Link to="/" className="flex items-center gap-3 group">
-          <div className="relative w-[32px] h-[32px] rounded-[6px] bg-beme-500 group-hover:bg-beme-400 transition-colors">
-            <div className="absolute inset-[6px] bg-ink-900 rounded-[2px]" />
-          </div>
+          <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
+            <BemeMark size={32} />
+          </span>
           <div className="leading-tight">
             <div className="text-2xl font-extrabold tracking-tight text-ink-50">Beme</div>
             <div className="text-xs text-ink-300">Building estimates made easy</div>

@@ -289,3 +289,75 @@ button:focus-visible {
 .beme-pan-active * {
   cursor: grabbing !important;
 }
+
+/**
+ * Stop-and-start logo spin used by <BemeLoader />.
+ *
+ * The Beme logo rotates a clean 360° over the first 55% of the cycle,
+ * then holds dead still for the remaining 45% before kicking off
+ * again. Because 0° and 360° are visually identical the loop appears
+ * seamless — spin, pause, spin, pause — and reads as a deliberate
+ * mechanical rhythm rather than a generic spinner.
+ *
+ * Easing is `cubic-bezier(0.65, 0, 0.35, 1)` (ease-in-out) so the
+ * spin accelerates from a stop, hits speed in the middle, and decelerates
+ * back to a halt at the pause — like a wheel being given a single
+ * crisp push each cycle.
+ *
+ * 1.6s total feels about right for "I notice it's spinning" without
+ * being annoying. Reduced-motion users get a static logo.
+ */
+@keyframes beme-spin-stop {
+  0% {
+    transform: rotate(0deg);
+  }
+  55% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.beme-spin-stop {
+  animation: beme-spin-stop 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  transform-origin: 50% 50%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beme-spin-stop {
+    animation: none;
+  }
+}
+
+/**
+ * "Just saved" checkmark — pops in next to the save-status pill the
+ * moment a save lands. Scales from 60% to 105% then settles to 100%
+ * so it reads as a beat of confirmation rather than a static glyph.
+ * Plays once on mount (animation duration 350ms, no iteration count
+ * → runs to completion and stays at the final frame). Pair with a
+ * keyed React node so a fresh save remounts the element and replays
+ * the animation; in ProjectBar we re-render via the justSaved state
+ * flipping true so the element appears fresh each time.
+ */
+@keyframes beme-check-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.beme-check-pop {
+  animation: beme-check-pop 350ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: 50% 50%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beme-check-pop {
+    animation: none;
+  }
+}

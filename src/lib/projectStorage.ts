@@ -270,6 +270,21 @@ export interface SavedProject {
   pdfBlob?: Blob
   pdfFileName?: string
   /**
+   * Storage path for the PRIMARY PDF in the cloud bucket.
+   *
+   * Transient — populated by `cloudGetProject` when the PDF is held
+   * in remote storage but NOT yet downloaded. The workspace uses it
+   * to fire a background `fetchProjectPdf(id)` once the metadata
+   * lands, so the project opens immediately and the PDF streams in
+   * a moment later instead of blocking the whole load behind a
+   * storage round-trip.
+   *
+   * Never persisted to `data` JSONB — the DB owns `projects.pdf_path`
+   * as a separate column, and `projectToCloudRow` strips this off
+   * before save.
+   */
+  pdfPath?: string
+  /**
    * Extra PDFs the estimator can flip to while working on this project —
    * typically engineering specs or notes that inform wall types but aren't
    * drawn on. Walls, openings, and piers all live against the primary PDF
@@ -476,10 +491,40 @@ export async function getProject(id: string): Promise<SavedProject | undefined> 
   return loaded ? migrateSavedProject(loaded) : loaded
 }
 
-/** List every saved project. Sorted by `updatedAt` descending. */
+/**
+ * List every saved project. Sorted by `updatedAt` descending.
+ *
+ * Returns a slim shape on the cloud path — fields like `makeups`,
+ * `brickMakeups`, `pierMakeups`, `pagesByPage`, `view3dSnapshots`,
+ * and reference-PDF metadata are NOT populated. The dashboard cards
+ * don't read those, and the slimming knocks several megabytes off
+ * the response on a typical project set.
+ *
+ * If you need the full project payload for every project (e.g. a
+ * cross-project migration), use {@link listProjectsFull} — it does
+ * the heavy `select('*')` instead.
+ */
 export async function listProjects(): Promise<SavedProject[]> {
   const uid = await currentUserId()
   const all = uid ? await cloudListProjects(uid) : await localListProjects()
+  return all.map(migrateSavedProject)
+}
+
+/**
+ * Like {@link listProjects} but pulls the full `data` JSONB column
+ * for every project — including makeups, pier definitions, snapshots
+ * and so on. Use for one-shot cross-project work like region-change
+ * migration where the caller needs to read and rewrite every field.
+ *
+ * On the cloud path this is significantly slower than the slim
+ * `listProjects` (full `select('*')` instead of the dashboard
+ * subset). Keep call sites rare — the dashboard, command palette,
+ * and any UI that lists projects for the user should use the slim
+ * version.
+ */
+export async function listProjectsFull(): Promise<SavedProject[]> {
+  const uid = await currentUserId()
+  const all = uid ? await cloudListProjectsFull(uid) : await localListProjects()
   return all.map(migrateSavedProject)
 }
 
@@ -638,10 +683,12 @@ function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | nu
     referenceNumber,
     pdfBlob: _pdfBlob,
     pdfFileName,
+    pdfPath: _pdfPath,
     referencePdfs,
     ...rest
   } = p
   void _pdfBlob
+  void _pdfPath
   const referencePdfMeta = referencePdfs?.map((r) => ({ fileName: r.fileName, path: r.path }))
   // Default owner to the inserting user on first save — the SQL migration
   // backfills existing rows, but new inserts from app code need to fill
@@ -692,6 +739,7 @@ interface CloudProjectRow {
     | 'completedAt'
     | 'pdfBlob'
     | 'pdfFileName'
+    | 'pdfPath'
   >
   pdf_path: string | null
   pdf_file_name: string | null
@@ -729,6 +777,34 @@ async function cloudSaveProject(p: SavedProject, userId: string): Promise<SavedP
       contentType: p.pdfBlob.type || 'application/pdf',
     })
     if (uploadErr) throw new Error(`PDF upload failed: ${uploadErr.message}`)
+  } else {
+    // No new blob in this save — DO NOT overwrite pdf_path with null
+    // just because the in-memory project lacks the bytes. The workspace
+    // can save during the window when the background PDF download
+    // hasn't yet resolved (or never resolved on this device), and a
+    // straight `pdf_path = null` write would orphan the existing
+    // stored blob. Preserve the path: read the current row's pdf_path
+    // and pass it through if non-null. If the project carries an
+    // explicit `pdfPath` (set by cloudGetProject), that takes priority
+    // — saves the read round-trip when we already know the path.
+    if (p.pdfPath) {
+      pdfPath = p.pdfPath
+    } else {
+      const { data: existing, error: lookupErr } = await client
+        .from('projects')
+        .select('pdf_path')
+        .eq('id', p.id)
+        .maybeSingle()
+      if (lookupErr) {
+        // Don't fail the save over a lookup hiccup — write null and
+        // log, the user's data is still intact (just the path is
+        // unreachable until next save where they re-attach).
+        // eslint-disable-next-line no-console
+        console.warn(`pdf_path lookup failed for ${p.id}:`, lookupErr.message)
+      } else if (existing) {
+        pdfPath = (existing as { pdf_path: string | null }).pdf_path
+      }
+    }
   }
 
   // Reference PDFs (engineering specs etc.) — upload any whose blob hasn't yet
@@ -865,55 +941,191 @@ async function cloudGetProject(id: string, _userId: string): Promise<SavedProjec
   const row = data as CloudProjectRow
   const project = rowToProjectMeta(row)
 
-  // Fetch the PDF blob if there is one.
+  // PRIMARY PDF — stash the storage path so the workspace can pull
+  // the blob in a background fetch. Awaiting the download here used
+  // to gate the entire project open behind a multi-megabyte storage
+  // round-trip, which made the workspace look frozen on first open
+  // and (when the download silently failed) left the canvas blank
+  // with no recovery path. The metadata returns immediately now;
+  // the caller fires `fetchProjectPdf(id)` once it has the path.
   if (row.pdf_path) {
-    const { data: blob, error: dlErr } = await client.storage.from(PDF_BUCKET).download(row.pdf_path)
-    if (dlErr) {
-      // Don't blow up the whole project load — the metadata is still useful.
-      // eslint-disable-next-line no-console
-      console.warn(`Failed to download PDF for project ${id}:`, dlErr.message)
-    } else if (blob) {
-      project.pdfBlob = blob
-    }
+    project.pdfPath = row.pdf_path
   }
 
-  // Reference PDFs — download each one so the workspace can switch to it.
-  // A failed download on a single reference doesn't block the project load;
-  // the entry stays in the array without a blob and the workspace shows a
-  // "(file unavailable)" hint on that tab.
-  if (project.referencePdfs && project.referencePdfs.length > 0) {
-    const downloaded: ReferencePdf[] = []
-    for (const ref of project.referencePdfs) {
-      if (!ref.path) {
-        downloaded.push(ref)
-        continue
-      }
-      const { data: refBlob, error: refErr } = await client.storage
-        .from(PDF_BUCKET)
-        .download(ref.path)
-      if (refErr) {
-        // eslint-disable-next-line no-console
-        console.warn(`Failed to download reference PDF ${ref.fileName}:`, refErr.message)
-        downloaded.push({ ...ref, blob: undefined })
-      } else {
-        downloaded.push({ ...ref, blob: refBlob ?? undefined })
-      }
-    }
-    project.referencePdfs = downloaded
-  }
+  // Reference PDFs — same deal. Carry the `path` through so the
+  // workspace knows there's a remote blob, but don't block the load
+  // waiting for every spec sheet to download. The workspace fetches
+  // each reference lazily when the user actually flips to that tab
+  // (or eagerly in a background batch — see fetchReferencePdf).
+  // We intentionally leave `blob` undefined on each entry; the
+  // workspace's existing path-based lookup is the signal.
 
   return project
+}
+
+/**
+ * Download the primary PDF blob for a project from cloud storage.
+ *
+ * Pair with `cloudGetProject` — that function returns metadata fast,
+ * this function pulls the blob in the background. Returns undefined
+ * when the project has no PDF, when the user isn't signed in (local
+ * mode), or when the storage download fails.
+ */
+export async function fetchProjectPdf(projectId: string): Promise<Blob | undefined> {
+  const uid = await currentUserId()
+  if (!uid) {
+    // Local mode — the blob is already in IndexedDB from the
+    // localGetProject path, no separate fetch needed.
+    return undefined
+  }
+  const client = supabase()
+  const { data, error } = await client
+    .from('projects')
+    .select('pdf_path')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (error || !data) return undefined
+
+  const recordedPath = (data as { pdf_path: string | null }).pdf_path
+  // Primary path — recorded in the DB row.
+  if (recordedPath) {
+    const { data: blob, error: dlErr } = await client.storage
+      .from(PDF_BUCKET)
+      .download(recordedPath)
+    if (dlErr) {
+      // eslint-disable-next-line no-console
+      console.warn(`Failed to download PDF for project ${projectId}:`, dlErr.message)
+    } else if (blob) {
+      return blob
+    }
+  }
+
+  // Recovery path — pdf_path is null (or its download failed) but the
+  // blob may still be sitting at the conventional storage path from a
+  // prior save: `${userId}/${projectId}.pdf`. A regression in the save
+  // flow used to overwrite pdf_path with null whenever the in-memory
+  // project lacked the blob (e.g., auto-save fired before the load
+  // brought the bytes in), orphaning the stored file. Try the
+  // conventional path so those orphans show up again.
+  //
+  // If recovery succeeds, the workspace will eventually save with this
+  // blob attached and pdf_path will heal back to the real path.
+  const conventionalPath = `${uid}/${projectId}.pdf`
+  // Skip if we already tried this exact path above.
+  if (recordedPath === conventionalPath) return undefined
+  const { data: recBlob, error: recErr } = await client.storage
+    .from(PDF_BUCKET)
+    .download(conventionalPath)
+  if (recErr) {
+    // No file at the conventional path either — the project genuinely
+    // has no stored PDF. Caller falls through to the upload zone /
+    // empty-workspace backstop.
+    return undefined
+  }
+  return recBlob ?? undefined
+}
+
+/**
+ * Download a single reference PDF blob from cloud storage by path.
+ *
+ * Returns undefined on failure (including local mode where storage
+ * isn't reachable). The workspace handles the undefined case by
+ * leaving the reference tab in its "file unavailable" state.
+ */
+export async function fetchReferencePdf(refPath: string): Promise<Blob | undefined> {
+  const uid = await currentUserId()
+  if (!uid) return undefined
+  const client = supabase()
+  const { data: blob, error: dlErr } = await client.storage.from(PDF_BUCKET).download(refPath)
+  if (dlErr) {
+    // eslint-disable-next-line no-console
+    console.warn(`Failed to download reference PDF at ${refPath}:`, dlErr.message)
+    return undefined
+  }
+  return blob ?? undefined
 }
 
 async function cloudListProjects(_userId: string): Promise<SavedProject[]> {
   void _userId // RLS scopes to the current user
   const client = supabase()
+  // Slim select — only pull the fields the dashboard actually reads,
+  // and only the JSONB sub-keys (via the `data->key` syntax) instead
+  // of the entire `data` column. The full column carries view3d
+  // snapshot dataURLs (base64 PNGs, often 100KB-1MB each), per-page
+  // pagesData / piers / openings, makeups, reference-PDF metadata,
+  // measurement strokes, and export-inclusion config — none of which
+  // the dashboard cards render. Trimming these typically drops the
+  // list payload from megabytes to a few dozen KB on a typical user.
+  //
+  // Top-level columns are unchanged. Each `data->key` slot becomes a
+  // top-level field on the row at query time, then we re-nest it
+  // into a SavedProject shape below so consumers see the usual
+  // structure.
+  // Single-line select — PostgREST is robust to whitespace inside
+  // the comma list, but supabase-js URL-encodes the string verbatim
+  // and some proxies / older runtimes have been known to choke on
+  // embedded `%0A` sequences. Cheap to keep this on one line.
+  const slimSelect =
+    'id,user_id,organisation_id,owner_user_id,reference_number,' +
+    'type,status,created_at,updated_at,completed_at,pdf_file_name,' +
+    'projectDetails:data->projectDetails,' +
+    'wallsByPage:data->wallsByPage,' +
+    'trades:data->trades,' +
+    'createdByUserId:data->createdByUserId,' +
+    'outcome:data->outcome,' +
+    'emptyWorkspace:data->emptyWorkspace'
   const { data, error } = await client
     .from('projects')
-    .select('*')
+    .select(slimSelect)
     .order('updated_at', { ascending: false })
   if (error) throw new Error(`Project list failed: ${error.message}`)
-  const rows = (data as CloudProjectRow[]).map(rowToProjectMeta)
+  // Re-nest the per-row payload into a SavedProject. The omitted
+  // fields (makeups, view3dSnapshots, piersByPage etc.) stay
+  // undefined — call sites that need them must use getProject(id)
+  // to pull the full row on demand. The dashboard card path never
+  // touches those fields, so the shape matches at runtime.
+  type ListRow = {
+    id: string
+    user_id: string
+    organisation_id: string | null
+    owner_user_id: string | null
+    reference_number: number | null
+    type: ProjectType
+    status: ProjectStatus
+    created_at: string
+    updated_at: string
+    completed_at: string | null
+    pdf_file_name: string | null
+    projectDetails: ProjectDetails | null
+    wallsByPage: SavedProject['wallsByPage'] | null
+    trades: SavedProject['trades'] | null
+    createdByUserId: string | null
+    outcome: SavedProject['outcome'] | null
+    emptyWorkspace: boolean | null
+  }
+  const rows: SavedProject[] = (data as ListRow[]).map((r) => ({
+    id: r.id,
+    type: r.type,
+    status: r.status,
+    organisationId: r.organisation_id ?? undefined,
+    ownerUserId: r.owner_user_id ?? r.user_id,
+    referenceNumber: r.reference_number ?? undefined,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    completedAt: r.completed_at ?? undefined,
+    pdfFileName: r.pdf_file_name ?? undefined,
+    projectDetails: r.projectDetails ?? {
+      clientName: '',
+      projectName: '',
+      siteAddress: '',
+    },
+    wallsByPage: r.wallsByPage ?? {},
+    openingsByPage: {},
+    trades: r.trades ?? undefined,
+    createdByUserId: r.createdByUserId ?? undefined,
+    outcome: r.outcome ?? undefined,
+    emptyWorkspace: r.emptyWorkspace ?? undefined,
+  }))
 
   // Defence in depth against the RLS-leak bug: if a project is stamped
   // with an organisationId but the CURRENT signed-in user isn't a member
@@ -928,6 +1140,30 @@ async function cloudListProjects(_userId: string): Promise<SavedProject[]> {
   const memberOrgIds = new Set(
     getOrgState().organisations.map((o) => o.id)
   )
+  return rows.filter((p) => {
+    if (!p.organisationId) return true
+    return memberOrgIds.has(p.organisationId)
+  })
+}
+
+/**
+ * Full-fat counterpart to {@link cloudListProjects} — pulls every
+ * top-level column AND the entire `data` JSONB blob for every project
+ * the user can see. Slower and heavier than the dashboard variant; only
+ * use it when the caller needs to read project internals (makeups,
+ * pier definitions, etc.) across the whole set, e.g. region-change
+ * migration.
+ */
+async function cloudListProjectsFull(_userId: string): Promise<SavedProject[]> {
+  void _userId // RLS scopes to the current user
+  const client = supabase()
+  const { data, error } = await client
+    .from('projects')
+    .select('*')
+    .order('updated_at', { ascending: false })
+  if (error) throw new Error(`Project list failed: ${error.message}`)
+  const rows = (data as CloudProjectRow[]).map(rowToProjectMeta)
+  const memberOrgIds = new Set(getOrgState().organisations.map((o) => o.id))
   return rows.filter((p) => {
     if (!p.organisationId) return true
     return memberOrgIds.has(p.organisationId)

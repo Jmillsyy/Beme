@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { confirm } from '../lib/confirm'
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
 import {
   PROTECTED_BLOCK_CODES,
@@ -255,7 +256,7 @@ export default function BlockLibraryPanel({
                 block={block}
                 readOnly={readOnly}
                 onEdit={() => setEditingCode(block.code)}
-                onDelete={() => {
+                onDelete={async () => {
                   const isProtected = PROTECTED_BLOCK_CODES.has(block.code)
                   if (isProtected) {
                     // Strong confirm — protected codes are referenced
@@ -264,24 +265,31 @@ export default function BlockLibraryPanel({
                     // users can truly start fresh with a custom library
                     // (e.g. US CMU, UK metric), but they need to know
                     // any wall type using this code will go missing.
-                    const ok = window.confirm(
-                      `Delete protected block "${block.code} — ${block.name}"?\n\n` +
-                        'This block is a default reference in the calc engine. ' +
-                        'Deleting it means:\n\n' +
-                        '• Any existing wall type referencing this code will point at ' +
-                        'a missing block and need to be fixed before drawing.\n' +
-                        '• New wall types created in an empty library will open with ' +
-                        'empty slots instead of being pre-filled.\n\n' +
-                        'Use this when you\'re wiping the library to swap to a different ' +
-                        'block catalogue (US CMU, UK metric, custom supplier range).\n\n' +
-                        'Continue?'
-                    )
+                    const ok = await confirm({
+                      title: `Delete protected block "${block.code} — ${block.name}"?`,
+                      message:
+                        'This block is a default reference in the calc ' +
+                        'engine. Any existing wall type referencing this ' +
+                        'code will point at a missing block, and new wall ' +
+                        'types created in an empty library will open with ' +
+                        'empty slots instead of being pre-filled. Use this ' +
+                        'when wiping the library to swap to a different ' +
+                        'catalogue (US CMU, UK metric, custom supplier range).',
+                      confirmLabel: 'Delete anyway',
+                      variant: 'destructive',
+                    })
                     if (ok) removeBlock(block.code, { force: true })
                     return
                   }
-                  if (window.confirm(`Delete block "${block.code} — ${block.name}"?`)) {
-                    removeBlock(block.code)
-                  }
+                  const ok = await confirm({
+                    title: `Delete block "${block.code} — ${block.name}"?`,
+                    message:
+                      'The block is removed from your library. Wall types ' +
+                      'referencing it will need to be updated.',
+                    confirmLabel: 'Delete',
+                    variant: 'destructive',
+                  })
+                  if (ok) removeBlock(block.code)
                 }}
               />
             ))}
@@ -290,14 +298,16 @@ export default function BlockLibraryPanel({
           {/* Reset to defaults — admins only. */}
           {!readOnly && (
             <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Reset the entire block library to SEQ QLD defaults? Custom blocks will be removed and renames lost.'
-                  )
-                ) {
-                  resetBlockLibrary()
-                }
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Reset the block library?',
+                  message:
+                    'Reverts every block to the SEQ QLD defaults. Custom ' +
+                    'blocks will be removed and any renames lost.',
+                  confirmLabel: 'Reset library',
+                  variant: 'destructive',
+                })
+                if (ok) resetBlockLibrary()
               }}
               className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
             >

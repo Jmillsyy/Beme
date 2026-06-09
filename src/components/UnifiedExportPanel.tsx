@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   BlockExportInclusions,
   BrickExportInclusions,
@@ -257,12 +257,24 @@ function ExportEstimateModal({
   const { currentOrg } = useOrganisations()
 
   // Esc closes — keep keyboard parity with the other modals (wall
-  // type editor, opening editor, etc.).
+  // type editor, opening editor, etc.). ⌘/Ctrl + Enter fires Export
+  // so power users can ship a quote without touching the mouse.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.preventDefault()
         onClose()
+        return
+      }
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        // Don't reference handleExport directly — it's redefined on
+        // every render. Synthesise a click on the export button
+        // instead so the handler that's wired through React fires.
+        const btn = document.querySelector<HTMLButtonElement>(
+          'button[data-export-action="export"]'
+        )
+        if (btn && !btn.disabled) btn.click()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -336,6 +348,86 @@ function ExportEstimateModal({
     measurements: true,
     schedules: true,
     disclaimer: true,
+  })
+
+  // Cover-page overrides — per-export only, never mutate ProjectDetails.
+  // Empty strings fall back to ProjectDetails defaults inside the
+  // exporter (projectName → title, etc.). Each field is plain text;
+  // the exporter HTML-escapes before rendering.
+  const [coverTitle, setCoverTitle] = useState('')
+  const [coverSubtitle, setCoverSubtitle] = useState('')
+  const [coverIntro, setCoverIntro] = useState('')
+
+  // Active nav anchor — drives the highlighted state on the left rail.
+  // Click → scroll the corresponding section into view; the
+  // IntersectionObserver below also updates this as the user scrolls
+  // manually through the long body so the rail and content stay
+  // in sync.
+  type NavId = 'cover' | 'sections' | 'areas' | 'quantities' | 'supplies'
+  const [activeNavId, setActiveNavId] = useState<NavId>('cover')
+  const coverSectionRef = useRef<HTMLElement | null>(null)
+  const sectionsSectionRef = useRef<HTMLElement | null>(null)
+  const areasSectionRef = useRef<HTMLElement | null>(null)
+  const quantitiesSectionRef = useRef<HTMLElement | null>(null)
+  const suppliesSectionRef = useRef<HTMLElement | null>(null)
+  const settingsScrollRef = useRef<HTMLDivElement | null>(null)
+  function sectionRefFor(id: NavId) {
+    return id === 'cover'
+      ? coverSectionRef
+      : id === 'sections'
+        ? sectionsSectionRef
+        : id === 'areas'
+          ? areasSectionRef
+          : id === 'quantities'
+            ? quantitiesSectionRef
+            : suppliesSectionRef
+  }
+  function scrollToSection(id: NavId) {
+    setActiveNavId(id)
+    const node = sectionRefFor(id).current
+    if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  // IntersectionObserver — when the user scrolls manually through
+  // the settings column, highlight whichever section's top edge has
+  // most recently entered the upper third of the viewport. Without
+  // this the nav rail stays stuck on whichever item the user last
+  // clicked, which feels broken once they scroll past it.
+  useEffect(() => {
+    const scrollNode = settingsScrollRef.current
+    if (!scrollNode) return
+    const nodes: Array<[NavId, HTMLElement | null]> = [
+      ['cover', coverSectionRef.current],
+      ['sections', sectionsSectionRef.current],
+      ['areas', areasSectionRef.current],
+      ['quantities', quantitiesSectionRef.current],
+      ['supplies', suppliesSectionRef.current],
+    ]
+    const live = nodes.filter((n): n is [NavId, HTMLElement] => !!n[1])
+    if (live.length === 0) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Pick the entry with the highest intersection ratio that's
+        // currently intersecting. Falls back to the topmost visible
+        // section so the rail picks something even when several are
+        // partly on screen.
+        const visible = entries.filter((e) => e.isIntersecting)
+        if (visible.length === 0) return
+        visible.sort((a, b) => b.intersectionRatio - a.intersectionRatio)
+        const top = visible[0]
+        const match = live.find(([, el]) => el === top.target)
+        if (match) setActiveNavId(match[0])
+      },
+      {
+        root: scrollNode,
+        // Top 0% → 50% of viewport. Bias upward so the highlight
+        // matches what the user is reading near the top.
+        rootMargin: '0px 0px -50% 0px',
+        threshold: [0, 0.25, 0.5, 0.75, 1],
+      }
+    )
+    for (const [, el] of live) observer.observe(el)
+    return () => observer.disconnect()
   })
 
   // ── Walls / openings / piers after the area filter ──
@@ -845,6 +937,22 @@ function ExportEstimateModal({
     setError(null)
     const progressId = toast.info('Generating PDF…', { durationMs: null })
     try {
+      // Cover-page overrides — only forwarded when the user actually
+      // entered something. Empty / whitespace-only fields stay
+      // undefined so the exporter's fallback (projectName, site
+      // address, etc.) kicks in instead of stamping a literal "" on
+      // the page.
+      const trimmedCoverTitle = coverTitle.trim()
+      const trimmedCoverSubtitle = coverSubtitle.trim()
+      const trimmedCoverIntro = coverIntro.trim()
+      const coverOverrides =
+        trimmedCoverTitle || trimmedCoverSubtitle || trimmedCoverIntro
+          ? {
+              title: trimmedCoverTitle || undefined,
+              subtitle: trimmedCoverSubtitle || undefined,
+              intro: trimmedCoverIntro || undefined,
+            }
+          : undefined
       const shared = {
         projectDetails,
         referenceNumber: referenceNumber ?? undefined,
@@ -854,6 +962,7 @@ function ExportEstimateModal({
         supplyItemNameOverrides,
         business: business(),
         pdfFile: pdfFile ?? undefined,
+        coverOverrides,
       }
       // Read the 3D view snapshot queue (saved to localStorage by
       // the ▣ Capture button as a JSON array of {id, dataUrl,
@@ -990,6 +1099,59 @@ function ExportEstimateModal({
   // above; there's nothing for the user to pick.
   const showAreaPicker = areas.length > 1
 
+  // Footer quantity summary — Σ for the trades that actually have
+  // walls included after the area filter. Drives the "scope of this
+  // export" line in the footer so the user feels the impact of each
+  // toggle in real time.
+  const summaryStats = useMemo(() => {
+    const totalBlocks = Object.values(blockBaseTally).reduce(
+      (s, n) => s + n,
+      0
+    )
+    const blockArea = blockMetrics.areaSqM
+    const brickArea = brickMetrics.areaSqM
+    const totalLengthM = blockMetrics.lengthM + brickMetrics.lengthM
+    const supplyCount =
+      Object.keys(blockSupplyBaseTally).length +
+      Object.keys(brickSupplyBaseTally).length
+    return {
+      totalBlocks,
+      blockArea,
+      brickArea,
+      totalLengthM,
+      walls: includedWalls.length,
+      openings: blockOpenings.length + brickOpenings.length,
+      supplyCount,
+    }
+  }, [
+    blockBaseTally,
+    blockMetrics,
+    brickMetrics,
+    blockSupplyBaseTally,
+    brickSupplyBaseTally,
+    includedWalls,
+    blockOpenings,
+    brickOpenings,
+  ])
+
+  // Effective cover-page values for the live preview pane — overrides
+  // take priority, fall back to the project details when blank.
+  // Trimmed so a stray space doesn't beat the project name.
+  const previewTitle =
+    coverTitle.trim() ||
+    projectDetails.projectName.trim() ||
+    projectDetails.siteAddress.trim() ||
+    'Untitled project'
+  const previewSubtitle = coverSubtitle.trim()
+  const previewIntro = coverIntro.trim()
+  const previewSubaddress =
+    projectDetails.siteAddress.trim() &&
+    projectDetails.siteAddress.trim() !== previewTitle
+      ? projectDetails.siteAddress.trim()
+      : ''
+  const previewBusiness = business()
+  const previewModeLabel = modeLabel
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -999,270 +1161,663 @@ function ExportEstimateModal({
       aria-label="Export estimate"
     >
       <div
-        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden"
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-7xl max-h-[94vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink-100">
+        {/* Header — wider modal earns a more substantial header.
+            Title sits above a chip row that surfaces the export mode
+            and (when overridden) the cover-page title so the user
+            sees at-a-glance what's about to ship. */}
+        <header className="px-6 py-3.5 border-b border-ink-600 flex items-start justify-between gap-4 bg-ink-900/40">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg font-semibold text-ink-100 leading-tight">
               Export estimate
             </h2>
-            <p className="text-[11px] text-ink-500 mt-0.5">
-              {modeLabel} · sections, quantity adjustments and supply items
-            </p>
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-beme-500/15 border border-beme-500/30 text-[11px] text-beme-300 font-medium">
+                {previewModeLabel}
+              </span>
+              <span className="text-[11px] text-ink-500 truncate">
+                Cover · sections · areas · quantities · supplies
+              </span>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
+            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2 -mt-1"
             aria-label="Close"
           >
             ×
           </button>
         </header>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-          {/*
-           * Top stripe: Areas (when shown) + Sections side-by-side on
-           * md+. These are short selection lists that don't benefit
-           * from full width, so pairing them lets the longer tables
-           * below get the whole modal. Falls back to stacked on narrow
-           * screens. When the area picker is hidden (single-area
-           * project), Sections takes the full width.
-           */}
+        {/* Body — three-column flex: left nav rail / middle settings
+            scroll / right live cover preview. Each pane scrolls
+            independently so a long supply list doesn't push the
+            preview off-screen and the nav rail stays visible while
+            the user works through the settings. */}
+        <div className="flex-1 flex min-h-0">
+
+          {/* LEFT — Section nav rail. Click each to anchor-scroll the
+              middle column to that section. The active item gets a
+              brand-tinted background so the user knows what they're
+              reading even on long projects. */}
+          <nav className="w-48 border-r border-ink-600 bg-ink-900/40 py-4 overflow-y-auto flex-shrink-0 hidden md:block">
+            <SectionNavItem
+              id="cover"
+              label="Cover page"
+              activeId={activeNavId}
+              onClick={scrollToSection}
+            />
+            <SectionNavItem
+              id="sections"
+              label="Sections"
+              activeId={activeNavId}
+              onClick={scrollToSection}
+            />
+            {showAreaPicker && (
+              <SectionNavItem
+                id="areas"
+                label="Areas"
+                activeId={activeNavId}
+                onClick={scrollToSection}
+              />
+            )}
+            {(hasBlockTally || Object.keys(blockAdjustments).length > 0) && (
+              <SectionNavItem
+                id="quantities"
+                label="Quantities"
+                activeId={activeNavId}
+                onClick={scrollToSection}
+              />
+            )}
+            {(hasBlockSupply || hasBrickSupply) && (
+              <SectionNavItem
+                id="supplies"
+                label="Supplies"
+                activeId={activeNavId}
+                onClick={scrollToSection}
+              />
+            )}
+          </nav>
+
+          {/* MIDDLE — Settings column. Each section gets its own ref
+              so the nav rail can anchor-scroll. space-y-8 between
+              sections gives generous breathing room — the wider
+              canvas lets us slow down the vertical density. */}
           <div
-            className={
-              showAreaPicker
-                ? 'grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5'
-                : ''
-            }
+            ref={settingsScrollRef}
+            className="flex-1 overflow-y-auto px-6 py-5 space-y-8 min-w-0"
           >
-          {/* Areas */}
-          {showAreaPicker && (
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
-                Areas
+
+            {/* Cover page editor — title, subtitle, intro. Per-export
+                only; project details stay untouched. Plain text
+                inputs so estimators can paste straight from email
+                without formatting headaches. */}
+            <section ref={coverSectionRef} id="cover">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
+                Cover page
               </h3>
-              <p className="text-[11px] text-ink-500 mb-2 leading-snug">
-                Pick which areas to include. Each area's walls are added
-                to the schedule independently.
+              <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+                Customise the title page for this export. Leave blank
+                to use the project name. Changes don't save back to
+                the project — they're scoped to this PDF only.
               </p>
-              <div className="flex flex-col gap-1 pl-1">
-                {/* Master "All" toggle. Ticked when every individual
-                    area row is selected; flips the whole group when
-                    the user clicks it. Sits above the dividing line
-                    so it reads as a controller for the rows below. */}
-                <label className="flex items-center gap-2 text-sm font-medium text-ink-100 cursor-pointer hover:text-beme-300 pb-1 mb-1 border-b border-ink-700/60">
+              <div className="space-y-2.5">
+                <label className="block">
+                  <span className="block text-[11px] uppercase tracking-wide text-ink-400 mb-1">
+                    Title
+                  </span>
                   <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={toggleAll}
-                    className="accent-beme-500"
+                    type="text"
+                    value={coverTitle}
+                    onChange={(e) => setCoverTitle(e.target.value)}
+                    placeholder={
+                      projectDetails.projectName.trim() ||
+                      projectDetails.siteAddress.trim() ||
+                      'Project title'
+                    }
+                    className="w-full px-3 py-2 rounded-md bg-ink-900 border border-ink-600 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-beme-500"
                   />
-                  <span>All areas</span>
                 </label>
-                {areas.map((a) => (
-                  <label
-                    key={a.id}
-                    className="flex items-center gap-2 text-sm text-ink-200 cursor-pointer hover:text-ink-100"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedAreas.has(a.id)}
-                      onChange={() => toggleArea(a.id)}
-                      className="accent-beme-500"
-                    />
-                    {a.colorHex && (
-                      <span
-                        className="inline-block w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: a.colorHex }}
-                        aria-hidden
-                      />
-                    )}
-                    <span className="flex-1 truncate">{a.name}</span>
-                  </label>
-                ))}
-                {hasUnassignedWalls && (
-                  <label className="flex items-center gap-2 text-sm text-ink-300 cursor-pointer hover:text-ink-100">
-                    <input
-                      type="checkbox"
-                      checked={selectedAreas.has(UNASSIGNED)}
-                      onChange={() => toggleArea(UNASSIGNED)}
-                      className="accent-beme-500"
-                    />
-                    <span className="italic">Unassigned</span>
-                  </label>
-                )}
+                <label className="block">
+                  <span className="block text-[11px] uppercase tracking-wide text-ink-400 mb-1">
+                    Subtitle
+                  </span>
+                  <input
+                    type="text"
+                    value={coverSubtitle}
+                    onChange={(e) => setCoverSubtitle(e.target.value)}
+                    placeholder="e.g. Block + brickwork estimate"
+                    className="w-full px-3 py-2 rounded-md bg-ink-900 border border-ink-600 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-beme-500"
+                  />
+                </label>
+                <label className="block">
+                  <span className="block text-[11px] uppercase tracking-wide text-ink-400 mb-1">
+                    Intro note
+                  </span>
+                  <textarea
+                    value={coverIntro}
+                    onChange={(e) => setCoverIntro(e.target.value)}
+                    placeholder="e.g. Estimate covers ground-floor blockwork only — see attached drawings for scope of brickwork upper floor."
+                    rows={3}
+                    className="w-full px-3 py-2 rounded-md bg-ink-900 border border-ink-600 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-beme-500 resize-y"
+                  />
+                </label>
               </div>
             </section>
-          )}
 
-          {/* Sections */}
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
-              Include in the PDF
-            </h3>
-            <div className="flex flex-col gap-1 pl-1">
-              <SectionToggle
-                label="Assumptions"
-                checked={sections.assumptions}
-                onChange={(v) =>
-                  setSections((s) => ({ ...s, assumptions: v }))
-                }
-              />
-              <SectionToggle
-                label="Wall layout pages"
-                checked={sections.wallLayout}
-                onChange={(v) =>
-                  setSections((s) => ({ ...s, wallLayout: v }))
-                }
-              />
-              <SectionToggle
-                label="Ruler measurements on layout"
-                checked={sections.measurements}
-                onChange={(v) =>
-                  setSections((s) => ({ ...s, measurements: v }))
-                }
-                disabled={!sections.wallLayout}
-                indent
-              />
-              <SectionToggle
-                label="Schedules & breakdowns"
-                checked={sections.schedules}
-                onChange={(v) => setSections((s) => ({ ...s, schedules: v }))}
-              />
-              <SectionToggle
-                label="Disclaimer"
-                checked={sections.disclaimer}
-                onChange={(v) =>
-                  setSections((s) => ({ ...s, disclaimer: v }))
-                }
-              />
-            </div>
-          </section>
-          </div>
-
-          {/* Quantity adjustments — Blocks only. Brick exports now
-              produce lineal- and square-metre outputs, not per-brick
-              counts, so a per-code brick adjustment table doesn't
-              fit the export shape any more. If we add per-area or
-              per-rate brick adjustments later they'll go here as a
-              separate row. */}
-          {(hasBlockTally ||
-            Object.keys(blockAdjustments).length > 0) && (
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
-                Quantity adjustments
+            {/* Sections */}
+            <section ref={sectionsSectionRef} id="sections">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
+                Include in the PDF
               </h3>
               <p className="text-[11px] text-ink-500 mb-3 leading-snug">
-                Each row shows the auto-tally quantity. Hit Edit to
-                override it with a different number — useful when you
-                want fewer (blocks on site, reused from another job)
-                or more (extras for breakage, future work). Use the
-                "+ Add" button to include a code that isn't on the
-                plan at all. Tallies respect the area filter above —
-                untick areas to remove their blocks from the count.
+                Pages to include. Skip the assumptions or disclaimer
+                for quick internal-only exports; keep them on for
+                anything going to the customer.
               </p>
-              {hasBlockTally && (
-                <AdjustmentsTable
-                  label="Blocks"
-                  baseTally={blockBaseTally}
-                  adjustments={blockAdjustments}
-                  onSetAdjustment={setBlockAdj}
-                  describe={blockLabel}
-                  availableCodes={blockPickerOptions}
-                  addLabel="Add block"
+              <div className="flex flex-col gap-1 pl-1">
+                <SectionToggle
+                  label="Assumptions"
+                  checked={sections.assumptions}
+                  onChange={(v) =>
+                    setSections((s) => ({ ...s, assumptions: v }))
+                  }
                 />
-              )}
+                <SectionToggle
+                  label="Wall layout pages"
+                  checked={sections.wallLayout}
+                  onChange={(v) =>
+                    setSections((s) => ({ ...s, wallLayout: v }))
+                  }
+                />
+                <SectionToggle
+                  label="Ruler measurements on layout"
+                  checked={sections.measurements}
+                  onChange={(v) =>
+                    setSections((s) => ({ ...s, measurements: v }))
+                  }
+                  disabled={!sections.wallLayout}
+                  indent
+                />
+                <SectionToggle
+                  label="Schedules & breakdowns"
+                  checked={sections.schedules}
+                  onChange={(v) =>
+                    setSections((s) => ({ ...s, schedules: v }))
+                  }
+                />
+                <SectionToggle
+                  label="Disclaimer"
+                  checked={sections.disclaimer}
+                  onChange={(v) =>
+                    setSections((s) => ({ ...s, disclaimer: v }))
+                  }
+                />
+              </div>
             </section>
-          )}
 
-          {/* Supply items — same table UX as blocks/bricks but driven
-              by the user's Material library. Each trade's rates × the
-              trade's own metrics produce the auto-tally; the user can
-              edit any row to override the final qty for THIS export
-              only (no library mutation), or add a supply that the
-              auto-tally currently shows as zero. The supply rates
-              themselves are still owned by the Material library —
-              this is purely a per-export quantity adjustment surface. */}
-          {(hasBlockSupply || hasBrickSupply) && (
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
-                Supply items
-              </h3>
-              <p className="text-[11px] text-ink-500 mb-3 leading-snug">
-                Auto-calculated from your Material-library rates and the
-                walls included above. Hit Edit to override a quantity
-                for this export (e.g. fewer cement bags because some
-                are already on site, or extra ties for breakage). The
-                library rates themselves stay untouched.
-              </p>
-              {hasBlockSupply && (
-                <AdjustmentsTable
-                  label="Block supplies"
-                  baseTally={blockSupplyBaseTally}
-                  adjustments={blockSupplyAdjustments}
-                  onSetAdjustment={setSupplyAdj}
-                  describe={describeSupply}
-                  availableCodes={blockSupplyPickerOptions}
-                  addLabel="Add supply item"
-                  hideCode
-                  groupBy={categoryForSupply}
-                  nameOverrides={supplyItemNameOverrides}
-                  onSetNameOverride={setSupplyName}
-                />
-              )}
-              {hasBrickSupply && (
-                <div className={hasBlockSupply ? 'mt-3' : ''}>
+            {/* Areas */}
+            {showAreaPicker && (
+              <section ref={areasSectionRef} id="areas">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
+                  Areas
+                </h3>
+                <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+                  Pick which areas to include. Each area's walls are
+                  added to the schedule independently.
+                </p>
+                <div className="flex flex-col gap-1 pl-1">
+                  <label className="flex items-center gap-2 text-sm font-medium text-ink-100 cursor-pointer hover:text-beme-300 pb-1 mb-1 border-b border-ink-700/60">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      className="accent-beme-500"
+                    />
+                    <span>All areas</span>
+                  </label>
+                  {areas.map((a) => (
+                    <label
+                      key={a.id}
+                      className="flex items-center gap-2 text-sm text-ink-200 cursor-pointer hover:text-ink-100"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedAreas.has(a.id)}
+                        onChange={() => toggleArea(a.id)}
+                        className="accent-beme-500"
+                      />
+                      {a.colorHex && (
+                        <span
+                          className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: a.colorHex }}
+                          aria-hidden
+                        />
+                      )}
+                      <span className="flex-1 truncate">{a.name}</span>
+                    </label>
+                  ))}
+                  {hasUnassignedWalls && (
+                    <label className="flex items-center gap-2 text-sm text-ink-300 cursor-pointer hover:text-ink-100">
+                      <input
+                        type="checkbox"
+                        checked={selectedAreas.has(UNASSIGNED)}
+                        onChange={() => toggleArea(UNASSIGNED)}
+                        className="accent-beme-500"
+                      />
+                      <span className="italic">Unassigned</span>
+                    </label>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* Quantity adjustments — Blocks only. */}
+            {(hasBlockTally || Object.keys(blockAdjustments).length > 0) && (
+              <section ref={quantitiesSectionRef} id="quantities">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
+                  Quantity adjustments
+                </h3>
+                <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+                  Each row shows the auto-tally quantity. Hit Edit to
+                  override it with a different number — useful when
+                  you want fewer (blocks on site, reused from another
+                  job) or more (extras for breakage, future work). Use
+                  the "+ Add" button to include a code that isn't on
+                  the plan at all. Tallies respect the area filter
+                  above — untick areas to remove their blocks from
+                  the count.
+                </p>
+                {hasBlockTally && (
                   <AdjustmentsTable
-                    label="Brick supplies"
-                    baseTally={brickSupplyBaseTally}
-                    adjustments={brickSupplyAdjustments}
+                    label="Blocks"
+                    baseTally={blockBaseTally}
+                    adjustments={blockAdjustments}
+                    onSetAdjustment={setBlockAdj}
+                    describe={blockLabel}
+                    availableCodes={blockPickerOptions}
+                    addLabel="Add block"
+                  />
+                )}
+              </section>
+            )}
+
+            {/* Supply items */}
+            {(hasBlockSupply || hasBrickSupply) && (
+              <section ref={suppliesSectionRef} id="supplies">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
+                  Supply items
+                </h3>
+                <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+                  Auto-calculated from your Material-library rates and
+                  the walls included above. Hit Edit to override a
+                  quantity for this export (e.g. fewer cement bags
+                  because some are already on site, or extra ties for
+                  breakage). The library rates themselves stay
+                  untouched.
+                </p>
+                {hasBlockSupply && (
+                  <AdjustmentsTable
+                    label="Block supplies"
+                    baseTally={blockSupplyBaseTally}
+                    adjustments={blockSupplyAdjustments}
                     onSetAdjustment={setSupplyAdj}
                     describe={describeSupply}
-                    availableCodes={brickSupplyPickerOptions}
+                    availableCodes={blockSupplyPickerOptions}
                     addLabel="Add supply item"
                     hideCode
                     groupBy={categoryForSupply}
                     nameOverrides={supplyItemNameOverrides}
                     onSetNameOverride={setSupplyName}
                   />
-                </div>
-              )}
-            </section>
-          )}
+                )}
+                {hasBrickSupply && (
+                  <div className={hasBlockSupply ? 'mt-3' : ''}>
+                    <AdjustmentsTable
+                      label="Brick supplies"
+                      baseTally={brickSupplyBaseTally}
+                      adjustments={brickSupplyAdjustments}
+                      onSetAdjustment={setSupplyAdj}
+                      describe={describeSupply}
+                      availableCodes={brickSupplyPickerOptions}
+                      addLabel="Add supply item"
+                      hideCode
+                      groupBy={categoryForSupply}
+                      nameOverrides={supplyItemNameOverrides}
+                      onSetNameOverride={setSupplyName}
+                    />
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* Trailing whitespace so the last section can scroll all
+                the way to the top of the viewport — without this,
+                "Supplies" can only reach mid-screen before bottoming
+                out and the nav rail's active state stops tracking. */}
+            <div className="h-32" aria-hidden />
+          </div>
+
+          {/* RIGHT — Live cover-page preview. Sticky on lg+; hidden
+              on narrow viewports. Updates as the user types in the
+              cover section. Renders a faithful mini-cover with
+              brand block, title, subtitle, project meta, intro.
+              Wider than a portrait pane so the landscape preview has
+              room to breathe — at w-[28rem] the mini comes out at
+              ~316px tall, comfortable to read without dominating
+              the modal. */}
+          <aside className="w-[28rem] border-l border-ink-600 bg-ink-900/40 overflow-y-auto flex-shrink-0 hidden lg:block">
+            <div className="p-5">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-500 mb-2">
+                Cover preview
+              </div>
+              <CoverPagePreview
+                title={previewTitle}
+                subtitle={previewSubtitle}
+                intro={previewIntro}
+                siteAddress={previewSubaddress}
+                clientName={projectDetails.clientName.trim()}
+                date={projectDetails.date}
+                referenceNumber={referenceNumber ?? null}
+                business={previewBusiness}
+                modeLabel={previewModeLabel}
+              />
+              <p className="text-[10px] text-ink-500 mt-3 leading-snug">
+                Final PDF uses your settings letterhead and exact
+                fonts. Layout above is a faithful mini — proportions
+                won't change.
+              </p>
+            </div>
+          </aside>
         </div>
 
-        {/* Footer */}
-        <footer className="px-5 py-3 border-t border-ink-600 bg-ink-900/40 flex items-center justify-between gap-3">
-          {error ? (
-            <p className="text-[11px] text-rose-300 leading-snug flex-1 min-w-0">
-              {error}
-            </p>
-          ) : (
-            <p className="text-[11px] text-ink-500 leading-snug flex-1 min-w-0">
-              {canExport
-                ? 'Print to PDF from the preview that opens.'
-                : 'Tick at least one area with walls to enable export.'}
-            </p>
-          )}
+        {/* Footer — beefier than before. Left side carries the live
+            quantity summary so the user feels the scope of the
+            current export as they toggle areas and sections. Right
+            side: ghost Cancel + a primary Export button that's
+            sized to look like the deliverable's "go" button, with a
+            ⌘⏎ chip for the keyboard shortcut. */}
+        <footer className="px-6 py-3 border-t border-ink-600 bg-ink-900/40 flex items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            {error ? (
+              <p className="text-xs text-rose-300 leading-snug">
+                {error}
+              </p>
+            ) : !canExport ? (
+              <p className="text-xs text-ink-400 leading-snug">
+                Tick at least one area with walls to enable export.
+              </p>
+            ) : (
+              <div className="flex items-center gap-3 flex-wrap text-xs tabular-nums">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="text-ink-500">Walls</span>
+                  <span className="text-ink-100 font-semibold">
+                    {summaryStats.walls}
+                  </span>
+                </span>
+                {summaryStats.totalBlocks > 0 && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="text-ink-500">Blocks</span>
+                    <span className="text-ink-100 font-semibold">
+                      {summaryStats.totalBlocks.toLocaleString()}
+                    </span>
+                  </span>
+                )}
+                {(summaryStats.blockArea > 0 || summaryStats.brickArea > 0) && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="text-ink-500">m²</span>
+                    <span className="text-ink-100 font-semibold">
+                      {(summaryStats.blockArea + summaryStats.brickArea).toFixed(2)}
+                    </span>
+                  </span>
+                )}
+                {summaryStats.totalLengthM > 0 && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="text-ink-500">Run</span>
+                    <span className="text-ink-100 font-semibold">
+                      {summaryStats.totalLengthM.toFixed(2)} m
+                    </span>
+                  </span>
+                )}
+                {summaryStats.openings > 0 && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="text-ink-500">Openings</span>
+                    <span className="text-ink-100 font-semibold">
+                      {summaryStats.openings}
+                    </span>
+                  </span>
+                )}
+                {summaryStats.supplyCount > 0 && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="text-ink-500">Supplies</span>
+                    <span className="text-ink-100 font-semibold">
+                      {summaryStats.supplyCount}
+                    </span>
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
+            className="px-4 py-2 rounded-lg text-ink-300 text-sm hover:text-ink-100 hover:bg-ink-700/60 transition-colors flex-shrink-0"
           >
             Cancel
           </button>
           <button
             onClick={handleExport}
             disabled={busy || !canExport}
-            className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            data-export-action="export"
+            className="px-5 py-2 rounded-lg bg-beme-500 text-black text-base font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2 flex-shrink-0 shadow-lg shadow-beme-500/20"
           >
-            {busy ? 'Opening preview…' : 'Export'}
+            <span>{busy ? 'Opening preview…' : 'Export'}</span>
+            {!busy && (
+              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-black/15 text-[10px] font-mono">
+                ⌘⏎
+              </kbd>
+            )}
           </button>
         </footer>
       </div>
     </div>
+  )
+}
+
+// ─── Internal: cover-page preview ──────────────────────────────────
+
+/**
+ * Faithful mini of the cover page that the export will render. Used
+ * inside the export modal's right pane so the user sees their cover
+ * changes (title, subtitle, intro) land before they hit Export.
+ *
+ * Stays proportionally similar to the real cover (brand block top,
+ * big title + subtitle, meta strip, intro paragraph) but scaled to
+ * fit the modal column. We deliberately don't iframe / SSR the actual
+ * exporter HTML — that would mean spinning up react-pdf or rendering
+ * a hidden full-page document just to grab a thumbnail. The mini
+ * tracks the cover content one-to-one and that's enough to validate
+ * "yes this is the version I want to send".
+ */
+function CoverPagePreview({
+  title,
+  subtitle,
+  intro,
+  siteAddress,
+  clientName,
+  date,
+  referenceNumber,
+  business,
+  modeLabel,
+}: {
+  title: string
+  subtitle: string
+  intro: string
+  siteAddress: string
+  clientName: string
+  date: string | undefined
+  referenceNumber: number | null
+  business: { companyName?: string; logoUrl?: string }
+  modeLabel: string
+}) {
+  // 1:√2 portrait aspect (A-series proportions, what a real PDF page
+  // looks like). Width is 100% of the container, height derives from
+  // aspect so the preview always feels like an actual sheet of paper.
+  const formattedDate = date
+    ? new Date(date).toLocaleDateString('en-AU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : ''
+  return (
+    <div
+      className="bg-white text-ink-900 rounded-md shadow-2xl shadow-black/40 overflow-hidden border border-ink-600 flex flex-col"
+      // A4 landscape — √2 : 1 aspect. Matches `@page { size: A4
+      // landscape }` in the exporter so the preview matches what
+      // prints, not the legacy portrait shape.
+      style={{ aspectRatio: '1.414 / 1' }}
+    >
+      {/* Letterhead strip — mirrors the real cover's brand block. */}
+      <div className="px-5 pt-4 pb-2.5 border-b border-stone-200 flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          {business?.logoUrl ? (
+            // Logo as the brand mark when set — matches exporter rule.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={business.logoUrl}
+              alt={business.companyName ?? 'Brand'}
+              className="max-h-7 max-w-full object-contain"
+            />
+          ) : business?.companyName ? (
+            <div className="text-[11px] font-bold tracking-wide text-stone-800 truncate">
+              {business.companyName}
+            </div>
+          ) : (
+            <div className="text-[11px] font-bold tracking-wide text-stone-800">
+              beme
+            </div>
+          )}
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-[8px] uppercase tracking-[0.14em] text-stone-500">
+            {modeLabel}
+          </div>
+          {typeof referenceNumber === 'number' && (
+            <div className="text-[8px] text-stone-500 mt-0.5 font-mono">
+              #{String(referenceNumber).padStart(6, '0')}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Body — two-column landscape layout. Title block on the
+          left half (eats up the broad horizontal canvas with a
+          larger headline), meta block on the right half. Intro
+          paragraph spans full width below if set. */}
+      <div className="flex-1 px-5 py-3 flex flex-col min-h-0">
+        <div className="flex gap-5 mt-1">
+          <div className="flex-[3] min-w-0">
+            <div className="text-[8px] uppercase tracking-[0.14em] text-stone-500 font-semibold mb-1">
+              {modeLabel}
+            </div>
+            <h1 className="text-[15px] font-extrabold leading-tight tracking-tight text-stone-900 break-words">
+              {title}
+            </h1>
+            {subtitle && (
+              <p className="text-[10px] text-stone-600 mt-1.5 leading-snug break-words">
+                {subtitle}
+              </p>
+            )}
+          </div>
+          <div className="flex-[2] min-w-0 border-l border-stone-200 pl-4">
+            <dl className="space-y-1.5 text-[8px]">
+              {siteAddress && (
+                <div>
+                  <dt className="uppercase tracking-wide text-stone-500">
+                    Site
+                  </dt>
+                  <dd className="text-stone-800 font-medium break-words leading-snug">
+                    {siteAddress}
+                  </dd>
+                </div>
+              )}
+              {clientName && (
+                <div>
+                  <dt className="uppercase tracking-wide text-stone-500">
+                    Client
+                  </dt>
+                  <dd className="text-stone-800 font-medium break-words leading-snug">
+                    {clientName}
+                  </dd>
+                </div>
+              )}
+              {formattedDate && (
+                <div>
+                  <dt className="uppercase tracking-wide text-stone-500">
+                    Date
+                  </dt>
+                  <dd className="text-stone-800 font-medium leading-snug">
+                    {formattedDate}
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        </div>
+
+        {/* Intro paragraph spans the full width — landscape gives us
+            ~22cm of typing room, perfect for a single readable line
+            of body text instead of the cramped narrow column the
+            portrait layout had. */}
+        {intro && (
+          <div className="mt-3 pt-3 border-t border-stone-200 flex-1 min-h-0 overflow-hidden">
+            <p className="text-[8px] text-stone-700 leading-relaxed whitespace-pre-wrap break-words">
+              {intro}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Faux footer — reads as "PDF page furniture" so the preview
+          settles as a real document, not just floating content. */}
+      <div className="px-5 py-1.5 border-t border-stone-200 text-[7px] text-stone-400 flex items-center justify-between">
+        <span>Page 1</span>
+        {business?.companyName && (
+          <span className="truncate ml-2">{business.companyName}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Internal: section nav item ────────────────────────────────────
+
+function SectionNavItem({
+  id,
+  label,
+  activeId,
+  onClick,
+}: {
+  id: 'cover' | 'sections' | 'areas' | 'quantities' | 'supplies'
+  label: string
+  activeId: string
+  onClick: (id: 'cover' | 'sections' | 'areas' | 'quantities' | 'supplies') => void
+}) {
+  const active = activeId === id
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(id)}
+      className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+        active
+          ? 'bg-beme-500/15 text-beme-300 border-l-2 border-beme-500'
+          : 'text-ink-300 hover:text-ink-100 hover:bg-ink-700/40 border-l-2 border-transparent'
+      }`}
+    >
+      {label}
+    </button>
   )
 }
 

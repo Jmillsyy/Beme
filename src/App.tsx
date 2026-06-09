@@ -17,6 +17,7 @@ import ConfirmHost from './components/ConfirmHost'
 import KeyboardCheatSheet from './components/KeyboardCheatSheet'
 import CommandPalette from './components/CommandPalette'
 import HelpFloatingButton from './components/HelpFloatingButton'
+import BemeLoader from './components/BemeLoader'
 
 /**
  * Routes that are reachable WITHOUT being signed in. Accept-invite is
@@ -37,7 +38,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-ink-900 text-ink-300 flex items-center justify-center">
-        <p className="text-sm">Loading…</p>
+        <BemeLoader />
       </div>
     )
   }

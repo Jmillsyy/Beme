@@ -125,29 +125,31 @@ const BAND_COLOR_PALETTE_SLATE: string[] = [
   'hsl(212, 16%, 66%)', // 16 pale blue
 ]
 
-/** Vibrant — pulls the same hand-tuned bright tones used by the wall
- *  type swatches in the side panels (WALL_TYPE_PALETTE in
- *  wallTypeColors.ts), then extends with 6 more in the same family so
- *  there's a full 16 slots for distinct block / brick codes. Reads as
- *  "colour-coded diagram" rather than realistic masonry — useful when
- *  the user wants to see every code as a distinct hue. */
+/** Vibrant — saturated, varied tones across the full hue wheel for
+ *  maximum visual distinction between codes. Modelled after the
+ *  takeoff-diagram style used by The Brick Counter et al — every
+ *  code reads as a distinct, bold hue so you can scan a 3D model
+ *  and see "that wall type is the red one" instantly. Reads as
+ *  "colour-coded diagram" rather than realistic masonry. Default
+ *  palette for the 3D view because the diagrammatic clarity beats
+ *  realism for an estimating tool. */
 const BAND_COLOR_PALETTE_VIBRANT: string[] = [
-  '#ED7D31', // 1  brand orange
-  '#3B82F6', // 2  blue
-  '#10B981', // 3  emerald
-  '#A855F7', // 4  purple
-  '#F59E0B', // 5  amber
-  '#EC4899', // 6  pink
-  '#14B8A6', // 7  teal
-  '#84CC16', // 8  lime
-  '#EF4444', // 9  red
-  '#6366F1', // 10 indigo
-  '#06B6D4', // 11 cyan
-  '#F97316', // 12 deep orange
-  '#8B5CF6', // 13 violet
-  '#22C55E', // 14 green
-  '#F43F5E', // 15 rose
-  '#0EA5E9', // 16 sky blue
+  '#E53935', // 1  bright red
+  '#26C6DA', // 2  cyan
+  '#FFB300', // 3  amber / mustard
+  '#7CB342', // 4  lime green
+  '#EC407A', // 5  magenta-pink
+  '#5E35B1', // 6  deep purple
+  '#FB8C00', // 7  vivid orange
+  '#1E88E5', // 8  royal blue
+  '#43A047', // 9  green
+  '#8E24AA', // 10 violet
+  '#FDD835', // 11 yellow
+  '#00ACC1', // 12 teal
+  '#F06292', // 13 pink
+  '#3949AB', // 14 indigo
+  '#6D4C41', // 15 chocolate brown
+  '#C0CA33', // 16 olive
 ]
 
 /** Palette-name → 16-slot palette lookup. Default 'concrete' for
@@ -193,39 +195,43 @@ function hashCode(code: string): number {
  * slot (about 1-in-16 chance). Use for scopes where multiple codes
  * don't need to be visually distinct from each other.
  */
-export function bandColor(code: string, palette: PaletteName = 'concrete'): string {
+export function bandColor(code: string, palette: PaletteName = 'vibrant'): string {
   const slots = BAND_COLOR_PALETTES[palette] ?? BAND_COLOR_PALETTE
   return slots[hashCode(code) % slots.length]
 }
 
 /**
- * Collision-free colour map for a known set of codes.
+ * Pure hash → colour map for a known set of codes.
  *
- * Sorts the unique codes alphabetically (stable across re-renders),
- * then for each code seeds at the hash's preferred slot and walks
- * forward through the palette until it finds an unused slot. So:
- *   - codes added independently still tend to land on their "natural"
- *     hue (so the visual identity stays familiar);
- *   - no two codes in the input set ever share a slot, until the
- *     input exceeds the palette size — after which slots wrap and
- *     can repeat (rare in practice for a single project).
+ * Every code lands on its hash-derived palette slot — the same slot
+ * it would land on in any other project. So `20.48` is always red,
+ * `20.01` is always royal blue, etc., regardless of which other
+ * codes are present. The cross-project consistency lets you scan
+ * any 3D view and recognise "the body block by colour" without
+ * having to check the legend each time.
+ *
+ * Trade-off: when two codes happen to hash to the same slot, both
+ * will share that colour within the project. With 16 slots and a
+ * typical project carrying 5-10 distinct codes the collision chance
+ * is small (~1-in-16 per code added beyond the first). When it
+ * happens, the legend still disambiguates them by name — the colour
+ * just isn't unique inside that one project.
+ *
+ * The previous behaviour (walk-forward collision avoidance) gave
+ * uniqueness within a project but meant a code's colour depended on
+ * which other codes were present alongside it — so the same code
+ * could be different colours in different projects. Tradies asked
+ * for the colour identity to be PER-CODE, not per-project.
  */
 export function buildBlockColorMap(
   codes: string[],
-  palette: PaletteName = 'concrete'
+  palette: PaletteName = 'vibrant'
 ): Map<string, string> {
   const slots = BAND_COLOR_PALETTES[palette] ?? BAND_COLOR_PALETTE
-  const unique = Array.from(new Set(codes.filter(Boolean))).sort()
-  const taken = new Set<number>()
+  const unique = Array.from(new Set(codes.filter(Boolean)))
   const map = new Map<string, string>()
   for (const code of unique) {
-    let idx = hashCode(code) % slots.length
-    let attempts = 0
-    while (taken.has(idx) && attempts < slots.length) {
-      idx = (idx + 1) % slots.length
-      attempts++
-    }
-    taken.add(idx)
+    const idx = hashCode(code) % slots.length
     map.set(code, slots[idx])
   }
   return map

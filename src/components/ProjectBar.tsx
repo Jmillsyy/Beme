@@ -102,6 +102,27 @@ export default function ProjectBar({
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
+  // Brief celebratory "just saved" state. We watch lastSavedAt for a
+  // change to a new non-null value — that's the most reliable signal
+  // that a save actually succeeded (as opposed to isSaving going
+  // false because the request errored out, which we don't want to
+  // celebrate). On detection we flip justSaved to true, render a
+  // green-pulse pill with a checkmark, then clear it 1.5s later so
+  // the bar settles back into its neutral "Saved · 2m ago" timestamp
+  // state. First render is a no-op: useRef seeds prev = lastSavedAt
+  // so re-mounting on an already-saved project doesn't fire the
+  // celebration.
+  const prevLastSavedAt = useRef<string | null>(lastSavedAt)
+  const [justSaved, setJustSaved] = useState(false)
+  useEffect(() => {
+    const prev = prevLastSavedAt.current
+    prevLastSavedAt.current = lastSavedAt
+    if (!lastSavedAt || lastSavedAt === prev) return
+    setJustSaved(true)
+    const timeout = setTimeout(() => setJustSaved(false), 1500)
+    return () => clearTimeout(timeout)
+  }, [lastSavedAt])
+
   // Close the menu on outside click / Escape
   useEffect(() => {
     if (!menuOpen) return
@@ -218,10 +239,12 @@ export default function ProjectBar({
             "Saved Xm ago" while the in-flight save is happening. */}
         {(isSaving || lastSavedAt) && (
           <span
-            className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] ${
+            className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-colors duration-300 ${
               isSaving
                 ? 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
-                : 'text-ink-400 border border-transparent'
+                : justSaved
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40'
+                  : 'text-ink-400 border border-transparent'
             }`}
             aria-live="polite"
           >
@@ -231,11 +254,32 @@ export default function ProjectBar({
                 aria-hidden
               />
             )}
+            {!isSaving && justSaved && (
+              // Animated checkmark — draws in over 350ms with a slight
+              // scale pop so it reads as a beat of confirmation rather
+              // than a static glyph that was always there.
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="beme-check-pop"
+                aria-hidden
+              >
+                <path d="M3 8.5 L7 12.5 L13.5 4" />
+              </svg>
+            )}
             {isSaving
               ? 'Saving…'
-              : lastSavedAt
-                ? `Saved · ${formatRelativeTime(lastSavedAt)}`
-                : null}
+              : justSaved
+                ? 'Saved'
+                : lastSavedAt
+                  ? `Saved · ${formatRelativeTime(lastSavedAt)}`
+                  : null}
           </span>
         )}
         <button

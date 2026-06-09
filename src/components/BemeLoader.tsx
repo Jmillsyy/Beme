@@ -1,0 +1,50 @@
+import BemeMark from './BemeMark'
+
+/**
+ * Brand-aware loading indicator.
+ *
+ * Renders the Beme square mark via the canonical {@link BemeMark} SVG
+ * and gives it the stop-and-start spin defined in index.css. The logo
+ * makes a single crisp 360° rotation, holds still for a beat, then
+ * goes again. Reads as "the app is working on something" with brand
+ * identity instead of a generic circular spinner.
+ *
+ * Geometry comes straight from the favicon SVG via BemeMark, so the
+ * loader's mark is pixel-perfectly aligned at every size — no more
+ * approximated inset math giving a subtly off-centre inner square.
+ *
+ * Size and caption are configurable. The caption sits below the mark
+ * in muted ink-300; pass `caption={null}` to suppress it.
+ */
+export default function BemeLoader({
+  size = 48,
+  caption = 'Loading…',
+  className = '',
+}: {
+  /** Logo edge length in px. Default 48 for general-purpose loading
+   *  screens. Drop to 24-32 for inline pill-style loaders. */
+  size?: number
+  /** Text shown under the logo. Pass `null` to render just the logo. */
+  caption?: string | null
+  /** Extra Tailwind on the outer wrapper if you need to tweak spacing
+   *  or alignment from the call site. */
+  className?: string
+}) {
+  return (
+    <div
+      className={`inline-flex flex-col items-center gap-3 ${className}`}
+      role="status"
+      aria-live="polite"
+    >
+      {/* `text-beme-500` drives the BemeMark's outer fill via
+          currentColor; the `beme-spin-stop` class on the same element
+          carries the keyframe animation. */}
+      <span className="beme-spin-stop inline-block text-beme-500">
+        <BemeMark size={size} />
+      </span>
+      {caption && (
+        <span className="text-sm text-ink-300 select-none">{caption}</span>
+      )}
+    </div>
+  )
+}

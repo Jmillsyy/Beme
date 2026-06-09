@@ -70,6 +70,24 @@ export interface BrickTally {
    */
   sillLinealMmByType: Record<string, number>
   /**
+   * Lineal MILLIMETRES of head course needed, keyed by MAKEUP id
+   * (wall type) rather than by brick code. Drives the per-wall-type
+   * breakdown table in the export — the brick-code variant above
+   * pools across makeups that share a head brick, which is the right
+   * shape for ordering bricks but not for showing the estimator the
+   * head lineals each wall type contributes.
+   *
+   * Populated only when the makeup carries a headBrickCode (otherwise
+   * the wall type has no head course to report).
+   */
+  headLinealMmByMakeup: Record<string, number>
+  /**
+   * Lineal MILLIMETRES of sill course needed, keyed by MAKEUP id.
+   * Windows only (doors excluded — same rule as sillLinealMmByType).
+   * Populated only when the makeup carries a sillBrickCode.
+   */
+  sillLinealMmByMakeup: Record<string, number>
+  /**
    * Lineal MILLIMETRES of "course substitute" — courses on a wall
    * whose courseRanges nominates a brick type different from the
    * wall's main brickTypeCode. Sum across all such courses on
@@ -490,6 +508,8 @@ export function calculateBrickTally(
   // to subtract from.
   const headLinealMmByType: Record<string, number> = {}
   const sillLinealMmByType: Record<string, number> = {}
+  const headLinealMmByMakeup: Record<string, number> = {}
+  const sillLinealMmByMakeup: Record<string, number> = {}
   const courseSubstituteLinealMmByType: Record<string, number> = {}
   const DEFAULT_TRIM_OVERHANG_MM = 100
   const wallByIdLocal = new Map<string, Wall>()
@@ -516,11 +536,24 @@ export function calculateBrickTally(
     if (makeup.sillBrickCode && !isDoor) {
       const code = makeup.sillBrickCode
       sillLinealMmByType[code] = (sillLinealMmByType[code] ?? 0) + trimSpanMm
+      // Per-makeup mirror — drives the per-wall-type breakdown in the
+      // export. Same gate as the per-code path: only count when the
+      // makeup actually carries a sill brick and the opening isn't a
+      // door. Without the same gate, the per-makeup total would
+      // diverge from the per-code total downstream.
+      if (wall.makeupId) {
+        sillLinealMmByMakeup[wall.makeupId] =
+          (sillLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
+      }
     }
     // Head — doors AND windows.
     if (makeup.headBrickCode) {
       const code = makeup.headBrickCode
       headLinealMmByType[code] = (headLinealMmByType[code] ?? 0) + trimSpanMm
+      if (wall.makeupId) {
+        headLinealMmByMakeup[wall.makeupId] =
+          (headLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
+      }
     }
   }
 
@@ -653,6 +686,8 @@ export function calculateBrickTally(
     bricksByType: finalBricksByType,
     headLinealMmByType,
     sillLinealMmByType,
+    headLinealMmByMakeup,
+    sillLinealMmByMakeup,
     courseSubstituteLinealMmByType,
     byMakeup,
   }

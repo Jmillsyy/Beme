@@ -5623,7 +5623,7 @@ function snapshotsStorageKey(
 /** Read the persisted block-colour palette from localStorage, falling
  *  back to 'concrete' (the original masonry-grey set). */
 function loadPalette(): PaletteName {
-  if (typeof window === 'undefined') return 'concrete'
+  if (typeof window === 'undefined') return 'vibrant'
   const v = window.localStorage.getItem(PALETTE_STORAGE_KEY)
   if (
     v === 'concrete' ||
@@ -5634,7 +5634,7 @@ function loadPalette(): PaletteName {
   ) {
     return v
   }
-  return 'concrete'
+  return 'vibrant'
 }
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
@@ -6047,6 +6047,34 @@ function ManualResizeCanvas({
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    // Shared measure-and-commit so the ResizeObserver, window-resize,
+    // and transition-end paths all produce identical updates.
+    const measureAndCommit = () => {
+      const rect = el.getBoundingClientRect()
+      const w = Math.round(rect.width)
+      const h = Math.round(rect.height)
+      if (w === 0 || h === 0) return
+      setSize((prev) =>
+        prev.width === w && prev.height === h ? prev : { width: w, height: h }
+      )
+    }
+    // Schedule a follow-up measure after CSS transitions land. The
+    // LeftNav toggle animates its width over 200ms; r3f's internal
+    // useMeasure races with our ResizeObserver during the
+    // transition and the LAST observation to fire wins the gl size.
+    // Half the time r3f's stale intermediate reading lands last and
+    // the canvas freezes at a sub-final size. Re-measuring ~280ms
+    // after any size change (slightly past the 200ms transition end)
+    // guarantees we apply the FINAL post-transition dimensions even
+    // if r3f overrode us mid-flight.
+    let trailingTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleTrailingMeasure = () => {
+      if (trailingTimer !== null) clearTimeout(trailingTimer)
+      trailingTimer = setTimeout(() => {
+        trailingTimer = null
+        measureAndCommit()
+      }, 280)
+    }
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = Math.round(entry.contentRect.width)
@@ -6059,15 +6087,49 @@ function ManualResizeCanvas({
           prev.width === w && prev.height === h ? prev : { width: w, height: h }
         )
       }
+      scheduleTrailingMeasure()
     })
     observer.observe(el)
+    // Window-resize fallback. ResizeObserver SHOULD fire on every
+    // size change, but in practice — especially when this layout
+    // sits inside an html-zoom container with a sticky flex parent
+    // — some browser resize gestures (drag-resize, devtools open /
+    // close, zoom via Ctrl+/-) leave the observer silent while the
+    // wrapper IS actually re-sizing. Re-measure on window resize as
+    // a belt-and-braces fallback so the canvas always tracks the
+    // viewport. requestAnimationFrame defers the read past the
+    // browser's layout pass so we read the post-resize dimensions
+    // not the pre-resize ones.
+    let rafId = 0
+    const onWindowResize = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        measureAndCommit()
+        scheduleTrailingMeasure()
+      })
+    }
+    window.addEventListener('resize', onWindowResize)
+    // Catch CSS width / height transitions completing anywhere in
+    // the ancestor chain — the LeftNav toggle is the main culprit,
+    // but any future animated panel that affects this column will
+    // also trigger a re-measure. We listen at the wrapper so events
+    // bubbling up from nested elements still reach us.
+    const onTransitionEnd = (e: TransitionEvent) => {
+      if (e.propertyName === 'width' || e.propertyName === 'height') {
+        measureAndCommit()
+      }
+    }
+    window.addEventListener('transitionend', onTransitionEnd)
     // Seed synchronously so the canvas mounts on the first render
     // cycle (ResizeObserver only fires on the NEXT frame).
-    const rect = el.getBoundingClientRect()
-    if (rect.width > 0 && rect.height > 0) {
-      setSize({ width: Math.round(rect.width), height: Math.round(rect.height) })
+    measureAndCommit()
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', onWindowResize)
+      window.removeEventListener('transitionend', onTransitionEnd)
+      cancelAnimationFrame(rafId)
+      if (trailingTimer !== null) clearTimeout(trailingTimer)
     }
-    return () => observer.disconnect()
   }, [])
 
   // Drive gl.setSize manually on every size change. Bypasses r3f's

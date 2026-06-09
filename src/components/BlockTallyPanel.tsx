@@ -5,6 +5,7 @@ import { BLOCK_LIBRARY, useBlockLibrary } from '../data/blockLibrary'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { formatLengthMm } from '../lib/units'
 import { useUserSettings } from '../lib/userSettings'
+import AnimatedNumber from './AnimatedNumber'
 
 interface BlockTallyPanelProps {
   walls: Wall[]
@@ -79,7 +80,7 @@ export default function BlockTallyPanel({
           </span>
           <h3 className="text-sm font-bold text-ink-50">Block tally</h3>
           <span className="text-xs text-beme-300 tabular-nums truncate">
-            · {totalBlocks.toLocaleString()} blocks
+            · <AnimatedNumber value={totalBlocks} /> blocks
           </span>
         </div>
         <span className="text-xs text-ink-400 tabular-nums flex-shrink-0">
@@ -94,8 +95,8 @@ export default function BlockTallyPanel({
             <div className="text-[11px] font-semibold uppercase tracking-[0.1em] opacity-85">
               Total blocks
             </div>
-            <div className="text-3xl font-extrabold tracking-tight leading-none mt-1">
-              {totalBlocks.toLocaleString()}
+            <div className="text-3xl font-extrabold tracking-tight leading-none mt-1 tabular-nums">
+              <AnimatedNumber value={totalBlocks} />
             </div>
             <div className="text-xs opacity-85 mt-1">
               {walls.length} wall{walls.length === 1 ? '' : 's'} ·{' '}

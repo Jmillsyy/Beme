@@ -1,0 +1,96 @@
+import { useEffect, useRef, useState } from 'react'
+
+/**
+ * Number that tick-up-animates from its previous value to its current
+ * value whenever the input changes.
+ *
+ * Used for the big tally numbers (Block tally, Brick tally, header
+ * pills) where the count changes as walls are added, deleted, or
+ * re-typed. The animation draws the eye to the change and makes the
+ * count feel like a live calculation rather than a static label that
+ * snapped.
+ *
+ * Implementation: requestAnimationFrame-driven interpolation with
+ * `cubic-easeOut` so the count flies up fast then settles. Default
+ * duration 450ms — fast enough to keep up with rapid edits, slow
+ * enough that the user perceives the motion. Tiny changes (<2) skip
+ * the animation entirely — toasting a "+1" with a long ramp feels
+ * sluggish; just snap. Same for very first paint (no previous value
+ * to animate from).
+ *
+ * Formatted via toLocaleString by default so 3934 renders as "3,934".
+ * Override `format` for special cases (e.g. metres with one decimal).
+ */
+export default function AnimatedNumber({
+  value,
+  durationMs = 450,
+  format = (n) => Math.round(n).toLocaleString(),
+  className,
+}: {
+  value: number
+  /** Animation duration in ms. */
+  durationMs?: number
+  /** Formatter applied to the live animated value each frame. */
+  format?: (n: number) => string
+  className?: string
+}) {
+  // Display value tracks the in-flight animation. Seeds at `value` on
+  // first mount so the very first render shows the real number (no
+  // 0→N tick-up on every page open — that'd look like a slot machine
+  // every time the workspace loads).
+  const [display, setDisplay] = useState(value)
+  // Previous logical value — what the animation starts from. Updated
+  // at the end of every animation so the next change interpolates
+  // from where we landed, not from the last snap.
+  const fromRef = useRef(value)
+  const rafRef = useRef<number | null>(null)
+  useEffect(() => {
+    // Cancel any in-flight animation so a rapid sequence of edits
+    // (drawing several walls fast) doesn't stack frames.
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    const from = fromRef.current
+    const to = value
+    if (from === to) return
+    // Tiny deltas don't need an animation — a 1-step bump that takes
+    // 450ms feels lethargic, the eye expects instant on small changes.
+    if (Math.abs(to - from) <= 1) {
+      fromRef.current = to
+      setDisplay(to)
+      return
+    }
+    const startTime = performance.now()
+    const tick = (now: number) => {
+      const elapsed = now - startTime
+      const t = Math.min(1, elapsed / durationMs)
+      // cubic ease-out — fast start, gentle settle. Matches the feel
+      // of a number being "decided on" rather than mechanically counted.
+      const eased = 1 - Math.pow(1 - t, 3)
+      const current = from + (to - from) * eased
+      setDisplay(current)
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(tick)
+      } else {
+        // Snap to exact final value so toLocaleString doesn't show
+        // 3,933.97 on the last frame.
+        setDisplay(to)
+        fromRef.current = to
+        rafRef.current = null
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [value, durationMs])
+  return (
+    <span className={className} aria-live="polite">
+      {format(display)}
+    </span>
+  )
+}

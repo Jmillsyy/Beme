@@ -1,0 +1,543 @@
+import { useEffect, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
+import { useOrganisations } from '../lib/organisations'
+import { useTheme } from '../lib/theme'
+import { useOnlineStatus } from '../lib/useOnlineStatus'
+import BemeMark from './BemeMark'
+
+/**
+ * Persistent left-sidebar navigation rail.
+ *
+ * Two width modes:
+ *   • Expanded (default, used on non-workspace pages) — 240px with
+ *     full labels, account block, org switcher.
+ *   • Collapsed (`defaultCollapsed` true, used in the workspace) —
+ *     56px icon-only rail so the user can hop between primary
+ *     surfaces without losing their place in the canvas. Tooltips
+ *     on hover keep the labels discoverable. Account block
+ *     compresses to just the avatar.
+ *
+ * The user can toggle between modes via a small chevron button on
+ * the rail's outer edge. The preference persists to localStorage so
+ * it carries across reloads — `defaultCollapsed` only seeds the
+ * initial value for first-time visits.
+ *
+ * Both modes render the same five primary nav items so the user's
+ * spatial memory carries across the app — "Settings is the gear at
+ * the bottom of the rail" works whether the rail is showing labels
+ * or just icons.
+ */
+const STORAGE_KEY = 'beme.leftnav.collapsed'
+
+export default function LeftNav({
+  defaultCollapsed = false,
+}: {
+  defaultCollapsed?: boolean
+}) {
+  const location = useLocation()
+  const { signedIn } = useAuth()
+
+  // Collapsed state is user-controlled (toggle button below) with
+  // localStorage persistence. `defaultCollapsed` only kicks in on
+  // first visit before the user has expressed a preference; after
+  // that, the stored value wins regardless of which page they
+  // happen to be on. Workspace pages pass true so first-time canvas
+  // users get the icon-only rail without having to discover the
+  // toggle.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return defaultCollapsed
+    try {
+      const stored = window.localStorage.getItem(STORAGE_KEY)
+      if (stored === '1') return true
+      if (stored === '0') return false
+    } catch {
+      // localStorage can throw on Safari private mode etc.
+    }
+    return defaultCollapsed
+  })
+  function toggleCollapsed() {
+    setCollapsed((prev) => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(STORAGE_KEY, next ? '1' : '0')
+      } catch {
+        // Ignore — preference doesn't persist, but the toggle still
+        // works for this session.
+      }
+      return next
+    })
+  }
+
+  const isActive = (path: string) =>
+    path === '/' ? location.pathname === '/' : location.pathname.startsWith(path)
+
+  const railWidth = collapsed ? 'w-20' : 'w-72'
+
+  return (
+    <aside
+      className={`hidden lg:flex ${railWidth} flex-shrink-0 border-r border-ink-700 bg-ink-900 flex-col h-screen sticky top-0 transition-[width] duration-200 relative group/rail`}
+    >
+      {/* Collapse / expand toggle — floats on the rail's outer edge.
+          Hidden until the user hovers the rail (group/rail) so the
+          chrome stays clean by default, then appears as a small
+          chevron button they can click to flip modes. Persisted to
+          localStorage so the choice survives reloads. */}
+      <button
+        type="button"
+        onClick={toggleCollapsed}
+        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        className="absolute top-9 -right-4 z-20 w-8 h-8 rounded-full border border-ink-600 bg-ink-800 text-ink-200 hover:text-ink-50 hover:bg-ink-700 hover:border-beme-500/60 flex items-center justify-center text-base font-semibold leading-none opacity-0 group-hover/rail:opacity-100 focus:opacity-100 transition-opacity shadow-md shadow-black/30"
+      >
+        {collapsed ? '›' : '‹'}
+      </button>
+
+      {/* Brand block — Beme square mark. In expanded mode the
+          wordmark + tagline sit alongside; collapsed mode shows just
+          the square so the icon row below lines up vertically with
+          the brand mark. Both modes link back to the dashboard. */}
+      <Link
+        to="/"
+        className={`${
+          collapsed
+            ? 'pt-6 pb-5 flex justify-center'
+            : 'px-5 pt-7 pb-8 block'
+        } group`}
+        title={collapsed ? 'Beme — Dashboard' : undefined}
+      >
+        {collapsed ? (
+          <span className="text-beme-500 group-hover:text-beme-400 transition-colors drop-shadow-[0_4px_12px_rgba(255,122,45,0.25)] inline-block">
+            <BemeMark size={44} />
+          </span>
+        ) : (
+          <div className="flex items-center gap-3 relative">
+            {/* Soft orange ambient glow behind the brand mark — gives
+                the otherwise-dark rail a warm anchor at the top without
+                turning into a hard panel. Mirrors how marketing-page
+                heroes use brand-tinted radial gradients to ground the
+                logo. pointer-events-none + behind-content z-stacking so
+                hover behaviour is unchanged. */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -inset-3 -z-0 bg-[radial-gradient(circle_at_top_left,rgba(255,122,45,0.18),transparent_70%)] rounded-2xl"
+            />
+            <span className="text-beme-500 group-hover:text-beme-400 transition-colors drop-shadow-[0_4px_12px_rgba(255,122,45,0.25)] relative z-10 inline-block">
+              <BemeMark size={44} />
+            </span>
+            <div className="leading-tight min-w-0 relative z-10">
+              <div className="text-[26px] font-extrabold tracking-tight text-ink-50 leading-none">
+                Beme
+              </div>
+            </div>
+          </div>
+        )}
+      </Link>
+
+      {/* Primary nav — five top-level surfaces. Icons are inline SVG
+          so we don't add a new dependency for a handful of glyphs and
+          we can tune size / stroke independently of any icon font.
+          No flex-1 here — we want the nav to size to its content so
+          the account block underneath sits right against the last
+          item rather than getting pushed to the viewport's bottom. */}
+      <nav className={collapsed ? 'px-2' : 'px-3'} aria-label="Primary">
+        <NavItem
+          to="/"
+          label="Dashboard"
+          collapsed={collapsed}
+          active={isActive('/')}
+          icon={
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
+              <path d="M3 12 12 3l9 9" />
+              <path d="M5 10v10h14V10" />
+              <path d="M9 21v-6h6v6" />
+            </svg>
+          }
+        />
+        <NavItem
+          to="/projects"
+          label="Projects"
+          collapsed={collapsed}
+          active={isActive('/projects')}
+          icon={
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
+              <path d="M3 7h18" />
+              <path d="M3 12h18" />
+              <path d="M3 17h18" />
+            </svg>
+          }
+        />
+        <NavItem
+          to="/library"
+          label="Material library"
+          collapsed={collapsed}
+          active={isActive('/library')}
+          icon={
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
+              <path d="M4 7l8-4 8 4" />
+              <path d="M4 7v10l8 4 8-4V7" />
+              <path d="M12 11v10" />
+              <path d="M4 7l8 4 8-4" />
+            </svg>
+          }
+        />
+        <NavItem
+          to="/guide"
+          label="Guide"
+          collapsed={collapsed}
+          active={isActive('/guide')}
+          icon={
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
+              <path d="M4 4h12a4 4 0 0 1 4 4v12a4 4 0 0 0-4-4H4z" />
+              <path d="M4 4v16" />
+            </svg>
+          }
+        />
+        <NavItem
+          to="/settings"
+          label="Settings"
+          collapsed={collapsed}
+          active={isActive('/settings')}
+          icon={
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06A2 2 0 1 1 4.21 16.96l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 4.21l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.5.2.91.6 1.18 1.06" />
+            </svg>
+          }
+        />
+      </nav>
+
+      {/* Account block. Expanded mode = ACCOUNT eyebrow + offline pill
+          + org switcher + user pill with menu. Collapsed mode = just
+          the user avatar + (when offline) a tiny amber dot beside it.
+          Org switching + sign-out + theme are still reachable via the
+          dashboard or by widening the rail (open any non-workspace
+          page). */}
+      {collapsed ? (
+        <div className="px-2 mt-8 pt-5 border-t border-ink-700/60 flex flex-col items-center gap-3">
+          <OfflineDotCompact />
+          {signedIn && <UserMenuRail collapsed />}
+        </div>
+      ) : (
+        <div className="px-3 mt-8 pt-5 border-t border-ink-700/60 space-y-3">
+          <div className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-400">
+            Account
+          </div>
+          <OfflineDot />
+          {signedIn && <OrgSwitcherRail />}
+          {signedIn && <UserMenuRail />}
+        </div>
+      )}
+    </aside>
+  )
+}
+
+// ─── Internal: Nav item ───────────────────────────────────────────
+
+function NavItem({
+  to,
+  label,
+  icon,
+  active,
+  collapsed = false,
+}: {
+  to: string
+  label: string
+  icon: React.ReactNode
+  active: boolean
+  collapsed?: boolean
+}) {
+  return (
+    <Link
+      to={to}
+      title={collapsed ? label : undefined}
+      aria-label={collapsed ? label : undefined}
+      className={`group flex items-center ${
+        collapsed
+          ? 'justify-center w-12 h-12 mx-auto mb-2'
+          : 'gap-3 px-3.5 py-3 text-base font-medium mb-1.5'
+      } rounded-lg text-sm transition-colors relative ${
+        active
+          ? 'bg-beme-500/15 text-beme-300'
+          : 'text-ink-300 hover:text-ink-100 hover:bg-ink-800/80'
+      }`}
+    >
+      {/* Active-state indicator bar on the left edge — half-height so it
+          reads as a subtle accent rather than a hard partition. */}
+      {active && (
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-beme-500"
+        />
+      )}
+      <span
+        className={`flex-shrink-0 ${
+          active ? 'text-beme-400' : 'text-ink-400 group-hover:text-ink-200'
+        }`}
+      >
+        {icon}
+      </span>
+      {!collapsed && <span className="truncate">{label}</span>}
+    </Link>
+  )
+}
+
+// ─── Internal: Offline status dot ─────────────────────────────────
+
+function OfflineDot() {
+  const online = useOnlineStatus()
+  if (online) return null
+  return (
+    <div className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-[11px] text-amber-200 w-full">
+      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+      Offline — saves on reconnect
+    </div>
+  )
+}
+
+/**
+ * Collapsed-rail offline indicator. Tiny amber dot with a hover
+ * tooltip so the user notices their connection is out without
+ * needing the full pill that doesn't fit in 56px.
+ */
+function OfflineDotCompact() {
+  const online = useOnlineStatus()
+  if (online) return null
+  return (
+    <span
+      className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"
+      title="Offline — saves on reconnect"
+      aria-label="Offline"
+    />
+  )
+}
+
+// ─── Internal: Org switcher (rail variant) ────────────────────────
+
+function OrgSwitcherRail() {
+  const { organisations, currentOrg, setCurrentOrg } = useOrganisations()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  if (organisations.length === 0) return null
+  // Single-org users get a static label — no dropdown chrome.
+  if (organisations.length === 1) {
+    return (
+      <div className="px-3 py-2.5 rounded-lg border border-ink-700 w-full truncate">
+        <span className="block text-[11px] uppercase tracking-wider text-ink-500 mb-0.5">
+          Team
+        </span>
+        <span className="block text-ink-100 font-medium text-sm truncate">{currentOrg?.name ?? organisations[0].name}</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative w-full" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full px-3 py-2.5 rounded-lg border border-ink-700 text-left flex items-center gap-2 hover:bg-ink-800/80 transition-colors"
+        aria-expanded={open}
+      >
+        <span className="flex-1 min-w-0">
+          <span className="block text-[11px] uppercase tracking-wider text-ink-500 mb-0.5">
+            Team
+          </span>
+          <span className="block text-sm font-medium text-ink-100 truncate">
+            {currentOrg?.name ?? 'Personal'}
+          </span>
+        </span>
+        <span className="text-ink-400 text-xs">▾</span>
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-2 w-full rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-30 py-1 text-xs">
+          <button
+            type="button"
+            onClick={() => {
+              setCurrentOrg(null)
+              setOpen(false)
+            }}
+            className={`w-full text-left px-3 py-1.5 hover:bg-ink-700 ${
+              currentOrg === null ? 'text-beme-300' : 'text-ink-200'
+            }`}
+          >
+            Personal
+          </button>
+          {organisations.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => {
+                setCurrentOrg(o.id)
+                setOpen(false)
+              }}
+              className={`w-full text-left px-3 py-1.5 hover:bg-ink-700 truncate ${
+                currentOrg?.id === o.id ? 'text-beme-300' : 'text-ink-200'
+              }`}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Internal: User menu (rail variant) ───────────────────────────
+
+function UserMenuRail({
+  collapsed = false,
+}: {
+  collapsed?: boolean
+}) {
+  const navigate = useNavigate()
+  const { user } = useAuth()
+  const [theme, setTheme] = useTheme()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  if (!user) return null
+  const rawName = displayNameOf(user)
+  // When `displayNameOf` has no metadata to work with, it falls back
+  // to the user's email — which then duplicates the email subtitle
+  // below. Derive a cleaner handle from the email's local-part
+  // ("joshmills06@gmail.com" → "joshmills06") and use that as the
+  // primary label in the email-only case. Real-name users keep their
+  // name verbatim.
+  const emailHandle = user.email ? user.email.split('@')[0] : ''
+  const primaryLabel =
+    rawName && rawName !== user.email
+      ? rawName
+      : emailHandle || rawName || 'Signed in'
+  // Only show the email subtitle when the primary label ISN'T just
+  // the email — otherwise the pill stacks two near-identical strings
+  // ("joshmills06@gmail.com" / "joshmills06@gmail.com") and looks
+  // broken.
+  const showEmailSubtitle =
+    !!user.email && primaryLabel !== user.email
+  const initials = initialsOf(user)
+  const isLight = theme === 'light'
+
+  return (
+    <div className={collapsed ? 'relative' : 'relative w-full'} ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={collapsed ? primaryLabel : undefined}
+        aria-label={collapsed ? primaryLabel : undefined}
+        className={
+          collapsed
+            ? 'flex items-center justify-center w-11 h-11 rounded-full hover:ring-2 hover:ring-beme-500/40 transition-shadow'
+            : 'w-full flex items-center gap-3 px-2.5 py-2.5 rounded-lg hover:bg-ink-800/80 transition-colors'
+        }
+        aria-expanded={open}
+      >
+        <span className={`w-11 h-11 rounded-full bg-beme-500 text-black text-sm font-bold flex items-center justify-center flex-shrink-0 shadow-md shadow-beme-500/30`}>
+          {initials}
+        </span>
+        {!collapsed && (
+          <>
+            <span className="flex-1 min-w-0 text-left">
+              <span className="block text-base text-ink-50 font-semibold truncate leading-tight">
+                {primaryLabel}
+              </span>
+              {showEmailSubtitle && (
+                <span className="block text-[13px] text-ink-400 truncate leading-tight mt-0.5">
+                  {user.email}
+                </span>
+              )}
+            </span>
+            <span className="text-ink-400 text-sm flex-shrink-0">▾</span>
+          </>
+        )}
+      </button>
+      {open && (
+        <div
+          className={`absolute bottom-full mb-2 rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-30 py-1 text-sm ${
+            collapsed
+              ? 'left-full ml-2 w-56'
+              : 'left-0 w-full'
+          }`}
+        >
+          {collapsed && (
+            <div className="px-3 py-2 border-b border-ink-700/60">
+              <div className="text-sm font-medium text-ink-100 truncate">
+                {primaryLabel}
+              </div>
+              {showEmailSubtitle && (
+                <div className="text-[10px] text-ink-500 truncate mt-0.5">
+                  {user.email}
+                </div>
+              )}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              navigate('/settings')
+            }}
+            className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
+          >
+            <span className="text-ink-400">⚙</span> Settings
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTheme(isLight ? 'dark' : 'light')
+            }}
+            className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
+          >
+            <span className="text-ink-400">{isLight ? '☀' : '☾'}</span>
+            {isLight ? 'Light theme' : 'Dark theme'}
+          </button>
+          <div className="border-t border-ink-600 my-1" />
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              void signOut()
+            }}
+            className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors"
+          >
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}

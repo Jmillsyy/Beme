@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from 'react'
+import { confirm } from '../lib/confirm'
 import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import {
@@ -136,25 +137,33 @@ function BrickLibraryPanelImpl({
               brick={brick}
               readOnly={readOnly}
               onEdit={() => setEditingCode(brick.code)}
-              onDelete={() => {
+              onDelete={async () => {
                 if (PROTECTED_BRICK_CODES.has(brick.code)) return
-                if (window.confirm(`Delete brick type "${brick.name}"?`)) {
-                  removeBrickType(brick.code)
-                }
+                const ok = await confirm({
+                  title: `Delete brick type "${brick.name}"?`,
+                  message:
+                    'The brick is removed from your library. Brick wall ' +
+                    'types referencing it will need to be updated.',
+                  confirmLabel: 'Delete',
+                  variant: 'destructive',
+                })
+                if (ok) removeBrickType(brick.code)
               }}
             />
           ))}
 
           {!readOnly && (
             <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Reset the brick library to defaults? Any custom brick types will be removed.'
-                  )
-                ) {
-                  resetBrickLibrary()
-                }
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Reset the brick library?',
+                  message:
+                    'Reverts every brick type to the defaults. Any custom ' +
+                    'brick types will be removed.',
+                  confirmLabel: 'Reset library',
+                  variant: 'destructive',
+                })
+                if (ok) resetBrickLibrary()
               }}
               className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
             >

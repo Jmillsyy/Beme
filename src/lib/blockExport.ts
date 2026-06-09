@@ -88,6 +88,20 @@ interface ExportParams {
    */
   supplyItemNameOverrides?: Record<string, string>
   /**
+   * Per-export cover page text overrides — title, subtitle, intro.
+   * Each field is plain text; the exporter HTML-escapes before
+   * rendering. When ALL three are missing / empty, no cover page is
+   * rendered and the document opens directly into Assumptions like
+   * the legacy flow. When any field is set, a dedicated cover page
+   * is prepended to the body using `projectDetails` as fallback for
+   * the title.
+   */
+  coverOverrides?: {
+    title?: string
+    subtitle?: string
+    intro?: string
+  }
+  /**
    * Per-block quantity ADJUSTMENTS (a count to subtract from the
    * computed tally). Used when the user has some blocks already on
    * site or reused from another job and doesn't want them on the
@@ -1510,6 +1524,43 @@ export async function buildBlockEstimateHtml(
     return `<div class="meta">${rows.join('')}</div>`
   })()
 
+  // Page 0: Cover page — only when the user customised any of the
+  // cover fields via the export modal. Falls back to the project
+  // name when no title override is set so the cover still reads
+  // sensibly. Document opens directly into Assumptions when all
+  // overrides are empty (legacy behaviour, no blank cover page).
+  const coverTitle = params.coverOverrides?.title?.trim() ?? ''
+  const coverSubtitle = params.coverOverrides?.subtitle?.trim() ?? ''
+  const coverIntro = params.coverOverrides?.intro?.trim() ?? ''
+  const hasCover = !!(coverTitle || coverSubtitle || coverIntro)
+  const coverTitleResolved =
+    coverTitle ||
+    projectDetails.projectName.trim() ||
+    projectDetails.siteAddress.trim() ||
+    'Block Takeoff'
+  const coverPage = hasCover
+    ? `
+      <section class="page cover-page">
+        ${pageHeader}
+        <div class="cover-body">
+          <div class="cover-eyebrow">Block estimate${referenceText ? ` · ${escapeHtml(referenceText)}` : ''}</div>
+          <div class="cover-head">
+            <div>
+              <h1 class="cover-title">${escapeHtml(coverTitleResolved)}</h1>
+              ${coverSubtitle ? `<p class="cover-subtitle">${escapeHtml(coverSubtitle)}</p>` : ''}
+            </div>
+            <dl class="cover-meta">
+              ${projectDetails.siteAddress.trim() && projectDetails.siteAddress.trim() !== coverTitleResolved ? `<div><dt>Site</dt><dd>${escapeHtml(projectDetails.siteAddress)}</dd></div>` : ''}
+              ${projectDetails.clientName.trim() ? `<div><dt>Client</dt><dd>${escapeHtml(projectDetails.clientName)}</dd></div>` : ''}
+              ${projectDetails.date ? `<div><dt>Date</dt><dd>${formatDate(projectDetails.date)}</dd></div>` : ''}
+            </dl>
+          </div>
+          ${coverIntro ? `<div class="cover-intro">${escapeHtml(coverIntro).replace(/\n/g, '<br/>')}</div>` : ''}
+        </div>
+      </section>
+    `
+    : ''
+
   // Page 1: Assumptions — rendered as categorised groups with
   // subheadings so the reader can scan to the relevant area
   // (Geometry vs Curves vs Openings vs Project-specific notes etc.)
@@ -1902,6 +1953,7 @@ export async function buildBlockEstimateHtml(
   // wrapper) get the full assembled doc just like before.
 
   const bodyContent = `
+  ${coverPage}
   ${assumptionsPage}
   ${/* 3D snapshots come FIRST after the assumptions pages so the
        reader sees the project in 3D as soon as they've finished
@@ -1979,6 +2031,78 @@ export async function buildBlockEstimateHtml(
     max-width: 150px;
     display: block;
     margin-bottom: 4px;
+  }
+
+  /* Cover page — A4 landscape layout. Title block takes the LEFT
+     half of the page (3 cols of a 5-col grid), meta block takes
+     the RIGHT half (2 cols). Intro paragraph spans the full width
+     below them, separated by a divider so the eye lands on the
+     title-meta split first. Title can grow larger than the portrait
+     version because landscape has the horizontal room to support
+     a ~44px headline without crowding. */
+  .cover-page .cover-body {
+    padding: 28px 12px 0 12px;
+    max-width: 100%;
+  }
+  .cover-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 10px;
+    color: #6B7280;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .cover-head {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    column-gap: 36px;
+    align-items: start;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #E5E7EB;
+  }
+  .cover-title {
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+    color: #111827;
+    margin: 0 0 6px 0;
+  }
+  .cover-subtitle {
+    font-size: 15px;
+    color: #4B5563;
+    margin: 8px 0 0 0;
+    line-height: 1.45;
+    max-width: 540px;
+  }
+  .cover-meta {
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 10px;
+    margin: 4px 0 0 0;
+    padding: 0 0 0 24px;
+    border-left: 1px solid #E5E7EB;
+  }
+  .cover-meta dt {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 9px;
+    color: #6B7280;
+    margin-bottom: 2px;
+  }
+  .cover-meta dd {
+    font-size: 12px;
+    color: #1F2937;
+    font-weight: 500;
+    margin: 0;
+  }
+  .cover-intro {
+    font-size: 12px;
+    color: #374151;
+    line-height: 1.6;
+    margin-top: 24px;
+    max-width: 100%;
+    white-space: pre-wrap;
   }
   /* Logo used as the primary brand mark — bigger than the inline logo
      because no text name accompanies it. Capped at 80 px tall / 280 px

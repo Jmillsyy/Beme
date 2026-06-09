@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useUserSettings } from '../lib/userSettings'
+import { toast } from '../lib/toast'
+import { confirm } from '../lib/confirm'
 import type {
   Pier,
   PierMakeup,
@@ -357,11 +359,17 @@ export default function WallTypesPanel({
                     <span
                       role="button"
                       tabIndex={0}
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation()
-                        if (window.confirm(`Delete wall type "${m.name}"?`)) {
-                          onDeleteMakeup(m.id)
-                        }
+                        const ok = await confirm({
+                          title: `Delete wall type "${m.name}"?`,
+                          message:
+                            'Walls currently using this type will fall back ' +
+                            'to the default. This can be undone.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDeleteMakeup(m.id)
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                     >
@@ -496,11 +504,17 @@ export default function WallTypesPanel({
                       <span
                         role="button"
                         tabIndex={0}
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           e.stopPropagation()
-                          if (window.confirm(`Delete pier type "${pm.name}"?`)) {
-                            onDeletePierMakeup(pm.id)
-                          }
+                          const ok = await confirm({
+                            title: `Delete pier type "${pm.name}"?`,
+                            message:
+                              'Piers currently using this type will fall ' +
+                              'back to the default.',
+                            confirmLabel: 'Delete',
+                            variant: 'destructive',
+                          })
+                          if (ok) onDeletePierMakeup(pm.id)
                         }}
                         className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                       >
@@ -556,10 +570,18 @@ export default function WallTypesPanel({
             setEditingSeedKind('wall')
           }}
           onSave={(m) => {
-            if (editingId === 'new') onAddMakeup(m)
+            const isNew = editingId === 'new'
+            if (isNew) onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
             setEditingSeedKind('wall')
+            // Confirmation toast — the modal vanishes, the new type
+            // appears in the wall-types panel, but the panel might be
+            // long enough that the new entry is below the fold. Toast
+            // makes the save explicit and labels the type by name.
+            toast.success(
+              isNew ? `Wall type "${m.name}" added` : `Wall type "${m.name}" updated`
+            )
             // No auto curve-draw activation here. The saved wall type
             // sits in the panel labelled "Curved" (kind flag on the
             // makeup); the user selects it like any other type and
@@ -608,7 +630,8 @@ export default function WallTypesPanel({
             setPierEditingSeedPlacement(undefined)
           }}
           onSave={(pm) => {
-            if (pierEditingId === 'new') {
+            const isNew = pierEditingId === 'new'
+            if (isNew) {
               onAddPierMakeup(pm)
               onSetActivePier(pm.id)
             } else {
@@ -616,6 +639,9 @@ export default function WallTypesPanel({
             }
             setPierEditingId(null)
             setPierEditingSeedPlacement(undefined)
+            toast.success(
+              isNew ? `Pier type "${pm.name}" added` : `Pier type "${pm.name}" updated`
+            )
           }}
         />
       )}
@@ -876,7 +902,7 @@ function WallTypeEditorModal({
     })
   }
 
-  function convertCurrentToBands() {
+  async function convertCurrentToBands() {
     const draft: WallMakeup = {
       id: existing?.id ?? 'draft',
       name,
@@ -900,29 +926,34 @@ function WallTypeEditorModal({
       skipHeightMakeup: true,
     })
     if (bands.length === 0) {
-      window.alert('Wall is too short to convert (less than one course).')
+      toast.error('Wall is too short to convert (less than one course).')
       return
     }
-    if (
-      lossy &&
-      !window.confirm(
-        'This wall type has per-course overrides which can’t be translated band-for-band. ' +
-          'Convert anyway? The overrides will be cleared.'
-      )
-    ) {
-      return
+    if (lossy) {
+      const ok = await confirm({
+        title: 'Convert to course pattern?',
+        message:
+          "This wall type has per-course overrides that can't be " +
+          'translated band-for-band. The overrides will be cleared.',
+        confirmLabel: 'Convert anyway',
+        variant: 'destructive',
+      })
+      if (!ok) return
     }
     setCoursePattern(bands)
     if (lossy) setCourseOverrides([])
   }
 
-  function clearCoursePattern() {
-    if (
-      !window.confirm(
-        'Clear the course pattern and revert this wall type to the uniform-height makeup? ' +
-          'The Height field will take over again.'
-      )
-    ) {
+  async function clearCoursePattern() {
+    const ok = await confirm({
+      title: 'Clear the course pattern?',
+      message:
+        'Reverts this wall type to the uniform-height makeup. ' +
+        'The Height field will take over again.',
+      confirmLabel: 'Clear pattern',
+      variant: 'destructive',
+    })
+    if (!ok) {
       return
     }
     setCoursePattern([])

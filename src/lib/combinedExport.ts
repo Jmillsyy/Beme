@@ -55,6 +55,18 @@ export interface CombinedExportParams {
    *  both single-trade builders so a renamed supply (e.g. ties) gets
    *  the same label in both sections of the combined PDF. */
   supplyItemNameOverrides?: Record<string, string>
+  /**
+   * Per-export cover page text overrides. Forwarded ONLY to the block
+   * builder (which renders first in the combined deliverable) so the
+   * combined PDF carries a single cover at the front and the brick
+   * section flows in afterwards without a duplicate cover. See the
+   * block/brick exporter for field semantics.
+   */
+  coverOverrides?: {
+    title?: string
+    subtitle?: string
+    intro?: string
+  }
   business?: BusinessExportInfo
   pdfFile?: File
 
@@ -129,6 +141,7 @@ export async function exportCombinedEstimate(
     supplyItemRateOverrides,
     supplyItemAdjustments,
     supplyItemNameOverrides,
+    coverOverrides,
     business,
     pdfFile,
     blockInclusions,
@@ -169,6 +182,11 @@ export async function exportCombinedEstimate(
     supplyItemRateOverrides,
     supplyItemAdjustments,
     supplyItemNameOverrides,
+    // Cover overrides go to the block builder ONLY — block runs first
+    // in the combined deliverable, so it carries the front cover and
+    // the brick section flows in behind. Forwarding to both would
+    // emit two covers, one mid-document.
+    coverOverrides,
     walls: blockWalls,
     makeups: blockMakeups,
     openings: blockOpenings,
