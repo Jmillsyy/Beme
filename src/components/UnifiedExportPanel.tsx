@@ -542,6 +542,349 @@ function ExportEstimateModal({
   }, [brickWalls, brickOpenings, brickSettings, brickMakeups])
   const hasBrickTally = Object.keys(brickBaseTally).length > 0
 
+  // ── Per-area Quantities (brick + block) ──
+  //
+  // For each project area (plus an "Unassigned" bucket for walls
+  // without an areaId), compute the trade-specific metrics the user
+  // wants to override on a per-area basis:
+  //   - brick: total brickwork m², head lineal m, sill lineal m
+  //   - block: total blockwork m² (block has no head/sill concept)
+  //
+  // These memos run the same calc engine the headline tally uses,
+  // just on a wall subset filtered to the area. Overrides (below)
+  // can then replace any value per area; final totals are the sum
+  // of (override ?? auto) across all areas.
+  type PerAreaSpec = { id: string; name: string; colorHex?: string }
+  const areaSpecs = useMemo<PerAreaSpec[]>(() => {
+    return [
+      ...areas.map((a) => ({
+        id: a.id,
+        name: a.name,
+        colorHex: a.colorHex,
+      })),
+      // Always include an unassigned bucket so walls without an areaId
+      // still show up. Hidden by the render if it ends up empty.
+      { id: '__unassigned__', name: 'Unassigned', colorHex: undefined },
+    ]
+  }, [areas])
+
+  // Sources for per-area Quantities: use the FULL project walls /
+  // openings (not the area-included ones) so every area in the
+  // project shows up in this section, regardless of whether the
+  // user has currently ticked it under the Areas filter. The user
+  // wanted to manage rates per area independently of inclusion;
+  // unticked areas just won't make it into the export, but their
+  // overrides are still recorded for when they get re-included.
+  const allBrickWalls = useMemo(
+    () => allWalls.filter((w) => (w.trade ?? 'block') === 'brick'),
+    [allWalls],
+  )
+  const allBlockWalls = useMemo(
+    () => allWalls.filter((w) => (w.trade ?? 'block') !== 'brick'),
+    [allWalls],
+  )
+  const allBrickOpenings = useMemo(() => {
+    const ids = new Set(allBrickWalls.map((w) => w.id))
+    return allOpenings.filter((o) => ids.has(o.wallId))
+  }, [allOpenings, allBrickWalls])
+  const allBlockOpenings = useMemo(() => {
+    const ids = new Set(allBlockWalls.map((w) => w.id))
+    return allOpenings.filter((o) => ids.has(o.wallId))
+  }, [allOpenings, allBlockWalls])
+
+  interface PerAreaBrickMakeupMetrics {
+    sqM: number
+    headLinealM: number
+    sillLinealM: number
+    wallCount: number
+  }
+  interface PerAreaBrickMetrics {
+    sqM: number
+    headLinealM: number
+    sillLinealM: number
+    runM: number
+    wallCount: number
+    openingCount: number
+    /** Per-wall-type breakdown — keyed by makeup id — for the
+     *  drilldown editor inside the area card. */
+    byMakeup: Record<string, PerAreaBrickMakeupMetrics>
+  }
+  const perAreaBrickMetrics = useMemo(() => {
+    const result: Record<string, PerAreaBrickMetrics> = {}
+    for (const area of areaSpecs) {
+      const wallsInArea = allBrickWalls.filter((w) =>
+        area.id === '__unassigned__' ? !w.areaId : w.areaId === area.id,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = allBrickOpenings.filter((o) =>
+        wallIds.has(o.wallId),
+      )
+      const tally = calculateBrickTally(
+        wallsInArea,
+        openingsInArea,
+        brickSettings,
+        brickMakeups,
+      )
+      const headLineal =
+        Object.values(tally.headLinealMmByType).reduce(
+          (s, v) => s + v,
+          0,
+        ) / 1000
+      const sillLineal =
+        Object.values(tally.sillLinealMmByType).reduce(
+          (s, v) => s + v,
+          0,
+        ) / 1000
+
+      // Per-makeup brick breakdown — same pattern as block. Groups
+      // walls by makeupId, runs calculateBrickTally on each subset,
+      // and exposes m² / head / sill per wall type for the drilldown
+      // editor in the area card.
+      const wallsByMakeup: Record<string, Wall[]> = {}
+      for (const w of wallsInArea) {
+        const mid = w.makeupId ?? ''
+        if (!mid) continue
+        if (!wallsByMakeup[mid]) wallsByMakeup[mid] = []
+        wallsByMakeup[mid].push(w)
+      }
+      const byMakeup: Record<string, PerAreaBrickMakeupMetrics> = {}
+      for (const [mid, mWalls] of Object.entries(wallsByMakeup)) {
+        const mWallIds = new Set(mWalls.map((w) => w.id))
+        const mOpenings = openingsInArea.filter((o) => mWallIds.has(o.wallId))
+        const mTally = calculateBrickTally(
+          mWalls,
+          mOpenings,
+          brickSettings,
+          brickMakeups,
+        )
+        const mHead =
+          Object.values(mTally.headLinealMmByType).reduce(
+            (s, v) => s + v,
+            0,
+          ) / 1000
+        const mSill =
+          Object.values(mTally.sillLinealMmByType).reduce(
+            (s, v) => s + v,
+            0,
+          ) / 1000
+        byMakeup[mid] = {
+          sqM: mTally.totalAreaSqMm / 1_000_000,
+          headLinealM: mHead,
+          sillLinealM: mSill,
+          wallCount: mWalls.length,
+        }
+      }
+
+      result[area.id] = {
+        sqM: tally.totalAreaSqMm / 1_000_000,
+        headLinealM: headLineal,
+        sillLinealM: sillLineal,
+        runM: tally.totalLinealMm / 1000,
+        wallCount: tally.wallCount,
+        openingCount: tally.openingCount,
+        byMakeup,
+      }
+    }
+    return result
+  }, [areaSpecs, allBrickWalls, allBrickOpenings, brickSettings, brickMakeups])
+
+  interface PerAreaBlockMakeupMetrics {
+    sqM: number
+    wallCount: number
+    blockTally: Record<string, number>
+  }
+  interface PerAreaBlockMetrics {
+    sqM: number
+    runM: number
+    wallCount: number
+    /** Per-block-code counts for this area, from calculateProjectTally
+     *  on the area's wall subset. Sorted entries used by the UI. */
+    blockTally: Record<string, number>
+    /** Per-wall-type breakdown for the wall-type drilldown editor
+     *  inside the area card. Keyed by makeup id. */
+    byMakeup: Record<string, PerAreaBlockMakeupMetrics>
+  }
+  const perAreaBlockMetrics = useMemo(() => {
+    const result: Record<string, PerAreaBlockMetrics> = {}
+    const makeupsByIdLocal = Object.fromEntries(
+      blockMakeups.map((m) => [m.id, m]),
+    ) as Record<string, WallMakeup>
+    const pierMakeupsByIdLocal = Object.fromEntries(
+      (pierMakeups ?? []).map((m) => [m.id, m]),
+    ) as Record<string, PierMakeup>
+    for (const area of areaSpecs) {
+      const wallsInArea = allBlockWalls.filter((w) =>
+        area.id === '__unassigned__' ? !w.areaId : w.areaId === area.id,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = allBlockOpenings.filter((o) =>
+        wallIds.has(o.wallId),
+      )
+      const piersInArea = (allPiers ?? []).filter((p) => {
+        const pWallId = (p as { wallId?: string }).wallId
+        if (pWallId) return wallIds.has(pWallId)
+        return true
+      })
+      // Per-block-code tally on this area's wall subset. Drives the
+      // editable per-code breakdown the user wanted (instead of just
+      // m²). Uses the same calc-engine path the headline tally uses.
+      const tally = calculateProjectTally(
+        wallsInArea,
+        makeupsByIdLocal,
+        openingsInArea,
+        piersInArea,
+        pierMakeupsByIdLocal,
+      )
+
+      // Per-wall-type (makeup) breakdown — group the area's walls by
+      // makeup id, then run calculateProjectTally on each subset to
+      // get the per-code tally for that wall type alone. Used by the
+      // drilldown editor inside each area card. m² for each wall
+      // type comes from sum(len × height) of just those walls,
+      // minus opening voids on those walls.
+      const wallsByMakeup: Record<string, Wall[]> = {}
+      for (const w of wallsInArea) {
+        const mid = w.makeupId ?? ''
+        if (!mid) continue
+        if (!wallsByMakeup[mid]) wallsByMakeup[mid] = []
+        wallsByMakeup[mid].push(w)
+      }
+      const byMakeup: Record<string, PerAreaBlockMakeupMetrics> = {}
+      for (const [mid, mWalls] of Object.entries(wallsByMakeup)) {
+        const mWallIds = new Set(mWalls.map((w) => w.id))
+        const mOpenings = openingsInArea.filter((o) => mWallIds.has(o.wallId))
+        const mPiers = piersInArea.filter((p) => {
+          const pWallId = (p as { wallId?: string }).wallId
+          if (!pWallId) return false
+          return mWallIds.has(pWallId)
+        })
+        const mTally = calculateProjectTally(
+          mWalls,
+          makeupsByIdLocal,
+          mOpenings,
+          mPiers,
+          pierMakeupsByIdLocal,
+        )
+        const mBlockTally: Record<string, number> = {}
+        for (const [code, count] of Object.entries(mTally)) {
+          if (typeof count === 'number' && count > 0) mBlockTally[code] = count
+        }
+        let mAreaSqMm = 0
+        for (const w of mWalls) {
+          const len = wallLengthMm(w)
+          const heightMm =
+            w.heightMmOverride ??
+            makeupsByIdLocal[w.makeupId]?.heightMm ??
+            0
+          mAreaSqMm += len * heightMm
+        }
+        for (const o of mOpenings) {
+          mAreaSqMm -= o.widthMm * o.heightMm
+        }
+        byMakeup[mid] = {
+          sqM: Math.max(0, mAreaSqMm) / 1_000_000,
+          wallCount: mWalls.length,
+          blockTally: mBlockTally,
+        }
+      }
+      const blockTallyClean: Record<string, number> = {}
+      for (const [code, count] of Object.entries(tally)) {
+        if (typeof count === 'number' && count > 0) blockTallyClean[code] = count
+      }
+      let totalAreaSqMm = 0
+      let totalLinealMm = 0
+      for (const w of wallsInArea) {
+        const len = wallLengthMm(w)
+        totalLinealMm += len
+        const heightMm =
+          w.heightMmOverride ?? makeupsByIdLocal[w.makeupId]?.heightMm ?? 0
+        totalAreaSqMm += len * heightMm
+      }
+      for (const o of openingsInArea) {
+        totalAreaSqMm -= o.widthMm * o.heightMm
+      }
+      result[area.id] = {
+        sqM: Math.max(0, totalAreaSqMm) / 1_000_000,
+        runM: totalLinealMm / 1000,
+        wallCount: wallsInArea.length,
+        blockTally: blockTallyClean,
+        byMakeup,
+      }
+    }
+    return result
+  }, [
+    areaSpecs,
+    allBlockWalls,
+    allBlockOpenings,
+    blockMakeups,
+    allPiers,
+    pierMakeups,
+  ])
+
+  // Per-area overrides. Field absent / undefined = use the auto
+  // value; numeric value = override. Keyed by areaId then field.
+  const [perAreaBrickOverrides, setPerAreaBrickOverrides] = useState<
+    Record<
+      string,
+      {
+        sqM?: number
+        headLinealM?: number
+        sillLinealM?: number
+        /** Per-wall-type drilldown overrides — keyed by makeup id.
+         *  Mirrors the block side: each entry can override that
+         *  wall type's m² / head / sill within this area. */
+        byMakeup?: Record<
+          string,
+          { sqM?: number; headLinealM?: number; sillLinealM?: number }
+        >
+      }
+    >
+  >({})
+  const [perAreaBlockOverrides, setPerAreaBlockOverrides] = useState<
+    Record<
+      string,
+      {
+        sqM?: number
+        /** Per-block-code overrides for this area. Field absent =
+         *  use auto count; numeric = override count. Negative is
+         *  clamped to 0 at apply time. */
+        blocks?: Record<string, number>
+        /** Per-wall-type drilldown overrides. Keyed by makeup id;
+         *  each entry can override that wall type's m² and per-code
+         *  counts in this area. */
+        byMakeup?: Record<
+          string,
+          { sqM?: number; blocks?: Record<string, number> }
+        >
+      }
+    >
+  >({})
+
+  /**
+   * Resolve a per-area metric: return the override if the user has set
+   * one, otherwise the auto-computed value. Tiny helper so the JSX
+   * stays readable.
+   */
+  const brickAreaValue = (areaId: string, field: 'sqM' | 'headLinealM' | 'sillLinealM'): number => {
+    const override = perAreaBrickOverrides[areaId]?.[field]
+    if (typeof override === 'number') return override
+    return perAreaBrickMetrics[areaId]?.[field] ?? 0
+  }
+  const blockAreaValue = (areaId: string, field: 'sqM'): number => {
+    const override = perAreaBlockOverrides[areaId]?.[field]
+    if (typeof override === 'number') return override
+    return perAreaBlockMetrics[areaId]?.[field] ?? 0
+  }
+
+  // Per-area expansion state — collapsed by default to keep the
+  // section glanceable on first open; user expands the ones they
+  // want to edit. Keyed by `${trade}-${areaId}`.
+  const [expandedAreaCards, setExpandedAreaCards] = useState<
+    Record<string, boolean>
+  >({})
+
   // Picker options for "+ Add" — show every code in the libraries so
   // the user can include anything. Sorted alphabetically for
   // predictable scanning.
@@ -1051,6 +1394,8 @@ function ExportEstimateModal({
             pierMakeups,
             pagesInfo: blockPagesInfo,
             blockAdjustments,
+            // Per-area m² overrides from the Quantities section.
+            perAreaBlockOverrides,
             view3dSnapshots,
           })
         } else {
@@ -1067,6 +1412,10 @@ function ExportEstimateModal({
             areas,
             pagesInfo: brickPagesInfo,
             brickAdjustments,
+            // Per-area m² / head lineal / sill lineal overrides from
+            // the Quantities section. Empty when the user hasn't
+            // touched any field — exporter falls back to auto values.
+            perAreaBrickOverrides,
             view3dSnapshots,
           })
         }
@@ -1440,6 +1789,635 @@ function ExportEstimateModal({
                     availableCodes={blockPickerOptions}
                     addLabel="Add block"
                   />
+                )}
+              </section>
+            )}
+
+            {/* Per-area Quantities — collapsible cards per area, one
+                per trade. Lets the user override the m² and (for
+                brick) head + sill lineal m on a per-area basis. The
+                final exported figure for each area = override ??
+                auto-computed. Sits above Supply items so the user
+                edits headline numbers first, supplies second. */}
+            {(Object.keys(perAreaBrickMetrics).length > 0 ||
+              Object.keys(perAreaBlockMetrics).length > 0) && (
+              <section id="quantities">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
+                  Quantities
+                </h3>
+                <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+                  Auto-calculated per area from the walls and openings
+                  on the plan. Expand any area to override the m² (and
+                  for brick, the head / sill lineal m) — useful when
+                  you need to bump for waste, account for a renovation,
+                  or hand-tune for unusual geometry. Empty fields fall
+                  back to the auto value.
+                </p>
+
+                {/* Brick areas */}
+                {Object.keys(perAreaBrickMetrics).length > 0 && (
+                  <div className="mb-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 mb-1.5">
+                      Brick
+                    </div>
+                    <div className="space-y-1.5">
+                      {areaSpecs
+                        .filter((a) => perAreaBrickMetrics[a.id])
+                        .map((a) => {
+                          const m = perAreaBrickMetrics[a.id]
+                          const key = `brick-${a.id}`
+                          const expanded = !!expandedAreaCards[key]
+                          const o = perAreaBrickOverrides[a.id] ?? {}
+                          const setField = (
+                            field: 'sqM' | 'headLinealM' | 'sillLinealM',
+                            v: number | undefined,
+                          ) => {
+                            setPerAreaBrickOverrides((prev) => ({
+                              ...prev,
+                              [a.id]: { ...(prev[a.id] ?? {}), [field]: v },
+                            }))
+                          }
+                          return (
+                            <div
+                              key={key}
+                              className="rounded-lg border border-ink-700 bg-ink-900/40 overflow-hidden"
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedAreaCards((s) => ({
+                                    ...s,
+                                    [key]: !s[key],
+                                  }))
+                                }
+                                className="w-full flex items-center justify-between gap-3 px-3 py-2 hover:bg-ink-800/40 transition-colors text-left"
+                              >
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <span
+                                    aria-hidden="true"
+                                    className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                                    style={{
+                                      backgroundColor:
+                                        a.colorHex ?? '#7a8896',
+                                    }}
+                                  />
+                                  <span className="text-sm text-ink-100 font-medium truncate">
+                                    {a.name}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-3 text-xs text-ink-400 tabular-nums">
+                                  <span>
+                                    <span className="text-ink-200 font-medium">
+                                      {brickAreaValue(a.id, 'sqM').toFixed(2)}
+                                    </span>{' '}
+                                    m²
+                                  </span>
+                                  <span className="text-ink-500">
+                                    {expanded ? '▾' : '▸'}
+                                  </span>
+                                </div>
+                              </button>
+                              {expanded && (
+                                <div className="px-3 py-3 border-t border-ink-700 bg-ink-900/60 space-y-2.5 text-xs">
+                                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-[11px] text-ink-400">
+                                    <div>
+                                      <span className="text-ink-500">
+                                        Walls
+                                      </span>{' '}
+                                      <span className="text-ink-200 tabular-nums">
+                                        {m.wallCount}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-ink-500">
+                                        Openings
+                                      </span>{' '}
+                                      <span className="text-ink-200 tabular-nums">
+                                        {m.openingCount}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <PerAreaInput
+                                    label="Total m²"
+                                    auto={m.sqM}
+                                    value={o.sqM}
+                                    unit="m²"
+                                    onChange={(v) => setField('sqM', v)}
+                                  />
+                                  <PerAreaInput
+                                    label="Head Lineal m"
+                                    auto={m.headLinealM}
+                                    value={o.headLinealM}
+                                    unit="m"
+                                    onChange={(v) => setField('headLinealM', v)}
+                                  />
+                                  <PerAreaInput
+                                    label="Sill Lineal m"
+                                    auto={m.sillLinealM}
+                                    value={o.sillLinealM}
+                                    unit="m"
+                                    onChange={(v) => setField('sillLinealM', v)}
+                                  />
+                                  {/* Wall-type drilldown for brick areas.
+                                      Same shape as block: each wall type is
+                                      a collapsible row showing m² in this
+                                      area; expanded reveals m² / head / sill
+                                      inputs scoped to that wall type. */}
+                                  {Object.keys(m.byMakeup).length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <div className="text-[10px] uppercase tracking-wider font-semibold text-ink-400 pt-1">
+                                        Wall types
+                                      </div>
+                                      <div className="space-y-1">
+                                        {Object.entries(m.byMakeup)
+                                          .sort(([ai], [bi]) => {
+                                            const an =
+                                              brickMakeups.find(
+                                                (mk) => mk.id === ai,
+                                              )?.name ?? ''
+                                            const bn =
+                                              brickMakeups.find(
+                                                (mk) => mk.id === bi,
+                                              )?.name ?? ''
+                                            return an.localeCompare(bn)
+                                          })
+                                          .map(([makeupId, mkData]) => {
+                                            const makeup = brickMakeups.find(
+                                              (mk) => mk.id === makeupId,
+                                            )
+                                            const mkKey = `brick-${a.id}-mk-${makeupId}`
+                                            const mkExpanded =
+                                              !!expandedAreaCards[mkKey]
+                                            const mkOv =
+                                              o.byMakeup?.[makeupId] ?? {}
+                                            const setMkField = (
+                                              field:
+                                                | 'sqM'
+                                                | 'headLinealM'
+                                                | 'sillLinealM',
+                                              v: number | undefined,
+                                            ) => {
+                                              setPerAreaBrickOverrides((prev) => {
+                                                const curr = prev[a.id] ?? {}
+                                                const byMakeupCurr =
+                                                  curr.byMakeup ?? {}
+                                                const mkCurr =
+                                                  byMakeupCurr[makeupId] ?? {}
+                                                return {
+                                                  ...prev,
+                                                  [a.id]: {
+                                                    ...curr,
+                                                    byMakeup: {
+                                                      ...byMakeupCurr,
+                                                      [makeupId]: {
+                                                        ...mkCurr,
+                                                        [field]: v,
+                                                      },
+                                                    },
+                                                  },
+                                                }
+                                              })
+                                            }
+                                            const mkDisplaySqM =
+                                              typeof mkOv.sqM === 'number'
+                                                ? mkOv.sqM
+                                                : mkData.sqM
+                                            return (
+                                              <div
+                                                key={mkKey}
+                                                className="rounded-md border border-ink-700/80 overflow-hidden"
+                                              >
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    setExpandedAreaCards((s) => ({
+                                                      ...s,
+                                                      [mkKey]: !s[mkKey],
+                                                    }))
+                                                  }
+                                                  className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 hover:bg-ink-800/40 transition-colors text-left"
+                                                >
+                                                  <span className="text-ink-100 text-[11px] font-medium truncate flex-1 min-w-0">
+                                                    {makeup?.name ??
+                                                      'Unknown wall type'}
+                                                  </span>
+                                                  <span className="text-[11px] text-ink-300 tabular-nums">
+                                                    <span className="text-ink-200 font-medium">
+                                                      {mkDisplaySqM.toFixed(2)}
+                                                    </span>{' '}
+                                                    m²
+                                                  </span>
+                                                  <span className="text-ink-500 text-[10px]">
+                                                    {mkExpanded ? '▾' : '▸'}
+                                                  </span>
+                                                </button>
+                                                {mkExpanded && (
+                                                  <div className="px-2.5 py-2 border-t border-ink-700/60 bg-ink-900/40 space-y-2">
+                                                    <PerAreaInput
+                                                      label="m² in this area"
+                                                      auto={mkData.sqM}
+                                                      value={mkOv.sqM}
+                                                      unit="m²"
+                                                      onChange={(v) =>
+                                                        setMkField('sqM', v)
+                                                      }
+                                                    />
+                                                    <PerAreaInput
+                                                      label="Head Lineal m"
+                                                      auto={mkData.headLinealM}
+                                                      value={mkOv.headLinealM}
+                                                      unit="m"
+                                                      onChange={(v) =>
+                                                        setMkField(
+                                                          'headLinealM',
+                                                          v,
+                                                        )
+                                                      }
+                                                    />
+                                                    <PerAreaInput
+                                                      label="Sill Lineal m"
+                                                      auto={mkData.sillLinealM}
+                                                      value={mkOv.sillLinealM}
+                                                      unit="m"
+                                                      onChange={(v) =>
+                                                        setMkField(
+                                                          'sillLinealM',
+                                                          v,
+                                                        )
+                                                      }
+                                                    />
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )
+                                          })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Block areas */}
+                {Object.keys(perAreaBlockMetrics).length > 0 && (
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 mb-1.5">
+                      Block
+                    </div>
+                    <div className="space-y-1.5">
+                      {areaSpecs
+                        .filter((a) => perAreaBlockMetrics[a.id])
+                        .map((a) => {
+                          const m = perAreaBlockMetrics[a.id]
+                          const key = `block-${a.id}`
+                          const expanded = !!expandedAreaCards[key]
+                          const o = perAreaBlockOverrides[a.id] ?? {}
+                          const setField = (
+                            field: 'sqM',
+                            v: number | undefined,
+                          ) => {
+                            setPerAreaBlockOverrides((prev) => ({
+                              ...prev,
+                              [a.id]: { ...(prev[a.id] ?? {}), [field]: v },
+                            }))
+                          }
+                          const setBlockCount = (
+                            code: string,
+                            v: number | undefined,
+                          ) => {
+                            setPerAreaBlockOverrides((prev) => {
+                              const curr = prev[a.id] ?? {}
+                              const blocks = { ...(curr.blocks ?? {}) }
+                              if (typeof v === 'number') {
+                                blocks[code] = v
+                              } else {
+                                delete blocks[code]
+                              }
+                              return {
+                                ...prev,
+                                [a.id]: { ...curr, blocks },
+                              }
+                            })
+                          }
+                          const sortedBlockCodes = Object.keys(m.blockTally).sort()
+                          return (
+                            <div
+                              key={key}
+                              className="rounded-lg border border-ink-700 bg-ink-900/40 overflow-hidden"
+                            >
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedAreaCards((s) => ({
+                                    ...s,
+                                    [key]: !s[key],
+                                  }))
+                                }
+                                className="w-full flex items-center justify-between gap-3 px-3 py-2 hover:bg-ink-800/40 transition-colors text-left"
+                              >
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <span
+                                    aria-hidden="true"
+                                    className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                                    style={{
+                                      backgroundColor:
+                                        a.colorHex ?? '#7a8896',
+                                    }}
+                                  />
+                                  <span className="text-sm text-ink-100 font-medium truncate">
+                                    {a.name}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-3 text-xs text-ink-400 tabular-nums">
+                                  <span>
+                                    <span className="text-ink-200 font-medium">
+                                      {blockAreaValue(a.id, 'sqM').toFixed(2)}
+                                    </span>{' '}
+                                    m²
+                                  </span>
+                                  <span className="text-ink-500">
+                                    {expanded ? '▾' : '▸'}
+                                  </span>
+                                </div>
+                              </button>
+                              {expanded && (
+                                <div className="px-3 py-3 border-t border-ink-700 bg-ink-900/60 space-y-3 text-xs">
+                                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-[11px] text-ink-400">
+                                    <div>
+                                      <span className="text-ink-500">
+                                        Walls
+                                      </span>{' '}
+                                      <span className="text-ink-200 tabular-nums">
+                                        {m.wallCount}
+                                      </span>
+                                    </div>
+                                    <div>
+                                      <span className="text-ink-500">Run</span>{' '}
+                                      <span className="text-ink-200 tabular-nums">
+                                        {m.runM.toFixed(2)} m
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <PerAreaInput
+                                    label="Total m²"
+                                    auto={m.sqM}
+                                    value={o.sqM}
+                                    unit="m²"
+                                    onChange={(v) => setField('sqM', v)}
+                                  />
+                                  {/* Per-block-code editor for this area.
+                                      Auto count from calculateProjectTally
+                                      on the area's wall subset; override
+                                      replaces the auto count at export
+                                      time. Empty / cleared input falls
+                                      back to auto. */}
+                                  {sortedBlockCodes.length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <div className="text-[10px] uppercase tracking-wider font-semibold text-ink-400 pt-1">
+                                        Block breakdown
+                                      </div>
+                                      <div className="rounded-md border border-ink-700/80 divide-y divide-ink-700/60">
+                                        {sortedBlockCodes.map((code) => {
+                                          const autoCount = m.blockTally[code] ?? 0
+                                          const ovCount =
+                                            o.blocks?.[code]
+                                          return (
+                                            <div
+                                              key={code}
+                                              className="flex items-center justify-between gap-2 px-2.5 py-1.5"
+                                            >
+                                              <div className="min-w-0 flex-1">
+                                                <div className="text-ink-100 font-mono text-[11px]">
+                                                  {code}
+                                                </div>
+                                                <div className="text-ink-500 text-[10px] truncate">
+                                                  {blockLabel(code) || '—'}
+                                                </div>
+                                              </div>
+                                              <PerAreaCountInput
+                                                auto={autoCount}
+                                                value={ovCount}
+                                                onChange={(v) =>
+                                                  setBlockCount(code, v)
+                                                }
+                                              />
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {/* Wall-type drilldown — list every wall
+                                      type used in this area, each
+                                      expandable to a per-wall-type m²
+                                      input + per-code editor scoped to
+                                      that wall type only. */}
+                                  {Object.keys(m.byMakeup).length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <div className="text-[10px] uppercase tracking-wider font-semibold text-ink-400 pt-1">
+                                        Wall types
+                                      </div>
+                                      <div className="space-y-1">
+                                        {Object.entries(m.byMakeup)
+                                          .sort(([ai], [bi]) => {
+                                            const an =
+                                              blockMakeups.find(
+                                                (mk) => mk.id === ai,
+                                              )?.name ?? ''
+                                            const bn =
+                                              blockMakeups.find(
+                                                (mk) => mk.id === bi,
+                                              )?.name ?? ''
+                                            return an.localeCompare(bn)
+                                          })
+                                          .map(([makeupId, mkData]) => {
+                                            const makeup = blockMakeups.find(
+                                              (mk) => mk.id === makeupId,
+                                            )
+                                            const mkKey = `block-${a.id}-mk-${makeupId}`
+                                            const mkExpanded =
+                                              !!expandedAreaCards[mkKey]
+                                            const mkOv =
+                                              o.byMakeup?.[makeupId] ?? {}
+                                            const setMkField = (
+                                              field: 'sqM',
+                                              v: number | undefined,
+                                            ) => {
+                                              setPerAreaBlockOverrides((prev) => {
+                                                const curr = prev[a.id] ?? {}
+                                                const byMakeupCurr =
+                                                  curr.byMakeup ?? {}
+                                                const mkCurr =
+                                                  byMakeupCurr[makeupId] ?? {}
+                                                return {
+                                                  ...prev,
+                                                  [a.id]: {
+                                                    ...curr,
+                                                    byMakeup: {
+                                                      ...byMakeupCurr,
+                                                      [makeupId]: {
+                                                        ...mkCurr,
+                                                        [field]: v,
+                                                      },
+                                                    },
+                                                  },
+                                                }
+                                              })
+                                            }
+                                            const setMkBlockCount = (
+                                              code: string,
+                                              v: number | undefined,
+                                            ) => {
+                                              setPerAreaBlockOverrides((prev) => {
+                                                const curr = prev[a.id] ?? {}
+                                                const byMakeupCurr =
+                                                  curr.byMakeup ?? {}
+                                                const mkCurr =
+                                                  byMakeupCurr[makeupId] ?? {}
+                                                const blocks = {
+                                                  ...(mkCurr.blocks ?? {}),
+                                                }
+                                                if (typeof v === 'number') {
+                                                  blocks[code] = v
+                                                } else {
+                                                  delete blocks[code]
+                                                }
+                                                return {
+                                                  ...prev,
+                                                  [a.id]: {
+                                                    ...curr,
+                                                    byMakeup: {
+                                                      ...byMakeupCurr,
+                                                      [makeupId]: {
+                                                        ...mkCurr,
+                                                        blocks,
+                                                      },
+                                                    },
+                                                  },
+                                                }
+                                              })
+                                            }
+                                            const mkAutoSqM = mkData.sqM
+                                            const mkDisplaySqM =
+                                              typeof mkOv.sqM === 'number'
+                                                ? mkOv.sqM
+                                                : mkAutoSqM
+                                            const mkCodes = Object.keys(
+                                              mkData.blockTally,
+                                            ).sort()
+                                            return (
+                                              <div
+                                                key={mkKey}
+                                                className="rounded-md border border-ink-700/80 overflow-hidden"
+                                              >
+                                                <button
+                                                  type="button"
+                                                  onClick={() =>
+                                                    setExpandedAreaCards((s) => ({
+                                                      ...s,
+                                                      [mkKey]: !s[mkKey],
+                                                    }))
+                                                  }
+                                                  className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 hover:bg-ink-800/40 transition-colors text-left"
+                                                >
+                                                  <span className="text-ink-100 text-[11px] font-medium truncate flex-1 min-w-0">
+                                                    {makeup?.name ??
+                                                      'Unknown wall type'}
+                                                  </span>
+                                                  <span className="text-[11px] text-ink-300 tabular-nums">
+                                                    <span className="text-ink-200 font-medium">
+                                                      {mkDisplaySqM.toFixed(2)}
+                                                    </span>{' '}
+                                                    m²
+                                                  </span>
+                                                  <span className="text-ink-500 text-[10px]">
+                                                    {mkExpanded ? '▾' : '▸'}
+                                                  </span>
+                                                </button>
+                                                {mkExpanded && (
+                                                  <div className="px-2.5 py-2 border-t border-ink-700/60 bg-ink-900/40 space-y-2">
+                                                    <PerAreaInput
+                                                      label="m² in this area"
+                                                      auto={mkAutoSqM}
+                                                      value={mkOv.sqM}
+                                                      unit="m²"
+                                                      onChange={(v) =>
+                                                        setMkField('sqM', v)
+                                                      }
+                                                    />
+                                                    {mkCodes.length > 0 && (
+                                                      <div className="space-y-1">
+                                                        <div className="text-[10px] uppercase tracking-wider font-semibold text-ink-500">
+                                                          Blocks
+                                                        </div>
+                                                        <div className="rounded border border-ink-700/60 divide-y divide-ink-700/40">
+                                                          {mkCodes.map(
+                                                            (code) => {
+                                                              const mkAuto =
+                                                                mkData
+                                                                  .blockTally[
+                                                                  code
+                                                                ] ?? 0
+                                                              const mkOvVal =
+                                                                mkOv.blocks?.[
+                                                                  code
+                                                                ]
+                                                              return (
+                                                                <div
+                                                                  key={code}
+                                                                  className="flex items-center justify-between gap-2 px-2 py-1"
+                                                                >
+                                                                  <div className="min-w-0 flex-1">
+                                                                    <div className="text-ink-100 font-mono text-[10px]">
+                                                                      {code}
+                                                                    </div>
+                                                                    <div className="text-ink-500 text-[9px] truncate">
+                                                                      {blockLabel(
+                                                                        code,
+                                                                      ) || '—'}
+                                                                    </div>
+                                                                  </div>
+                                                                  <PerAreaCountInput
+                                                                    auto={mkAuto}
+                                                                    value={
+                                                                      mkOvVal
+                                                                    }
+                                                                    onChange={(
+                                                                      v,
+                                                                    ) =>
+                                                                      setMkBlockCount(
+                                                                        code,
+                                                                        v,
+                                                                      )
+                                                                    }
+                                                                  />
+                                                                </div>
+                                                              )
+                                                            },
+                                                          )}
+                                                        </div>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )
+                                          })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                    </div>
+                  </div>
                 )}
               </section>
             )}
@@ -2316,5 +3294,109 @@ function SectionToggle({
       />
       <span className="flex-1">{label}</span>
     </label>
+  )
+}
+
+/**
+ * Editable numeric input for per-area Quantities. Shows the auto-
+ * computed value as a hint when no override is set; user can type a
+ * different value to override. Empty / cleared input falls back to
+ * the auto value (state stored as undefined).
+ */
+function PerAreaInput({
+  label,
+  auto,
+  value,
+  unit,
+  onChange,
+}: {
+  label: string
+  auto: number
+  value: number | undefined
+  unit: string
+  onChange: (next: number | undefined) => void
+}) {
+  const hasOverride = typeof value === 'number'
+  const [draft, setDraft] = useState<string>(
+    hasOverride ? String(value) : '',
+  )
+  // Re-sync draft when the prop value changes from outside (e.g. when
+  // a different area's overrides come into focus or a reset happens).
+  useEffect(() => {
+    setDraft(hasOverride ? String(value) : '')
+  }, [value, hasOverride])
+  return (
+    <label className="flex items-center justify-between gap-3">
+      <span className="flex-shrink-0 text-ink-300">{label}</span>
+      <div className="flex items-center gap-2 min-w-0">
+        <input
+          type="number"
+          step="0.01"
+          min={0}
+          value={draft}
+          placeholder={auto.toFixed(2)}
+          onChange={(e) => {
+            const v = e.target.value
+            setDraft(v)
+            if (v === '') {
+              onChange(undefined)
+              return
+            }
+            const n = parseFloat(v)
+            if (Number.isFinite(n)) onChange(n)
+          }}
+          className="w-24 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 tabular-nums text-right focus:outline-none focus:border-beme-400"
+        />
+        <span className="text-ink-400 text-[11px] w-6 text-left flex-shrink-0">
+          {unit}
+        </span>
+      </div>
+    </label>
+  )
+}
+
+/**
+ * Compact integer input for the per-area block-code editor. Tighter
+ * footprint than PerAreaInput (one row per code, sometimes 10+ of
+ * them in a single area card). Shows the auto count in the placeholder
+ * when no override is set; typing replaces it. Empty / cleared input
+ * clears the override and falls back to the auto count.
+ */
+function PerAreaCountInput({
+  auto,
+  value,
+  onChange,
+}: {
+  auto: number
+  value: number | undefined
+  onChange: (next: number | undefined) => void
+}) {
+  const hasOverride = typeof value === 'number'
+  const [draft, setDraft] = useState<string>(
+    hasOverride ? String(value) : '',
+  )
+  useEffect(() => {
+    setDraft(hasOverride ? String(value) : '')
+  }, [value, hasOverride])
+  return (
+    <input
+      type="number"
+      step="1"
+      min={0}
+      value={draft}
+      placeholder={String(auto)}
+      onChange={(e) => {
+        const v = e.target.value
+        setDraft(v)
+        if (v === '') {
+          onChange(undefined)
+          return
+        }
+        const n = parseInt(v, 10)
+        if (Number.isFinite(n)) onChange(Math.max(0, n))
+      }}
+      title={`Auto-tallied count: ${auto}`}
+      className="w-16 px-1.5 py-0.5 border border-ink-600 rounded text-[11px] bg-ink-900 text-ink-50 tabular-nums text-right focus:outline-none focus:border-beme-400 flex-shrink-0"
+    />
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
 import { useOrganisations } from '../lib/organisations'
@@ -46,6 +47,15 @@ export default function LeftNav({
   // users get the icon-only rail without having to discover the
   // toggle.
   const [collapsed, setCollapsed] = useState<boolean>(() => {
+    // `defaultCollapsed` true (workspace pages) FORCES collapsed on
+    // mount regardless of any stored expansion preference. Trades
+    // global localStorage persistence for per-page auto-collapse —
+    // the user wanted the rail to auto-minimise when opening a
+    // project even if they normally keep it expanded on the
+    // dashboard. They can still manually expand within the session
+    // via the toggle, and that toggle persists for non-workspace
+    // pages (dashboard, projects, etc.).
+    if (defaultCollapsed === true) return true
     if (typeof window === 'undefined') return defaultCollapsed
     try {
       const stored = window.localStorage.getItem(STORAGE_KEY)
@@ -76,22 +86,30 @@ export default function LeftNav({
 
   return (
     <aside
+      // Rail stays at its natural z position so modals fully cover it
+      // when they open. The profile dropdown escapes any stacking
+      // issues by rendering in a Portal at the document root (see
+      // UserMenuRail below).
       className={`hidden lg:flex ${railWidth} flex-shrink-0 border-r border-ink-700 bg-ink-900 flex-col h-screen sticky top-0 transition-[width] duration-200 relative group/rail`}
     >
-      {/* Collapse / expand toggle — floats on the rail's outer edge.
-          Hidden until the user hovers the rail (group/rail) so the
-          chrome stays clean by default, then appears as a small
-          chevron button they can click to flip modes. Persisted to
-          localStorage so the choice survives reloads. */}
-      <button
-        type="button"
-        onClick={toggleCollapsed}
-        title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        className="absolute top-9 -right-4 z-20 w-8 h-8 rounded-full border border-ink-600 bg-ink-800 text-ink-200 hover:text-ink-50 hover:bg-ink-700 hover:border-beme-500/60 flex items-center justify-center text-base font-semibold leading-none opacity-0 group-hover/rail:opacity-100 focus:opacity-100 transition-opacity shadow-md shadow-black/30"
-      >
-        {collapsed ? '›' : '‹'}
-      </button>
+      {/* Collapse / expand toggle — lives in a thin header strip at
+          the very top of the rail. Always visible (no hover gate)
+          and inside the rail bounds so it reads as part of the
+          chrome rather than floating outside. Persisted to
+          localStorage so the choice survives reloads on non-
+          workspace pages; workspace pages force collapsed on mount
+          (see defaultCollapsed handling in the state init above). */}
+      <div className="flex items-center justify-center h-12 px-2">
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="w-9 h-9 rounded-lg border border-ink-700 bg-ink-800/60 text-ink-300 hover:text-ink-50 hover:bg-ink-700 hover:border-beme-500/40 flex items-center justify-center text-base leading-none transition-colors"
+        >
+          {collapsed ? '›' : '‹'}
+        </button>
+      </div>
 
       {/* Brand block — Beme square mark. In expanded mode the
           wordmark + tagline sit alongside; collapsed mode shows just
@@ -128,6 +146,13 @@ export default function LeftNav({
             <div className="leading-tight min-w-0 relative z-10">
               <div className="text-[26px] font-extrabold tracking-tight text-ink-50 leading-none">
                 Beme
+              </div>
+              {/* Tagline under the wordmark. Sits in the same brand
+                  block as the mark so the whole top-left chunk reads
+                  as one unit. Quiet weight + muted ink so it doesn't
+                  fight the wordmark for the eye's first stop. */}
+              <div className="text-[11px] text-ink-400 mt-1 leading-tight">
+                Building estimates made easy
               </div>
             </div>
           </div>
@@ -413,11 +438,55 @@ function UserMenuRail({
   const [theme, setTheme] = useTheme()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  // Fixed-position coords for the portal-rendered dropdown. Computed
+  // from the avatar button's bounding rect when `open` flips true so
+  // the menu sits adjacent to the trigger but escapes any z-stacking
+  // / overflow:hidden ancestors (modals, AppShell, etc.).
+  const [coords, setCoords] = useState<{ top: number; left: number }>({
+    top: 0,
+    left: 0,
+  })
+
+  // Position-on-open + reposition-on-resize.
+  useEffect(() => {
+    if (!open) return
+    function reposition() {
+      const btn = buttonRef.current
+      if (!btn) return
+      const rect = btn.getBoundingClientRect()
+      if (collapsed) {
+        // Fly out to the right of the avatar, top-aligned with the
+        // avatar. ml-2 equivalent (8px gap).
+        setCoords({ top: rect.top, left: rect.right + 8 })
+      } else {
+        // Drop below the user pill, left-aligned with it.
+        setCoords({ top: rect.bottom + 8, left: rect.left })
+      }
+    }
+    reposition()
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [open, collapsed])
 
   useEffect(() => {
     if (!open) return
     function handleClick(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      // Click anywhere outside the avatar button OR the portal menu
+      // closes the menu. Both refs are consulted because the portal
+      // menu lives outside the avatar's DOM subtree.
+      if (
+        !ref.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        setOpen(false)
+      }
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false)
@@ -455,6 +524,7 @@ function UserMenuRail({
   return (
     <div className={collapsed ? 'relative' : 'relative w-full'} ref={ref}>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={collapsed ? primaryLabel : undefined}
@@ -485,59 +555,64 @@ function UserMenuRail({
           </>
         )}
       </button>
-      {open && (
-        <div
-          className={`absolute bottom-full mb-2 rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-30 py-1 text-sm ${
-            collapsed
-              ? 'left-full ml-2 w-56'
-              : 'left-0 w-full'
-          }`}
-        >
-          {collapsed && (
-            <div className="px-3 py-2 border-b border-ink-700/60">
-              <div className="text-sm font-medium text-ink-100 truncate">
-                {primaryLabel}
-              </div>
-              {showEmailSubtitle && (
-                <div className="text-[10px] text-ink-500 truncate mt-0.5">
-                  {user.email}
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{
+              position: 'fixed',
+              top: coords.top,
+              left: coords.left,
+              width: collapsed ? '14rem' : buttonRef.current?.getBoundingClientRect().width,
+            }}
+            className="rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-[100] py-1 text-sm"
+          >
+            {collapsed && (
+              <div className="px-3 py-2 border-b border-ink-700/60">
+                <div className="text-sm font-medium text-ink-100 truncate">
+                  {primaryLabel}
                 </div>
-              )}
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false)
-              navigate('/settings')
-            }}
-            className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
-          >
-            <span className="text-ink-400">⚙</span> Settings
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setTheme(isLight ? 'dark' : 'light')
-            }}
-            className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
-          >
-            <span className="text-ink-400">{isLight ? '☀' : '☾'}</span>
-            {isLight ? 'Light theme' : 'Dark theme'}
-          </button>
-          <div className="border-t border-ink-600 my-1" />
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false)
-              void signOut()
-            }}
-            className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors"
-          >
-            Sign out
-          </button>
-        </div>
-      )}
+                {showEmailSubtitle && (
+                  <div className="text-[10px] text-ink-500 truncate mt-0.5">
+                    {user.email}
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                navigate('/settings')
+              }}
+              className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
+            >
+              <span className="text-ink-400">⚙</span> Settings
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTheme(isLight ? 'dark' : 'light')
+              }}
+              className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
+            >
+              <span className="text-ink-400">{isLight ? '☀' : '☾'}</span>
+              {isLight ? 'Light theme' : 'Dark theme'}
+            </button>
+            <div className="border-t border-ink-600 my-1" />
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                void signOut()
+              }}
+              className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors"
+            >
+              Sign out
+            </button>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

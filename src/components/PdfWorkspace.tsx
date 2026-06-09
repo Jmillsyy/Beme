@@ -50,13 +50,13 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import SupplyItemsPanel from './SupplyItemsPanel'
-import TradeRail from './TradeRail'
 import AreaTabs from './AreaTabs'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickTypesPanel from './BrickTypesPanel'
+import TradeRail from './TradeRail'
 import MaterialLibraryGate from './MaterialLibraryGate'
 import LibraryGuidance from './LibraryGuidance'
 import LengthInput from './LengthInput'
@@ -3066,9 +3066,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         return 'Add at least one brick to your Material library before drawing.'
       }
     }
+    // "All areas" is a viewing mode — a wall drawn here would have no
+    // areaId set, which then bleeds into per-area tallies / exports
+    // as an "Unassigned" bucket the user usually didn't intend. Force
+    // them to pick a specific area first. The gate only fires when
+    // the project actually has areas defined — if no areas exist,
+    // activeAreaId=null just means "draw anywhere" and that's fine.
+    if (activeAreaId === null && areas.length > 0) {
+      return 'Pick an area on the right to draw — "All areas" is view-only.'
+    }
     return null
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, blockLibraryVersion, brickLibraryVersion])
+  }, [mode, blockLibraryVersion, brickLibraryVersion, activeAreaId, areas.length])
   const canDraw = drawBlockedReason === null
 
   /**
@@ -6201,7 +6210,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           onClose={() => setDetailsDrawerOpen(false)}
         />
 
-        <div className="sticky top-0 h-[calc(100vh/0.79)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
+        <div className="sticky top-0 h-[calc(100vh/0.79)] relative flex flex-col px-4 pt-2 pb-4 bg-ink-900">
           <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
             {/* ── Canvas area: drop zone fills the height ── */}
@@ -6335,7 +6344,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             </div>
 
             {/* ── Right rail: same as workspace mode ── */}
-            <aside className="w-full mt-3 space-y-4 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
+            <aside className="w-full mt-3 space-y-3 lg:w-[272px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
                 <WallTypesPanel
                   // Per-area filter — same as the main render below.
@@ -6473,7 +6482,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           and right rail below take up the full visible area once the
           header chrome has scrolled away. The PDF pan container still has
           its own internal scroll for the plan content. */}
-      <div className="sticky top-0 h-[calc(100vh/0.79)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
+      <div className="sticky top-0 h-[calc(100vh/0.79)] relative flex flex-col px-4 pt-2 pb-4 bg-ink-900">
 
       {/* Empty-library gate. Now controlled by materialPromptMode so it
           only fires when the user actively clicked a trade tab whose
@@ -8426,12 +8435,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         // butts flush against whatever's around it (rail / page bg),
         // and the Canvas inside fills the wrapper edge to edge.
         <div
-          className="flex-1 min-w-0 min-h-0 relative overflow-hidden"
+          className="flex-1 min-w-0 min-h-0 self-stretch h-full relative overflow-hidden"
           // Wrapper bg doubles as the visible "frame" around the 3D
           // Canvas (the Canvas is absolute-inset-0). Flip with theme so
           // it matches the scene clearColor in either mode — dark slate
           // in dark, warm off-white in light — and stays seamless with
           // the surrounding chrome.
+          //
+          // self-stretch + h-full: belt-and-braces to force the wrapper
+          // to take the full row height. Without these, on some
+          // layouts the wrapper was sizing to its (zero-height) content
+          // and ManualResizeCanvas measured a too-short height,
+          // leaving workspace bg visible below the 3D canvas. flex
+          // align-items: stretch should already do this in theory, but
+          // min-h-0 + the absolute child inside seems to confuse the
+          // default stretch in practice.
           style={{ backgroundColor: theme === 'light' ? '#f7f4ec' : '#1a1d24' }}
         >
           {isReferenceView ? (
@@ -8863,7 +8881,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           canvas on smaller screens.
 
           Stays visible in BOTH 2D and 3D modes. */}
-      <aside className="w-full mt-3 space-y-4 lg:w-[340px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
+      <aside className="w-full mt-3 space-y-3 lg:w-[272px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
 
         {/* Area tabs — named subdivisions of the project ("Balcony",
             "Staircase", "Level 1", etc.). Sits at the TOP of the right
@@ -9292,7 +9310,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   return (
     <div
       ref={sidebarRef}
-      className="w-44 flex-shrink-0 max-h-full overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-2 shadow-lg"
+      className="w-32 flex-shrink-0 max-h-full overflow-y-auto bg-ink-800 border border-ink-600 rounded-xl p-1.5 shadow-lg"
     >
       <Document
         key={pdfFile?.name ?? 'no-file'}
@@ -9300,7 +9318,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
         loading={null}
         error={null}
       >
-        <div className="space-y-2.5">
+        <div className="space-y-1.5">
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => {
             const isCurrent = pageNum === currentPage
             const hasScale =
@@ -9311,7 +9329,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
             return (
               <div
                 key={pageNum}
-                className={`relative group block w-full p-1.5 rounded-lg transition-colors text-left ${
+                className={`relative group block w-full p-1 rounded-md transition-colors text-left ${
                   isCurrent
                     ? 'ring-2 ring-beme-500 bg-beme-500/10'
                     : 'ring-1 ring-ink-600 hover:ring-beme-500/60 bg-ink-700/40'
@@ -9322,22 +9340,22 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                   className="block w-full text-left"
                 >
                   <div
-                    className="bg-ink-800 flex justify-center overflow-hidden rounded-md"
+                    className="bg-ink-800 flex justify-center overflow-hidden rounded"
                     style={{ lineHeight: 0 }}
                   >
                     <Page
                       pageNumber={pageNum}
-                      width={148}
+                      width={104}
                       renderAnnotationLayer={false}
                       renderTextLayer={false}
                     />
                   </div>
                   <div
-                    className={`mt-1 text-xs flex items-center justify-between px-1 ${
+                    className={`mt-0.5 text-[10px] flex items-center justify-between px-0.5 ${
                       isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
                     }`}
                   >
-                    <span className="flex items-center gap-1.5 min-w-0">
+                    <span className="flex items-center gap-1 min-w-0">
                       {pageAreaColorByPage?.[pageNum] && (
                         <span
                           className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
@@ -9346,7 +9364,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                           aria-hidden
                         />
                       )}
-                      <span className="truncate">Page {pageNum}</span>
+                      <span className="truncate">P{pageNum}</span>
                     </span>
                     {hasScale && (
                       <span className="text-emerald-300" title="Scale set">
@@ -9355,7 +9373,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                     )}
                   </div>
                   {wallCount > 0 && (
-                    <div className="text-[10px] text-ink-400 px-1">
+                    <div className="text-[9px] text-ink-400 px-0.5 leading-tight">
                       {wallCount} wall{wallCount === 1 ? '' : 's'}
                     </div>
                   )}

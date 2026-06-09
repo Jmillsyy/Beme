@@ -111,6 +111,36 @@ interface ExportParams {
    * to >= 0 so a too-aggressive adjustment can't render a negative.
    */
   blockAdjustments?: Record<BlockCode, number>
+  /**
+   * Per-area overrides from the export modal's Quantities section.
+   * For each area the user can override:
+   *   - `sqM`: replaces the calc-engine m² for that area's wall
+   *     subset; flows into supply-item per-m² math + summary.
+   *   - `blocks`: per-block-code count overrides for that area.
+   *     Each override replaces the auto-tally count for that code
+   *     in that area; deltas are summed globally and applied to
+   *     the project-wide block tally.
+   *
+   * Keyed by areaId (or `__unassigned__` for the unassigned
+   * bucket). Missing fields fall back to the calc-engine value.
+   */
+  perAreaBlockOverrides?: Record<
+    string,
+    {
+      sqM?: number
+      blocks?: Record<string, number>
+      /** Per-wall-type drilldown overrides within this area. Keyed
+       *  by makeup id. Each entry can override that wall type's m²
+       *  contribution and per-code counts in this area. Deltas are
+       *  computed against the per-(area, makeup) auto totals and
+       *  applied to the project-wide tally the same way the
+       *  area-level overrides are. */
+      byMakeup?: Record<
+        string,
+        { sqM?: number; blocks?: Record<string, number> }
+      >
+    }
+  >
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
@@ -1212,6 +1242,93 @@ export async function buildBlockEstimateHtml(
     piers,
     pierMakeupsById
   )
+
+  // Apply per-area per-block-code overrides from the export modal's
+  // Quantities section, BEFORE the blockAdjustments pass below.
+  // For every (area, code) the user has overridden, compute the
+  // auto count on the area's wall subset, then mutate rawTally by
+  // the delta (override - auto). End result: blockAdjustments work
+  // as before on top of an already-adjusted rawTally.
+  const perAreaBlockOv = params.perAreaBlockOverrides ?? {}
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      const blockOv = ov.blocks
+      if (!blockOv || Object.keys(blockOv).length === 0) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      const piersInArea = piers.filter((p) => {
+        const pWallId = (p as { wallId?: string }).wallId
+        if (pWallId) return wallIds.has(pWallId)
+        return true
+      })
+      const areaTally = calculateProjectTally(
+        wallsInArea,
+        makeupsById,
+        openingsInArea,
+        piersInArea,
+        pierMakeupsById,
+      )
+      for (const [code, overrideCount] of Object.entries(blockOv)) {
+        if (typeof overrideCount !== 'number') continue
+        const c = code as BlockCode
+        const autoCount = areaTally[c] ?? 0
+        const delta = overrideCount - autoCount
+        if (delta === 0) continue
+        const currentGlobal = rawTally[c] ?? 0
+        rawTally[c] = Math.max(0, currentGlobal + delta)
+      }
+    }
+  }
+
+  // Apply per-(area, makeup) per-block-code overrides — the
+  // wall-type drilldown inside each area. Computes the auto count
+  // on the wall subset filtered to BOTH the area and the makeup,
+  // then applies (override - auto) deltas to rawTally. Runs after
+  // the area-level pass so per-wall-type edits stack on top of
+  // any area-level edits the user made.
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      const byMakeup = ov.byMakeup
+      if (!byMakeup) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+        const blockOv = mkOv.blocks
+        if (!blockOv || Object.keys(blockOv).length === 0) continue
+        const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+        if (mkWalls.length === 0) continue
+        const mkWallIds = new Set(mkWalls.map((w) => w.id))
+        const mkOpenings = openings.filter((o) => mkWallIds.has(o.wallId))
+        const mkPiers = piers.filter((p) => {
+          const pWallId = (p as { wallId?: string }).wallId
+          if (!pWallId) return false
+          return mkWallIds.has(pWallId)
+        })
+        const mkAutoTally = calculateProjectTally(
+          mkWalls,
+          makeupsById,
+          mkOpenings,
+          mkPiers,
+          pierMakeupsById,
+        )
+        for (const [code, overrideCount] of Object.entries(blockOv)) {
+          if (typeof overrideCount !== 'number') continue
+          const c = code as BlockCode
+          const autoCount = mkAutoTally[c] ?? 0
+          const delta = overrideCount - autoCount
+          if (delta === 0) continue
+          const currentGlobal = rawTally[c] ?? 0
+          rawTally[c] = Math.max(0, currentGlobal + delta)
+        }
+      }
+    }
+  }
   // Apply per-block adjustments. Each entry in `blockAdjustments` is
   // a SIGNED delta to subtract from the tally:
   //   - positive number → remove from tally (already on site, reused).
@@ -1256,6 +1373,84 @@ export async function buildBlockEstimateHtml(
     totalAreaSqMm_supply -= o.widthMm * o.heightMm
   }
   if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+
+  // Apply per-area m² overrides from the export modal's Quantities
+  // section. For each area with an override, compute the auto m²
+  // on that area's wall subset and apply the delta to the global
+  // totalAreaSqMm_supply. Drives the blockwork-area figure used by
+  // per-m² supply items + summary lines; the block schedule (counts
+  // per code) is geometry-bound and remains untouched.
+  // (`perAreaBlockOv` is the same map already captured above for the
+  // per-code overrides — reuse it here for the m² delta pass.)
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const areaId of Object.keys(perAreaBlockOv)) {
+      const ov = perAreaBlockOv[areaId]
+      if (!ov || typeof ov.sqM !== 'number') continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      let autoAreaSqMm = 0
+      for (const w of wallsInArea) {
+        const dx = w.endX - w.startX
+        const dy = w.endY - w.startY
+        const lenMm = Math.sqrt(dx * dx + dy * dy)
+        const h =
+          w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+        autoAreaSqMm += lenMm * h
+      }
+      for (const o of openingsInArea) {
+        autoAreaSqMm -= o.widthMm * o.heightMm
+      }
+      autoAreaSqMm = Math.max(0, autoAreaSqMm)
+      const overrideSqMm = ov.sqM * 1_000_000
+      totalAreaSqMm_supply += overrideSqMm - autoAreaSqMm
+    }
+    if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+  }
+
+  // Per-(area, makeup) m² overrides — wall-type drilldown sqM.
+  // These only apply when the area itself has no area-level sqM
+  // override (otherwise the area-level value is the boss for total
+  // m² and we'd double-count). For each unrestricted area, sum the
+  // (override - auto) deltas across its makeup-level overrides and
+  // apply to totalAreaSqMm_supply.
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      if (typeof ov.sqM === 'number') continue // area-level wins
+      const byMakeup = ov.byMakeup
+      if (!byMakeup) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+        if (typeof mkOv.sqM !== 'number') continue
+        const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+        if (mkWalls.length === 0) continue
+        const mkWallIds = new Set(mkWalls.map((w) => w.id))
+        const mkOpenings = openings.filter((o) => mkWallIds.has(o.wallId))
+        let mkAutoSqMm = 0
+        for (const w of mkWalls) {
+          const dx = w.endX - w.startX
+          const dy = w.endY - w.startY
+          const lenMm = Math.sqrt(dx * dx + dy * dy)
+          const h =
+            w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+          mkAutoSqMm += lenMm * h
+        }
+        for (const o of mkOpenings) {
+          mkAutoSqMm -= o.widthMm * o.heightMm
+        }
+        mkAutoSqMm = Math.max(0, mkAutoSqMm)
+        const mkOverrideSqMm = mkOv.sqM * 1_000_000
+        totalAreaSqMm_supply += mkOverrideSqMm - mkAutoSqMm
+      }
+    }
+    if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+  }
 
   // User-defined supply items applicable to block estimates. Source
   // of truth: when an org is active, use the org-synced Supabase

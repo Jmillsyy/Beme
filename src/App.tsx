@@ -9,6 +9,7 @@ import MaterialLibraryPage from './pages/MaterialLibraryPage'
 import GuidePage from './pages/GuidePage'
 import AcceptInvitePage from './pages/AcceptInvitePage'
 import WelcomePage from './pages/WelcomePage'
+import AppShell from './components/AppShell'
 import { useAuth } from './lib/auth'
 import { isSupabaseConfigured } from './lib/supabase'
 import ToastHost from './components/ToastHost'
@@ -57,13 +58,20 @@ export default function App() {
     <>
       <ErrorBoundary>
         <Routes>
-          <Route path="/" element={<HomePage />} />
+          {/* Dashboard-style pages share a single AppShell mount —
+              LeftNav stays alive across nav clicks so they don't flash
+              the whole chrome away and back. Each child page renders
+              into AppShell's <Outlet />. */}
+          <Route element={<AppShell />}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/library" element={<MaterialLibraryPage />} />
+            <Route path="/guide" element={<GuidePage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/projects" element={<ProjectsPage />} />
+          </Route>
+          {/* Workspace + standalone pages own their own layout. */}
           <Route path="/project/brick" element={<BrickEstimatePage />} />
           <Route path="/project/block" element={<BlockEstimatePage />} />
-          <Route path="/library" element={<MaterialLibraryPage />} />
-          <Route path="/guide" element={<GuidePage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/accept-invite" element={<AcceptInvitePage />} />
           <Route path="/welcome" element={<WelcomePage />} />
         </Routes>

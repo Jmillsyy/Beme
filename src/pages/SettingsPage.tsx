@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import AppShell from '../components/AppShell'
 import BemeLoader from '../components/BemeLoader'
 import {
   resetUserSettings,
@@ -211,7 +210,7 @@ export default function SettingsPage() {
   )
 
   return (
-    <AppShell>
+    <>
       <div className="px-12 py-10">
         <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
           <div>
@@ -320,7 +319,7 @@ export default function SettingsPage() {
           </section>
         </div>
       </div>
-    </AppShell>
+    </>
   )
 }
 

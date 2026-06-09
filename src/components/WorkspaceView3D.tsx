@@ -5887,11 +5887,9 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     // height`, which is smaller than `sizeMax` itself — so fitting
     // the camera to `sizeMax` over-shoots distance and leaves the
     // building taking ~50% of the canvas. Multiplier 0.40 brings the
-    // camera in tight so the projected building fills the viewport
-    // close to edge-to-edge; long thin buildings may clip on the
-    // long axis but F-fit lets the user recover. (Was 0.55 — left
-    // visible empty 3D scene space on the right + bottom of the
-    // canvas; user feedback wanted a tighter frame.)
+    // camera in tight; long thin buildings may clip on the long axis
+    // but F-fit lets the user recover. (Tried 0.28 — too aggressive,
+    // camera ended up INSIDE the model on small footprints.)
     const dist = (sizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.40
     // Place at 45° around the building, slightly elevated. Keeping
     // Y proportional to dist (0.55) gives a comfortable 3/4 view.
@@ -5940,8 +5938,16 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
             gl.setSize(width, height, true)
           }}
           style={{
-            width: `${width}px`,
-            height: `${height}px`,
+            // CSS sizing uses 100% so the canvas element ALWAYS visually
+            // fills its parent, regardless of whether our ManualResizeCanvas
+            // got a stale or pre-final measurement. The pixel-precise
+            // `width` / `height` props are still passed below to drive
+            // the WebGL framebuffer resolution via gl.setSize, but the
+            // displayed CSS size is decoupled — so even if the
+            // framebuffer is a frame behind, the visible canvas surface
+            // doesn't show the wrapper's bg through gaps.
+            width: '100%',
+            height: '100%',
             display: 'block',
           }}
           // Key on theme so the clearColor takes effect on theme flip.
@@ -6073,6 +6079,14 @@ function ManualResizeCanvas({
       trailingTimer = setTimeout(() => {
         trailingTimer = null
         measureAndCommit()
+        // After the size has settled, refit the camera so the model
+        // fills the new canvas dimensions. Without this, switching
+        // 2D↔3D, toggling panels, or resizing the window leaves the
+        // model floating small inside a larger canvas. window.__beme3dFit
+        // is the same hook the F-key + Fit-button use, so this path
+        // produces an identical framing.
+        type Win = Window & { __beme3dFit?: () => void }
+        ;(window as Win).__beme3dFit?.()
       }, 280)
     }
     const observer = new ResizeObserver((entries) => {
@@ -6134,8 +6148,11 @@ function ManualResizeCanvas({
 
   // Drive gl.setSize manually on every size change. Bypasses r3f's
   // built-in useMeasure (which was the root cause of the stuck
-  // canvas). updateStyle=true makes r3f also update the CSS width /
-  // height of the canvas element to match the framebuffer size.
+  // canvas). updateStyle=true forces the framebuffer + canvas CSS
+  // to match our measured size — paired with the absolute-position
+  // CSS injection in the Canvas style below so the canvas surface
+  // always covers its wrapper, even if the measured size is briefly
+  // smaller than the wrapper's true flex-resolved size.
   useEffect(() => {
     const gl = glRef.current
     if (!gl || size.width === 0 || size.height === 0) return
@@ -6148,7 +6165,28 @@ function ManualResizeCanvas({
       className="absolute inset-0"
       style={{ width: '100%', height: '100%' }}
     >
-      {size.width > 0 && size.height > 0 && children(size.width, size.height, glRef)}
+      {/* Hard override for r3f's canvas element. r3f's internal
+          useMeasure fires AFTER mount and writes pixel width/height
+          directly onto the canvas inline style, sometimes with a
+          stale undersized reading — which produced the "flash then
+          shrink" behaviour where the canvas mounted at full size,
+          then resized smaller a frame later, leaving workspace bg
+          visible to the right and below. This style rule forces
+          the canvas to ALWAYS render at 100% of its wrapper
+          regardless of what r3f writes, decoupling the visible
+          surface from r3f's measurement. The framebuffer resolution
+          still updates correctly via our own ManualResizeCanvas
+          measurement → gl.setSize path. */}
+      <style>{`
+        .beme-3d-canvas-fill canvas {
+          width: 100% !important;
+          height: 100% !important;
+          display: block !important;
+        }
+      `}</style>
+      <div className="beme-3d-canvas-fill w-full h-full">
+        {size.width > 0 && size.height > 0 && children(size.width, size.height, glRef)}
+      </div>
     </div>
   )
 }

@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import AppShell from '../components/AppShell'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
@@ -117,7 +116,7 @@ export default function MaterialLibraryPage() {
   const readOnly = !isAdmin
 
   return (
-    <AppShell>
+    <>
       <div className="px-12 py-10">
         <div className="flex items-end justify-between flex-wrap gap-3 mb-2">
           <div>
@@ -255,7 +254,7 @@ export default function MaterialLibraryPage() {
           )}
         </div>
       </div>
-    </AppShell>
+    </>
   )
 }
 

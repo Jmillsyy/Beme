@@ -195,7 +195,7 @@ function SupplyItemsPanelImpl({
   }, [visibleApplicableItems])
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
       <div className="flex items-center gap-2 mb-2 min-w-0">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -215,7 +215,7 @@ function SupplyItemsPanelImpl({
         </button>
         <Link
           to="/library#supply-items"
-          className="text-xs px-2 py-0.5 rounded-md bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors whitespace-nowrap flex-shrink-0"
+          className="text-xs px-2 py-1 rounded bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors whitespace-nowrap flex-shrink-0"
           title="Open the Material library, scrolled to Supply items"
         >
           + Add
@@ -277,17 +277,17 @@ function SupplyItemsPanelImpl({
                           return (
                             <div
                               key={item.id}
-                              className="p-3 border rounded-lg border-ink-600 bg-ink-700/40"
+                              className="p-2 border rounded-md border-ink-600 bg-ink-700/40"
                             >
                               <div className="flex items-center gap-2 text-sm font-medium">
-                                <span className="text-ink-100">
+                                <span className="text-ink-100 truncate">
                                   {item.name}
                                 </span>
                                 <span className="ml-auto text-xs tabular-nums font-semibold text-beme-300">
                                   {rounded.toLocaleString()}
                                 </span>
                               </div>
-                              <div className="mt-2 text-xs text-ink-400">
+                              <div className="mt-1 text-xs text-ink-400">
                                 {rate} {UNIT_SUFFIX[item.unit]}
                               </div>
                             </div>

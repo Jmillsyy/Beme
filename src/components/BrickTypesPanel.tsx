@@ -83,13 +83,13 @@ export default function BrickTypesPanel({
   const editingMakeup =
     editingId && editingId !== 'new' ? makeups.find((m) => m.id === editingId) : null
   const activeMakeup = visibleMakeups.find((m) => m.id === activeMakeupId)
-  const orderedMakeups = useMemo(() => {
-    if (!activeMakeup) return visibleMakeups
-    return [activeMakeup, ...visibleMakeups.filter((m) => m.id !== activeMakeup.id)]
-  }, [visibleMakeups, activeMakeup])
+  // No active-to-top reordering — list stays in insertion order so
+  // clicking a card doesn't move it under the cursor. Active state
+  // is communicated via the ring + Active badge instead.
+  const orderedMakeups = visibleMakeups
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
       <div className="flex items-center justify-between mb-2 gap-2">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -117,7 +117,7 @@ export default function BrickTypesPanel({
                 setEditingId('new')
               }}
               disabled={brickLibraryEmpty}
-              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+              className="text-xs px-2 py-1 rounded bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
             >
               + Add
             </button>
@@ -126,7 +126,7 @@ export default function BrickTypesPanel({
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-2 pb-1">
+        <div className="flex flex-col gap-1.5 pb-0.5">
           {orderedMakeups.map((m) => {
             const isActive = m.id === activeMakeupId
             const wallCount = wallCountsByMakeupId[m.id] ?? 0
@@ -135,26 +135,21 @@ export default function BrickTypesPanel({
               <button
                 key={m.id}
                 onClick={() => onSetActive(m.id)}
-                className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                className={`group/wt relative w-full p-2 rounded-md border text-left transition-colors ${
                   isActive
-                    ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                    ? 'border-beme-500 ring-1 ring-beme-500/30 bg-beme-500/10'
                     : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
                 }`}
               >
                 {isActive && (
-                  <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                  <span className="absolute top-1.5 right-1.5 text-[10px] px-1.5 py-0 rounded bg-beme-500 text-black font-medium leading-tight">
                     Active
                   </span>
                 )}
-                <div className="flex items-start gap-2 mb-1 pr-12">
-                  {/* Colour-tinted chip doubling as the type label —
-                      matches the block panel exactly so brick + block
-                      wall-type lists read the same way. Says "Wall"
-                      for straight types, "Curved" for kind='curved'.
-                      Background is the type's plan colour so the
-                      chip itself is the colour-id swatch. */}
+                <div className="flex items-start gap-2 pr-12">
+                  {/* Colour-tinted chip doubling as the type label. */}
                   <span
-                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30"
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30 leading-tight"
                     style={{
                       backgroundColor: wallTypeColor(m.id, colorMakeups),
                     }}
@@ -162,20 +157,23 @@ export default function BrickTypesPanel({
                   >
                     {m.kind === 'curved' ? 'Curved' : 'Wall'}
                   </span>
-                  {/* Wrap the name onto multiple lines rather than truncate —
-                      the name is the identity of this entry, so the user
-                      always wants it in full even if the card grows taller. */}
-                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0 leading-snug">
                     {m.name}
                   </div>
                 </div>
-                <div className="text-xs text-ink-400">
-                  {m.heightMm}mm · brick {m.brickTypeCode || 'project default'}
+                <div className="text-xs text-ink-400 mt-1 leading-tight">
+                  {m.heightMm}mm · {wallCount} wall{wallCount === 1 ? '' : 's'}
                 </div>
-                <div className="text-xs text-ink-500 mt-2">
-                  {wallCount} wall{wallCount === 1 ? '' : 's'} using this
-                </div>
-                <div className="flex gap-3 mt-2">
+                {/* Edit / Duplicate / Delete — hidden by default to keep
+                    the card compact; revealed on hover or when active so
+                    common access stays one click away. */}
+                <div
+                  className={`flex gap-3 mt-1.5 transition-opacity ${
+                    isActive
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover/wt:opacity-100'
+                  }`}
+                >
                   <span
                     role="button"
                     tabIndex={0}

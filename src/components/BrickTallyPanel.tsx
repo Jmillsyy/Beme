@@ -3,6 +3,8 @@ import type { BrickMakeup, BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
 import { useBrickLibrary } from '../data/brickLibrary'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
+import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import { brickLintelWarnings } from '../lib/lintelCoverage'
 import LintelCoverageBand from './LintelCoverageBand'
 import AnimatedNumber from './AnimatedNumber'
@@ -46,7 +48,25 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   // off each band's brick type at calc time).
   const { version: brickLibraryVersion } = useBrickLibrary()
   const { settings: userSettings } = useUserSettings()
-  void userSettings
+  const { currentOrgId } = useOrganisations()
+  const { items: orgItems, orgId: orgItemsOrgId } = useOrgSupplyItems()
+
+  // Pick the right supply-items source. When the user is in an org,
+  // the org's supply items (Supabase) are the source of truth; the
+  // local userSettings.supplyItems list is only used for personal /
+  // offline accounts. The MaterialLibraryPage uses the same source
+  // selection — without matching that here, the warnings checked an
+  // empty list and flagged every opening as uncovered, even when the
+  // user clearly had Galintels covering those widths.
+  //
+  // Race guard: only trust orgItems when their carrier orgId matches
+  // the current org. During an org switch the singleton briefly holds
+  // the previous org's items.
+  const activeSupplyItems = useMemo(() => {
+    if (currentOrgId && orgItemsOrgId === currentOrgId) return orgItems
+    if (!currentOrgId) return userSettings.supplyItems ?? []
+    return []
+  }, [currentOrgId, orgItemsOrgId, orgItems, userSettings.supplyItems])
 
   const tally = useMemo(() => {
     void brickLibraryVersion
@@ -57,8 +77,8 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   // match any per-opening lintel supply item with a width range, and
   // overlapping ranges that would double-count. See lib/lintelCoverage.
   const lintelWarnings = useMemo(
-    () => brickLintelWarnings(openings, userSettings.supplyItems),
-    [openings, userSettings.supplyItems],
+    () => brickLintelWarnings(openings, activeSupplyItems),
+    [openings, activeSupplyItems],
   )
 
   if (walls.length === 0) {
@@ -73,7 +93,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   const lengthM = tally.totalLinealMm / 1000
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="w-full bg-ink-700 px-3 py-2 border-b border-ink-600 flex items-center justify-between gap-2 text-left group"
@@ -107,7 +127,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
               tight to the headline so the panel reads as "one
               feature card on a neutral surface" rather than "all
               orange". */}
-          <div className="px-4 py-4 bg-gradient-to-br from-beme-500 to-beme-600 text-ink-900">
+          <div className="px-3 py-3 bg-gradient-to-br from-beme-500 to-beme-600 text-ink-900">
             <div className="text-[11px] font-semibold uppercase tracking-[0.1em] opacity-85">
               Total brickwork area
             </div>
@@ -120,19 +140,66 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
             </div>
           </div>
 
-          {/* Metadata strip — same visual rhythm as BlockTallyPanel:
-              neutral ink-800 surface, ink-400 text, single line. The
-              brick rail is intentionally headline-only (head/sill
-              breakdowns live in the export PDF), so this strip only
-              carries the openings count — keeps the structural
-              parity with the block panel without duplicating
-              numbers that are already in the export. */}
-          <div className="px-3 py-2 text-xs text-ink-400 border-t border-ink-600 flex justify-between gap-2 flex-wrap tabular-nums">
-            <span>
-              <AnimatedNumber value={tally.openingCount} /> opening
-              {tally.openingCount === 1 ? '' : 's'}
-            </span>
-          </div>
+          {/* Metadata strip — opening count + head/sill/total opening
+              lineal metres. The user wanted these surfaced inline
+              with the openings count instead of waiting for the
+              export. Total = head + sill (overhang counted twice
+              on windows — both above and below — same as the export
+              tally). Doors are excluded from sill (they sit on the
+              floor, no sill course). */}
+          {(() => {
+            const headLinealM =
+              Object.values(tally.headLinealMmByType).reduce(
+                (s, v) => s + v,
+                0,
+              ) / 1000
+            const sillLinealM =
+              Object.values(tally.sillLinealMmByType).reduce(
+                (s, v) => s + v,
+                0,
+              ) / 1000
+            const totalOpeningLinealM = headLinealM + sillLinealM
+            return (
+              <div className="px-3 py-2.5 text-xs border-t border-ink-600 grid grid-cols-2 gap-x-3 gap-y-2 tabular-nums">
+                <div>
+                  <div className="text-ink-400 text-[11px]">Openings</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber value={tally.openingCount} />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-400 text-[11px]">Total Lineal m</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber
+                      value={totalOpeningLinealM}
+                      format={(n) => n.toFixed(2)}
+                    />{' '}
+                    m
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-400 text-[11px]">Head Lineal m</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber
+                      value={headLinealM}
+                      format={(n) => n.toFixed(2)}
+                    />{' '}
+                    m
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-400 text-[11px]">Sill Lineal m</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber
+                      value={sillLinealM}
+                      format={(n) => n.toFixed(2)}
+                    />{' '}
+                    m
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
         </>
       )}
     </div>

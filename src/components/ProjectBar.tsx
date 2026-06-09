@@ -163,18 +163,23 @@ export default function ProjectBar({
   })()
 
   return (
-    // Full-width bar with px-20 so the back-to-dashboard pill, breadcrumb,
-    // project identity, and save actions line up with the workspace columns
-    // below and the Beme logo + org/user pills in the header above. Matches
-    // the estimate workspace's px-20 outer padding.
-    <div className="bg-ink-800/60 border-b border-ink-600 px-20 py-2 flex items-center gap-3 flex-wrap">
+    // Full-width bar with px-4 so the back-to-dashboard pill, project
+    // identity, and save actions sit with a small breathing gutter
+    // from the workspace edges. Matches the workspace sticky
+    // container below (px-4) so this bar and the canvas line up
+    // edge-to-edge with the same gutter.
+    // Wrapper is intentionally transparent + borderless so the bar
+    // dissolves into the page background. Per-pill borders still give
+    // each control a tappable shape, but there's no slab wash to
+    // separate the bar from the workspace below.
+    <div className="px-4 py-2 flex items-center gap-3 flex-wrap">
       {/* LEFT — back-to-dashboard pill so the user can hop out of the
           workspace from anywhere. Request-breadcrumb is gone with the
           inbox flow; sharing a project is now a reference-number copy
           paste away. */}
       <Link
         to="/"
-        className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
+        className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700/40 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
         title="Back to dashboard"
       >
         <span className="text-base leading-none">←</span>
@@ -189,7 +194,7 @@ export default function ProjectBar({
       <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
         {createdByDisplayName && (
           <span
-            className="hidden lg:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-300"
+            className="hidden lg:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-ink-600 text-sm text-ink-300"
             title="Estimator who started this project"
           >
             <span className="text-ink-500 text-xs uppercase tracking-wider">Started by</span>
@@ -198,7 +203,7 @@ export default function ProjectBar({
         )}
         <button
           onClick={onOpenDetails}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 group text-left text-sm hover:bg-ink-700 hover:border-beme-500/50 transition-colors"
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 group text-left text-sm hover:bg-ink-700/40 hover:border-beme-500/50 transition-colors"
           title={`${statusLabel} · click to edit project details`}
         >
           {mode && (
@@ -214,7 +219,7 @@ export default function ProjectBar({
           )}
           {typeof referenceNumber === 'number' && (
             <span
-              className="text-[10px] px-1.5 py-0.5 rounded tabular-nums font-semibold bg-ink-700 text-ink-200 border border-ink-500"
+              className="text-[10px] px-1.5 py-0.5 rounded tabular-nums font-semibold text-ink-300 border border-ink-600"
               title={`Reference number — quote this when looking the project up. #${formatReferenceNumber(referenceNumber)}`}
             >
               #{formatReferenceNumber(referenceNumber)}

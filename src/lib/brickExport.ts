@@ -168,6 +168,35 @@ interface ExportParams {
    * Keyed by brick type code. Final count clamped to >= 0.
    */
   brickAdjustments?: Record<string, number>
+  /**
+   * Per-area metric overrides from the export modal's Quantities
+   * section. When a field is set, it replaces the auto-computed
+   * value for that area in the export's headline summary totals.
+   * Keyed by areaId (or `__unassigned__` for the unassigned bucket).
+   * Missing fields fall back to the calc-engine value.
+   *
+   * Currently applied to the top-level summary numbers in the
+   * exported PDF. The detailed schedule of materials (Galintels per
+   * opening, etc.) still tracks the raw geometry so a hand-bumped
+   * m² doesn't invent new openings.
+   */
+  perAreaBrickOverrides?: Record<
+    string,
+    {
+      sqM?: number
+      headLinealM?: number
+      sillLinealM?: number
+      /** Per-wall-type drilldown within this area. Each entry is
+       *  keyed by makeup id and can override that wall type's
+       *  m² / head lineal m / sill lineal m contribution. Deltas are
+       *  computed against per-(area, makeup) auto totals and
+       *  applied to the project-wide brick tally. */
+      byMakeup?: Record<
+        string,
+        { sqM?: number; headLinealM?: number; sillLinealM?: number }
+      >
+    }
+  >
   /** Optional business identity (from user settings). Same shape as block export. */
   business?: BusinessExportInfo
   /** The primary plan PDF — when supplied alongside pagesInfo, each Wall
@@ -822,10 +851,137 @@ export async function buildBrickEstimateHtml(
       adjustedBricksByType = {}
     }
   }
+  // Apply per-area m² / head / sill overrides from the export modal.
+  // Strategy: for every area with at least one override, compute the
+  // auto-tally on that area's wall subset to get the auto value,
+  // then apply the override delta (override - auto) to the global
+  // rawTally totals. Result: the headline area + head + sill numbers
+  // reflect what the user set in the modal, while the per-opening
+  // schedule and per-makeup breakdown stay tied to geometry.
+  let areaSqMmDelta = 0
+  let headLinealMmDelta = 0
+  let sillLinealMmDelta = 0
+  const perAreaOv = params.perAreaBrickOverrides ?? {}
+  if (Object.keys(perAreaOv).length > 0) {
+    const areaIdsToProcess = Object.keys(perAreaOv)
+    for (const areaId of areaIdsToProcess) {
+      const ov = perAreaOv[areaId]
+      if (!ov) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      const areaTally = calculateBrickTally(
+        wallsInArea,
+        openingsInArea,
+        settings,
+        makeups,
+      )
+      const autoSqM = areaTally.totalAreaSqMm / 1_000_000
+      const autoHead =
+        Object.values(areaTally.headLinealMmByType).reduce(
+          (s, v) => s + v,
+          0,
+        ) / 1000
+      const autoSill =
+        Object.values(areaTally.sillLinealMmByType).reduce(
+          (s, v) => s + v,
+          0,
+        ) / 1000
+      if (typeof ov.sqM === 'number') {
+        areaSqMmDelta += (ov.sqM - autoSqM) * 1_000_000
+      }
+      if (typeof ov.headLinealM === 'number') {
+        headLinealMmDelta += (ov.headLinealM - autoHead) * 1000
+      }
+      if (typeof ov.sillLinealM === 'number') {
+        sillLinealMmDelta += (ov.sillLinealM - autoSill) * 1000
+      }
+
+      // Per-(area, makeup) drilldown overrides. For each makeup
+      // override the user set under this area, compute the auto
+      // value on the wall subset restricted to BOTH the area and
+      // the makeup, then push the (override - auto) delta into the
+      // same global delta accumulators. m² edits only feed the
+      // area-total delta when the area-level m² is NOT set
+      // (otherwise area-level wins). head/sill always stack —
+      // they're per-wall-type by nature and shouldn't get swamped
+      // by area-level totals if both happen to be set.
+      const byMakeup = ov.byMakeup
+      if (byMakeup) {
+        for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+          if (!mkOv) continue
+          const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+          if (mkWalls.length === 0) continue
+          const mkWallIds = new Set(mkWalls.map((w) => w.id))
+          const mkOpenings = openingsInArea.filter((o) =>
+            mkWallIds.has(o.wallId),
+          )
+          const mkTally = calculateBrickTally(
+            mkWalls,
+            mkOpenings,
+            settings,
+            makeups,
+          )
+          const mkAutoSqM = mkTally.totalAreaSqMm / 1_000_000
+          const mkAutoHead =
+            Object.values(mkTally.headLinealMmByType).reduce(
+              (s, v) => s + v,
+              0,
+            ) / 1000
+          const mkAutoSill =
+            Object.values(mkTally.sillLinealMmByType).reduce(
+              (s, v) => s + v,
+              0,
+            ) / 1000
+          if (typeof mkOv.sqM === 'number' && typeof ov.sqM !== 'number') {
+            areaSqMmDelta += (mkOv.sqM - mkAutoSqM) * 1_000_000
+          }
+          if (typeof mkOv.headLinealM === 'number') {
+            headLinealMmDelta += (mkOv.headLinealM - mkAutoHead) * 1000
+          }
+          if (typeof mkOv.sillLinealM === 'number') {
+            sillLinealMmDelta += (mkOv.sillLinealM - mkAutoSill) * 1000
+          }
+        }
+      }
+    }
+  }
+  // Apply the cumulative deltas to the by-type maps proportionally to
+  // each type's share — so a 5% bump in head lineal m boosts every
+  // existing head brick code by 5%, instead of dumping everything onto
+  // one code. When no auto value exists (empty by-type map) the
+  // delta is dropped on the floor: there's no code to assign it to.
+  function scaleMap(
+    map: Record<string, number>,
+    deltaMm: number,
+  ): Record<string, number> {
+    if (deltaMm === 0) return map
+    const total = Object.values(map).reduce((s, v) => s + v, 0)
+    if (total <= 0) return map
+    const factor = (total + deltaMm) / total
+    const next: Record<string, number> = {}
+    for (const [k, v] of Object.entries(map)) {
+      next[k] = Math.max(0, v * factor)
+    }
+    return next
+  }
+
   const tally = {
     ...rawTally,
     bricksByType: adjustedBricksByType,
     brickCount: adjustedBrickCount,
+    totalAreaSqMm: Math.max(0, rawTally.totalAreaSqMm + areaSqMmDelta),
+    headLinealMmByType: scaleMap(
+      rawTally.headLinealMmByType,
+      headLinealMmDelta,
+    ),
+    sillLinealMmByType: scaleMap(
+      rawTally.sillLinealMmByType,
+      sillLinealMmDelta,
+    ),
   }
 
   const headerTitle =

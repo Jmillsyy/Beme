@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, Outlet } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import BemeMark from './BemeMark'
 import LeftNav from './LeftNav'
@@ -7,23 +7,30 @@ import LeftNav from './LeftNav'
  * App-wide layout chrome for non-workspace pages.
  *
  * Pairs a persistent left nav rail with a full-width main column.
- * Replaces the previous top-header + right-sidebar pattern on
- * Dashboard, Projects, Library, Guide and Settings. Workspace
- * pages (block / brick estimate) DON'T use this shell — they need
- * the full viewport for the canvas and have their own contextual
- * right rail.
+ * Used as a router LAYOUT route in App.tsx so that LeftNav stays
+ * mounted across navigations between Dashboard / Projects / Library /
+ * Guide / Settings — only <Outlet /> swaps. Without this, each page
+ * wrapping itself in <AppShell> caused the whole tree (LeftNav
+ * included) to unmount and remount on every click, producing the
+ * "page flashes then continues" feel.
+ *
+ * Workspace pages (block / brick estimate) DON'T use this shell —
+ * they need the full viewport for the canvas and have their own
+ * contextual right rail. They mount their own LeftNav directly.
+ *
+ * Backwards-compatible — still accepts `children` so a page can
+ * embed AppShell explicitly if it really wants to (rare; the layout-
+ * route pattern is the normal path).
  *
  * Mobile fallback: when the left rail is hidden (<lg viewport), a
  * slim top brand bar appears so the user still has a way back to
- * the dashboard. Each consumer page can render its own page-level
- * heading inside the main column.
- *
- * Usage:
- *   <AppShell>
- *     <YourPageContent />
- *   </AppShell>
+ * the dashboard.
  */
-export default function AppShell({ children }: { children: React.ReactNode }) {
+export default function AppShell({
+  children,
+}: {
+  children?: React.ReactNode
+}) {
   const { signedIn } = useAuth()
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50 flex relative overflow-hidden">
@@ -67,7 +74,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
         </header>
         <main className="flex-1 min-w-0">
-          {children}
+          {/* Layout-route mode: render the matched child route via
+              <Outlet />. Legacy mode: render children if a caller
+              explicitly wrapped itself in <AppShell>. */}
+          {children ?? <Outlet />}
         </main>
       </div>
     </div>

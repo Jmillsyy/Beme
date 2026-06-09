@@ -198,20 +198,17 @@ export default function WallTypesPanel({
 
   const activeMakeup = visibleMakeups.find((m) => m.id === activeMakeupId)
 
-  // Sort so the active wall type sits at the top of the list and stays there
-  // — handy when there are 4+ types and the user spends most of their time
-  // drawing with one of them. The remaining types keep their original order
-  // so the user's mental map of "the second one I created" doesn't shuffle.
-  //
-  // Sources from `visibleMakeups` so the suppression-when-library-empty
-  // rule covers the ordered render too.
-  const orderedMakeups = useMemo(() => {
-    if (!activeMakeup) return visibleMakeups
-    return [activeMakeup, ...visibleMakeups.filter((m) => m.id !== activeMakeup.id)]
-  }, [visibleMakeups, activeMakeup])
+  // List order matches `visibleMakeups` exactly — no float-active-to-top
+  // shuffle. The previous "active type pops to position 0" behaviour
+  // moved cards under the cursor when the user picked one, which broke
+  // muscle memory: the second card you wanted to try was now the third
+  // (the freshly activated one took its slot). Keeping insertion order
+  // means every click leaves the list still, and the active card stays
+  // visible via the ring + Active badge rather than relocation.
+  const orderedMakeups = visibleMakeups
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
       <div className="flex items-center justify-between mb-2 gap-2">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -239,7 +236,7 @@ export default function WallTypesPanel({
                 setEditingId('new')
               }}
               disabled={blockLibraryEmpty}
-              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+              className="text-xs px-2 py-1 rounded bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
             >
               + Add
             </button>
@@ -248,7 +245,7 @@ export default function WallTypesPanel({
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-2 pb-1">
+        <div className="flex flex-col gap-1.5 pb-0.5">
           {orderedMakeups.map((m) => {
             // Wall card only lights up when the live kind is 'wall'.
             // Without this gate, switching to a pier left the last
@@ -262,25 +259,21 @@ export default function WallTypesPanel({
               <button
                 key={m.id}
                 onClick={() => onSetActive(m.id)}
-                className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                className={`group/wt relative w-full p-2 rounded-md border text-left transition-colors ${
                   isActive
-                    ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                    ? 'border-beme-500 ring-1 ring-beme-500/30 bg-beme-500/10'
                     : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
                 }`}
               >
                 {isActive && (
-                  <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                  <span className="absolute top-1.5 right-1.5 text-[10px] px-1.5 py-0 rounded bg-beme-500 text-black font-medium leading-tight">
                     Active
                   </span>
                 )}
-                <div className="flex items-start gap-2 mb-1 pr-12">
-                  {/* "Wall" chip painted with the type's own plan
-                      colour so the chip itself doubles as the
-                      colour-id swatch — no separate swatch needed.
-                      White text + black/30 ring keeps the label
-                      readable on any palette colour. */}
+                <div className="flex items-start gap-2 pr-12">
+                  {/* "Wall" chip painted with the type's own plan colour. */}
                   <span
-                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30"
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30 leading-tight"
                     style={{
                       backgroundColor: masonryTypeColor(
                         m.id,
@@ -295,35 +288,31 @@ export default function WallTypesPanel({
                       ? 'Curved'
                       : 'Wall'}
                   </span>
-                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0 leading-snug">
                     {m.name}
                   </div>
                 </div>
-                <div className="text-xs text-ink-400">
-                  {m.bondType} bond · {getMakeupHeightMm(m)}mm · Body {m.bodyBlockCode}
+                <div className="text-xs text-ink-400 mt-1 leading-tight">
+                  {m.bondType} bond · {getMakeupHeightMm(m)}mm · {wallCount} wall{wallCount === 1 ? '' : 's'}
                 </div>
                 {m.coursePattern && m.coursePattern.length > 0 && (
-                  <div className="text-xs text-beme-300 mt-1 font-mono">
-                    Pattern:{' '}
+                  <div className="text-xs text-beme-300 mt-1 font-mono leading-tight truncate">
                     {m.coursePattern.map((b) => `${b.count}×${b.blockCode}`).join(' + ')}
                   </div>
                 )}
                 {m.courseOverrides && m.courseOverrides.length > 0 && (
-                  <div className="text-xs text-ink-400 mt-1">
-                    {m.courseOverrides.length} course override
+                  <div className="text-xs text-ink-400 mt-1 leading-tight">
+                    {m.courseOverrides.length} override
                     {m.courseOverrides.length === 1 ? '' : 's'}
                   </div>
                 )}
-                {m.courseSeriesRanges && m.courseSeriesRanges.length > 0 && (
-                  <div className="text-xs text-ink-400 mt-1">
-                    {m.courseSeriesRanges.length} series range
-                    {m.courseSeriesRanges.length === 1 ? '' : 's'}
-                  </div>
-                )}
-                <div className="text-xs text-ink-500 mt-2">
-                  {wallCount} wall{wallCount === 1 ? '' : 's'} using this
-                </div>
-                <div className="flex gap-3 mt-2">
+                <div
+                  className={`flex gap-3 mt-1.5 transition-opacity ${
+                    isActive
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover/wt:opacity-100'
+                  }`}
+                >
                   <span
                     role="button"
                     tabIndex={0}

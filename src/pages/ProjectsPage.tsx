@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import AppShell from '../components/AppShell'
 import BemeLoader from '../components/BemeLoader'
 import { useAuth } from '../lib/auth'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
@@ -198,7 +197,7 @@ export default function ProjectsPage() {
   }, [projects, typeFilter, ownerFilter, refFilter, period])
 
   return (
-    <AppShell>
+    <>
       <div className="px-12 py-10">
         <Link
           to="/"
@@ -366,7 +365,7 @@ export default function ProjectsPage() {
           </ul>
         )}
       </div>
-    </AppShell>
+    </>
   )
 }
 

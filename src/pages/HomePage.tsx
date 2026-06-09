@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import AppShell from '../components/AppShell'
 import DonutChart from '../components/DonutChart'
 import LocalMigrationBanner from '../components/LocalMigrationBanner'
 import BemeLoader from '../components/BemeLoader'
@@ -230,7 +229,7 @@ export default function HomePage() {
   const isOrgInvited = accountType === 'org-invited'
 
   return (
-    <AppShell>
+    <>
       {/* Main dashboard column — full width inside the AppShell now
           that the right-rail DashboardSidebar is gone. Navigation
           lives in LeftNav; quick actions and primary CTAs sit
@@ -255,7 +254,7 @@ export default function HomePage() {
           </div>
         )}
       </div>
-    </AppShell>
+    </>
   )
 }
 
@@ -574,7 +573,9 @@ function NoOrgEmptyState() {
  *   - "Your projects" — projects this user started.
  *   - "Team projects" — active projects belonging to other org members,
  *     so an admin can see the team's load at a glance.
- *   - "Recently completed" — last few finished projects across the team.
+ *   - "Completed" — every finished project across the team, most recent
+ *     first. (Was windowed to the last 7 days, but the column went empty
+ *     during slow weeks and made the dashboard feel barren.)
  */
 function OrgDashboard({ org, userId }: { org: Organisation; userId: string | null }) {
   const [members, setMembers] = useState<OrgMember[]>([])
@@ -706,21 +707,15 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
   }, [projects, userId])
 
-  // Team-wide "shipped in the last 7 days" feed — projects only. NOT
-  // sliced here; the CompletedColumn slices to its own slotCount so
-  // it can compute overflow and surface a "View all N →" link.
+  // Team-wide "shipped" feed — every completed project, most recent
+  // first. Previously windowed to the last 7 days, but the column
+  // was empty most of the time when nothing had shipped that week,
+  // which made the dashboard feel barren. Now the column always has
+  // something to show as long as the team has ever finished
+  // anything; CompletedColumn handles slicing + overflow.
   const recentlyCompleted = useMemo(() => {
-    const weekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000
-    const withinPastWeek = (iso: string | undefined) => {
-      if (!iso) return false
-      const t = new Date(iso).getTime()
-      return Number.isFinite(t) && t >= weekAgoMs
-    }
     return projects
-      .filter(
-        (p) =>
-          p.status === 'completed' && withinPastWeek(p.completedAt ?? p.updatedAt)
-      )
+      .filter((p) => p.status === 'completed')
       .sort(
         (a, b) =>
           new Date(b.completedAt ?? b.updatedAt).getTime() -
@@ -801,7 +796,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           narrow viewports so the rows don't squash. Hidden entirely
           when neither column has any work. */}
       {/* ── Project lists — three columns side by side ──
-          Your projects · Your team's projects · Recently completed.
+          Your projects · Your team's projects · Completed.
           Each column is capped at 3 rows so the entire dashboard
           (header + stats row + this grid) fits a 13" MacBook Pro
           viewport. Overflow surfaces via per-column "View all" links.
@@ -840,11 +835,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               emptyCopy="Quiet over here — your team's caught up."
             />
             <CompletedColumn
-              title="Recently completed"
+              title="Completed"
               projects={recentlyCompleted}
               viewAllHref="/projects?status=completed"
               slotCount={slotCount}
-              emptyCopy="Nothing finished by the team this week."
+              emptyCopy="No completed projects yet."
             />
           </section>
         )
@@ -980,7 +975,7 @@ function CompletedColumn({
           </span>
         </h3>
         <span className="text-xs text-ink-400 whitespace-nowrap">
-          {projects.length === 1 ? 'project this week' : 'projects this week'}
+          {projects.length === 1 ? 'project completed' : 'projects completed'}
         </span>
       </div>
       <ul className="space-y-2">

@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom'
-import AppShell from '../components/AppShell'
 import GuideMedia from '../components/GuideMedia'
 
 /**
@@ -21,7 +20,7 @@ import GuideMedia from '../components/GuideMedia'
  */
 export default function GuidePage() {
   return (
-    <AppShell>
+    <>
       <div className="px-12 py-10">
         <div className="mb-8">
           <Link
@@ -874,7 +873,7 @@ export default function GuidePage() {
           </article>
         </div>
       </div>
-    </AppShell>
+    </>
   )
 }
 

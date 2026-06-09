@@ -116,7 +116,7 @@ export default function AreaTabs({
   const activeLabel = activeArea?.name ?? 'All areas'
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
       <div className="flex items-center gap-2 min-w-0">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -226,7 +226,7 @@ export default function AreaTabs({
           <button
             type="button"
             onClick={() => setCreating({ name: nextDefaultAreaName() })}
-            className="w-full text-left px-2 py-1.5 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded-md transition-colors"
+            className="w-full text-left px-2 py-1 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded transition-colors"
           >
             + New area
           </button>
@@ -276,7 +276,7 @@ function AreaMenuRow({
 }) {
   return (
     <div
-      className={`group relative flex items-center gap-2 px-2 py-1.5 rounded-md text-xs cursor-pointer transition-colors ${
+      className={`group relative flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer transition-colors ${
         active
           ? 'bg-beme-500/15 text-beme-300 ring-1 ring-beme-500/30'
           : 'text-ink-100 hover:bg-ink-700'
