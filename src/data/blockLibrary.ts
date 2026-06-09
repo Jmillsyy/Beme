@@ -994,24 +994,21 @@ export function pickLintelBlock(openingHeightMm: number): Block | undefined {
 }
 
 /**
- * Lintel selected by HEAD-HEIGHT BUCKET. Walks every lintel-tagged block
- * and picks the one whose [lintelMinHeadHeightMm, lintelMaxHeadHeightMm]
- * range contains the given head height. Each region's library can
- * define its own bucket boundaries — AU SEQ uses 0–200 / 200–300 / 300+
- * via the 20.13 / 20.25 / 20.18 triple; US / UK regions will set
- * different bands on their own lintel blocks.
+ * Lintel picker for a given head height. Used to live on per-block
+ * head-height "buckets" (lintelMinHeadHeightMm / lintelMaxHeadHeightMm)
+ * which let the user pin a specific lintel block to a specific head
+ * range — but the buckets routinely overlapped across user libraries,
+ * which triggered the "ambiguous selection" warning and forced the
+ * user to hand-edit ranges they didn't really care about.
  *
- * Bucket convention is INCLUSIVE on both ends — a 300mm head matches a
- * `min=200, max=300` bucket. This matches how masonry catalogues are
- * typically written ("300mm Lintel Block" covers 300mm heads, full
- * stop). When more than one bucket matches the head (e.g. AU SEQ's
- * 20.25 [200,300] and 20.18 [300,∞) both cover head=300), prefer the
- * one with the smaller / more specific max — that's the block whose
- * name and range were chosen to cover that exact head.
+ * Simplified: always delegate to `pickLintelBlockIn`, which picks the
+ * SMALLEST lintel whose face height covers the head while preferring
+ * decompositions that align cleanly with the body course module. No
+ * user-maintained ranges, no overlap ambiguity, no warning panel.
  *
- * Falls back to `pickLintelBlockIn` (height-based selection) for any
- * lintel block that doesn't carry the head-height-range metadata yet —
- * so libraries imported before this field existed keep working.
+ * `lintelMinHeadHeightMm` / `lintelMaxHeadHeightMm` remain on the Block
+ * type as legacy fields so saved libraries keep deserialising; they
+ * just aren't consulted at selection time anymore.
  *
  * Returns undefined only if the library has no lintel blocks at all.
  */
@@ -1019,29 +1016,6 @@ export function pickLintelForHeadHeightIn(
   library: Record<BlockCode, Block>,
   headHeightMm: number
 ): Block | undefined {
-  const lintels = Object.values(library).filter((b) => b.roles.includes('lintel'))
-  if (lintels.length === 0) return undefined
-  // Collect every bucket that contains this head height (inclusive max),
-  // then pick the tightest. Unbounded buckets (max === undefined) sort
-  // last so a bounded match always wins over an open-ended one.
-  const matches = lintels.filter((b) => {
-    if (b.lintelMinHeadHeightMm === undefined) return false
-    const min = b.lintelMinHeadHeightMm
-    const max = b.lintelMaxHeadHeightMm
-    return headHeightMm >= min && (max === undefined || headHeightMm <= max)
-  })
-  if (matches.length > 0) {
-    // Tie-break: prefer the smaller max. Undefined max = Infinity, so
-    // it always loses to a bounded bucket. When two bounded buckets
-    // share the same max, fall through to library iteration order.
-    matches.sort((a, b) => {
-      const aMax = a.lintelMaxHeadHeightMm ?? Number.POSITIVE_INFINITY
-      const bMax = b.lintelMaxHeadHeightMm ?? Number.POSITIVE_INFINITY
-      return aMax - bMax
-    })
-    return matches[0]
-  }
-  // Fallback: height-based selection for libraries without range metadata.
   return pickLintelBlockIn(library, headHeightMm)
 }
 export function pickLintelForHeadHeight(headHeightMm: number): Block | undefined {
@@ -1305,9 +1279,9 @@ export function analyseLibraryHealth(
       severity: 'warning',
       message: 'No lintel blocks tagged.',
       detail:
-        "Openings won't get a lintel line in the export. Add lintel " +
-        'blocks with "lintel" role and the lintelMinHeadHeightMm / ' +
-        'lintelMaxHeadHeightMm fields populated.',
+        "Openings won't get a lintel line in the export. Tag at least " +
+        'one block with the "lintel" role — beme will auto-pick the ' +
+        'smallest one tall enough to cover each opening head.',
     })
   }
 

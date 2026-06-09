@@ -57,6 +57,8 @@ import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
 import BrickTypesPanel from './BrickTypesPanel'
+import MaterialLibraryGate from './MaterialLibraryGate'
+import LibraryGuidance from './LibraryGuidance'
 import LengthInput from './LengthInput'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
@@ -94,6 +96,7 @@ import {
   getMakeupHeightMm,
 } from '../lib/makeups'
 import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
+import type { BlockCode } from '../types/blocks'
 import { resolveBlockByRole } from '../lib/blockRoles'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
 import { getUserSettings, useUserSettings } from '../lib/userSettings'
@@ -465,6 +468,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // route. If the route changes project id entirely, React unmounts and
   // remounts so the new initialMode wins automatically.
   const [mode, setMode] = useState<'block' | 'brick' | undefined>(initialMode)
+  /**
+   * Material-library prompt mode. null = no prompt visible. Set to
+   * 'block' or 'brick' when the user actively clicks a trade tab whose
+   * library is empty — that's the moment the prompt is helpful (the
+   * user has signalled intent to work in that trade). A multi-trade
+   * estimate working only in block isn't nagged about an empty brick
+   * library because the brick tab was never engaged.
+   *
+   * Cleared on dismissal or when the user navigates away from the
+   * modal (Open Material Library button, backdrop click, Esc).
+   */
+  const [materialPromptMode, setMaterialPromptMode] = useState<'block' | 'brick' | null>(null)
   // Read theme so the 3D viewer wrapper bg can flip with the rest of
   // the app — otherwise a dark slate "frame" surrounds the canvas in
   // light mode and vice-versa.
@@ -1062,6 +1077,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   /** Brick-mode opening kind — drives the auto-derived sill (door=0,
    *  window=wallH-300-openingH) and sill-trim suppression in 3D. */
   const [brickOpeningKind, setBrickOpeningKind] = useState<'window' | 'door'>('window')
+  /** Block-mode per-opening lintel override. Empty string = auto-pick
+   *  (smallest covering lintel-tagged block). Any other value is a
+   *  BlockCode that must reference a lintel-tagged entry in the library
+   *  at save time. Persisted on Opening.lintelBlockCodeOverride. */
+  const [blockOpeningLintelOverride, setBlockOpeningLintelOverride] = useState<string>('')
 
   // ---------- Undo / redo ----------
   // A snapshot is the tuple of every page-keyed data state we let the user
@@ -1081,17 +1101,31 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // decide whether the latest render reflects a new edit (push to undo) or
   // a state restoration we just performed (skip).
   const lastEditSnapshotRef = useRef<EditSnapshot | null>(null)
-  const [makeups, setMakeups] = useState<WallMakeup[]>(() => [
+  const [makeups, setMakeups] = useState<WallMakeup[]>(() => {
+    // Only seed a default wall type when the user actually has blocks
+    // in their library. With an empty library the seed would point at
+    // empty / hardcoded codes and produce nonsense tallies (the bug
+    // where deleting the library still emitted 20.03 half-blocks).
+    // When the library is empty we hand back an empty list — the
+    // Wall types panel's empty state then guides the user to add a
+    // block first.
+    if (Object.keys(BLOCK_LIBRARY).length === 0) return []
     // Pull the singleton settings at init so the seed wall type respects
     // the user's DefaultsByRole map (e.g. their preferred body / corner
     // block). One-shot read — once the workspace is open, the user owns
     // the makeup. Same getUserSettings() pattern as brickSettings below.
-    createDefaultWallMakeup({
-      name: 'Block wall 2400mm',
-      settings: getUserSettings(),
-    }),
-  ])
-  const [activeMakeupId, setActiveMakeupId] = useState<string>(() => makeups[0].id)
+    return [
+      createDefaultWallMakeup({
+        name: 'Block wall 2400mm',
+        settings: getUserSettings(),
+      }),
+    ]
+  })
+  const [activeMakeupId, setActiveMakeupId] = useState<string>(
+    // No makeup → no active id. Empty string is fine here; the wall-type
+    // selector treats anything not in `makeups` as "no selection".
+    () => makeups[0]?.id ?? ''
+  )
   /**
    * Which kind of type the user most recently activated — drives the
    * shared toolbar's behaviour. When 'wall', Draw wall toggles
@@ -2420,6 +2454,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           )
           setBlockOpeningHeadMm(derivedHead)
           setBlockOpeningSillMm(opening.sillHeightMm)
+          setBlockOpeningLintelOverride(opening.lintelBlockCodeOverride ?? '')
         }
       }
     }
@@ -2835,6 +2870,45 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // brick type's depth in the library panel.
   const { version: blockLibraryVersion } = useBlockLibrary()
   const { version: brickLibraryVersion } = useBrickLibrary()
+
+  /**
+   * Reasons drawing might be blocked. Independent of saveBlockedReason
+   * because they're checked at different moments — save reasons fire on
+   * Save button hover, draw reasons gate the Draw wall + Add opening +
+   * Pier toolbar buttons.
+   *
+   * Currently the only block-mode draw block is "your library is empty"
+   * — without at least one block in BLOCK_LIBRARY, every fallback in
+   * the calc engine produces garbage tallies (empty code rows, stale
+   * AU SEQ codes like 20.03 leaking through). Gate drawing entirely
+   * and tell the user to add a block to Material library first.
+   *
+   * Re-reads on every library version change via blockLibraryVersion
+   * so the moment the user adds a block, the gate lifts and the Draw
+   * wall button becomes clickable without a refresh.
+   *
+   * NOTE: placed after the library-version hooks above so it can read
+   * them — moving earlier triggers a temporal dead zone error.
+   */
+  const drawBlockedReason = useMemo<string | null>(() => {
+    void blockLibraryVersion // dependency: re-run when library changes
+    void brickLibraryVersion // dependency: re-run when brick library changes
+    if (mode === 'block') {
+      const usableBlocks = Object.keys(BLOCK_LIBRARY).length
+      if (usableBlocks === 0) {
+        return 'Add at least one block to your Material library before drawing.'
+      }
+    }
+    if (mode === 'brick') {
+      const usableBricks = Object.keys(BRICK_LIBRARY).length
+      if (usableBricks === 0) {
+        return 'Add at least one brick to your Material library before drawing.'
+      }
+    }
+    return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, blockLibraryVersion, brickLibraryVersion])
+  const canDraw = drawBlockedReason === null
 
   /**
    * Headline numbers the SupplyItemsPanel needs to compute live quantities.
@@ -3867,6 +3941,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   const handleOpeningPlaced = useCallback((wallId: string, startAlongWallMm: number, widthMm: number) => {
     setPendingOpening({ wallId, startAlongWallMm, widthMm })
+    // New openings default to auto-pick — reset any override carried
+    // over from the last edit session so the modal doesn't open
+    // pre-pinned to a previously edited block.
+    setBlockOpeningLintelOverride('')
     setPlacingOpening(false)
   }, [])
 
@@ -3947,6 +4025,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // picker gate on the creation modal for the same rule.)
     const kindForSave = mode === 'brick' ? brickOpeningKind : undefined
 
+    // Block-mode lintel override — only persisted when set AND in block
+    // mode. Brick openings ignore this field. Empty string = auto-pick
+    // (omit field).
+    const lintelOverrideForSave =
+      mode === 'block' && blockOpeningLintelOverride
+        ? (blockOpeningLintelOverride as BlockCode)
+        : undefined
+
     if (pendingOpening.editingId) {
       // EDIT path — patch the existing opening in place. Wall
       // assignment, start-along-wall position, and width are
@@ -3970,6 +4056,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ...(mode === 'brick'
                   ? { kind: kindForSave }
                   : { kind: undefined }),
+                // Lintel override: write when set, explicitly clear
+                // when the user has flipped back to Auto in the
+                // modal. Block mode only.
+                ...(mode === 'block'
+                  ? { lintelBlockCodeOverride: lintelOverrideForSave }
+                  : {}),
               }
             : o
         )
@@ -3988,6 +4080,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         heightMm: openingHeightForSave,
         sillHeightMm: sillForSave,
         ...(kindForSave ? { kind: kindForSave } : {}),
+        ...(lintelOverrideForSave
+          ? { lintelBlockCodeOverride: lintelOverrideForSave }
+          : {}),
       }
       setOpeningsByPage((prev) => ({
         ...prev,
@@ -5914,6 +6009,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
             {/* ── Canvas area: drop zone fills the height ── */}
             <div className="flex-1 min-w-0 min-h-0 w-full flex flex-col gap-3">
+              {/* Empty-library gate. Now controlled by materialPromptMode
+                  so it only appears when the user actively clicked a
+                  trade tab whose library is empty (see the TradeRail
+                  onChangeTrade handler). Multi-trade estimates aren't
+                  nagged on load. */}
+              {(mode === 'block' || mode === 'brick') && (
+                <MaterialLibraryGate
+                  mode={mode}
+                  open={materialPromptMode === mode}
+                  onClose={() => setMaterialPromptMode(null)}
+                />
+              )}
               <div
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
@@ -6156,6 +6263,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           header chrome has scrolled away. The PDF pan container still has
           its own internal scroll for the plan content. */}
       <div className="sticky top-0 h-[calc(100vh/0.88)] relative flex flex-col px-20 pt-2 pb-4 bg-ink-900">
+
+      {/* Empty-library gate. Now controlled by materialPromptMode so it
+          only fires when the user actively clicked a trade tab whose
+          library is empty. Cross-trade estimates working only in one
+          trade aren't nagged about the other. */}
+      {(mode === 'block' || mode === 'brick') && (
+        <MaterialLibraryGate
+          mode={mode}
+          open={materialPromptMode === mode}
+          onClose={() => setMaterialPromptMode(null)}
+        />
+      )}
 
       {/* Unified toolbar — file tabs · page nav · zoom · scale · replace in
           one row. The old separate file-switcher row was redundant because
@@ -7001,7 +7120,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       · {allWalls.length} walls total in project
                     </span>
                   )}
-                  {activeMakeup && (
+                  {activeMakeup && canDraw && (
                     <span className="text-ink-400"> · drawing as {activeMakeup.name}</span>
                   )}
                 </span>
@@ -7058,7 +7177,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 spot — the panel decides which mode you're in by
                 which card you clicked. Disabled gates apply to
                 both modes (need a scale, can't be on a reference,
-                etc.). */}
+                etc.). Wrapped with LibraryGuidance — surfaces a rich
+                hover popover (with a Material Library link) when the
+                user's library is the reason this is disabled. */}
+            <LibraryGuidance
+              mode={mode === 'brick' ? 'brick' : 'block'}
+              actionLabel="Draw wall"
+              position="bottom"
+            >
             <button
               onClick={() => {
                 if (activeTypeKind === 'pier') {
@@ -7107,6 +7233,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 !currentScale ||
                 calibrating ||
                 isReferenceView ||
+                !canDraw ||
                 (activeTypeKind === 'wall' &&
                   (missingActiveType || activeIsCurveMakeup)) ||
                 (activeTypeKind === 'pier' && !activePierMakeupId)
@@ -7114,13 +7241,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               title={
                 isReferenceView
                   ? 'Drawing is disabled on reference PDFs — only the ruler is available. Switch back to the primary plan to draw.'
-                  : activeTypeKind === 'pier'
-                  ? 'Click on a wall for a tied pier; anywhere else for a freestanding pier. Uses the active pier type from the panel.'
-                  : missingActiveType
-                  ? 'Pick a wall type in the Wall types panel before drawing.'
-                  : activeIsCurveMakeup
-                  ? 'This wall type is bound to a curve — pick a straight wall type or use the Curved wall tool.'
-                  : undefined
+                  : drawBlockedReason ?? (
+                      activeTypeKind === 'pier'
+                        ? 'Click on a wall for a tied pier; anywhere else for a freestanding pier. Uses the active pier type from the panel.'
+                        : missingActiveType
+                        ? 'Pick a wall type in the Wall types panel before drawing.'
+                        : activeIsCurveMakeup
+                        ? 'This wall type is bound to a curve — pick a straight wall type or use the Curved wall tool.'
+                        : undefined
+                    )
               }
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                 drawingMode || placingFreestandingPier || placingTiedPier
@@ -7136,11 +7265,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ? 'Stop drawing'
                 : 'Draw wall'}
             </button>
+            </LibraryGuidance>
             {/* Curved wall + Pier triggers moved into the Wall types
                 panel — see WallTypesPanel's onToggleCurvedWall and
                 onTogglePierPlacement props. Keeps the toolbar focused
                 on the two universal actions (Draw wall, Add opening)
                 plus the situational tools (Cut wall, Ruler). */}
+            <LibraryGuidance
+              mode={mode === 'brick' ? 'brick' : 'block'}
+              actionLabel="Add opening"
+              position="bottom"
+            >
             <button
               onClick={() => {
                 setPlacingOpening((v) => !v)
@@ -7157,11 +7292,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 !currentScale ||
                 calibrating ||
                 currentPageWalls.length === 0 ||
-                isReferenceView
+                isReferenceView ||
+                !canDraw
               }
               title={
                 isReferenceView
                   ? 'Reference PDFs are read-only — switch to the primary plan to add openings.'
+                  : !canDraw
+                  ? drawBlockedReason ?? undefined
+                  : currentPageWalls.length === 0
+                  ? 'Draw at least one wall before adding openings.'
                   : undefined
               }
               className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -7172,6 +7312,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             >
               {placingOpening ? 'Cancel opening' : '+ Add opening'}
             </button>
+            </LibraryGuidance>
             {/* Cut wall — splits the clicked wall at the cursor into
                 two independent walls with a sealant gap between. Now
                 available in BOTH block and brick mode (was block-only;
@@ -7179,6 +7320,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 underlying split logic is pure geometry — same
                 operation for either trade. */}
             {(mode === 'block' || mode === 'brick') && (
+              <LibraryGuidance
+                mode={mode === 'brick' ? 'brick' : 'block'}
+                actionLabel="Cut wall"
+                position="bottom"
+              >
               <button
                 onClick={() => {
                   setPlacingControlJoint((v) => !v)
@@ -7195,11 +7341,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   !currentScale ||
                   calibrating ||
                   currentPageWalls.length === 0 ||
-                  isReferenceView
+                  isReferenceView ||
+                  !canDraw
                 }
                 title={
                   isReferenceView
                     ? 'Reference PDFs are read-only — switch to the primary plan to split walls.'
+                    : !canDraw
+                    ? drawBlockedReason ?? undefined
+                    : currentPageWalls.length === 0
+                    ? 'Draw at least one wall before cutting.'
                     : 'Click on a wall to cut it at that point (creates two independent walls with a sealant gap).'
                 }
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
@@ -7210,6 +7361,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               >
                 {placingControlJoint ? 'Cancel cut' : '+ Cut wall'}
               </button>
+              </LibraryGuidance>
             )}
             {/* Ruler — transient on-canvas measurement tool. Works in both
                 block and brick mode. Active button is fuchsia so it stands
@@ -7412,6 +7564,80 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     Use sill 0 for door-style openings.
                   </p>
                 </section>
+
+                {/* Lintel section — block mode only. Lets the user pin a
+                    specific lintel block to this opening instead of the
+                    auto-pick. Empty value = auto-pick. Lists every block
+                    in the library tagged with the `lintel` role.
+
+                    Disabled when the user hasn't tagged any lintel
+                    blocks — explanatory empty state replaces the
+                    dropdown so the user knows what's missing and where
+                    to go. */}
+                {(() => {
+                  const lintelOptions = Object.values(BLOCK_LIBRARY)
+                    .filter((b) => b.roles.includes('lintel'))
+                    .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm)
+                  // Wall-height-derived extras same as the calc engine.
+                  // The picker preview shows the auto-pick using the
+                  // current dimensions, so the user knows what they're
+                  // overriding.
+                  const wallHeightMod200 = Math.round(wallHeightMm) % 200
+                  const previewExtras: number[] =
+                    wallHeightMod200 === 100
+                      ? [100]
+                      : wallHeightMod200 === 150
+                      ? [150]
+                      : []
+                  // Live auto-pick preview against the head the user is
+                  // currently editing — when they switch back to "Auto"
+                  // they see exactly which block the engine would
+                  // choose, so the override is an informed decision.
+                  const autoPick =
+                    blockOpeningHeadMm > 0
+                      ? selectBlockLintel(blockOpeningHeadMm, previewExtras)?.code ?? null
+                      : null
+                  return (
+                    <section>
+                      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                        Lintel
+                      </h4>
+                      {lintelOptions.length === 0 ? (
+                        <p className="text-[11px] text-ink-400 leading-relaxed">
+                          No lintel-tagged blocks in your library yet — head
+                          courses won't get a lintel in the tally. Tag a block
+                          with the <code className="text-ink-200">lintel</code> role
+                          in Material Library to enable selection here.
+                        </p>
+                      ) : (
+                        <>
+                          <select
+                            value={blockOpeningLintelOverride}
+                            onChange={(e) =>
+                              setBlockOpeningLintelOverride(e.target.value)
+                            }
+                            className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                          >
+                            <option value="">
+                              Auto-pick
+                              {autoPick ? ` — currently ${autoPick}` : ''}
+                            </option>
+                            {lintelOptions.map((b) => (
+                              <option key={b.code} value={b.code}>
+                                {b.code} — {b.name} ({b.dimensions.heightMm}mm tall)
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                            Auto-pick uses the smallest lintel-tagged block
+                            whose face height covers the head. Override to
+                            pin this opening to a specific block.
+                          </p>
+                        </>
+                      )}
+                    </section>
+                  )
+                })()}
 
                 {/* Validation states */}
                 {tooTall && (
@@ -8480,7 +8706,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           <TradeRail
             trades={['block', 'brick']}
             activeTrade={mode}
-            onChangeTrade={(t) => setMode(t)}
+            onChangeTrade={(t) => {
+              setMode(t)
+              // When the user actively clicks a trade tab whose
+              // library is empty, surface the onboarding prompt.
+              // This is the only path that auto-opens it now —
+              // simply LOADING a project never does. Multi-trade
+              // estimates working in one trade don't get nagged
+              // about the other.
+              const targetLibraryEmpty =
+                t === 'block'
+                  ? Object.keys(BLOCK_LIBRARY).length === 0
+                  : Object.keys(BRICK_LIBRARY).length === 0
+              if (targetLibraryEmpty) {
+                setMaterialPromptMode(t)
+              }
+            }}
           />
         )}
 

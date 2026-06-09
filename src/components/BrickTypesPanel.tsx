@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState, type ReactElement } from 'react'
 import type { BrickCourseRange, BrickMakeup } from '../types/walls'
 import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
+import { Link } from 'react-router-dom'
 import { useBrickLibrary } from '../data/brickLibrary'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import LengthInput from './LengthInput'
+import LibraryGuidance from './LibraryGuidance'
 
 interface BrickTypesPanelProps {
   makeups: BrickMakeup[]
@@ -64,15 +66,25 @@ export default function BrickTypesPanel({
   // when no separate palette arg was passed). See WallTypesPanel for
   // the same rationale — keeps colours stable across area filters.
   const colorMakeups = paletteMakeups ?? makeups
+  // Library check so the panel can tell the user which knob is the
+  // missing one — "no brick in library, fix that first" vs "library has
+  // bricks, just no wall types yet". Also drives suppression of saved
+  // wall types when the library is empty: showing a "brick wall —
+  // Acme 76mm" card while the library has no Acme 76mm in it would let
+  // the user activate a type whose underlying brick is missing.
+  const { library: brickLibrary, version: brickLibraryVersion } = useBrickLibrary()
+  void brickLibraryVersion
+  const brickLibraryEmpty = Object.keys(brickLibrary).length === 0
+  const visibleMakeups = brickLibraryEmpty ? [] : makeups
   const [editingId, setEditingId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const editingMakeup =
     editingId && editingId !== 'new' ? makeups.find((m) => m.id === editingId) : null
-  const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
+  const activeMakeup = visibleMakeups.find((m) => m.id === activeMakeupId)
   const orderedMakeups = useMemo(() => {
-    if (!activeMakeup) return makeups
-    return [activeMakeup, ...makeups.filter((m) => m.id !== activeMakeup.id)]
-  }, [makeups, activeMakeup])
+    if (!activeMakeup) return visibleMakeups
+    return [activeMakeup, ...visibleMakeups.filter((m) => m.id !== activeMakeup.id)]
+  }, [visibleMakeups, activeMakeup])
 
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
@@ -91,17 +103,23 @@ export default function BrickTypesPanel({
             {!expanded && activeMakeup ? (
               <>· {activeMakeup.name}</>
             ) : (
-              <>· {makeups.length}</>
+              <>· {visibleMakeups.length}</>
             )}
           </span>
         </button>
         {expanded && (
-          <button
-            onClick={() => setEditingId('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
-          >
-            + Add
-          </button>
+          <LibraryGuidance mode="brick" actionLabel="Add wall type" position="left">
+            <button
+              onClick={() => {
+                if (brickLibraryEmpty) return
+                setEditingId('new')
+              }}
+              disabled={brickLibraryEmpty}
+              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          </LibraryGuidance>
         )}
       </div>
 
@@ -206,6 +224,42 @@ export default function BrickTypesPanel({
               </button>
             )
           })}
+
+          {/* Empty state — mirrors WallTypesPanel exactly so block + brick
+              workspaces feel the same when the user lands cold. */}
+          {orderedMakeups.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-3 py-4 text-center">
+              {brickLibraryEmpty ? (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No brick wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Add at least one brick to your Material Library, then come
+                    back to create brick wall types here.
+                  </p>
+                  <Link
+                    to="/library#bricks"
+                    className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-beme-300 hover:text-beme-200"
+                  >
+                    Open Material Library
+                    <span aria-hidden="true">→</span>
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No brick wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Hit <span className="font-semibold text-ink-200">+ Add</span>{' '}
+                    above to set up your first brick wall — height, bond, and
+                    brick type.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 

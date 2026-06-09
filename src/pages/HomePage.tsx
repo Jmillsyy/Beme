@@ -1512,7 +1512,8 @@ function PersonalDashboard() {
         <NewEstimateTile />
       </section>
 
-      {/* Project rail — two side-by-side columns:
+      {/* Project rail — stacked vertically: Current on top, Completed
+          below.
             • Current projects = anything in-progress (still being
               estimated, not yet completed) — search lives here so
               the user can hunt down a specific job before opening it.
@@ -1520,12 +1521,13 @@ function PersonalDashboard() {
               regardless of outcome (won / lost / pending). Smaller,
               denser list — historical reference rather than active
               workspace.
-          Each column caps at 3 rows on the dashboard with a "View
-          all" affordance below. items-stretch on the grid makes
-          both columns share the tallest column's height, so the
-          empty state on Completed fills the whole space when
-          Current has rows. */}
-      <section className="mt-8 flex-1 grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-8 items-stretch">
+          Each section caps at 3 rows on the dashboard with a "View
+          all" affordance below. Vertical stack means the user lands
+          on Current first (the section they're most likely to act
+          on) and scrolls down to history; the previous side-by-side
+          layout buried the active list at narrower viewports and
+          wasted right-column space when Completed was empty. */}
+      <section className="mt-8 flex-1 grid grid-cols-1 gap-y-8 items-start">
         {/* Current — single small-uppercase header matching the
             OrgDashboard ProjectsColumn pattern. No marketing-style
             eyebrow + large heading combo. The orange dot keeps a

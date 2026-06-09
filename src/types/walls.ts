@@ -525,6 +525,21 @@ export interface Opening {
    */
   sillCourseBlockCode?: BlockCode
   sillCourseOrientation?: 'running' | 'soldier'
+  /**
+   * Per-opening lintel override. When set, the calc engine + 3D use
+   * this block code as the lintel for THIS opening instead of the
+   * auto-picked one (smallest lintel-tagged block whose face height
+   * covers the head). Useful when the user wants a specific lintel
+   * across multiple openings even though a smaller one would also
+   * span — e.g. a structural detail calls for a 300mm lintel
+   * everywhere regardless of opening head height.
+   *
+   * Undefined = auto-pick (default behaviour, see selectBlockLintel).
+   * Must reference a block tagged with the `lintel` role; if the
+   * referenced block disappears from the library or loses its role,
+   * the calc falls back to auto-pick.
+   */
+  lintelBlockCodeOverride?: BlockCode
 }
 
 /**

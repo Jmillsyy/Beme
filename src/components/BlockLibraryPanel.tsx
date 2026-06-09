@@ -173,6 +173,80 @@ export default function BlockLibraryPanel({
             </select>
           </div>
 
+          {/* Empty state. Two flavours: a) library has nothing in it
+              (first-run / wiped), b) filter excludes everything but the
+              library has entries. Different messaging because different
+              fixes — add a block vs change the filter. */}
+          {blocks.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-4 py-6 text-center">
+              {Object.keys(library).length === 0 ? (
+                <>
+                  <p className="text-sm font-semibold text-ink-100">
+                    Your block library is empty
+                  </p>
+                  <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                    Block estimates need at least one block in your library
+                    before you can create wall types or draw walls. Hit{' '}
+                    <span className="font-semibold text-ink-200">+ Add block</span>{' '}
+                    above to start.
+                  </p>
+                  <div className="mt-4 text-left max-w-md mx-auto rounded-md border border-ink-700 bg-ink-900/60 p-3">
+                    <p className="text-[11px] uppercase tracking-wider font-semibold text-ink-400 mb-2">
+                      What you need
+                    </p>
+                    <ul className="space-y-2 text-xs text-ink-300">
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A body block</span>{' '}
+                          — the main course block (tag it with the{' '}
+                          <span className="font-mono text-ink-200">body</span>{' '}
+                          role).
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A corner block</span>{' '}
+                          — for L-junctions and free ends (tag{' '}
+                          <span className="font-mono text-ink-200">corner</span>).
+                          Often the same block as the body — assign both roles.
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A half block</span>{' '}
+                          (recommended) — for accurate course staggering
+                          (tag <span className="font-mono text-ink-200">half</span>).
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">Bond beam, lintel, base course</span>{' '}
+                          — optional, but recommended for richer estimates.
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-ink-100">
+                    No blocks match this filter
+                  </p>
+                  <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                    No block in your library is tagged with the selected role.
+                    Try the <span className="font-semibold text-ink-200">All blocks</span>{' '}
+                    filter to see the full catalogue, or add the role to an
+                    existing block via Edit.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
           {/* List */}
           <div className="flex flex-col gap-1">
             {blocks.map((block) => (
@@ -619,42 +693,12 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
                   <fieldset className="border border-ink-700 bg-ink-900/40 rounded-lg p-3">
                     <legend className="px-1 text-ink-300 text-xs">Lintel rules</legend>
                     <p className="text-[11px] text-ink-400 mb-3 leading-relaxed">
-                      How this block is selected and sized when used as a lintel.
-                      All optional — leave blank for sensible defaults. Min and
-                      Max head height are both <em>inclusive</em>: a range of
-                      200–300 covers heads from 200mm to 300mm.
+                      How this block is sized when used as a lintel. Selection
+                      is automatic — when an opening needs a lintel, beme picks
+                      the smallest lintel-tagged block whose face height covers
+                      the head. No ranges to maintain.
                     </p>
                     <div className="grid grid-cols-3 gap-3">
-                      <label className="block">
-                        <span className="block text-ink-300 text-xs mb-1">Min head (mm)</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={50}
-                          value={lintelMinHeadHeightMm}
-                          onChange={(e) => {
-                            const v = e.target.value
-                            setLintelMinHeadHeightMm(v === '' ? '' : parseInt(v, 10))
-                          }}
-                          placeholder="e.g. 200"
-                          className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="block text-ink-300 text-xs mb-1">Max head (mm)</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={50}
-                          value={lintelMaxHeadHeightMm}
-                          onChange={(e) => {
-                            const v = e.target.value
-                            setLintelMaxHeadHeightMm(v === '' ? '' : parseInt(v, 10))
-                          }}
-                          placeholder="e.g. 300"
-                          className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                        />
-                      </label>
                       <label className="block">
                         <span className="block text-ink-300 text-xs mb-1">Bearing each side (mm)</span>
                         <input

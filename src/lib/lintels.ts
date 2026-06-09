@@ -25,7 +25,7 @@ import {
   pickLintelBlockIn,
   BLOCK_LIBRARY,
 } from '../data/blockLibrary'
-import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
+import { DEFAULT_MORTAR_JOINT_MM, type BlockCode } from '../types/blocks'
 
 // ---------- Block walls: lintel spec by head height ----------
 
@@ -83,16 +83,36 @@ export function selectBlockLintel(
    * no room for the 100mm course; 20.18's 390mm + 5×200 + 100 = 1490
    * fits exactly with the makeup course slotted in).
    */
-  extraCourseModulesMm: number[] = []
+  extraCourseModulesMm: number[] = [],
+  /**
+   * Optional per-opening override — when set and the code refers to a
+   * lintel-tagged block in the live library, that block is used as the
+   * lintel instead of the auto-pick. Falls through to auto-pick when:
+   *   - the code is missing from the library (stale reference)
+   *   - the block is no longer tagged with the `lintel` role
+   * so the override never produces a hard failure.
+   */
+  overrideCode?: BlockCode
 ): LintelSpec | null {
+  // Override path — honour the user's per-opening pick if it still
+  // resolves to a lintel-tagged block.
+  let block = undefined as ReturnType<typeof pickLintelBlockIn>
+  if (overrideCode) {
+    const candidate = BLOCK_LIBRARY[overrideCode]
+    if (candidate && candidate.roles.includes('lintel')) {
+      block = candidate
+    }
+  }
   // Modular-fit selection: pick the lintel whose remaining head
   // (head − lintel face) divides cleanest by the available course
   // modulars. See `pickLintelBlockIn` for the rule.
-  const block = pickLintelBlockIn(
-    BLOCK_LIBRARY,
-    headHeightMm,
-    extraCourseModulesMm
-  )
+  if (!block) {
+    block = pickLintelBlockIn(
+      BLOCK_LIBRARY,
+      headHeightMm,
+      extraCourseModulesMm
+    )
+  }
 
   if (!block) return null
 

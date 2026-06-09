@@ -1275,7 +1275,16 @@ function segmentsForStraightWall(
                 : wallHeightMod200 === 150
                   ? [150]
                   : []
-            const spec = selectBlockLintel(headHeightMm, extras)
+            // Pass the per-opening lintelBlockCodeOverride so the 3D
+            // render matches the calc tally — both honour the same
+            // user pick. Auto-fallback still happens inside
+            // selectBlockLintel if the override code is missing or
+            // no longer tagged as a lintel.
+            const spec = selectBlockLintel(
+              headHeightMm,
+              extras,
+              sourceOp?.lintelBlockCodeOverride
+            )
             if (spec) code = spec.code as BlockCode
           }
           if (!code) return null
@@ -1283,12 +1292,26 @@ function segmentsForStraightWall(
           if (!block) return null
           const lintelHeightM = block.dimensions.heightMm / 1000
           const lintelBlockW = block.dimensions.widthMm / 1000
+          // Clip the lintel at the wall top so a 390mm lintel chosen
+          // for a 200mm head area renders as 200mm tall instead of
+          // poking out above the wall. Matches how the lintel would
+          // be cut on site — the block above wall top is sawn off,
+          // the count in the tally still includes the whole block
+          // (you still buy and cut a whole one). Without this clip
+          // the 3D view shows a phantom block above the wall and
+          // the lintel footprint extends into "no-wall" space which
+          // breaks downstream cell-removal and mortar emission.
+          // `totalHeightM` comes from the outer wall scope so the
+          // clamp uses the same wall top the rest of the render
+          // honours.
+          const y1Raw = op.head + lintelHeightM
+          const y1 = Math.min(y1Raw, totalHeightM)
           return {
             code,
             spanStart: op.start,
             spanEnd: op.end,
             y0: op.head,
-            y1: op.head + lintelHeightM,
+            y1,
             blockWidthM: lintelBlockW,
           }
         })
@@ -2024,6 +2047,71 @@ function segmentsForStraightWall(
       y1: lintel.y1,
       blockWidthM: lintel.blockWidthM,
     })
+
+    // ── Gap-fill above the lintel ──────────────────────────────────
+    //
+    // When the lintel doesn't fully consume the head area modular-
+    // cleanly (typical with a user override — e.g. picking a 200mm
+    // lintel under a 300mm head leaves a 100mm gap), drop in a
+    // course of the closest height-makeup-tagged block to bridge
+    // the leftover. Mirrors the calc-side gap-fill in blockCalc.ts
+    // so the 3D render and the tally agree on what's there.
+    //
+    // Decomposition: gap above lintel = N×200mm body courses + a
+    // remainder. The remainder is what a height-makeup course
+    // covers; if it's tiny (<50mm) treat it as mortar slop and skip.
+    const gapAboveMm = (totalHeightM - lintel.y1) * 1000
+    if (gapAboveMm >= 50) {
+      const BODY_MM = 200
+      const MORTAR_MM = DEFAULT_MORTAR_JOINT_MM
+      const bodyCoursesAbove = Math.floor(gapAboveMm / BODY_MM)
+      const makeupGapMm = gapAboveMm - bodyCoursesAbove * BODY_MM
+      if (makeupGapMm >= 50) {
+        // Smallest height-makeup block whose face fits the gap
+        // (after one mortar joint above the makeup). Mirrors
+        // pickHeightMakeupBlockIn's preference: exact match first,
+        // closest-under otherwise.
+        const targetFaceMm = makeupGapMm - MORTAR_MM
+        const makeupCandidates = Object.values(library)
+          .filter((b) => b.roles.includes('height-makeup'))
+          .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
+        const makeup =
+          makeupCandidates.find(
+            (b) => b.dimensions.heightMm === targetFaceMm
+          ) ??
+          makeupCandidates.find((b) => b.dimensions.heightMm <= targetFaceMm)
+        if (makeup) {
+          const makeupFaceM = makeup.dimensions.heightMm / 1000
+          const makeupWidthM = makeup.dimensions.widthMm / 1000
+          // Position: directly above the lintel + any whole body
+          // courses that come first. With bodyCoursesAbove=0 (the
+          // common 100mm-gap case) the makeup sits flush on top of
+          // the lintel.
+          const yMakeup0 = lintel.y1 + (bodyCoursesAbove * BODY_MM) / 1000
+          const yMakeup1 = yMakeup0 + makeupFaceM
+          // Clear body cells in the gap-fill's y-range so the
+          // makeup block isn't underlaid by stray body geometry.
+          // Same span as the lintel — gap-fill is one course wide.
+          for (const entry of grid) {
+            const { course, cells } = entry
+            if (course.y1 <= yMakeup0 + 0.001) continue
+            if (course.y0 >= yMakeup1 - 0.001) continue
+            stampZone(cells, lintel.spanStart, lintel.spanEnd, null)
+          }
+          // Emit through the same lintel-mesh pipeline (Phase 6).
+          // The mesh shape is identical so we reuse it.
+          lintelMeshes.push({
+            code: makeup.code as BlockCode,
+            color: colorOf(makeup.code as BlockCode),
+            s0: lintel.spanStart,
+            s1: lintel.spanEnd,
+            y0: yMakeup0,
+            y1: yMakeup1,
+            blockWidthM: makeupWidthM,
+          })
+        }
+      }
+    }
   }
 
   // ── Phase 4b: sill course override (windows only) ───────────────
@@ -3452,7 +3540,11 @@ function Scene({
                 : wallHeightMod200 === 150
                   ? [150]
                   : []
-            const spec = selectBlockLintel(headHeightMm, extras)
+            const spec = selectBlockLintel(
+              headHeightMm,
+              extras,
+              op.lintelBlockCodeOverride
+            )
             if (spec) allCodes.push(spec.code)
           }
         }

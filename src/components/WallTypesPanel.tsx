@@ -36,6 +36,7 @@ import {
 } from '../lib/makeups'
 import { bandColor } from '../lib/blockColors'
 import LengthInput from './LengthInput'
+import LibraryGuidance from './LibraryGuidance'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -146,6 +147,23 @@ export default function WallTypesPanel({
   // arg was passed (single-area or legacy callers).
   const colorMakeups = paletteMakeups ?? makeups
   const colorPierMakeups = palettePierMakeups ?? pierMakeups
+  // Library check so the empty-state messaging below can tell the user
+  // exactly what's missing — "no wall types yet, hit + Add" vs "your
+  // block library is empty, fix that first then come back".
+  //
+  // Also drives suppression: when the library is empty we hide existing
+  // wall types from the list (they reference codes that no longer
+  // exist, so showing them would let the user activate a wall type
+  // that can't draw anything sensible). The makeups data is preserved
+  // — adding blocks back re-surfaces them.
+  const { library: blockLibrary, version: blockLibraryVersion } = useBlockLibrary()
+  void blockLibraryVersion
+  const blockLibraryEmpty = Object.keys(blockLibrary).length === 0
+  // Effective lists shown in the panel. We don't mutate `makeups` /
+  // `pierMakeups` so the parent's data stays intact; we just don't
+  // render rows for them while the library is empty.
+  const visibleMakeups = blockLibraryEmpty ? [] : makeups
+  const visiblePierMakeups = blockLibraryEmpty ? [] : pierMakeups
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
   /** When the pier editor swaps over to the wall modal via the Curved
@@ -176,16 +194,19 @@ export default function WallTypesPanel({
       ? makeups.find((m) => m.id === editingId) ?? null
       : null
 
-  const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
+  const activeMakeup = visibleMakeups.find((m) => m.id === activeMakeupId)
 
   // Sort so the active wall type sits at the top of the list and stays there
   // — handy when there are 4+ types and the user spends most of their time
   // drawing with one of them. The remaining types keep their original order
   // so the user's mental map of "the second one I created" doesn't shuffle.
+  //
+  // Sources from `visibleMakeups` so the suppression-when-library-empty
+  // rule covers the ordered render too.
   const orderedMakeups = useMemo(() => {
-    if (!activeMakeup) return makeups
-    return [activeMakeup, ...makeups.filter((m) => m.id !== activeMakeup.id)]
-  }, [makeups, activeMakeup])
+    if (!activeMakeup) return visibleMakeups
+    return [activeMakeup, ...visibleMakeups.filter((m) => m.id !== activeMakeup.id)]
+  }, [visibleMakeups, activeMakeup])
 
   return (
     <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
@@ -204,17 +225,23 @@ export default function WallTypesPanel({
             {!expanded && activeMakeup ? (
               <>· {activeMakeup.name}</>
             ) : (
-              <>· {makeups.length}</>
+              <>· {visibleMakeups.length}</>
             )}
           </span>
         </button>
         {expanded && (
-          <button
-            onClick={() => setEditingId('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
-          >
-            + Add
-          </button>
+          <LibraryGuidance mode="block" actionLabel="Add wall type" position="left">
+            <button
+              onClick={() => {
+                if (blockLibraryEmpty) return
+                setEditingId('new')
+              }}
+              disabled={blockLibraryEmpty}
+              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          </LibraryGuidance>
         )}
       </div>
 
@@ -346,13 +373,52 @@ export default function WallTypesPanel({
             )
           })}
 
+          {/* Empty state. Distinguishes the two reasons this list might
+              be empty so the user knows which knob to turn: an empty
+              block library (go fix that first) vs a populated library
+              with no wall types yet (hit + Add). Hidden once any wall
+              or pier card exists — those already self-explain. */}
+          {orderedMakeups.length === 0 && visiblePierMakeups.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-3 py-4 text-center">
+              {blockLibraryEmpty ? (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Add at least one block to your Material Library, then come
+                    back to create wall types here.
+                  </p>
+                  <Link
+                    to="/library#blocks"
+                    className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-beme-300 hover:text-beme-200"
+                  >
+                    Open Material Library
+                    <span aria-hidden="true">→</span>
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Hit <span className="font-semibold text-ink-200">+ Add</span>{' '}
+                    above to set up your first wall — bond, height, body and
+                    corner blocks.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
           {/* Pier types render inline with wall types — a pier is just
               another card in this list. Selecting one and pressing
               Draw wall on the toolbar drops the pier (single-click
               placement); selecting a wall card behaves exactly the
               same (two-click draw). The Tied / Free chip is the
               only visual hint that this card is a pier. */}
-          {pierMakeups.map((pm) => {
+          {visiblePierMakeups.map((pm) => {
             // Pier card only lights up when the live kind is 'pier'.
             // Mirror of the wall-card guard a few lines above —
             // exactly one card across both kinds reads as Active at

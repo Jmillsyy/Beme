@@ -2691,7 +2691,11 @@ function applyOpeningAdjustments(
     if (courseType === 'height-71') extraCourseModulesMm.push(100)
     else if (courseType === 'height-140') extraCourseModulesMm.push(150)
   }
-  const lintel = selectBlockLintel(headHeightMm, extraCourseModulesMm)
+  const lintel = selectBlockLintel(
+    headHeightMm,
+    extraCourseModulesMm,
+    opening.lintelBlockCodeOverride
+  )
   if (!lintel) return
 
   // Lintel span = opening width + bearing on each side. Bearing is
@@ -2727,6 +2731,53 @@ function applyOpeningAdjustments(
 
   for (let i = 0; i < lintelCoursesToUse; i++) {
     subtractCourseBody(headStartIdx + i, bodyPerLintelCourse)
+  }
+
+  // ---- Gap-fill above the lintel ----
+  //
+  // When the chosen lintel doesn't fully consume the head area
+  // modular-cleanly (typical with a user override — e.g. 200mm lintel
+  // under a 300mm head leaves a 100mm gap), drop in a height-makeup
+  // course above the lintel to bridge the leftover.
+  //
+  // Decomposition: gap = N×200 (whole body courses) + remainder. The
+  // body courses cost nothing here (the head area's body courses are
+  // already counted in the wall-body tally — see the comment above).
+  // The remainder is what a height-makeup course covers.
+  //
+  // Only emits when (a) there's a height-makeup block in the library
+  // whose face fits the remainder modular, and (b) there's an actual
+  // course slot to put it in (the makeup course slot fits within
+  // the wall). Failures fall through silently — the existing 3D
+  // clipping handles the visual case.
+  const gapAboveLintelMm = headHeightMm - lintel.verticalModuleMm
+  if (gapAboveLintelMm > 0) {
+    const bodyCoursesAboveLintel = Math.floor(gapAboveLintelMm / BODY_BLOCK_MODULE_MM)
+    const makeupRemainderMm =
+      gapAboveLintelMm - bodyCoursesAboveLintel * BODY_BLOCK_MODULE_MM
+    // 50mm threshold: smaller residuals are mortar/dimension slop and
+    // don't warrant a course. A 100mm remainder lands a 20.71 (90mm
+    // face + 10mm mortar = 100mm modular); a 150mm remainder lands a
+    // 20.140 (140 + 10 = 150).
+    const MIN_MAKEUP_GAP_MM = 50
+    if (makeupRemainderMm >= MIN_MAKEUP_GAP_MM) {
+      const targetFaceMm = makeupRemainderMm - DEFAULT_MORTAR_JOINT_MM
+      const makeupBlock = pickHeightMakeupBlock(targetFaceMm)
+      if (makeupBlock) {
+        const makeupHorizontalModuleMm =
+          makeupBlock.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM
+        const makeupCount = Math.ceil(lintelSpanMm / makeupHorizontalModuleMm)
+        addToTally(tally, makeupBlock.code, makeupCount)
+        // Body subtraction for the makeup course — sits directly
+        // above the lintel + any whole body courses between. Only
+        // applied if the course slot actually exists in the wall.
+        const makeupCourseIdx =
+          headStartIdx + lintelCoursesNeeded + bodyCoursesAboveLintel
+        if (makeupCourseIdx < courses.length) {
+          subtractCourseBody(makeupCourseIdx, bodyPerLintelCourse)
+        }
+      }
+    }
   }
 }
 
