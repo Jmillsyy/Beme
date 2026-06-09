@@ -4,6 +4,7 @@ import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { useBrickLibrary } from '../data/brickLibrary'
 import { wallTypeColor } from '../lib/wallTypeColors'
+import LengthInput from './LengthInput'
 
 interface BrickTypesPanelProps {
   makeups: BrickMakeup[]
@@ -20,6 +21,15 @@ interface BrickTypesPanelProps {
   onAddMakeup: (makeup: BrickMakeup) => void
   onUpdateMakeup: (makeup: BrickMakeup) => void
   onDeleteMakeup: (id: string) => void
+  /**
+   * Optional curve-draw activator passed from PdfWorkspace. When wired,
+   * the brick wall-type editor surfaces a "Curved" toggle alongside
+   * "Straight" — same affordance the block wall-type modal exposes.
+   * Saving a Curved brick type stamps `kind: 'curved'` on the makeup
+   * so the Draw button routes to 3-click curve-draw mode. Optional so
+   * older host integrations that haven't wired curves still compile.
+   */
+  onToggleCurvedWall?: () => void
 }
 
 function generateMakeupId(): string {
@@ -48,6 +58,7 @@ export default function BrickTypesPanel({
   onAddMakeup,
   onUpdateMakeup,
   onDeleteMakeup,
+  onToggleCurvedWall,
 }: BrickTypesPanelProps) {
   // Palette colours come from the FULL project list (or `makeups`
   // when no separate palette arg was passed). See WallTypesPanel for
@@ -116,11 +127,21 @@ export default function BrickTypesPanel({
                   </span>
                 )}
                 <div className="flex items-start gap-2 mb-1 pr-12">
+                  {/* Colour-tinted chip doubling as the type label —
+                      matches the block panel exactly so brick + block
+                      wall-type lists read the same way. Says "Wall"
+                      for straight types, "Curved" for kind='curved'.
+                      Background is the type's plan colour so the
+                      chip itself is the colour-id swatch. */}
                   <span
-                    className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
-                    style={{ backgroundColor: wallTypeColor(m.id, colorMakeups) }}
-                    aria-hidden
-                  />
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30"
+                    style={{
+                      backgroundColor: wallTypeColor(m.id, colorMakeups),
+                    }}
+                    title="Wall colour shown on the plan"
+                  >
+                    {m.kind === 'curved' ? 'Curved' : 'Wall'}
+                  </span>
                   {/* Wrap the name onto multiple lines rather than truncate —
                       the name is the identity of this entry, so the user
                       always wants it in full even if the card grows taller. */}
@@ -194,11 +215,24 @@ export default function BrickTypesPanel({
       {editingId !== null && (
         <BrickTypeEditorModal
           existing={editingId === 'new' ? null : editingMakeup ?? null}
+          // Curved option only available on NEW types (same rule as the
+          // block modal — converting an existing wall type's shape
+          // mid-flight has too many cascading implications). Disabled
+          // when the host hasn't wired a curve-draw activator.
+          curvedAvailable={
+            editingId === 'new' && Boolean(onToggleCurvedWall)
+          }
           onCancel={() => setEditingId(null)}
           onSave={(m) => {
             if (editingId === 'new') onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
+            // The saved brick type sits in the panel labelled "Curved"
+            // (kind flag on the makeup). The user selects it like any
+            // other type and hits Draw — the toolbar's draw routing
+            // checks the active makeup's kind and routes to curve-draw
+            // or straight-draw accordingly. Same flow as the block
+            // wall-type modal.
           }}
         />
       )}
@@ -212,9 +246,23 @@ interface BrickTypeEditorModalProps {
   existing: BrickMakeup | null
   onSave: (makeup: BrickMakeup) => void
   onCancel: () => void
+  /**
+   * Curve option is shown when true. Same rule as the block modal:
+   * only the "+ Add" entry surface offers it (you can't convert an
+   * existing brick type's shape mid-flight). Selecting Curved keeps
+   * the form open so the user can fill out the basics, then saving
+   * stamps `kind: 'curved'` so the parent's draw button routes to
+   * 3-click curve-draw mode the next time this type is active.
+   */
+  curvedAvailable?: boolean
 }
 
-function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorModalProps) {
+function BrickTypeEditorModal({
+  existing,
+  onSave,
+  onCancel,
+  curvedAvailable,
+}: BrickTypeEditorModalProps) {
   const { library } = useBrickLibrary()
   const brickTypes = useMemo(
     () => Object.values(library).sort((a, b) => a.heightMm - b.heightMm),
@@ -255,6 +303,18 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
   type TabKey = 'basics' | 'composition' | 'openings'
   const [activeTab, setActiveTab] = useState<TabKey>('basics')
 
+  // Wall shape — Straight (default) or Curved. Existing brick types
+  // keep their stored kind; new types default to Straight. The Curved
+  // option only renders when the host wired the curve-draw activator
+  // (curvedAvailable). Same UX pattern as the block wall type modal:
+  // picking Curved keeps the form open so the user fills the same
+  // fields as a straight wall; on Save the kind flag is stamped on
+  // the makeup and the parent's Draw button routes to 3-click
+  // curve-draw the next time this type is active.
+  const [selectedKind, setSelectedKind] = useState<'wall' | 'curved'>(
+    existing?.kind ?? 'wall',
+  )
+
   // Esc closes — mirrors WallTypeEditorModal so the keyboard UX is uniform.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -277,6 +337,14 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
     onSave({
       id,
       name: name.trim() || 'New brick type',
+      // Existing brick types keep their stored kind (you can't morph
+      // a straight brick wall type into a curved one mid-flight).
+      // New types pick up whatever the user chose in the kind picker;
+      // 'wall' is the default and stays absent from the persisted
+      // shape (undefined ≡ straight wall, backward-compatible).
+      kind:
+        existing?.kind ??
+        (selectedKind === 'curved' ? 'curved' : 'wall'),
       heightMm,
       brickTypeCode,
       ...(cleanRanges.length > 0 ? { courseRanges: cleanRanges } : {}),
@@ -338,6 +406,49 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
             ×
           </button>
         </header>
+
+        {/* Wall shape picker — visual style mirrors the block modal's
+            KindPicker so the two editors read as the same product.
+            Brick has no pier kinds, so the picker is just Straight /
+            Curved. Renders only on new types when the host wired
+            curve-draw (existing brick types can't morph their shape
+            mid-flight, same rule the block side enforces). */}
+        {!existing && curvedAvailable && (
+          <div className="px-5 py-2.5 border-b border-ink-600 bg-ink-900/20">
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+                Type
+              </span>
+              <div className="inline-flex border border-ink-600 rounded-lg overflow-hidden">
+                {(
+                  [
+                    { value: 'wall', label: 'Wall' },
+                    { value: 'curved', label: 'Curved' },
+                  ] as const
+                ).map((o, i) => {
+                  const isActive = selectedKind === o.value
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      onClick={() => {
+                        if (!isActive) setSelectedKind(o.value)
+                      }}
+                      aria-pressed={isActive}
+                      className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                        isActive
+                          ? 'bg-beme-500 text-black'
+                          : 'bg-ink-800 text-ink-300 hover:bg-ink-700 hover:text-ink-100'
+                      } ${i > 0 ? 'border-l border-ink-600' : ''}`}
+                    >
+                      {o.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tabs + content — same shell as the blockwork modal: left tab
             rail, scrollable content area, right rail with live preview. */}
@@ -408,14 +519,12 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               />
             </label>
             <label className="text-sm block">
-              <span className="block text-ink-300 mb-1">Height (mm)</span>
-              <input
-                type="number"
-                min="200"
-                step="50"
-                value={heightMm}
-                onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              <span className="block text-ink-300 mb-1">Height</span>
+              <LengthInput
+                valueMm={heightMm}
+                onChangeMm={(mm) => setHeightMm(Math.round(mm))}
+                minMm={200}
+                className="w-full"
               />
             </label>
             <label className="text-sm block">

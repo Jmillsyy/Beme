@@ -941,6 +941,15 @@ export function planWall(
     const invC1Gap = Math.abs(lengthMm - invOddFit.actualLengthMm)
     const syncC2Gap = Math.abs(lengthMm - syncEvenFit.actualLengthMm)
     const invC2Gap = Math.abs(lengthMm - invEvenFit.actualLengthMm)
+    // Mark these as referenced — the wallC1OwnsItsCorner branch below
+    // computes its own gaps for corner walls; the length-based branch
+    // uses these gaps as a tiebreak. The unconditional-INV path
+    // doesn't read them but we keep them computed because TS would
+    // warn unused otherwise.
+    void syncC1Gap
+    void invC1Gap
+    void syncC2Gap
+    void invC2Gap
     let invWins: boolean
     if (wallC1OwnsItsCorner !== null) {
       // Ownership-aware decision. The choice between SYNC and INV
@@ -997,10 +1006,17 @@ export function planWall(
       const invOwnC1Gap = Math.abs(lengthMm - invOwnC1.actualLengthMm)
       invWins = invOwnC1Gap < syncOwnC1Gap
     } else {
-      // Length-based fallback (no corner end, or no wallsById).
-      invWins =
-        invC1Gap < syncC1Gap ||
-        (invC1Gap === syncC1Gap && invC2Gap < syncC2Gap)
+      // No corner ends — both sides free. ALWAYS invert for the
+      // "snakes and ladders" / running-bond layout the user
+      // explicitly asked for. Each course shows full on one side and
+      // half on the other; the next course mirrors. Even if SYNC
+      // would give a marginally cleaner fit, the inverted layout is
+      // visually cleaner (alternating sides instead of mixed
+      // symmetric-then-asymmetric courses), so we commit
+      // unconditionally. The fit's body row absorbs whatever cut is
+      // needed for non-modular wall lengths — same place cuts
+      // already land for canonical stretcher.
+      invWins = true
     }
     if (invWins) {
       // Commit the inversion on the chosen side. Swap odd↔even on
@@ -2026,8 +2042,35 @@ export function planWallLayout(
       )
     }
 
-    const startEndWidth = widthOf(startBlock)
-    const endEndWidth = widthOf(endBlock)
+    // ── Half-end slot cap ────────────────────────────────────────
+    //
+    // Stretcher bond's half-end position is geometry-locked: the
+    // slot face must equal (bodyFace − mortar) / 2 so the body grid
+    // offsets by exactly half a body+mortar module between odd and
+    // even courses. If the user nominates a full-width block for
+    // the halfBlockCode slot (e.g. CMU8 in both Full + Half), the
+    // render must CUT that block to the slot's required face width
+    // so the bond is preserved.
+    //
+    // Cap only applies to non-corner ends — corner ends always use
+    // the full corner block. Stack bond ignores this branch
+    // because junctionType !== 'corner' check above never picks
+    // halfBlockCode (resolveEndForCourse returns cornerBlockCode).
+    const halfSlotFaceMm = Math.max(1, (bodyBlockWidthMm - MORTAR_MM) / 2)
+    const isStartStretcherHalfEnd =
+      makeup.bondType === 'stretcher' &&
+      wall.startJunction.type !== 'corner' &&
+      !startParityOdd
+    const isEndStretcherHalfEnd =
+      makeup.bondType === 'stretcher' &&
+      wall.endJunction.type !== 'corner' &&
+      !endParityOdd
+    const startEndWidth = isStartStretcherHalfEnd
+      ? Math.min(widthOf(startBlock), halfSlotFaceMm)
+      : widthOf(startBlock)
+    const endEndWidth = isEndStretcherHalfEnd
+      ? Math.min(widthOf(endBlock), halfSlotFaceMm)
+      : widthOf(endBlock)
     const leadInWidth = leadInCode ? widthOf(leadInCode) : 0
 
     // ---- Lay blocks left-to-right ----

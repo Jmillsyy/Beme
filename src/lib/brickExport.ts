@@ -24,6 +24,30 @@ import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
 import { getCurrentOrgId } from './organisations'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
+import { arcFromThreePoints, isCurvedWall } from './curveGeom'
+
+/**
+ * Wall lineal length in mm. Mirrors the brickCalc helper:
+ *   - Straight walls → Euclidean distance.
+ *   - Curved walls → true centreline arc length (sweep × radius).
+ *
+ * Centralised here too so every callsite — summary tiles, per-wall
+ * tally, opening shape projection — reports the same length for the
+ * same wall.
+ */
+function wallLinealMm(w: Wall): number {
+  if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+    const geom = arcFromThreePoints(
+      { x: w.startX, y: w.startY },
+      { x: w.midX, y: w.midY },
+      { x: w.endX, y: w.endY },
+    )
+    if (geom) return geom.arcLengthMm
+  }
+  const dx = w.endX - w.startX
+  const dy = w.endY - w.startY
+  return Math.sqrt(dx * dx + dy * dy)
+}
 
 /** Single-skin default — same value PdfWorkspace uses for wall thickness
  *  when no brick type is selected. Drives the layout-page wall stroke. */
@@ -213,11 +237,11 @@ function buildBrickPlanOverviewPage(
   const fallbackColour = BRICK_WALL_TYPE_PALETTE[0]
   const colourFor = (w: Wall) => colourByMakeupId[w.makeupId] ?? fallbackColour
 
-  const wallLengthsMm = walls.map((w) => {
-    const dx = w.endX - w.startX
-    const dy = w.endY - w.startY
-    return Math.sqrt(dx * dx + dy * dy)
-  })
+  // Per-wall length. Curved walls (kind === 'curved') use true arc
+  // length along the centreline so a curved brick wall reports its
+  // real lineal m — mirrors the brickCalc helper. Falls back to
+  // Euclidean distance if the curve geometry is degenerate.
+  const wallLengthsMm = walls.map((w) => wallLinealMm(w))
   const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
   const openingsAreaSqMm = openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
   const netWallAreaSqMm = Math.max(0, brickwork.totalAreaSqMm)
@@ -326,6 +350,34 @@ function buildBrickPlanOverviewPage(
   const wallShapes = walls
     .map((w) => {
       const c = colourFor(w)
+      // Curved walls render as an SVG <path> A-arc instead of a
+      // straight <line> so the plan overview shows the same shape
+      // the user drew. Two stroked passes — wider dark rim, narrower
+      // body fill — match the straight-wall styling exactly so
+      // mixed straight + curved walls read as one drawing.
+      if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+        const geom = arcFromThreePoints(
+          { x: w.startX, y: w.startY },
+          { x: w.midX, y: w.midY },
+          { x: w.endX, y: w.endY },
+        )
+        if (geom) {
+          // SVG arc flags: large-arc when |sweep| > π,
+          // sweep-flag = 1 for CCW in screen space (y grows down
+          // so the sign convention flips vs maths-conventional
+          // atan2). arcFromThreePoints uses screen-space y, so
+          // sweepAngle > 0 already maps to the visual CCW.
+          const largeArc = Math.abs(geom.sweepAngle) > Math.PI ? 1 : 0
+          const sweepFlag = geom.sweepAngle > 0 ? 1 : 0
+          const d = `M ${w.startX} ${w.startY} A ${geom.radiusMm} ${geom.radiusMm} 0 ${largeArc} ${sweepFlag} ${w.endX} ${w.endY}`
+          return [
+            `<path d="${d}" fill="none" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`,
+            `<path d="${d}" fill="none" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`,
+          ].join('\n          ')
+        }
+        // Degenerate curve (collinear points) — fall through to the
+        // straight-line render below so nothing disappears.
+      }
       return [
         `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`,
         `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`,
@@ -1213,12 +1265,11 @@ export async function buildBrickEstimateHtml(
       w.heightMmOverride ??
       makeup?.heightMm ??
       settings.defaultWallHeightMm
-    // Brick walls don't have corner extensions like block walls do, so
-    // a simple Euclidean length matches what calculateBrickTally does
-    // for the same wall.
-    const dx = w.endX - w.startX
-    const dy = w.endY - w.startY
-    const len = Math.sqrt(dx * dx + dy * dy)
+    // Brick walls don't have corner extensions like block walls do.
+    // Length comes from the shared arc-aware helper so curved brick
+    // walls report their true centreline arc length here — same
+    // value calculateBrickTally uses for the headline totalLinealMm.
+    const len = wallLinealMm(w)
     const gross = len * height
     const wallOps = openingsByWallId.get(w.id) ?? []
     const opArea = wallOps.reduce(

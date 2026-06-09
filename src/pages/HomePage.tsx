@@ -246,8 +246,14 @@ export default function HomePage() {
             <div className="h-4 w-72 bg-ink-700/40 rounded-md animate-pulse mx-auto" />
           </div>
         ) : (
-          <div className="flex flex-col lg:flex-row gap-8 items-start">
-            <div className="flex-1 min-w-0 w-full">
+          // items-stretch (default) instead of items-start so the
+          // main column grows to match the sidebar's height — that's
+          // what lets the project columns fill down to align with
+          // the bottom of the right rail. The main wrapper becomes
+          // flex flex-col so the project section inside the
+          // dashboard can flex-1 into the leftover vertical space.
+          <div className="flex flex-col lg:flex-row gap-8 lg:items-stretch">
+            <div className="flex-1 min-w-0 w-full flex flex-col">
               {currentOrg ? (
                 <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
               ) : isOrgInvited ? (
@@ -305,108 +311,59 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           }
         : null
 
+  // Sidebar bumped from 260px → 280px so cards have room for the
+  // new larger eyebrows + headings without text crowding the right
+  // edge. Same sticky behaviour. Card-to-card spacing bumped from
+  // 3 → 4 to match the marketing-page rhythm.
+  // Sidebar — back to the original detailed layout (Material library
+  // / Find by reference / Active template / Shortcuts / Tip), each
+  // card with its own coloured eyebrow + dot. User liked this layout;
+  // the issue was the BODY of the dashboard, not the rail.
   return (
-    <aside className="w-full lg:w-[260px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
-      {/* "+ New estimate" used to live up here as the rail's first
-          card. It's been promoted to a tile in the dashboard's stats
-          row so the create action sits flush with the In progress /
-          Completed-this-week numbers — one eye-sweep across the top
-          of the page. The rail now leads with Material library. */}
+    <aside className="w-full lg:w-[280px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
+      {/* Material library */}
+      <Link
+        to="/library"
+        title={healthSummary?.tooltip}
+        className="block border border-ink-600 rounded-2xl bg-ink-800 p-4 hover:border-beme-500 transition-colors group"
+      >
+        <div className="text-xs uppercase tracking-wider text-beme-400 font-semibold mb-2 flex items-center gap-2">
+          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+          Material library
+          {healthSummary && (
+            <span
+              className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                healthSummary.tone === 'error'
+                  ? 'bg-rose-500/20 text-rose-200 border border-rose-500/40'
+                  : 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+              }`}
+            >
+              {healthSummary.label}
+            </span>
+          )}
+        </div>
+        <div className="text-base font-bold text-ink-50 group-hover:text-beme-500 transition-colors leading-tight">
+          Open library →
+        </div>
+        <div className="text-xs text-ink-400 mt-1">Blocks, bricks, supply items</div>
+      </Link>
 
-      {/* Material library — the next-most-frequent destination from the
-          dashboard (users tune blocks, bricks, and supply items between
-          projects). On the org dashboard it sits below the estimate-start
-          card so the create actions get the prime spot. On the personal
-          dashboard it's the top-of-rail card since estimate-start is
-          already in the body.
-
-          Visual treatment: a thin orange accent bar on the left, no
-          heavy border ring / glow. Earlier it had a 2px beme-500
-          border and shadow, which made it look like a primary CTA
-          competing with "+ New estimate". The accent bar alone keeps
-          it discoverable without shouting. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
-        <Link
-          to="/library"
-          title={healthSummary?.tooltip}
-          className="px-3 py-3 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group flex items-center gap-3"
-        >
-          <span
-            className="inline-block w-1 h-10 rounded-full bg-beme-500 flex-shrink-0"
-            aria-hidden
-          />
-          <div className="flex-1 text-left min-w-0">
-            <div className="font-bold text-sm leading-tight text-ink-50 flex items-center gap-2">
-              <span>Material library</span>
-              {/* Health-issue badge — only renders when there's at least
-                  one error or warning. Errors take colour priority. */}
-              {healthSummary && (
-                <span
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                    healthSummary.tone === 'error'
-                      ? 'bg-rose-500/20 text-rose-200 border border-rose-500/40'
-                      : 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
-                  }`}
-                  aria-label={healthSummary.tooltip}
-                >
-                  <span
-                    className={`inline-block w-1.5 h-1.5 rounded-full ${
-                      healthSummary.tone === 'error' ? 'bg-rose-400' : 'bg-amber-400'
-                    }`}
-                  />
-                  {healthSummary.label}
-                </span>
-              )}
-            </div>
-            <div className="text-[11px] text-ink-300 group-hover:text-ink-200 mt-0.5">
-              Blocks, bricks, supply items
-            </div>
-          </div>
-          <span className="text-ink-400 group-hover:text-beme-500 transition-colors">→</span>
-        </Link>
-      </div>
-
-      {/* Find by reference number — every project has a 6-digit ID stamped
-          on its exported PDF + project bar. The estimator (or sales person)
-          types the number a customer quotes them over the phone, hits
-          Enter, and lands on the project. Lives in the rail next to
-          Shortcuts because it's a navigation aid, not a primary action. */}
       <FindByReferenceCard />
-
-      {/* Active region template — surfaces which seed template the user
-          picked at sign-up (or last switched to via Settings). Small,
-          but useful when a teammate is helping over the phone ("which
-          library are you on, UK or AU?"). */}
       <ActiveTemplateCard />
 
-      {/* Shortcuts — secondary nav into the parts of Beme that don't
-          have a natural surfacing on the dashboard itself. Below "Start
-          something new" so the create actions get the prime real estate. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800/60 overflow-hidden">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-4 pt-3 pb-2">
+      {/* Shortcuts */}
+      <div className="border border-ink-600 rounded-2xl bg-ink-800 overflow-hidden">
+        <h3 className="text-xs uppercase tracking-wider text-ink-400 font-semibold px-4 pt-4 pb-3 flex items-center gap-2">
+          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-ink-500" />
           Shortcuts
         </h3>
         <nav className="flex flex-col">
-          {/* Material library used to live here as a SidebarLink — promoted
-              to the rail's top card so the Shortcuts list stays tight and
-              the library is one click away from any dashboard view. */}
           <SidebarLink to="/guide" title="Beme guide" desc="Full walkthrough + shortcuts" />
           <SidebarLink to="/settings" title="Settings" desc="Defaults, regional features, theme" />
         </nav>
       </div>
 
-      {/* Tip of the day — a rotating quick-tip / shortcut. Keeps the rail
-          alive without surfacing primary actions, and is the single
-          place users discover keyboard / drawing shortcuts that would
-          otherwise live buried in the guide. */}
       <TipCard />
-
-      {/* Tiny credits / version badge so the rail doesn't end abruptly.
-          Updates the user's sense of where they are in the product
-          (build / branch / status) without taking attention. */}
-      <div className="text-[11px] text-ink-500 px-4">
-        Beme · Building estimates made easy
-      </div>
     </aside>
   )
 }
@@ -452,9 +409,10 @@ function FindByReferenceCard() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="border border-ink-600 rounded-xl bg-ink-800/60 p-4 space-y-2"
+      className="border border-ink-600 rounded-2xl bg-ink-800 p-4 space-y-3"
     >
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+      <h3 className="text-xs uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-2">
+        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
         Find by reference
       </h3>
       <div className="flex items-stretch gap-2">
@@ -479,7 +437,7 @@ function FindByReferenceCard() {
       {error ? (
         <p className="text-xs text-rose-300">{error}</p>
       ) : (
-        <p className="text-[11px] text-ink-500">
+        <p className="text-xs text-ink-400">
           6-digit number from any Beme-exported PDF.
         </p>
       )}
@@ -489,10 +447,8 @@ function FindByReferenceCard() {
 
 /**
  * Active region template — surfaces which library seed the user picked
- * (AU-SEQ, US-CMU, UK-Block, blank). Click-through opens the library
- * page where the template controls live. Falls back to "AU-SEQ" for
- * legacy users who pre-date the libraryTemplateKey field — that matches
- * the pre-region default.
+ * (AU-SEQ, US-CMU, UK-Block). Sky eyebrow + dot. Falls back to
+ * Australia (SEQ) for legacy users.
  */
 function ActiveTemplateCard() {
   const { settings } = useUserSettings()
@@ -502,79 +458,22 @@ function ActiveTemplateCard() {
   const region = template?.region ?? 'AU-SEQ'
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs uppercase tracking-wider text-ink-400 font-semibold flex items-center gap-2">
+          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-ink-500" />
           Active template
         </h3>
         <Link
           to="/library"
-          className="text-[11px] text-beme-500 hover:text-beme-400 hover:underline"
+          className="text-xs text-beme-500 hover:text-beme-400 hover:underline"
           title="Switch template in the Material library"
         >
           Switch
         </Link>
       </div>
-      <div className="text-sm font-medium text-ink-100 truncate">
-        {displayName}
-      </div>
-      <div className="text-[11px] text-ink-500 mt-0.5">{region}</div>
-    </div>
-  )
-}
-
-/**
- * Tip card — a rotating one-liner with a keyboard / drawing shortcut.
- * Keeps the rail visually balanced and is the natural surface for
- * discoverability: users learn shortcuts gradually as they see them.
- * Tips rotate on every component mount (i.e. every dashboard visit)
- * so a long session doesn't see the same tip ten times.
- */
-function TipCard() {
-  const tips = [
-    {
-      title: 'Jump anywhere fast',
-      body: 'Press Cmd+K (or Ctrl+K on Windows) to open the command palette — projects, library, settings, all searchable.',
-    },
-    {
-      title: 'See every shortcut',
-      body: 'Press ? anywhere to open the keyboard shortcut reference.',
-    },
-    {
-      title: 'Type a wall length',
-      body: 'While drawing a wall, just type the length in mm and press Enter to drop it.',
-    },
-    {
-      title: 'Esc cancels anything',
-      body: 'Pressing Esc clears the current tool — drawing, ruler, opening, pier, control joint.',
-    },
-    {
-      title: 'Delete to remove',
-      body: 'Select a wall, opening, or pier and press Delete (or Backspace) to remove it.',
-    },
-    {
-      title: 'Snap to wall faces',
-      body: 'New walls snap to the 4 faces of any nearby wall — corners and butt joints just work.',
-    },
-    {
-      title: 'Reference numbers',
-      body: 'Every exported PDF stamps a 6-digit ref. Type it in the rail to jump straight back.',
-    },
-    {
-      title: 'Click a card to activate',
-      body: 'In the workspace, click any wall or pier type card to make it the active type for the next thing you draw.',
-    },
-  ]
-  const tip = useMemo(() => tips[Math.floor(Math.random() * tips.length)], [])
-  return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-500">
-          Tip
-        </span>
-        <span className="text-[11px] text-ink-400 truncate">· {tip.title}</span>
-      </div>
-      <p className="text-[11px] text-ink-300 leading-snug">{tip.body}</p>
+      <div className="text-base font-bold text-ink-50 truncate leading-tight">{displayName}</div>
+      <div className="text-xs text-ink-400 mt-1">{region}</div>
     </div>
   )
 }
@@ -595,16 +494,43 @@ function SidebarLink({
   return (
     <Link
       to={to}
-      className="flex items-start gap-3 px-4 py-2.5 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
+      className="flex items-start gap-3 px-4 py-3 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
     >
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-ink-100 group-hover:text-beme-500 transition-colors">
+        <div className="text-sm font-bold text-ink-50 group-hover:text-beme-500 transition-colors leading-tight">
           {title}
         </div>
-        <div className="text-xs text-ink-400 mt-0.5">{desc}</div>
+        <div className="text-xs text-ink-400 mt-1">{desc}</div>
       </div>
       <span className="text-ink-500 group-hover:text-beme-500 transition-colors">→</span>
     </Link>
+  )
+}
+
+/**
+ * Tip of the day — rotating one-liner shortcut hint. Beme eyebrow + dot.
+ */
+function TipCard() {
+  const tips = [
+    { title: 'Jump anywhere fast', body: 'Press Cmd+K (or Ctrl+K on Windows) to open the command palette — projects, library, settings, all searchable.' },
+    { title: 'See every shortcut', body: 'Press ? anywhere to open the keyboard shortcut reference.' },
+    { title: 'Type a wall length', body: 'While drawing a wall, just type the length and press Enter to drop it.' },
+    { title: 'Esc cancels anything', body: 'Pressing Esc clears the current tool — drawing, ruler, opening, pier, control joint.' },
+    { title: 'Delete to remove', body: 'Select a wall, opening, or pier and press Delete (or Backspace) to remove it.' },
+    { title: 'Snap to wall faces', body: 'New walls snap to the 4 faces of any nearby wall — corners and butt joints just work.' },
+    { title: 'Reference numbers', body: 'Every exported PDF stamps a 6-digit ref. Type it in the rail to jump straight back.' },
+    { title: 'Click a card to activate', body: 'In the workspace, click any wall or pier type card to make it the active type for the next thing you draw.' },
+  ]
+  const tip = useMemo(() => tips[Math.floor(Math.random() * tips.length)], [])
+  return (
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 p-4">
+      <div className="text-xs uppercase tracking-wider text-beme-400 font-semibold mb-2 flex items-center gap-2">
+        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+        Tip
+      </div>
+      <div className="text-sm font-bold text-ink-50 leading-tight mb-1.5">{tip.title}</div>
+      <p className="text-xs text-ink-300 leading-relaxed">{tip.body}</p>
+    </div>
   )
 }
 
@@ -1351,6 +1277,56 @@ function PersonalDashboard() {
     })
   }, [projects, filter, searchQuery])
 
+  /**
+   * Splits projects into Current (in-progress) and Completed for
+   * the side-by-side dashboard layout. Search applies to the
+   * Current column only — Completed is a historical archive that
+   * doesn't need to be hunted through; the user can flip a project
+   * back to in-progress if they need to re-touch it.
+   */
+  const currentProjects = useMemo(() => {
+    const base = projects.filter((p) => p.status !== 'completed')
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return base
+    return base.filter((p) => {
+      const d = p.projectDetails
+      return (
+        d.projectName.toLowerCase().includes(q) ||
+        d.siteAddress.toLowerCase().includes(q) ||
+        d.clientName.toLowerCase().includes(q) ||
+        d.estimatorName.toLowerCase().includes(q)
+      )
+    })
+  }, [projects, searchQuery])
+  const completedProjects = useMemo(
+    () => projects.filter((p) => p.status === 'completed'),
+    [projects],
+  )
+  // Dashboard caps each column at 3 rows so the page stays scannable.
+  // The "View all" link below routes to /projects with the matching
+  // status filter pre-applied. Sorted most-recently-updated first so
+  // the three rows are the freshest work, not the first 3 the API
+  // returned.
+  const DASHBOARD_PROJECTS_PER_COLUMN = 3
+  const currentProjectsVisible = useMemo(
+    () =>
+      [...currentProjects]
+        .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+        .slice(0, DASHBOARD_PROJECTS_PER_COLUMN),
+    [currentProjects],
+  )
+  const completedProjectsVisible = useMemo(
+    () =>
+      [...completedProjects]
+        .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+        .slice(0, DASHBOARD_PROJECTS_PER_COLUMN),
+    [completedProjects],
+  )
+  const currentHasMore =
+    currentProjects.length > DASHBOARD_PROJECTS_PER_COLUMN
+  const completedHasMore =
+    completedProjects.length > DASHBOARD_PROJECTS_PER_COLUMN
+
   async function handleDelete(id: string) {
     const ok = await confirm({
       title: 'Delete this project?',
@@ -1463,10 +1439,29 @@ function PersonalDashboard() {
   const personalName = user?.email ? user.email.split('@')[0] : null
 
   return (
-    <>
+    // flex flex-col + flex-1 so PersonalDashboard fills the height
+    // of its parent (which now stretches to match the sidebar). The
+    // bottom project section gets flex-1 inside this column so it
+    // absorbs the remaining height and pushes its empty / dashed
+    // placeholders down to align with the rail's bottom edge.
+    <div className="flex flex-col flex-1">
+      {/* ── Hero ──
+          Marketing-page treatment: orange eyebrow chip with a dot,
+          then a serious display heading and an unhurried sublead.
+          The dashboard used to lead with a chunky text-3xl/extrabold
+          header and a tiny `text-sm` line under it — that read as
+          "internal admin tool". Bumping the type and adding the
+          chip lifts it into the same visual league as the marketing
+          site without changing the information it carries. */}
+      {/* Hero — matches the OrgDashboard header treatment so the
+          two dashboards read as one product. Simple text-3xl
+          extrabold heading + small ink-300 sub. No eyebrow chip, no
+          giant display heading, no orange-tinted personal name. */}
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
         <div>
-          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Your dashboard</h2>
+          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">
+            Your dashboard
+          </h2>
           <p className="text-ink-300 text-sm mt-1">
             Your estimates, win rate, and current jobs at a glance.
           </p>
@@ -1478,76 +1473,79 @@ function PersonalDashboard() {
         />
       </div>
 
-      <section className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatTile label="Total projects" value={stats.total} />
-        <StatTile label="In progress" value={stats.inProgress} accent="beme" />
-        <StatTile label="Won" value={stats.won} accent="emerald" />
-        <WinRateTile
-          winRate={stats.winRate}
-          won={stats.won}
-          lost={stats.lost}
-          pending={stats.pending}
+      {/* Stat ribbon — mirrors the OrgDashboard's restrained
+          palette. Just three muted stat tiles (no colour-matched
+          dots, no sky/emerald variety) + the NewEstimateTile in the
+          fourth slot. Colour comes from the NewEstimateTile alone,
+          so the eye lands on the action. */}
+      <section className="mt-6 grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatTile
+          label="Total projects"
+          value={stats.total}
+          sub={
+            stats.total === 0
+              ? 'No estimates yet'
+              : `${stats.completed} completed`
+          }
         />
+        <StatTile
+          label="In progress"
+          value={stats.inProgress}
+          accent="beme"
+          sub={
+            stats.inProgress === 0
+              ? 'Nothing on the go'
+              : stats.inProgress === 1
+                ? '1 active estimate'
+                : `${stats.inProgress} active estimates`
+          }
+        />
+        <StatTile
+          label="Won"
+          value={stats.won}
+          sub={
+            stats.winRate === null
+              ? 'No outcomes yet'
+              : `${Math.round(stats.winRate * 100)}% win rate`
+          }
+        />
+        <NewEstimateTile />
       </section>
 
-      {/* Primary action — one card. With the unified workspace, an estimate
-          can hold block, brick, or both. The user picks the starting trade
-          inside the workspace (via the trade chip group at the top of the
-          right rail) and can add the other later — so the dashboard surfaces
-          a single "+ New estimate" entry instead of forcing a trade choice
-          upfront. */}
-      <section className="mt-6">
-        <Link
-          to="/project/block"
-          className="block border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 group"
-        >
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-                Start a new estimate
-              </div>
-              <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
-                + New estimate
-              </h4>
-              <p className="text-sm text-ink-300 max-w-2xl">
-                Upload a plan, trace walls, openings, and piers. Block, brick,
-                or both — switch trades inside the workspace via the chip
-                group at the top of the right rail.
-              </p>
-            </div>
-            {/* Visual hint that both trades are available inside — sits in
-                the top-right of the card so it doesn't dominate. */}
-            <div className="flex items-center gap-1.5 flex-shrink-0 mt-1">
-              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-beme-500/15 text-beme-300 border border-beme-500/30">
-                Block
+      {/* Project rail — two side-by-side columns:
+            • Current projects = anything in-progress (still being
+              estimated, not yet completed) — search lives here so
+              the user can hunt down a specific job before opening it.
+            • Completed projects = anything marked completed,
+              regardless of outcome (won / lost / pending). Smaller,
+              denser list — historical reference rather than active
+              workspace.
+          Each column caps at 3 rows on the dashboard with a "View
+          all" affordance below. items-stretch on the grid makes
+          both columns share the tallest column's height, so the
+          empty state on Completed fills the whole space when
+          Current has rows. */}
+      <section className="mt-8 flex-1 grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-8 items-stretch">
+        {/* Current — single small-uppercase header matching the
+            OrgDashboard ProjectsColumn pattern. No marketing-style
+            eyebrow + large heading combo. The orange dot keeps a
+            tiny brand touch without dominating. */}
+        <div className="flex flex-col">
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+              Current projects
+              <span className="text-ink-500 normal-case font-normal tracking-normal">
+                · {currentProjects.length}
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                Brick
-              </span>
-            </div>
-          </div>
-          <div className="mt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
-            Open the workspace →
-          </div>
-        </Link>
-      </section>
-
-      <section className="mt-10">
-        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Projects
-          </h3>
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Search — matches project name, site address, client name,
-                estimator name. Case-insensitive substring. Layered on top
-                of the status / outcome filter to the right. */}
+            </h3>
             <div className="relative">
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search projects…"
-                className="pl-8 pr-3 py-1.5 w-56 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
+                placeholder="Search…"
+                className="pl-8 pr-3 py-1.5 w-44 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
               />
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1574,61 +1572,417 @@ function PersonalDashboard() {
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-1 border border-ink-600 rounded-lg p-1 bg-ink-800 flex-wrap">
-              <FilterTab label="All" count={stats.total} active={filter === 'all'} onClick={() => setFilter('all')} />
-              <FilterTab label="In progress" count={stats.inProgress} active={filter === 'in-progress'} onClick={() => setFilter('in-progress')} />
-              <FilterTab label="Completed" count={stats.completed} active={filter === 'completed'} onClick={() => setFilter('completed')} />
-              <FilterTab label="Won" count={stats.won} active={filter === 'won'} onClick={() => setFilter('won')} />
-              <FilterTab label="Lost" count={stats.lost} active={filter === 'lost'} onClick={() => setFilter('lost')} />
-              <FilterTab label="Pending" count={stats.pending} active={filter === 'pending'} onClick={() => setFilter('pending')} />
-            </div>
           </div>
+
+          {loading && (
+            <ul className="space-y-2" aria-label="Loading projects">
+              <ProjectRowSkeleton />
+              <ProjectRowSkeleton />
+            </ul>
+          )}
+
+          {!loading && currentProjects.length === 0 && (
+            <div className="flex-1 border border-dashed border-ink-600 rounded-xl bg-ink-800/40 text-ink-400 px-6 py-10 text-center flex flex-col items-center justify-center gap-3 min-h-[8rem]">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className="w-8 h-8 text-ink-500"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <line x1="9" y1="15" x2="15" y2="15" />
+              </svg>
+              <div className="text-sm">
+                {projects.length === 0 ? (
+                  <>
+                    <div className="text-ink-200 font-medium">No estimates yet.</div>
+                    <div className="text-xs text-ink-500 mt-1">
+                      Use <strong className="text-beme-300">+ New estimate</strong> above to start one.
+                    </div>
+                  </>
+                ) : searchQuery ? (
+                  <>
+                    <div className="text-ink-200 font-medium">No matches.</div>
+                    <div className="text-xs text-ink-500 mt-1">
+                      Nothing matches <strong>"{searchQuery}"</strong>.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-ink-200 font-medium">All caught up.</div>
+                    <div className="text-xs text-ink-500 mt-1">
+                      No projects currently in progress.
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {!loading && currentProjects.length > 0 && (
+            <>
+              <ul className="space-y-2">
+                {currentProjectsVisible.map((p) => (
+                  <ProjectRow
+                    key={p.id}
+                    project={p}
+                    onDelete={() => handleDelete(p.id)}
+                    onDuplicate={() => handleDuplicate(p)}
+                    onCycleOutcome={() => handleCycleOutcome(p)}
+                  />
+                ))}
+              </ul>
+              {currentHasMore && (
+                <div className="mt-3 flex justify-end">
+                  <Link
+                    to="/projects?status=in-progress"
+                    className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+                  >
+                    View all
+                    <span className="text-ink-500">
+                      · {currentProjects.length}
+                    </span>
+                  </Link>
+                </div>
+              )}
+              {/* Filler — keeps the column visually full when it
+                  has fewer rows than the sidebar's height allows.
+                  Doubles as a soft "start another" affordance so
+                  the placeholder earns its space rather than just
+                  being a blank box. flex-1 absorbs the leftover
+                  vertical room; min-h sets a floor so it doesn't
+                  collapse on a busy column. */}
+              <Link
+                to="/project/block"
+                className="flex-1 mt-3 border border-dashed border-ink-600 hover:border-ink-500 rounded-xl bg-ink-800/30 hover:bg-ink-800/50 text-ink-400 hover:text-ink-200 transition-colors flex items-center justify-center min-h-[4rem] text-xs font-medium gap-1.5"
+              >
+                <span className="text-base">+</span>
+                Start another estimate
+              </Link>
+            </>
+          )}
         </div>
 
-        {loading && (
-          <ul className="space-y-2" aria-label="Loading projects">
-            <ProjectRowSkeleton />
-            <ProjectRowSkeleton />
-            <ProjectRowSkeleton />
-          </ul>
-        )}
-
-        {!loading && filtered.length === 0 && (
-          <div className="border border-dashed border-ink-600 rounded-xl p-12 text-center text-ink-400 bg-ink-800/50">
-            {projects.length === 0 ? (
-              <span>
-                No saved projects yet. Click <strong>+ New estimate</strong>{' '}
-                above to start one.
+        {/* ── Completed ── flex column so the empty state can
+            grow to fill the same height as the Current column on
+            wide screens (items-stretch on the grid above gives the
+            container the height; the inner flex grows the empty
+            state into it). */}
+        <div className="flex flex-col">
+          {/* Completed column — same small-uppercase header as the
+              Current column, just a different label. No sky-tinted
+              eyebrow — the OrgDashboard uses one beme dot for every
+              section and the personal dashboard now matches. */}
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+              Completed projects
+              <span className="text-ink-500 normal-case font-normal tracking-normal">
+                · {completedProjects.length}
               </span>
-            ) : searchQuery ? (
-              <span>
-                No projects match <strong>"{searchQuery}"</strong>.
-              </span>
-            ) : (
-              <span>No projects with this filter.</span>
-            )}
+            </h3>
           </div>
-        )}
 
-        {!loading && filtered.length > 0 && (
-          <ul className="space-y-2">
-            {filtered.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                onDelete={() => handleDelete(p.id)}
-                onDuplicate={() => handleDuplicate(p)}
-                onCycleOutcome={() => handleCycleOutcome(p)}
-              />
-            ))}
-          </ul>
-        )}
+          {loading && (
+            <ul className="space-y-2" aria-label="Loading projects">
+              <ProjectRowSkeleton />
+              <ProjectRowSkeleton />
+            </ul>
+          )}
+
+          {!loading && completedProjects.length === 0 && (
+            <div className="flex-1 border border-dashed border-ink-600 rounded-xl bg-ink-800/40 text-ink-400 px-6 py-10 text-center flex flex-col items-center justify-center gap-3 min-h-[8rem]">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                className="w-8 h-8 text-ink-500"
+              >
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                <polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+              <div className="text-sm">
+                <div className="text-ink-200 font-medium">No completed projects yet.</div>
+                <div className="text-xs text-ink-500 mt-1">
+                  Mark a current project complete to file it here.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!loading && completedProjects.length > 0 && (
+            <>
+              <ul className="space-y-2">
+                {completedProjectsVisible.map((p) => (
+                  <ProjectRow
+                    key={p.id}
+                    project={p}
+                    onDelete={() => handleDelete(p.id)}
+                    onDuplicate={() => handleDuplicate(p)}
+                    onCycleOutcome={() => handleCycleOutcome(p)}
+                  />
+                ))}
+              </ul>
+              {completedHasMore && (
+                <div className="mt-3 flex justify-end">
+                  <Link
+                    to="/projects?status=completed"
+                    className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+                  >
+                    View all
+                    <span className="text-ink-500">
+                      · {completedProjects.length}
+                    </span>
+                  </Link>
+                </div>
+              )}
+              {/* Filler — same purpose as the Current column's
+                  "+ Start another" affordance, but the archive is
+                  passive so there's no CTA inside. Subtle text
+                  reminds the user this is the bottom of the list
+                  rather than a missing row. */}
+              <div className="flex-1 mt-3 border border-dashed border-ink-600 rounded-xl bg-ink-800/30 text-ink-500 flex items-center justify-center min-h-[4rem] text-xs">
+                End of archive
+              </div>
+            </>
+          )}
+        </div>
       </section>
 
       {/* Material library and Beme guide tiles moved to the dashboard
           sidebar (right rail) — see DashboardSidebar in HomePage. */}
-    </>
+    </div>
   )
+}
+
+/**
+ * Right-hand insights column on the dashboard. Three surfaces:
+ *   1. Recent activity — last 5 projects by updatedAt.
+ *   2. Projects by trade — block / brick / both split as a mini bar.
+ *   3. Quick actions — Resume last, Material library, Settings.
+ *
+ * All driven by the existing projects array + stats so there are no
+ * new fetches or schema changes. Symmetric card pattern with the
+ * stat tiles + new-estimate card so the dashboard reads as a single
+ * cohesive surface.
+ */
+function DashboardInsights({
+  projects,
+  stats,
+}: {
+  projects: SavedProject[]
+  stats: { total: number; inProgress: number; won: number; lost: number; pending: number; completed: number; winRate: number | null }
+}) {
+  // Last 5 most recently updated.
+  const recent = [...projects]
+    .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+    .slice(0, 5)
+
+  // By-trade breakdown from each project's `trades` array (multi-trade)
+  // with `type` as fallback (legacy single-trade projects). Counted
+  // as block-only, brick-only, or both so the bar reads as three
+  // segments rather than overlapping totals.
+  const tradeCounts = projects.reduce(
+    (acc, p) => {
+      const trades = p.trades && p.trades.length > 0 ? p.trades : p.type ? [p.type] : []
+      const hasBlock = trades.includes('block')
+      const hasBrick = trades.includes('brick')
+      if (hasBlock && hasBrick) acc.both++
+      else if (hasBlock) acc.block++
+      else if (hasBrick) acc.brick++
+      else acc.none++
+      return acc
+    },
+    { block: 0, brick: 0, both: 0, none: 0 },
+  )
+  const tradeTotal = tradeCounts.block + tradeCounts.brick + tradeCounts.both
+  const pct = (n: number) => (tradeTotal === 0 ? 0 : (n / tradeTotal) * 100)
+
+  const lastProject = recent[0]
+  const lastProjectHref = lastProject
+    ? `/project/${(lastProject.trades?.[0] ?? lastProject.type ?? 'block')}?id=${lastProject.id}`
+    : null
+
+  return (
+    <section className="mt-10">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+        Insights
+      </h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {/* Recent activity. Empty-state copy nudges the user toward
+          the "New estimate" card above. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-4 pt-3 pb-2">
+          Recent activity
+        </h3>
+        {recent.length === 0 ? (
+          <p className="px-4 pb-4 text-xs text-ink-400 italic">
+            Nothing yet. Start an estimate to see activity here.
+          </p>
+        ) : (
+          <ul className="divide-y divide-ink-700/60">
+            {recent.map((p) => (
+              <li key={p.id}>
+                <Link
+                  to={`/project/${p.trades?.[0] ?? p.type ?? 'block'}?id=${p.id}`}
+                  className="flex items-center justify-between gap-3 px-4 py-2 text-sm hover:bg-ink-700/40 transition-colors"
+                >
+                  <span className="truncate text-ink-100">{p.name || 'Untitled'}</span>
+                  <span className="text-[10px] text-ink-500 flex-shrink-0">
+                    {p.updatedAt ? formatRelativeTime(p.updatedAt) : ''}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Projects by trade — three-segment horizontal bar with a
+          legend below. Reads as a mini-chart without needing a real
+          charting lib. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          By trade
+        </h3>
+        {tradeTotal === 0 ? (
+          <p className="text-xs text-ink-400 italic">No projects yet.</p>
+        ) : (
+          <>
+            <div className="flex h-2 rounded-full overflow-hidden bg-ink-700">
+              <div
+                className="bg-beme-500"
+                style={{ width: `${pct(tradeCounts.block)}%` }}
+                title={`Block: ${tradeCounts.block}`}
+              />
+              <div
+                className="bg-amber-500"
+                style={{ width: `${pct(tradeCounts.brick)}%` }}
+                title={`Brick: ${tradeCounts.brick}`}
+              />
+              <div
+                className="bg-sky-500"
+                style={{ width: `${pct(tradeCounts.both)}%` }}
+                title={`Both: ${tradeCounts.both}`}
+              />
+            </div>
+            <div className="mt-3 flex items-center gap-3 flex-wrap text-[11px] text-ink-300">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-beme-500" />
+                Block <span className="text-ink-500">{tradeCounts.block}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-amber-500" />
+                Brick <span className="text-ink-500">{tradeCounts.brick}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-sky-500" />
+                Both <span className="text-ink-500">{tradeCounts.both}</span>
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Quick actions — three buttons for common workflows.
+          Resume-last is greyed out when there's no project yet so
+          the empty-state user gets a graceful affordance instead of
+          a dead link. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          Quick actions
+        </h3>
+        <div className="grid grid-cols-1 gap-2">
+          {lastProjectHref ? (
+            <Link
+              to={lastProjectHref}
+              className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
+            >
+              Resume last project
+              <span className="block text-[11px] text-ink-500 mt-0.5 truncate">
+                {lastProject?.name || 'Untitled'}
+              </span>
+            </Link>
+          ) : (
+            <span className="px-3 py-2 rounded-lg border border-ink-700 bg-ink-900/20 text-sm text-ink-500 cursor-not-allowed">
+              Resume last project
+              <span className="block text-[11px] text-ink-600 mt-0.5">No projects yet</span>
+            </span>
+          )}
+          <Link
+            to="/library"
+            className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
+          >
+            Open material library
+            <span className="block text-[11px] text-ink-500 mt-0.5">Blocks, bricks, supply items</span>
+          </Link>
+          <Link
+            to="/settings"
+            className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
+          >
+            Settings
+            <span className="block text-[11px] text-ink-500 mt-0.5">Defaults, theme, region</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* Win rate breakdown — restates the headline stat alongside
+          the raw won / lost / pending counts. Helps the dashboard
+          feel less empty when the user has only a handful of
+          projects but wants to see the shape of them. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          Outcomes
+        </h3>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div>
+            <div className="text-xl font-bold text-emerald-300">{stats.won}</div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Won</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold text-rose-300">{stats.lost}</div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Lost</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold text-amber-300">{stats.pending}</div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Pending</div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * "2 minutes ago", "3 hours ago", "yesterday", "5 Jan" — picks a
+ * format based on how old the timestamp is. Falls back to ISO date
+ * for older items so the column doesn't grow to "47 weeks ago".
+ */
+function formatRelativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  // Older than a week — short date.
+  const d = new Date(iso)
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
 // ---------- Shared sub-components ----------
@@ -1743,29 +2097,45 @@ function StatTile({
   label: string
   value: string | number
   sub?: string
-  accent?: 'beme' | 'emerald' | 'amber'
+  accent?: 'beme' | 'emerald' | 'amber' | 'sky'
 }) {
-  // Accent colours bumped one step brighter (300 → 500 for beme,
-  // 300 → 400 for emerald/amber) so the headline numbers carry the
-  // brand orange / green more strongly. Earlier the burnt-tone
-  // beme-300 read as muted brown in light mode.
-  const accentClass =
+  // Accent colours follow the marketing site's tri-colour palette
+  // (beme / amber / sky) plus emerald for "won" — the dot next to the
+  // eyebrow makes the row read like a real category strip rather
+  // than a wall of numbers. Numbers tuned one step brighter than the
+  // eyebrow so the value carries the brand colour strongly.
+  const accentText =
     accent === 'beme'
       ? 'text-beme-500'
       : accent === 'emerald'
         ? 'text-emerald-400'
         : accent === 'amber'
           ? 'text-amber-400'
-          : 'text-ink-50'
+          : accent === 'sky'
+            ? 'text-sky-400'
+            : 'text-ink-50'
+  const dotBg =
+    accent === 'beme'
+      ? 'bg-beme-500'
+      : accent === 'emerald'
+        ? 'bg-emerald-400'
+        : accent === 'amber'
+          ? 'bg-amber-400'
+          : accent === 'sky'
+            ? 'bg-sky-400'
+            : 'bg-ink-500'
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 px-5 py-4 lift">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 flex items-center gap-2">
+        {accent && (
+          <span aria-hidden="true" className={`inline-block w-1.5 h-1.5 rounded-full ${dotBg}`} />
+        )}
         {label}
       </div>
-      <div className={`text-2xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
+      <div className={`text-3xl font-bold tracking-tight tabular-nums mt-2 ${accentText}`}>
         {value}
       </div>
-      {sub && <div className="text-xs text-ink-400 mt-0.5">{sub}</div>}
+      {sub && <div className="text-xs text-ink-400 mt-1">{sub}</div>}
     </div>
   )
 }
@@ -1880,10 +2250,22 @@ function ProjectRow({
       ? project.projectDetails.siteAddress
       : ''
   const typeLabel = project.type === 'block' ? 'Block' : 'Brick'
+  // Resolve the trade(s) used on this project so we can paint the
+  // left-edge stripe — same encoding as the OrgDashboard's
+  // ProjectInProgressRow / CompletedProjectCard: orange for block,
+  // amber for brick, vertical gradient for mixed.
+  const trades = tradesOf(project)
 
   return (
-    <li className="border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500/60 transition-colors">
-      <div className="flex items-center justify-between flex-wrap gap-3 p-4">
+    <li className="relative border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500/60 transition-colors overflow-hidden">
+      {/* Trade stripe — matches the org dashboard project rows so the
+          eye can pick block vs brick at a glance across both
+          dashboards without having to read the badge. */}
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
+      />
+      <div className="flex items-center justify-between flex-wrap gap-3 p-4 pl-5">
         <Link
           to={`/project/${project.type}?id=${project.id}`}
           className="flex-1 min-w-0 group"

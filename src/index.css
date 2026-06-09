@@ -254,6 +254,28 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* ── Card hover lift ────────────────────────────────────────────────
+   Mirrors the .lift utility on the marketing site so the dashboard
+   surfaces feel like they belong to the same product. Subtle 3px
+   nudge up + brand-orange border highlight + soft glow on hover.
+   Respects prefers-reduced-motion. */
+.lift {
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.25s ease;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  border-color: var(--color-beme-500);
+  box-shadow: 0 12px 32px rgba(255, 122, 45, 0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lift:hover {
+    transform: none;
+  }
+}
+
 /**
  * Force the closed-hand "grabbing" cursor across the whole canvas while
  * a pan gesture is in progress. The Konva stage and PDF page each set
