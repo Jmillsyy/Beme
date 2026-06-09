@@ -60,24 +60,29 @@ export const BAND_COLOR_PALETTE: string[] = [
   'hsl(215,  8%, 46%)', // 16 graphite
 ]
 
-/** Brick / clay tones — saturated reds, oranges, terracottas. */
+/** Brick / clay tones — terracotta-dominant, no brown. Hues sit in
+ *  the 14–28° band (orange-red baked clay through warm sienna),
+ *  saturations 46–64% so slots stay vivid and warm. Lightness floor
+ *  raised to ~44% so even the darker slots read as deep terracotta /
+ *  paprika rather than the muddy browns the previous palette had.
+ *  No slot dips into the dark-brown / mahogany zone. */
 const BAND_COLOR_PALETTE_BRICK: string[] = [
-  'hsl( 12, 42%, 46%)', // 1  classic red brick
-  'hsl( 22, 36%, 58%)', // 2  warm terracotta
-  'hsl(  8, 32%, 38%)', // 3  deep oxblood
-  'hsl( 28, 28%, 64%)', // 4  pale clay
-  'hsl( 16, 38%, 52%)', // 5  burnt sienna
-  'hsl(  6, 24%, 30%)', // 6  charcoal-burnt brick
-  'hsl( 24, 30%, 50%)', // 7  rust
-  'hsl( 18, 44%, 56%)', // 8  bright firebrick
-  'hsl( 14, 26%, 42%)', // 9  dusty red
-  'hsl( 32, 22%, 60%)', // 10 buff
-  'hsl( 10, 36%, 48%)', // 11 paprika
-  'hsl( 20, 40%, 64%)', // 12 salmon brick
-  'hsl(  4, 28%, 34%)', // 13 wine
-  'hsl( 26, 24%, 54%)', // 14 sandy clay
-  'hsl( 18, 32%, 44%)', // 15 mahogany
-  'hsl( 30, 18%, 38%)', // 16 dark taupe
+  'hsl( 18, 58%, 50%)', // 1  classic terracotta
+  'hsl( 22, 50%, 60%)', // 2  warm clay
+  'hsl( 16, 62%, 46%)', // 3  burnt terracotta
+  'hsl( 24, 46%, 68%)', // 4  pale buff terracotta
+  'hsl( 20, 60%, 54%)', // 5  vivid baked clay
+  'hsl( 14, 58%, 44%)', // 6  deep terracotta
+  'hsl( 26, 48%, 52%)', // 7  pottery clay
+  'hsl( 16, 64%, 58%)', // 8  bright terracotta
+  'hsl( 14, 52%, 50%)', // 9  classic flowerpot
+  'hsl( 28, 42%, 66%)', // 10 soft sandstone clay
+  'hsl( 20, 58%, 48%)', // 11 paprika clay
+  'hsl( 22, 54%, 62%)', // 12 coral terracotta
+  'hsl( 18, 56%, 46%)', // 13 rich baked clay
+  'hsl( 26, 46%, 56%)', // 14 baked sienna
+  'hsl( 16, 54%, 52%)', // 15 warm sienna
+  'hsl( 24, 48%, 58%)', // 16 dusty rose terracotta
 ]
 
 /** Warm sandstone — buffs, tans, soft yellows. */

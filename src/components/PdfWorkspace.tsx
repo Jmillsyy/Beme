@@ -413,6 +413,24 @@ const EMPTY_WORKSPACE_PAGE_WIDTH_MM = 841
 const EMPTY_WORKSPACE_PAGE_HEIGHT_MM = 594
 const EMPTY_WORKSPACE_DEFAULT_RATIO = 100
 
+/**
+ * Distinct accent colours assigned to areas in creation order. Used
+ * by the area dot + the wall-draw preview line tint so visitors can
+ * tell areas apart at a glance without having to read names. After
+ * the 8 colours are exhausted the cycle repeats — fine for the
+ * typical 2-5 area project, no realistic project hits 9+ floors.
+ */
+const AREA_PALETTE = [
+  '#ef4444', // red
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#f59e0b', // amber
+  '#8b5cf6', // violet
+  '#14b8a6', // teal
+  '#ec4899', // pink
+  '#84cc16', // lime
+]
+
 export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorkspaceProps = {}) {
   // Mode is local state initialised from the prop. The TradeRail on the
   // left changes it without unmounting the workspace — all existing
@@ -433,6 +451,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // walls drawn while an area is active get its id stamped on them.
   const [areas, setAreas] = useState<ProjectArea[]>([])
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null)
+  // Backfill colorHex for any areas that loaded without one (older
+  // projects predate auto-colouring). Done once per area-list change
+  // and only when there's something to fill, so we don't trigger
+  // re-render loops on already-coloured projects. New areas get their
+  // colour at create time (see onCreate handlers); this just catches
+  // the older / migrated rows.
+  useEffect(() => {
+    if (areas.length === 0) return
+    if (areas.every((a) => a.colorHex)) return
+    setAreas((prev) =>
+      prev.map((a, i) =>
+        a.colorHex ? a : { ...a, colorHex: AREA_PALETTE[i % AREA_PALETTE.length] }
+      )
+    )
+  }, [areas])
   // Workspace view mode — '2d' is the Konva canvas (editing surface); '3d'
   // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
   // state, never persisted. Toggle button in the unified toolbar flips it.
@@ -7536,12 +7569,49 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             numPages={numPages}
             currentPage={currentPage}
             pagesData={isReferenceView ? {} : pagesData}
-            onSelectPage={setCurrentPage}
+            onSelectPage={(pageNum) => {
+              setCurrentPage(pageNum)
+              // Auto-switch active area to this page's last-used area
+              // (the page-area association). Soft binding: skip if the
+              // page has no walls yet (no association), and skip on
+              // reference views (no editing happens there).
+              if (isReferenceView) return
+              const pageWalls = wallsByPage[pageNum] ?? []
+              // Walk backwards to find the most recent wall with an
+              // areaId — that's the last area the user worked in on
+              // this page.
+              for (let i = pageWalls.length - 1; i >= 0; i--) {
+                const w = pageWalls[i]
+                if (w.areaId) {
+                  setActiveAreaId(w.areaId)
+                  return
+                }
+              }
+            }}
             wallCountsByPage={
               isReferenceView
                 ? {}
                 : Object.fromEntries(
                     Object.entries(wallsByPage).map(([n, ws]) => [n, ws.length])
+                  )
+            }
+            pageAreaColorByPage={
+              isReferenceView
+                ? {}
+                : Object.fromEntries(
+                    Object.entries(wallsByPage).map(([n, ws]) => {
+                      // Per-page area dot — colour of the most recently
+                      // drawn wall's area, so the thumbnail at a glance
+                      // tells you which floor the page is "for".
+                      for (let i = ws.length - 1; i >= 0; i--) {
+                        const w = ws[i]
+                        if (w.areaId) {
+                          const area = areas.find((a) => a.id === w.areaId)
+                          if (area?.colorHex) return [n, area.colorHex]
+                        }
+                      }
+                      return [n, undefined]
+                    })
                   )
             }
             onClearPage={isReferenceView ? undefined : handleClearPage}
@@ -7930,11 +8000,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   pierColorByPierId={pierColorByPierId}
                   pierSizeByPierId={pierSizeByPierId}
                   activeWallColor={
-                    mode === 'block' && activeMakeupId
+                    // Active-area colour first — the preview line shows
+                    // the AREA you're about to draw into. Wall-type
+                    // colour is the fallback when no area is selected
+                    // or the area has no colorHex set. Subtle but
+                    // catches the "I forgot to switch area" mistake at
+                    // the exact moment you click the first point.
+                    (activeAreaId
+                      ? areas.find((a) => a.id === activeAreaId)?.colorHex
+                      : undefined) ??
+                    (mode === 'block' && activeMakeupId
                       ? wallTypeColor(activeMakeupId, makeups)
                       : mode === 'brick' && activeBrickMakeupId
                         ? wallTypeColor(activeBrickMakeupId, brickMakeups)
-                        : undefined
+                        : undefined)
                   }
                   activeMakeupIdForHighlight={
                     showActiveMakeupHighlight
@@ -8091,7 +8170,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
                     ? crypto.randomUUID()
                     : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-                const newArea: ProjectArea = { id, name }
+                // Auto-assign a colour from the area palette so the
+                // preview-line tinting (and any future per-area visual
+                // signals) work without the user having to pick a
+                // colour. Cycles through the palette by current area
+                // count so the first area gets red, second blue, etc.
+                const colorHex = AREA_PALETTE[areas.length % AREA_PALETTE.length]
+                const newArea: ProjectArea = { id, name, colorHex }
                 setAreas((prev) => [...prev, newArea])
                 // Seed one baseline wall type per trade so the new area
                 // opens with a working starting wall instead of an
@@ -8342,6 +8427,10 @@ interface ThumbnailSidebarProps {
   onSelectPage: (pageNum: number) => void
   wallCountsByPage?: Record<number, number>
   onClearPage?: (pageNum: number) => void
+  /** Hex colour to render as a dot on each page thumb, indicating the
+   *  area that page is "associated with" (last area drawn on it).
+   *  Workspace computes this from the page's walls. */
+  pageAreaColorByPage?: Record<number, string | undefined>
 }
 
 const ThumbnailSidebar = memo(function ThumbnailSidebar({
@@ -8353,6 +8442,7 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
   onSelectPage,
   wallCountsByPage,
   onClearPage,
+  pageAreaColorByPage,
 }: ThumbnailSidebarProps) {
   return (
     <div
@@ -8402,7 +8492,17 @@ const ThumbnailSidebar = memo(function ThumbnailSidebar({
                       isCurrent ? 'text-beme-300 font-semibold' : 'text-ink-300'
                     }`}
                   >
-                    <span>Page {pageNum}</span>
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      {pageAreaColorByPage?.[pageNum] && (
+                        <span
+                          className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: pageAreaColorByPage[pageNum] }}
+                          title="Last area drawn on this page"
+                          aria-hidden
+                        />
+                      )}
+                      <span className="truncate">Page {pageNum}</span>
+                    </span>
                     {hasScale && (
                       <span className="text-emerald-300" title="Scale set">
                         ✓

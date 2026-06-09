@@ -182,7 +182,29 @@ export default function BlockLibraryPanel({
                 readOnly={readOnly}
                 onEdit={() => setEditingCode(block.code)}
                 onDelete={() => {
-                  if (PROTECTED_BLOCK_CODES.has(block.code)) return
+                  const isProtected = PROTECTED_BLOCK_CODES.has(block.code)
+                  if (isProtected) {
+                    // Strong confirm — protected codes are referenced
+                    // by name in the calc engine and as defaults in
+                    // wall-type creation. Force-deleting is allowed so
+                    // users can truly start fresh with a custom library
+                    // (e.g. US CMU, UK metric), but they need to know
+                    // any wall type using this code will go missing.
+                    const ok = window.confirm(
+                      `Delete protected block "${block.code} — ${block.name}"?\n\n` +
+                        'This block is a default reference in the calc engine. ' +
+                        'Deleting it means:\n\n' +
+                        '• Any existing wall type referencing this code will point at ' +
+                        'a missing block and need to be fixed before drawing.\n' +
+                        '• New wall types created in an empty library will open with ' +
+                        'empty slots instead of being pre-filled.\n\n' +
+                        'Use this when you\'re wiping the library to swap to a different ' +
+                        'block catalogue (US CMU, UK metric, custom supplier range).\n\n' +
+                        'Continue?'
+                    )
+                    if (ok) removeBlock(block.code, { force: true })
+                    return
+                  }
                   if (window.confirm(`Delete block "${block.code} — ${block.name}"?`)) {
                     removeBlock(block.code)
                   }
@@ -277,9 +299,12 @@ function BlockRow({
           </button>
           <button
             onClick={onDelete}
-            disabled={protectedBlock}
-            title={protectedBlock ? 'Built-in blocks can be renamed but not deleted' : 'Delete this block'}
-            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title={
+              protectedBlock
+                ? 'Default block — delete only when wiping the library to swap to a different block catalogue (warning prompt before it actually removes)'
+                : 'Delete this block'
+            }
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 transition-colors"
           >
             Delete
           </button>

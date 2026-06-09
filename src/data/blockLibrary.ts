@@ -353,9 +353,21 @@ export function upsertBlock(block: Block): void {
   void persistLibraryEverywhere(BLOCK_LIBRARY, { upsertedCodes: [block.code] })
 }
 
-/** Remove a block from the library. No-op for protected codes. */
-export function removeBlock(code: BlockCode): void {
-  if (PROTECTED_BLOCK_CODES.has(code)) return
+/**
+ * Remove a block from the library.
+ *
+ * - Default (no opts): skips protected codes silently — back-compat path
+ *   for old callers that didn't know about the force flag.
+ * - With `{ force: true }`: deletes regardless of protection. Wall
+ *   types / pier types that reference the code don't get auto-rewritten
+ *   — they become "broken" (point at a code that's no longer in the
+ *   library). UI must warn the user before calling with force.
+ */
+export function removeBlock(
+  code: BlockCode,
+  opts: { force?: boolean } = {}
+): void {
+  if (!opts.force && PROTECTED_BLOCK_CODES.has(code)) return
   if (!(code in BLOCK_LIBRARY)) return
   delete BLOCK_LIBRARY[code]
   notifyChange()

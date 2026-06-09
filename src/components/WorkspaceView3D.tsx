@@ -67,7 +67,7 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
-import { bandColor, buildBlockColorMap, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
+import { bandColor, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import { rasterisePdfPage } from '../lib/pdfRaster'
 import { useTheme, type Theme } from '../lib/theme'
@@ -134,10 +134,14 @@ const FALLBACK_BODY_WIDTH_MM = 390
  *  camera distances without producing thick / glitchy seams. */
 const MORTAR_GAP_M = 0.006
 
-/** Mortar fill colour — warm medium-grey reading as cement between the
- *  block faces. Renders behind each block course so the gaps between
- *  blocks show mortar rather than empty space (the dark wrapper bg). */
-const MORTAR_COLOR = '#6a635a'
+/** Mortar fill colour — light warm-grey reading as dry Portland cement
+ *  between the block faces. Was the darker #6a635a; lightened so the
+ *  mortar reads more clearly against both the concrete-grey blocks and
+ *  the vibrant-palette blocks, where the previous value blended into
+ *  darker faces and lost the "joints between blocks" visual.
+ *  Renders behind each block course so the gaps between blocks show
+ *  mortar rather than empty space (the dark wrapper bg). */
+const MORTAR_COLOR = '#c4bfb6'
 
 /** Fraction of wall thickness the mortar layer occupies. Less than 1.0
  *  means the mortar is RECESSED — set inside the wall slightly so block
@@ -3295,8 +3299,8 @@ function Scene({
   const { segments, wedges, mortarShells, segmentBounds, resolvedCodes } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
-    // view. Pass the complete set to buildBlockColorMap so every code
-    // lands on a distinct palette slot — same logic as the 2D preview.
+    // view. Codes are coloured via the pure-hash `bandColor`, so the
+    // same code always lands on the same colour across every project.
     const wallResolutions = walls.map((wall) => {
       if (wall.trade === 'brick') return null
       return resolveWallCourses(wall, makeupsById, library)
@@ -3448,15 +3452,20 @@ function Scene({
         }
       }
     }
-    // Build the colour map via buildBlockColorMap so every code lands
-    // on a UNIQUE palette slot until the set exceeds 16 codes (after
-    // which the walk wraps and slots can repeat). This avoids the
-    // collision the user hit where 20.71 and 20.140 hashed to the same
-    // slot and rendered in identical dark red. The trade-off: the
-    // same code may land in a different slot in the WallTypesPanel
-    // preview (which builds its own smaller code set). Cross-view
-    // consistency is therefore not guaranteed, but every code in the
-    // 3D view is visually distinct from every other.
+    // Build the colour map via the raw hash `bandColor` rather than
+    // `buildBlockColorMap`. The hash is pure-function-of-code, so
+    // "30.01" always lands on the same palette slot — in this project,
+    // the next project, the legend, the WallTypesPanel preview, every
+    // 3D capture. Cross-estimate consistency: the supplier looking at
+    // a brick schedule will see Standard Block in the same colour every
+    // time.
+    //
+    // Trade-off: the per-project collision avoidance in
+    // buildBlockColorMap is gone, so occasionally two codes that hash
+    // to the same slot will share a colour. The legend label sits next
+    // to the swatch so this is readable rather than ambiguous. The
+    // 16-slot vibrant palette gives a ~1-in-16 collision rate per
+    // additional code, low enough that most projects don't hit it.
     //
     // Filter to ONLY codes that exist in the current library. When the
     // user switches library templates, makeups keep their old codes in
@@ -3464,7 +3473,10 @@ function Scene({
     // this filter the legend would show ghosts from the old library long
     // after the switch.
     const presentCodes = allCodes.filter((code) => library[code] !== undefined)
-    const colorMap = buildBlockColorMap(presentCodes, palette)
+    const colorMap = new Map<string, string>()
+    for (const code of presentCodes) {
+      colorMap.set(code, bandColor(code, palette))
+    }
 
     const out: WallSegmentBox[] = []
     const outWedges: WallSegmentWedge[] = []

@@ -1143,14 +1143,14 @@ function ExportEstimateModal({
           </section>
           </div>
 
-          {/* Quantity adjustments — Blocks + Bricks. The brick tally
-              now produces per-brick counts via grid walk in
-              calculateBrickTally, so per-code adjustments work the
-              same way as blocks (positive = reduce, negative = add). */}
+          {/* Quantity adjustments — Blocks only. Brick exports now
+              produce lineal- and square-metre outputs, not per-brick
+              counts, so a per-code brick adjustment table doesn't
+              fit the export shape any more. If we add per-area or
+              per-rate brick adjustments later they'll go here as a
+              separate row. */}
           {(hasBlockTally ||
-            hasBrickTally ||
-            Object.keys(blockAdjustments).length > 0 ||
-            Object.keys(brickAdjustments).length > 0) && (
+            Object.keys(blockAdjustments).length > 0) && (
             <section>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-2">
                 Quantity adjustments
@@ -1158,11 +1158,11 @@ function ExportEstimateModal({
               <p className="text-[11px] text-ink-500 mb-3 leading-snug">
                 Each row shows the auto-tally quantity. Hit Edit to
                 override it with a different number — useful when you
-                want fewer (blocks/bricks on site, reused from another
-                job) or more (extras for breakage, future work). Use
-                the "+ Add" button to include a code that isn't on the
+                want fewer (blocks on site, reused from another job)
+                or more (extras for breakage, future work). Use the
+                "+ Add" button to include a code that isn't on the
                 plan at all. Tallies respect the area filter above —
-                untick areas to remove their bricks from the count.
+                untick areas to remove their blocks from the count.
               </p>
               {hasBlockTally && (
                 <AdjustmentsTable
@@ -1174,19 +1174,6 @@ function ExportEstimateModal({
                   availableCodes={blockPickerOptions}
                   addLabel="Add block"
                 />
-              )}
-              {hasBrickTally && (
-                <div className={hasBlockTally ? 'mt-3' : ''}>
-                  <AdjustmentsTable
-                    label="Bricks"
-                    baseTally={brickBaseTally}
-                    adjustments={brickAdjustments}
-                    onSetAdjustment={setBrickAdj}
-                    describe={brickLabel}
-                    availableCodes={brickPickerOptions}
-                    addLabel="Add brick"
-                  />
-                </div>
               )}
             </section>
           )}
