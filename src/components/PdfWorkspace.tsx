@@ -1637,9 +1637,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const validAreaIds = new Set(hydratedAreas.map((a) => a.id))
         const isOrphanAreaId = (id: string | undefined) =>
           !id || !validAreaIds.has(id)
+        // Walls also need an area to land in if they're orphaned —
+        // a project of all wall-orphans + no makeup-orphans + no
+        // existing areas would otherwise skip the area-creation step
+        // and the walls would silently stay orphaned.
+        const wallsNeedAreaMigration = Object.values(
+          proj.wallsByPage ?? {},
+        ).some((walls) => walls.some((w) => isOrphanAreaId(w.areaId)))
         const needsAreaForMigration =
           (proj.makeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
-          (proj.brickMakeups ?? []).some((m) => isOrphanAreaId(m.areaId))
+          (proj.brickMakeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
+          wallsNeedAreaMigration
         if (needsAreaForMigration && hydratedAreas.length === 0) {
           // Create a starter area to receive the legacy makeups. Named
           // 'New Area' so it lines up with what the user sees when they
@@ -1660,6 +1668,30 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             ? ({ ...m, areaId: migrationAreaId } as T)
             : m
 
+        // Walls saved before the per-area model — or saved while
+        // pointing at an area that's since been deleted — end up with
+        // an areaId that doesn't match any current area. They stay
+        // visible in the "All areas" view but disappear from every
+        // specific area's panel, which is how the user kept ending up
+        // with walls that "aren't assigned to any area". Rewrite any
+        // orphan to the first hydrated area (matching the makeup
+        // migration above) so every wall lands in a real area on load.
+        const migrateWallsAreaId = (
+          src: Record<number, Wall[]> | undefined,
+        ): Record<number, Wall[]> | undefined => {
+          if (!src) return src
+          if (!migrationAreaId) return src
+          const out: Record<number, Wall[]> = {}
+          for (const [pageStr, walls] of Object.entries(src)) {
+            out[Number(pageStr)] = walls.map((w) =>
+              isOrphanAreaId(w.areaId)
+                ? { ...w, areaId: migrationAreaId }
+                : w,
+            )
+          }
+          return out
+        }
+
         // Brick walls used to be saved with makeupId === '' because they
         // had no per-wall type. Now they reference a BrickMakeup the same way
         // block walls reference a WallMakeup. Migrate on load: hydrate the
@@ -1676,7 +1708,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const migratedWallsByPage = proj.type === 'brick'
           ? migrateBrickWalls(proj.wallsByPage, defaultBrickMakeupId)
           : proj.wallsByPage
-        setWallsByPage(migratedWallsByPage ?? {})
+        const areaMigratedWallsByPage = migrateWallsAreaId(migratedWallsByPage)
+        setWallsByPage(areaMigratedWallsByPage ?? {})
         setOpeningsByPage(proj.openingsByPage ?? {})
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
         // Hydrate pier makeups from save (or reset to empty if the project
@@ -3235,21 +3268,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   /**
    * Active wall colour for the cursor preview.
    *
-   * Active-area colour wins first — the preview line shows the AREA
-   * the next wall will be tagged with, which catches "I forgot to
-   * switch area" mistakes at the moment you click the first point.
-   * Falls back to wall-type colour when no area is selected (or the
-   * area has no colorHex set), so the preview is always meaningful.
+   * Always tracks the WALL TYPE colour, not the area colour. Previous
+   * version led with the area's colorHex, which made every wall drawn
+   * in (say) a red area look red regardless of wall type — exactly the
+   * disambiguation problem wall-type colours are there to solve. The
+   * area chip in the right rail + the stat strip already broadcast
+   * which area is active; the preview line's only job is to surface
+   * which TYPE will be drawn.
    */
   const activeWallColor = useMemo(() => {
-    const areaColor = activeAreaId
-      ? areas.find((a) => a.id === activeAreaId)?.colorHex
-      : undefined
-    if (areaColor) return areaColor
     if (mode === 'block' && activeMakeupId) return wallTypeColor(activeMakeupId, makeups)
     if (mode === 'brick' && activeBrickMakeupId) return wallTypeColor(activeBrickMakeupId, brickMakeups)
     return undefined
-  }, [mode, activeMakeupId, activeBrickMakeupId, makeups, brickMakeups, activeAreaId, areas])
+  }, [mode, activeMakeupId, activeBrickMakeupId, makeups, brickMakeups])
 
   /** Active-makeup highlight target — only when the highlight toggle is on. */
   const activeMakeupIdForHighlight = useMemo(() => {
