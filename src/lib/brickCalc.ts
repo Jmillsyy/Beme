@@ -23,6 +23,7 @@ import type {
 import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
+import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 
 // ---------- Brick tally ----------
 //
@@ -51,23 +52,50 @@ export interface BrickTally {
    */
   bricksByType: Record<string, number>
   /**
-   * Lineal METRES of head course needed across every opening,
-   * keyed by the head brick code each makeup nominates. Per
-   * opening: width + 2 × overhang. Doors AND windows both
-   * contribute a head course. Empty when no makeup carries a
-   * headBrickCode (or no openings exist).
+   * Lineal MILLIMETRES of head course needed across every opening,
+   * keyed by brick code. Per opening: width + 2 × overhang. Doors AND
+   * windows both contribute a head course.
    *
-   * Reported in MILLIMETRES — the export divides by 1000 to
-   * render as "X.X m" for the deliverable.
+   * Always populated when openings exist. When a makeup names an
+   * explicit `headBrickCode` (in the wall-type modal's "Opening
+   * visuals" tab) the lineals key under THAT code; otherwise they
+   * key under the makeup's primary brick code — the head course
+   * defaults to the body brick. The brick-code lookup is a 3D-render
+   * concern; the lineal-m total is a tally metric that surfaces
+   * either way.
+   *
+   * Reported in MILLIMETRES — the export divides by 1000 to render
+   * as "X.X m" for the deliverable.
    */
   headLinealMmByType: Record<string, number>
   /**
    * Lineal MILLIMETRES of sill course under every window. Same
    * (width + 2 × overhang) formula. Doors are EXCLUDED — they sit
-   * on the floor, no sill course beneath. Empty when no makeup
-   * carries a sillBrickCode (or all openings are doors).
+   * on the floor, no sill course beneath. Same fallback rule as
+   * headLinealMmByType: keys under the makeup's `sillBrickCode` when
+   * set, otherwise its primary brick code, so the lineal-m total
+   * surfaces whether or not the user has filled in Opening visuals.
    */
   sillLinealMmByType: Record<string, number>
+  /**
+   * Lineal MILLIMETRES of head course needed, keyed by MAKEUP id
+   * (wall type) rather than by brick code. Drives the per-wall-type
+   * breakdown table in the export — the brick-code variant above
+   * pools across makeups that share a head brick, which is the right
+   * shape for ordering bricks but not for showing the estimator the
+   * head lineals each wall type contributes.
+   *
+   * Populated for every wall type that has openings, regardless of
+   * whether the makeup names a headBrickCode.
+   */
+  headLinealMmByMakeup: Record<string, number>
+  /**
+   * Lineal MILLIMETRES of sill course needed, keyed by MAKEUP id.
+   * Windows only (doors excluded — same rule as sillLinealMmByType).
+   * Populated for every wall type that has at least one window
+   * opening, regardless of whether the makeup names a sillBrickCode.
+   */
+  sillLinealMmByMakeup: Record<string, number>
   /**
    * Lineal MILLIMETRES of "course substitute" — courses on a wall
    * whose courseRanges nominates a brick type different from the
@@ -113,7 +141,27 @@ export interface BrickTallyByMakeup {
   brickCount: number
 }
 
+/**
+ * Wall length in millimetres.
+ *
+ * Straight walls → Euclidean distance between start and end.
+ * Curved walls   → true arc length along the centreline. The arc is
+ *                  defined by the three points (start, mid, end), and
+ *                  arcLengthMm comes from the shared curveGeom helper
+ *                  that drives the block estimator + 3D renderer.
+ *
+ * Falls back to Euclidean distance if the curve geometry is degenerate
+ * (three collinear points) so the calc never returns NaN.
+ */
 function wallLengthMm(wall: Wall): number {
+  if (isCurvedWall(wall) && wall.midX !== undefined && wall.midY !== undefined) {
+    const geom = arcFromThreePoints(
+      { x: wall.startX, y: wall.startY },
+      { x: wall.midX, y: wall.midY },
+      { x: wall.endX, y: wall.endY },
+    )
+    if (geom) return geom.arcLengthMm
+  }
   const dx = wall.endX - wall.startX
   const dy = wall.endY - wall.startY
   return Math.sqrt(dx * dx + dy * dy)
@@ -469,12 +517,25 @@ export function calculateBrickTally(
   // to subtract from.
   const headLinealMmByType: Record<string, number> = {}
   const sillLinealMmByType: Record<string, number> = {}
+  const headLinealMmByMakeup: Record<string, number> = {}
+  const sillLinealMmByMakeup: Record<string, number> = {}
   const courseSubstituteLinealMmByType: Record<string, number> = {}
   const DEFAULT_TRIM_OVERHANG_MM = 100
   const wallByIdLocal = new Map<string, Wall>()
   for (const w of walls) wallByIdLocal.set(w.id, w)
 
   // Head + sill — per opening.
+  //
+  // Lineal-m accumulation runs UNCONDITIONALLY — every window gets a
+  // sill span, every opening gets a head span — regardless of whether
+  // the wall makeup has set a sillBrickCode / headBrickCode. The brick
+  // code is a 3D-render concern (drives the visual sill / head course
+  // bricks in the workspace view) but the lineal-m total is a real
+  // takeoff metric the estimator wants to see either way. When no
+  // brick code is set, the lineal m keys under the makeup's primary
+  // brick code instead — the head / sill course would default to the
+  // same brick as the body anyway, so it's the right downstream key
+  // for the per-type tables.
   for (const op of openings) {
     if (!op.wallId) continue
     const wall = wallByIdLocal.get(op.wallId)
@@ -483,6 +544,8 @@ export function calculateBrickTally(
     if (!makeup) continue
     const overhang = makeup.openingTrimOverhangMm ?? DEFAULT_TRIM_OVERHANG_MM
     const trimSpanMm = op.widthMm + 2 * overhang
+    const primaryBrickCode =
+      makeup.brickTypeCode ?? settings.brickTypeCode ?? ''
 
     // Sill — windows only. An opening is a door (no sill course
     // underneath) when EITHER its explicit kind is 'door' OR its
@@ -492,14 +555,26 @@ export function calculateBrickTally(
     // measurements, and a door is geometrically a sill=0 opening.
     const isDoor =
       op.kind === 'door' || (op.sillHeightMm ?? 0) <= 0
-    if (makeup.sillBrickCode && !isDoor) {
-      const code = makeup.sillBrickCode
-      sillLinealMmByType[code] = (sillLinealMmByType[code] ?? 0) + trimSpanMm
+    if (!isDoor) {
+      const sillCode = makeup.sillBrickCode || primaryBrickCode
+      if (sillCode) {
+        sillLinealMmByType[sillCode] =
+          (sillLinealMmByType[sillCode] ?? 0) + trimSpanMm
+      }
+      if (wall.makeupId) {
+        sillLinealMmByMakeup[wall.makeupId] =
+          (sillLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
+      }
     }
     // Head — doors AND windows.
-    if (makeup.headBrickCode) {
-      const code = makeup.headBrickCode
-      headLinealMmByType[code] = (headLinealMmByType[code] ?? 0) + trimSpanMm
+    const headCode = makeup.headBrickCode || primaryBrickCode
+    if (headCode) {
+      headLinealMmByType[headCode] =
+        (headLinealMmByType[headCode] ?? 0) + trimSpanMm
+    }
+    if (wall.makeupId) {
+      headLinealMmByMakeup[wall.makeupId] =
+        (headLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
     }
   }
 
@@ -632,6 +707,8 @@ export function calculateBrickTally(
     bricksByType: finalBricksByType,
     headLinealMmByType,
     sillLinealMmByType,
+    headLinealMmByMakeup,
+    sillLinealMmByMakeup,
     courseSubstituteLinealMmByType,
     byMakeup,
   }

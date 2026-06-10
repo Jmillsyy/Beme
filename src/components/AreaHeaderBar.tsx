@@ -1,0 +1,254 @@
+import { useEffect, useRef, useState } from 'react'
+import type { ProjectArea } from '../lib/projectStorage'
+
+/**
+ * Persistent area indicator that sits at the top of the canvas area
+ * inside the sticky toolbar wrapper. Always visible while drawing —
+ * kills the "user forgot they're on Ground floor and just drew 20
+ * walls into First floor" mistake.
+ *
+ * Anatomy (left → right):
+ *   - Coloured left accent stripe (the area's colorHex, fades to
+ *     ink-600 when no colour set or in "All" mode)
+ *   - Coloured dot
+ *   - Area name + small "drawing here" subtitle
+ *   - Right-aligned "Switch area ▾" button that opens an inline
+ *     popover with the full area list
+ *
+ * Special case — "All areas" view (activeArea === null): the bar
+ * goes amber and the subtitle warns "Pick an area before drawing"
+ * because walls created in this mode aren't tagged to anything.
+ *
+ * Pure presentation — workspace owns area state and dispatches
+ * onSelect / onCreate the same way AreaTabs does. The popover is a
+ * minimal version of the AreaTabs list — no rename / delete here
+ * (those live in the right rail).
+ */
+export default function AreaHeaderBar({
+  areas,
+  activeAreaId,
+  onSelect,
+  onCreate,
+}: {
+  areas: ProjectArea[]
+  /** null = "All areas" — viewing combined, no area tagging. */
+  activeAreaId: string | null
+  onSelect: (areaId: string | null) => void
+  /** New area shortcut from the popover footer. */
+  onCreate: (name: string) => void
+}) {
+  const activeArea = activeAreaId
+    ? (areas.find((a) => a.id === activeAreaId) ?? null)
+    : null
+  const isAllAreas = activeAreaId === null
+
+  const [popoverOpen, setPopoverOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const newNameInputRef = useRef<HTMLInputElement>(null)
+
+  // Close popover on outside click + Esc.
+  useEffect(() => {
+    if (!popoverOpen) return
+    function handleClick(e: MouseEvent) {
+      if (!popoverRef.current?.contains(e.target as Node)) {
+        setPopoverOpen(false)
+        setCreating(false)
+        setNewName('')
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setPopoverOpen(false)
+        setCreating(false)
+        setNewName('')
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [popoverOpen])
+
+  // Auto-focus the new-area input when the inline create form opens.
+  useEffect(() => {
+    if (creating) newNameInputRef.current?.focus()
+  }, [creating])
+
+  function handleCreateSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const trimmed = newName.trim()
+    if (!trimmed) return
+    onCreate(trimmed)
+    setNewName('')
+    setCreating(false)
+    setPopoverOpen(false)
+  }
+
+  // Visuals — amber tint when in "All areas" view to signal "new walls
+  // here aren't tagged"; otherwise the area's colour drives the accent
+  // (or a neutral beme/orange if the area has no colorHex set).
+  const accentColor = isAllAreas
+    ? 'var(--color-amber-500, #f59e0b)'
+    : activeArea?.colorHex || 'var(--color-beme-500)'
+
+  return (
+    <div className="relative">
+      <div
+        className="flex items-center gap-3 px-3 py-2 rounded-md border border-ink-700 bg-ink-800/70"
+        style={{
+          borderLeftWidth: '4px',
+          borderLeftColor: accentColor,
+        }}
+      >
+        {/* Coloured dot */}
+        <span
+          className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: accentColor }}
+          aria-hidden
+        />
+
+        {/* Area name + subtitle */}
+        <div className="flex items-baseline gap-2 min-w-0 flex-1">
+          <span className="font-semibold text-ink-50 text-sm truncate">
+            {isAllAreas ? 'All areas' : activeArea?.name}
+          </span>
+          <span
+            className={`text-xs truncate ${
+              isAllAreas ? 'text-amber-300' : 'text-ink-400'
+            }`}
+          >
+            {isAllAreas
+              ? '· viewing combined — pick an area before drawing'
+              : '· drawing here'}
+          </span>
+        </div>
+
+        {/* Switch button */}
+        <button
+          type="button"
+          onClick={() => setPopoverOpen((v) => !v)}
+          className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-ink-300 hover:text-ink-100 hover:bg-ink-700 transition-colors flex-shrink-0"
+          aria-haspopup="menu"
+          aria-expanded={popoverOpen}
+          title="Switch area"
+        >
+          Switch area
+          <span className={popoverOpen ? 'rotate-180 transition-transform' : 'transition-transform'}>
+            ▾
+          </span>
+        </button>
+      </div>
+
+      {/* Inline popover — area list + new-area shortcut. Anchored to the
+          right edge of the bar so it doesn't cover the area name when
+          open. */}
+      {popoverOpen && (
+        <div
+          ref={popoverRef}
+          className="absolute right-0 top-full mt-1 w-72 rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-30 py-1"
+          role="menu"
+        >
+          <div className="px-3 pt-2 pb-1 text-[11px] text-ink-400 uppercase tracking-wider">
+            Switch to
+          </div>
+
+          {/* "All areas" row */}
+          <button
+            type="button"
+            onClick={() => {
+              onSelect(null)
+              setPopoverOpen(false)
+            }}
+            className={`w-full text-left px-4 py-2 hover:bg-ink-700 transition-colors flex items-center gap-2 text-sm ${
+              isAllAreas ? 'text-amber-300 font-medium' : 'text-ink-100'
+            }`}
+            role="menuitem"
+          >
+            <span className="inline-block w-2 h-2 rounded-full border border-ink-500" />
+            <span className="flex-1">All areas</span>
+            {isAllAreas && <span className="text-xs">✓</span>}
+          </button>
+
+          {areas.length > 0 && <div className="border-t border-ink-700 my-1" />}
+
+          {areas.map((area) => {
+            const isActive = area.id === activeAreaId
+            return (
+              <button
+                key={area.id}
+                type="button"
+                onClick={() => {
+                  onSelect(area.id)
+                  setPopoverOpen(false)
+                }}
+                className={`w-full text-left px-4 py-2 hover:bg-ink-700 transition-colors flex items-center gap-2 text-sm ${
+                  isActive ? 'text-beme-300 font-medium' : 'text-ink-100'
+                }`}
+                role="menuitem"
+              >
+                {area.colorHex ? (
+                  <span
+                    className="inline-block w-2 h-2 rounded-full"
+                    style={{ backgroundColor: area.colorHex }}
+                    aria-hidden
+                  />
+                ) : (
+                  <span className="inline-block w-2 h-2 rounded-full border border-ink-500" />
+                )}
+                <span className="flex-1 truncate">{area.name}</span>
+                {isActive && <span className="text-xs">✓</span>}
+              </button>
+            )
+          })}
+
+          <div className="border-t border-ink-700 my-1" />
+
+          {/* New area shortcut */}
+          {creating ? (
+            <form onSubmit={handleCreateSubmit} className="px-3 py-2">
+              <input
+                ref={newNameInputRef}
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Area name"
+                className="w-full px-2 py-1.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-sm focus:outline-none focus:border-beme-500"
+              />
+              <div className="flex gap-2 mt-2">
+                <button
+                  type="submit"
+                  className="flex-1 px-3 py-1 rounded bg-beme-500 text-black text-xs font-medium hover:bg-beme-400"
+                >
+                  Create
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreating(false)
+                    setNewName('')
+                  }}
+                  className="px-3 py-1 rounded text-xs text-ink-300 hover:bg-ink-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="w-full text-left px-4 py-2 text-sm text-ink-300 hover:bg-ink-700 hover:text-ink-100 transition-colors"
+              role="menuitem"
+            >
+              + New area
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

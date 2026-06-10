@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { setBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { setBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { LIBRARY_TEMPLATES } from '../data/libraryTemplates'
+import { confirm } from '../lib/confirm'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
 import {
@@ -62,11 +63,15 @@ export default function LibrarySectionControls({
   async function handleReset() {
     const label =
       kind === 'block' ? 'blocks' : kind === 'brick' ? 'bricks' : 'supply items'
-    const ok = window.confirm(
-      `Reset ${label}?\n\n` +
-        `This wipes all ${count} ${label.slice(0, -1)}${count === 1 ? '' : 's'} in this section ` +
-        'and syncs to the cloud. The other library sections stay untouched. There is no undo.'
-    )
+    const ok = await confirm({
+      title: `Reset ${label}?`,
+      message:
+        `Wipes all ${count} ${label.slice(0, -1)}${count === 1 ? '' : 's'} ` +
+        'in this section and syncs to the cloud. The other library ' +
+        'sections stay untouched. There is no undo.',
+      confirmLabel: `Reset ${label}`,
+      variant: 'destructive',
+    })
     if (!ok) return
     if (kind === 'block') setBlockLibrary({})
     else if (kind === 'brick') setBrickLibrary({})

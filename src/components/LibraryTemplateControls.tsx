@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { setBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
 import { setBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { getLibraryTemplate } from '../data/libraryTemplates'
+import { confirm } from '../lib/confirm'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
 import RegionPicker from './RegionPicker'
 
@@ -40,17 +41,19 @@ export default function LibraryTemplateControls({
   const brickCount = Object.keys(brickLib).length
   const supplyCount = settings.supplyItems?.length ?? 0
 
-  function handleResetAll() {
-    const ok = window.confirm(
-      'Reset entire library?\n\n' +
-        'This wipes everything in one go:\n' +
-        `  · ${blockCount} block${blockCount === 1 ? '' : 's'}\n` +
-        `  · ${brickCount} brick${brickCount === 1 ? '' : 's'}\n` +
-        `  · ${supplyCount} supply item${supplyCount === 1 ? '' : 's'}\n` +
-        '  · The active template assignment\n\n' +
-        "You'll be able to pick a new template or rebuild manually. " +
-        'This action syncs to the cloud — there is no undo.'
-    )
+  async function handleResetAll() {
+    const ok = await confirm({
+      title: 'Reset entire library?',
+      message:
+        `Wipes everything in one go: ${blockCount} block` +
+        `${blockCount === 1 ? '' : 's'}, ${brickCount} brick` +
+        `${brickCount === 1 ? '' : 's'}, ${supplyCount} supply item` +
+        `${supplyCount === 1 ? '' : 's'}, and the active template ` +
+        "assignment. You'll be able to pick a new template or rebuild " +
+        'manually. This action syncs to the cloud — there is no undo.',
+      confirmLabel: 'Reset everything',
+      variant: 'destructive',
+    })
     if (!ok) return
     setBlockLibrary({})
     setBrickLibrary({})

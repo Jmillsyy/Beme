@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import Header from '../components/Header'
 import DonutChart from '../components/DonutChart'
 import LocalMigrationBanner from '../components/LocalMigrationBanner'
+import BemeLoader from '../components/BemeLoader'
 import {
   type ProjectOutcome,
   type ProjectStatus,
@@ -19,7 +19,6 @@ import { useUserSettings } from '../lib/userSettings'
 import { LIBRARY_TEMPLATES } from '../data/libraryTemplates'
 import { analyseLibraryHealth, useBlockLibrary } from '../data/blockLibrary'
 import { confirm } from '../lib/confirm'
-import { ProjectRowSkeleton } from '../components/Skeleton'
 import { toast } from '../lib/toast'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
 import type { OrgMember, Organisation } from '../types/organisations'
@@ -230,38 +229,32 @@ export default function HomePage() {
   const isOrgInvited = accountType === 'org-invited'
 
   return (
-    <div className="min-h-screen bg-ink-900 text-ink-50">
-      <Header />
-      {/* Two-column dashboard: main content on the left, a sticky sidebar
-          of quick links / shortcuts on the right (lg+ only).
-          px-20 to match the header (and the workspace below) so the
-          team-dashboard heading, project rows, and right rail all line
-          up vertically with the Beme logo on the left and the user pill
-          on the right — no inset "centred column" look on wide monitors. */}
-      <main className="px-20 py-12">
+    <>
+      {/* Main dashboard column — full width inside the AppShell now
+          that the right-rail DashboardSidebar is gone. Navigation
+          lives in LeftNav; quick actions and primary CTAs sit
+          inline in the dashboard's own hero (see Personal/Org
+          dashboard). px-12 instead of the old px-20 since the left
+          rail eats some of the page-edge space already. */}
+      <div className="px-12 py-10">
         {signedIn && <LocalMigrationBanner />}
         {stillResolving ? (
-          <div className="space-y-3 py-12">
-            <div className="h-8 w-48 bg-ink-700/60 rounded-md animate-pulse mx-auto" />
-            <div className="h-4 w-72 bg-ink-700/40 rounded-md animate-pulse mx-auto" />
+          <div className="flex items-center justify-center py-24">
+            <BemeLoader />
           </div>
         ) : (
-          <div className="flex flex-col lg:flex-row gap-8 items-start">
-            <div className="flex-1 min-w-0 w-full">
-              {currentOrg ? (
-                <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
-              ) : isOrgInvited ? (
-                <NoOrgEmptyState />
-              ) : (
-                <PersonalDashboard />
-              )}
-            </div>
-            <DashboardSidebar isOrgUser={!!currentOrg} />
+          <div className="flex flex-col">
+            {currentOrg ? (
+              <OrgDashboard org={currentOrg} userId={user?.id ?? null} />
+            ) : isOrgInvited ? (
+              <NoOrgEmptyState />
+            ) : (
+              <PersonalDashboard />
+            )}
           </div>
         )}
-      </main>
-
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -305,108 +298,59 @@ function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
           }
         : null
 
+  // Sidebar bumped from 260px → 280px so cards have room for the
+  // new larger eyebrows + headings without text crowding the right
+  // edge. Same sticky behaviour. Card-to-card spacing bumped from
+  // 3 → 4 to match the marketing-page rhythm.
+  // Sidebar — back to the original detailed layout (Material library
+  // / Find by reference / Active template / Shortcuts / Tip), each
+  // card with its own coloured eyebrow + dot. User liked this layout;
+  // the issue was the BODY of the dashboard, not the rail.
   return (
-    <aside className="w-full lg:w-[260px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
-      {/* "+ New estimate" used to live up here as the rail's first
-          card. It's been promoted to a tile in the dashboard's stats
-          row so the create action sits flush with the In progress /
-          Completed-this-week numbers — one eye-sweep across the top
-          of the page. The rail now leads with Material library. */}
+    <aside className="w-full lg:w-[280px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
+      {/* Material library */}
+      <Link
+        to="/library"
+        title={healthSummary?.tooltip}
+        className="block border border-ink-600 rounded-2xl bg-ink-800 p-4 hover:border-beme-500 transition-colors group"
+      >
+        <div className="text-xs uppercase tracking-wider text-beme-400 font-semibold mb-2 flex items-center gap-2">
+          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+          Material library
+          {healthSummary && (
+            <span
+              className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                healthSummary.tone === 'error'
+                  ? 'bg-rose-500/20 text-rose-200 border border-rose-500/40'
+                  : 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+              }`}
+            >
+              {healthSummary.label}
+            </span>
+          )}
+        </div>
+        <div className="text-base font-bold text-ink-50 group-hover:text-beme-500 transition-colors leading-tight">
+          Open library →
+        </div>
+        <div className="text-xs text-ink-400 mt-1">Blocks, bricks, supply items</div>
+      </Link>
 
-      {/* Material library — the next-most-frequent destination from the
-          dashboard (users tune blocks, bricks, and supply items between
-          projects). On the org dashboard it sits below the estimate-start
-          card so the create actions get the prime spot. On the personal
-          dashboard it's the top-of-rail card since estimate-start is
-          already in the body.
-
-          Visual treatment: a thin orange accent bar on the left, no
-          heavy border ring / glow. Earlier it had a 2px beme-500
-          border and shadow, which made it look like a primary CTA
-          competing with "+ New estimate". The accent bar alone keeps
-          it discoverable without shouting. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
-        <Link
-          to="/library"
-          title={healthSummary?.tooltip}
-          className="px-3 py-3 rounded-lg bg-ink-900 border border-ink-600 hover:border-beme-500 hover:bg-ink-800 transition-colors group flex items-center gap-3"
-        >
-          <span
-            className="inline-block w-1 h-10 rounded-full bg-beme-500 flex-shrink-0"
-            aria-hidden
-          />
-          <div className="flex-1 text-left min-w-0">
-            <div className="font-bold text-sm leading-tight text-ink-50 flex items-center gap-2">
-              <span>Material library</span>
-              {/* Health-issue badge — only renders when there's at least
-                  one error or warning. Errors take colour priority. */}
-              {healthSummary && (
-                <span
-                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                    healthSummary.tone === 'error'
-                      ? 'bg-rose-500/20 text-rose-200 border border-rose-500/40'
-                      : 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
-                  }`}
-                  aria-label={healthSummary.tooltip}
-                >
-                  <span
-                    className={`inline-block w-1.5 h-1.5 rounded-full ${
-                      healthSummary.tone === 'error' ? 'bg-rose-400' : 'bg-amber-400'
-                    }`}
-                  />
-                  {healthSummary.label}
-                </span>
-              )}
-            </div>
-            <div className="text-[11px] text-ink-300 group-hover:text-ink-200 mt-0.5">
-              Blocks, bricks, supply items
-            </div>
-          </div>
-          <span className="text-ink-400 group-hover:text-beme-500 transition-colors">→</span>
-        </Link>
-      </div>
-
-      {/* Find by reference number — every project has a 6-digit ID stamped
-          on its exported PDF + project bar. The estimator (or sales person)
-          types the number a customer quotes them over the phone, hits
-          Enter, and lands on the project. Lives in the rail next to
-          Shortcuts because it's a navigation aid, not a primary action. */}
       <FindByReferenceCard />
-
-      {/* Active region template — surfaces which seed template the user
-          picked at sign-up (or last switched to via Settings). Small,
-          but useful when a teammate is helping over the phone ("which
-          library are you on, UK or AU?"). */}
       <ActiveTemplateCard />
 
-      {/* Shortcuts — secondary nav into the parts of Beme that don't
-          have a natural surfacing on the dashboard itself. Below "Start
-          something new" so the create actions get the prime real estate. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800/60 overflow-hidden">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-4 pt-3 pb-2">
+      {/* Shortcuts */}
+      <div className="border border-ink-600 rounded-2xl bg-ink-800 overflow-hidden">
+        <h3 className="text-xs uppercase tracking-wider text-ink-400 font-semibold px-4 pt-4 pb-3 flex items-center gap-2">
+          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-ink-500" />
           Shortcuts
         </h3>
         <nav className="flex flex-col">
-          {/* Material library used to live here as a SidebarLink — promoted
-              to the rail's top card so the Shortcuts list stays tight and
-              the library is one click away from any dashboard view. */}
           <SidebarLink to="/guide" title="Beme guide" desc="Full walkthrough + shortcuts" />
           <SidebarLink to="/settings" title="Settings" desc="Defaults, regional features, theme" />
         </nav>
       </div>
 
-      {/* Tip of the day — a rotating quick-tip / shortcut. Keeps the rail
-          alive without surfacing primary actions, and is the single
-          place users discover keyboard / drawing shortcuts that would
-          otherwise live buried in the guide. */}
       <TipCard />
-
-      {/* Tiny credits / version badge so the rail doesn't end abruptly.
-          Updates the user's sense of where they are in the product
-          (build / branch / status) without taking attention. */}
-      <div className="text-[11px] text-ink-500 px-4">
-        Beme · Building estimates made easy
-      </div>
     </aside>
   )
 }
@@ -452,9 +396,10 @@ function FindByReferenceCard() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="border border-ink-600 rounded-xl bg-ink-800/60 p-4 space-y-2"
+      className="border border-ink-600 rounded-2xl bg-ink-800 p-4 space-y-3"
     >
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+      <h3 className="text-xs uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-2">
+        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
         Find by reference
       </h3>
       <div className="flex items-stretch gap-2">
@@ -479,7 +424,7 @@ function FindByReferenceCard() {
       {error ? (
         <p className="text-xs text-rose-300">{error}</p>
       ) : (
-        <p className="text-[11px] text-ink-500">
+        <p className="text-xs text-ink-400">
           6-digit number from any Beme-exported PDF.
         </p>
       )}
@@ -489,10 +434,8 @@ function FindByReferenceCard() {
 
 /**
  * Active region template — surfaces which library seed the user picked
- * (AU-SEQ, US-CMU, UK-Block, blank). Click-through opens the library
- * page where the template controls live. Falls back to "AU-SEQ" for
- * legacy users who pre-date the libraryTemplateKey field — that matches
- * the pre-region default.
+ * (AU-SEQ, US-CMU, UK-Block). Sky eyebrow + dot. Falls back to
+ * Australia (SEQ) for legacy users.
  */
 function ActiveTemplateCard() {
   const { settings } = useUserSettings()
@@ -502,79 +445,22 @@ function ActiveTemplateCard() {
   const region = template?.region ?? 'AU-SEQ'
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
-      <div className="flex items-center justify-between mb-1.5">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs uppercase tracking-wider text-ink-400 font-semibold flex items-center gap-2">
+          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-ink-500" />
           Active template
         </h3>
         <Link
           to="/library"
-          className="text-[11px] text-beme-500 hover:text-beme-400 hover:underline"
+          className="text-xs text-beme-500 hover:text-beme-400 hover:underline"
           title="Switch template in the Material library"
         >
           Switch
         </Link>
       </div>
-      <div className="text-sm font-medium text-ink-100 truncate">
-        {displayName}
-      </div>
-      <div className="text-[11px] text-ink-500 mt-0.5">{region}</div>
-    </div>
-  )
-}
-
-/**
- * Tip card — a rotating one-liner with a keyboard / drawing shortcut.
- * Keeps the rail visually balanced and is the natural surface for
- * discoverability: users learn shortcuts gradually as they see them.
- * Tips rotate on every component mount (i.e. every dashboard visit)
- * so a long session doesn't see the same tip ten times.
- */
-function TipCard() {
-  const tips = [
-    {
-      title: 'Jump anywhere fast',
-      body: 'Press Cmd+K (or Ctrl+K on Windows) to open the command palette — projects, library, settings, all searchable.',
-    },
-    {
-      title: 'See every shortcut',
-      body: 'Press ? anywhere to open the keyboard shortcut reference.',
-    },
-    {
-      title: 'Type a wall length',
-      body: 'While drawing a wall, just type the length in mm and press Enter to drop it.',
-    },
-    {
-      title: 'Esc cancels anything',
-      body: 'Pressing Esc clears the current tool — drawing, ruler, opening, pier, control joint.',
-    },
-    {
-      title: 'Delete to remove',
-      body: 'Select a wall, opening, or pier and press Delete (or Backspace) to remove it.',
-    },
-    {
-      title: 'Snap to wall faces',
-      body: 'New walls snap to the 4 faces of any nearby wall — corners and butt joints just work.',
-    },
-    {
-      title: 'Reference numbers',
-      body: 'Every exported PDF stamps a 6-digit ref. Type it in the rail to jump straight back.',
-    },
-    {
-      title: 'Click a card to activate',
-      body: 'In the workspace, click any wall or pier type card to make it the active type for the next thing you draw.',
-    },
-  ]
-  const tip = useMemo(() => tips[Math.floor(Math.random() * tips.length)], [])
-  return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-3">
-      <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-500">
-          Tip
-        </span>
-        <span className="text-[11px] text-ink-400 truncate">· {tip.title}</span>
-      </div>
-      <p className="text-[11px] text-ink-300 leading-snug">{tip.body}</p>
+      <div className="text-base font-bold text-ink-50 truncate leading-tight">{displayName}</div>
+      <div className="text-xs text-ink-400 mt-1">{region}</div>
     </div>
   )
 }
@@ -595,16 +481,43 @@ function SidebarLink({
   return (
     <Link
       to={to}
-      className="flex items-start gap-3 px-4 py-2.5 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
+      className="flex items-start gap-3 px-4 py-3 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
     >
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-ink-100 group-hover:text-beme-500 transition-colors">
+        <div className="text-sm font-bold text-ink-50 group-hover:text-beme-500 transition-colors leading-tight">
           {title}
         </div>
-        <div className="text-xs text-ink-400 mt-0.5">{desc}</div>
+        <div className="text-xs text-ink-400 mt-1">{desc}</div>
       </div>
       <span className="text-ink-500 group-hover:text-beme-500 transition-colors">→</span>
     </Link>
+  )
+}
+
+/**
+ * Tip of the day — rotating one-liner shortcut hint. Beme eyebrow + dot.
+ */
+function TipCard() {
+  const tips = [
+    { title: 'Jump anywhere fast', body: 'Press Cmd+K (or Ctrl+K on Windows) to open the command palette — projects, library, settings, all searchable.' },
+    { title: 'See every shortcut', body: 'Press ? anywhere to open the keyboard shortcut reference.' },
+    { title: 'Type a wall length', body: 'While drawing a wall, just type the length and press Enter to drop it.' },
+    { title: 'Esc cancels anything', body: 'Pressing Esc clears the current tool — drawing, ruler, opening, pier, control joint.' },
+    { title: 'Delete to remove', body: 'Select a wall, opening, or pier and press Delete (or Backspace) to remove it.' },
+    { title: 'Snap to wall faces', body: 'New walls snap to the 4 faces of any nearby wall — corners and butt joints just work.' },
+    { title: 'Reference numbers', body: 'Every exported PDF stamps a 6-digit ref. Type it in the rail to jump straight back.' },
+    { title: 'Click a card to activate', body: 'In the workspace, click any wall or pier type card to make it the active type for the next thing you draw.' },
+  ]
+  const tip = useMemo(() => tips[Math.floor(Math.random() * tips.length)], [])
+  return (
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 p-4">
+      <div className="text-xs uppercase tracking-wider text-beme-400 font-semibold mb-2 flex items-center gap-2">
+        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+        Tip
+      </div>
+      <div className="text-sm font-bold text-ink-50 leading-tight mb-1.5">{tip.title}</div>
+      <p className="text-xs text-ink-300 leading-relaxed">{tip.body}</p>
+    </div>
   )
 }
 
@@ -660,7 +573,9 @@ function NoOrgEmptyState() {
  *   - "Your projects" — projects this user started.
  *   - "Team projects" — active projects belonging to other org members,
  *     so an admin can see the team's load at a glance.
- *   - "Recently completed" — last few finished projects across the team.
+ *   - "Completed" — every finished project across the team, most recent
+ *     first. (Was windowed to the last 7 days, but the column went empty
+ *     during slow weeks and made the dashboard feel barren.)
  */
 function OrgDashboard({ org, userId }: { org: Organisation; userId: string | null }) {
   const [members, setMembers] = useState<OrgMember[]>([])
@@ -675,21 +590,34 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   const reloadDashboard = useCallback(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all([
-      listOrgMembers(org.id),
-      // listProjects returns every project this user can see (their own +
-      // any org-scoped project where they're a member). Cloud RLS does
-      // the filtering server-side so anyone in the org sees the same set.
-      listProjects(),
-    ])
-      .then(([mems, projs]) => {
+    // allSettled instead of all so a failed listOrgMembers fetch doesn't
+    // tank the project list (and vice versa). The previous Promise.all
+    // had `.catch(() => setLoading(false))` with no logging — when one
+    // of the two fetches rejected (e.g. transient network blip on
+    // navigation back to the dashboard), BOTH state updates were
+    // skipped and the user saw an empty dashboard with no surfaced
+    // error. allSettled lets us apply whichever fetch succeeded and
+    // log the one that didn't.
+    //
+    // listProjects returns every project this user can see (their own
+    // + any org-scoped project where they're a member). Cloud RLS does
+    // the filtering server-side so anyone in the org sees the same set.
+    Promise.allSettled([listOrgMembers(org.id), listProjects()])
+      .then(([memsResult, projsResult]) => {
         if (cancelled) return
-        setMembers(mems)
-        setProjects(projs)
+        if (memsResult.status === 'fulfilled') {
+          setMembers(memsResult.value)
+        } else {
+          // eslint-disable-next-line no-console
+          console.error('Failed to load org members', memsResult.reason)
+        }
+        if (projsResult.status === 'fulfilled') {
+          setProjects(projsResult.value)
+        } else {
+          // eslint-disable-next-line no-console
+          console.error('Failed to load projects', projsResult.reason)
+        }
         setLoading(false)
-      })
-      .catch(() => {
-        if (!cancelled) setLoading(false)
       })
     return () => {
       cancelled = true
@@ -779,21 +707,15 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
   }, [projects, userId])
 
-  // Team-wide "shipped in the last 7 days" feed — projects only. NOT
-  // sliced here; the CompletedColumn slices to its own slotCount so
-  // it can compute overflow and surface a "View all N →" link.
+  // Team-wide "shipped" feed — every completed project, most recent
+  // first. Previously windowed to the last 7 days, but the column
+  // was empty most of the time when nothing had shipped that week,
+  // which made the dashboard feel barren. Now the column always has
+  // something to show as long as the team has ever finished
+  // anything; CompletedColumn handles slicing + overflow.
   const recentlyCompleted = useMemo(() => {
-    const weekAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000
-    const withinPastWeek = (iso: string | undefined) => {
-      if (!iso) return false
-      const t = new Date(iso).getTime()
-      return Number.isFinite(t) && t >= weekAgoMs
-    }
     return projects
-      .filter(
-        (p) =>
-          p.status === 'completed' && withinPastWeek(p.completedAt ?? p.updatedAt)
-      )
+      .filter((p) => p.status === 'completed')
       .sort(
         (a, b) =>
           new Date(b.completedAt ?? b.updatedAt).getTime() -
@@ -815,7 +737,15 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   return (
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
-        <div>
+        <div className="relative">
+          {/* Orange accent bar to the left of the heading — gives the
+              hero a confident brand anchor without the heading itself
+              having to carry colour. Pairs with the AppShell's top
+              gradient strip so the page reads as "branded". */}
+          <span
+            aria-hidden="true"
+            className="absolute -left-3 top-1 bottom-1 w-1 rounded-full bg-gradient-to-b from-beme-400 to-beme-600"
+          />
           <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">
             Team dashboard
           </h2>
@@ -866,7 +796,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
           narrow viewports so the rows don't squash. Hidden entirely
           when neither column has any work. */}
       {/* ── Project lists — three columns side by side ──
-          Your projects · Your team's projects · Recently completed.
+          Your projects · Your team's projects · Completed.
           Each column is capped at 3 rows so the entire dashboard
           (header + stats row + this grid) fits a 13" MacBook Pro
           viewport. Overflow surfaces via per-column "View all" links.
@@ -905,11 +835,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               emptyCopy="Quiet over here — your team's caught up."
             />
             <CompletedColumn
-              title="Recently completed"
+              title="Completed"
               projects={recentlyCompleted}
               viewAllHref="/projects?status=completed"
               slotCount={slotCount}
-              emptyCopy="Nothing finished by the team this week."
+              emptyCopy="No completed projects yet."
             />
           </section>
         )
@@ -960,13 +890,15 @@ function ProjectsColumn({
   return (
     <div>
       <div className="flex items-center justify-between mb-3 gap-3">
-        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" aria-hidden="true" />
+        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-ink-200">
+          <span className="inline-block w-2 h-2 rounded-full bg-beme-500 shadow-sm shadow-beme-500/40" aria-hidden="true" />
           {title}
+          <span className="text-ink-500 normal-case tracking-normal font-normal">
+            · {projects.length}
+          </span>
         </h3>
         <span className="text-xs text-ink-400 whitespace-nowrap">
-          {projects.length}{' '}
-          {projects.length === 1 ? 'project' : 'projects'} on the go
+          {projects.length === 1 ? 'project on the go' : 'projects on the go'}
         </span>
       </div>
       <ul className="space-y-2">
@@ -1035,13 +967,15 @@ function CompletedColumn({
   return (
     <div>
       <div className="flex items-center justify-between mb-3 gap-3">
-        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" aria-hidden="true" />
+        <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-ink-200">
+          <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/40" aria-hidden="true" />
           {title}
+          <span className="text-ink-500 normal-case tracking-normal font-normal">
+            · {projects.length}
+          </span>
         </h3>
         <span className="text-xs text-ink-400 whitespace-nowrap">
-          {projects.length}{' '}
-          {projects.length === 1 ? 'project' : 'projects'} this week
+          {projects.length === 1 ? 'project completed' : 'projects completed'}
         </span>
       </div>
       <ul className="space-y-2">
@@ -1124,7 +1058,7 @@ function ProjectInProgressRow({
     <li>
       <Link
         to={href}
-        className="relative block border border-ink-600 rounded-lg bg-ink-800 pl-5 pr-4 py-3 min-h-[124px] hover:border-beme-500/40 hover:bg-ink-700/40 transition-colors overflow-hidden"
+        className="relative block border border-ink-600 rounded-lg bg-ink-800 pl-5 pr-4 py-3 min-h-[124px] hover:border-beme-500/50 hover:bg-ink-700/30 hover:shadow-lg hover:shadow-beme-500/5 hover:-translate-y-px transition-all duration-150 overflow-hidden"
       >
         {/* Trade-coloured stripe down the left edge. Block = brand
             orange, brick = amber, mixed = vertical gradient between
@@ -1146,7 +1080,7 @@ function ProjectInProgressRow({
             </span>
             {typeof project.referenceNumber === 'number' && (
               <span
-                className="text-[11px] tabular-nums font-semibold text-beme-500 flex-shrink-0"
+                className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-beme-500/10 border border-beme-500/20 text-[10px] tabular-nums font-semibold text-beme-300 flex-shrink-0"
                 title="Reference number — quote this when looking the project up."
               >
                 #{formatRef(project.referenceNumber)}
@@ -1314,6 +1248,26 @@ function PersonalDashboard() {
     refreshProjects()
   }, [refreshProjects, signedIn])
 
+  // Refresh whenever the window regains focus or the tab becomes
+  // visible — mirrors OrgDashboard's behaviour so the personal
+  // dashboard also catches the workflow where the user marks a
+  // project done in the workspace, hops to another tab, then
+  // returns. Without it the dashboard sat stale until a hard
+  // reload. The mount-time effect above already covers fresh
+  // navigation-back via React Router; this covers the rest.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return
+      refreshProjects()
+    }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [refreshProjects])
+
   const stats = useMemo(() => {
     const total = projects.length
     const inProgress = projects.filter((p) => p.status === 'in-progress').length
@@ -1350,6 +1304,56 @@ function PersonalDashboard() {
       )
     })
   }, [projects, filter, searchQuery])
+
+  /**
+   * Splits projects into Current (in-progress) and Completed for
+   * the side-by-side dashboard layout. Search applies to the
+   * Current column only — Completed is a historical archive that
+   * doesn't need to be hunted through; the user can flip a project
+   * back to in-progress if they need to re-touch it.
+   */
+  const currentProjects = useMemo(() => {
+    const base = projects.filter((p) => p.status !== 'completed')
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return base
+    return base.filter((p) => {
+      const d = p.projectDetails
+      return (
+        d.projectName.toLowerCase().includes(q) ||
+        d.siteAddress.toLowerCase().includes(q) ||
+        d.clientName.toLowerCase().includes(q) ||
+        d.estimatorName.toLowerCase().includes(q)
+      )
+    })
+  }, [projects, searchQuery])
+  const completedProjects = useMemo(
+    () => projects.filter((p) => p.status === 'completed'),
+    [projects],
+  )
+  // Dashboard caps each column at 3 rows so the page stays scannable.
+  // The "View all" link below routes to /projects with the matching
+  // status filter pre-applied. Sorted most-recently-updated first so
+  // the three rows are the freshest work, not the first 3 the API
+  // returned.
+  const DASHBOARD_PROJECTS_PER_COLUMN = 3
+  const currentProjectsVisible = useMemo(
+    () =>
+      [...currentProjects]
+        .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+        .slice(0, DASHBOARD_PROJECTS_PER_COLUMN),
+    [currentProjects],
+  )
+  const completedProjectsVisible = useMemo(
+    () =>
+      [...completedProjects]
+        .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+        .slice(0, DASHBOARD_PROJECTS_PER_COLUMN),
+    [completedProjects],
+  )
+  const currentHasMore =
+    currentProjects.length > DASHBOARD_PROJECTS_PER_COLUMN
+  const completedHasMore =
+    completedProjects.length > DASHBOARD_PROJECTS_PER_COLUMN
 
   async function handleDelete(id: string) {
     const ok = await confirm({
@@ -1426,17 +1430,27 @@ function PersonalDashboard() {
     try {
       const newId = await duplicateProject(project.id)
       if (!newId) {
-        window.alert('Could not duplicate that project.')
+        toast.error('Could not duplicate that project.')
         return
       }
       // Push the new project into the list immediately so the user sees a
       // confirming entry before the route change kicks in. Then navigate.
       const refreshed = await listProjects()
       setProjects(refreshed)
+      // Confirmation toast — the navigation that follows is fast enough
+      // that the user sees this for a split second on the dashboard,
+      // then it follows them into the new project. The "Stay here"
+      // action lets a user who duplicated by accident bail out of the
+      // route change before it commits.
+      toast.success('Project duplicated', {
+        description: 'A fresh copy is ready to edit. Walls and walls types carry over.',
+      })
       navigate(projectUrl({ ...project, id: newId }))
     } catch (err) {
       console.error('Failed to duplicate', err)
-      window.alert('Could not duplicate that project. See the console for details.')
+      toast.error('Could not duplicate that project.', {
+        description: (err as Error).message,
+      })
     }
   }
 
@@ -1451,37 +1465,149 @@ function PersonalDashboard() {
         outcome: next,
         updatedAt: new Date().toISOString(),
       })
+      // Outcome cycling is a low-stakes label change — keep the toast
+      // light (info, short) so it doesn't feel like a Major Event. The
+      // colour ribbon on the project card moves immediately, which is
+      // the main feedback; this toast just labels what changed for
+      // users who didn't notice the colour shift.
+      const label =
+        next === 'won' ? 'Marked as won' :
+        next === 'lost' ? 'Marked as lost' :
+        'Outcome cleared'
+      toast.info(label)
     } catch (err) {
       console.error('Failed to update outcome', err)
       setProjects((prev) => prev.map((p) => (p.id === project.id ? project : p)))
+      toast.error('Could not update outcome', {
+        description: (err as Error).message,
+      })
     }
   }
 
   // Derive a friendly name from the auth user — "joshmills03@hotmail.com"
   // becomes "joshmills03". Falls through to undefined when not signed in
-  // (the welcome strip then just shows the greeting without a name).
+  // so the hero greeting can degrade gracefully.
   const personalName = user?.email ? user.email.split('@')[0] : null
 
+  // Greeting + date for the hero meta strip on the top right. Compact
+  // 2-line read: greeting (with name when known) on top, date below.
+  // Replaces the previous WelcomeStrip which carried an extra
+  // amber "X projects on the go" pill that duplicated the stat
+  // ribbon below.
+  const hour = new Date().getHours()
+  const greeting =
+    hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+  const today = new Date().toLocaleDateString(undefined, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  })
+
+  // No-projects state drives the big invitation hero instead of
+  // showing two empty Current / Completed sections side by side.
+  // The screenshot complaint that the dashboard "feels unorganised"
+  // came from this case: skeleton rows + a quartet of dashed boxes
+  // looked like broken UI rather than intentional zero-state.
+  const hasAnyProjects = projects.length > 0
+
   return (
-    <>
-      <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
-        <div>
-          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50">Your dashboard</h2>
-          <p className="text-ink-300 text-sm mt-1">
-            Your estimates, win rate, and current jobs at a glance.
+    // flex flex-col + flex-1 so PersonalDashboard fills the height
+    // of its parent (which now stretches to match the sidebar).
+    <div className="flex flex-col flex-1">
+      {/* ── Hero ──
+          Single bold heading + sublead on the left, compact date /
+          greeting cluster on the right. Date sits in a quiet pill so
+          it reads as metadata, not a competing headline. */}
+      <div className="flex items-start justify-between flex-wrap gap-4">
+        <div className="min-w-0 relative">
+          {/* Brand accent bar to the left of the heading — pairs with
+              the AppShell's top gradient strip so the page anchors
+              orange on two axes (top + left) without going overboard. */}
+          <span
+            aria-hidden="true"
+            className="absolute -left-3 top-1 bottom-1 w-1 rounded-full bg-gradient-to-b from-beme-400 to-beme-600"
+          />
+          <h2 className="text-3xl font-extrabold tracking-tight text-ink-50 leading-tight">
+            Your dashboard
+          </h2>
+          <p className="text-ink-300 text-sm mt-1.5">
+            Track your projects, win rate, and active jobs at a glance.
           </p>
         </div>
-        <WelcomeStrip
-          name={personalName}
-          actionItems={stats.inProgress}
-          actionLabel={stats.inProgress === 1 ? 'project on the go' : 'projects on the go'}
-        />
+        <div className="text-right flex-shrink-0">
+          <div className="text-sm text-ink-300">
+            {greeting}
+            {personalName && (
+              <>
+                , <span className="text-ink-50 font-semibold">{personalName}</span>
+              </>
+            )}
+          </div>
+          <div className="inline-flex items-center gap-1.5 mt-1.5 px-2.5 py-1 rounded-full bg-ink-800 border border-ink-600 text-[11px] text-ink-300 tabular-nums">
+            <span className="w-1 h-1 rounded-full bg-beme-500" aria-hidden />
+            {today}
+          </div>
+        </div>
       </div>
 
-      <section className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatTile label="Total projects" value={stats.total} />
-        <StatTile label="In progress" value={stats.inProgress} accent="beme" />
-        <StatTile label="Won" value={stats.won} accent="emerald" />
+      {/* Primary CTA row — big confident "+ New estimate" button as
+          the page's primary action, separated from the stats so the
+          eye lands on it directly. Replaces the previous
+          NewEstimateTile that sat awkwardly mixed in with the stat
+          tiles. On wider screens, sits inline with a quick-scan
+          summary line. */}
+      <div className="mt-7 flex items-center gap-3 flex-wrap">
+        <Link
+          to="/project/block"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-lg shadow-beme-500/20"
+        >
+          <span className="text-lg leading-none">+</span>
+          New estimate
+        </Link>
+        <span className="text-xs text-ink-400">
+          Block, brick, or both — switch trades inside.
+        </span>
+      </div>
+
+      {/* Stat ribbon — 4 equal tiles. Total / In progress / Won /
+          Win rate. Win rate uses the WinRateTile (mini donut) so the
+          row reads as a real metrics dashboard rather than four
+          interchangeable cells. Keeps the same visual rhythm in any
+          state (loading, no projects, full project list). */}
+      <section className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatTile
+          label="Total projects"
+          value={stats.total}
+          sub={
+            stats.total === 0
+              ? 'No estimates yet'
+              : stats.completed === 0
+                ? `${stats.inProgress} in progress`
+                : `${stats.completed} completed`
+          }
+        />
+        <StatTile
+          label="In progress"
+          value={stats.inProgress}
+          accent="beme"
+          sub={
+            stats.inProgress === 0
+              ? 'Nothing on the go'
+              : stats.inProgress === 1
+                ? '1 active estimate'
+                : `${stats.inProgress} active`
+          }
+        />
+        <StatTile
+          label="Won"
+          value={stats.won}
+          accent="emerald"
+          sub={
+            stats.won + stats.lost === 0
+              ? 'No outcomes yet'
+              : `${stats.lost} lost · ${stats.pending} pending`
+          }
+        />
         <WinRateTile
           winRate={stats.winRate}
           won={stats.won}
@@ -1490,64 +1616,101 @@ function PersonalDashboard() {
         />
       </section>
 
-      {/* Primary action — one card. With the unified workspace, an estimate
-          can hold block, brick, or both. The user picks the starting trade
-          inside the workspace (via the trade chip group at the top of the
-          right rail) and can add the other later — so the dashboard surfaces
-          a single "+ New estimate" entry instead of forcing a trade choice
-          upfront. */}
-      <section className="mt-6">
-        <Link
-          to="/project/block"
-          className="block border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500 hover:bg-ink-700 transition-all p-5 group"
-        >
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-                Start a new estimate
-              </div>
-              <h4 className="text-xl font-bold text-beme-400 group-hover:text-beme-300 mt-1 mb-1">
-                + New estimate
-              </h4>
-              <p className="text-sm text-ink-300 max-w-2xl">
-                Upload a plan, trace walls, openings, and piers. Block, brick,
-                or both — switch trades inside the workspace via the chip
-                group at the top of the right rail.
-              </p>
-            </div>
-            {/* Visual hint that both trades are available inside — sits in
-                the top-right of the card so it doesn't dominate. */}
-            <div className="flex items-center gap-1.5 flex-shrink-0 mt-1">
-              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-beme-500/15 text-beme-300 border border-beme-500/30">
-                Block
-              </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                Brick
-              </span>
-            </div>
-          </div>
-          <div className="mt-3 text-xs text-ink-400 group-hover:text-beme-300 transition-colors">
-            Open the workspace →
-          </div>
-        </Link>
-      </section>
+      {/* Loading state — first paint while listProjects resolves.
+          Single skeleton row + one helper line so the user sees
+          motion without a full faux UI flickering on top of itself.
+          Hidden once `loading` flips, regardless of how many
+          projects came back. */}
+      {loading && (
+        <div className="mt-8 flex items-center justify-center py-8">
+          <BemeLoader caption="Loading your projects…" />
+        </div>
+      )}
 
-      <section className="mt-10">
-        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-            Projects
-          </h3>
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Search — matches project name, site address, client name,
-                estimator name. Case-insensitive substring. Layered on top
-                of the status / outcome filter to the right. */}
+      {/* Zero-project state — single confident hero card with a
+          big CTA, instead of two separate dashed-border "Current"
+          and "Completed" placeholders. Reads as "you're here to
+          start something" rather than "the dashboard is broken /
+          empty". Only shows after the loading flip — keeps the
+          first paint from flashing two different empty states. */}
+      {!loading && !hasAnyProjects && (
+        <section className="mt-8 flex-1 flex items-center justify-center">
+          <div className="w-full max-w-xl border border-ink-600 rounded-2xl bg-ink-800/60 px-8 py-12 text-center">
+            <div className="mx-auto w-14 h-14 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-5">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-7 h-7 text-beme-400"
+                aria-hidden
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <line x1="9" y1="15" x2="15" y2="15" />
+              </svg>
+            </div>
+            <h3 className="text-xl font-bold text-ink-50 tracking-tight">
+              Start your first estimate
+            </h3>
+            <p className="text-sm text-ink-400 mt-2 leading-relaxed">
+              Upload a plan or start with a blank workspace. Block, brick,
+              or both — every project supports both trades.
+            </p>
+            <div className="mt-6 flex items-center justify-center gap-3 flex-wrap">
+              <Link
+                to="/project/block"
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-lg shadow-beme-500/20"
+              >
+                <span className="text-lg leading-none">+</span>
+                New estimate
+              </Link>
+              <Link
+                to="/guide"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-ink-300 text-sm hover:text-ink-100 hover:bg-ink-700/60 transition-colors"
+              >
+                View the guide
+                <span className="text-ink-500">→</span>
+              </Link>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Project rail — only renders when the user has at least one
+          project. Splits into Current (in-progress) and Completed
+          stacked vertically. Completed hides entirely when empty
+          (the zero-project block above handles the all-empty case,
+          and showing a dashed "no completed" box on a project that's
+          still in progress is more noise than help).
+          Each section caps at 3 rows on the dashboard with a "View
+          all" affordance below. */}
+      {!loading && hasAnyProjects && (
+      <section className="mt-8 flex-1 grid grid-cols-1 gap-y-8 items-start">
+        {/* Current — single small-uppercase header matching the
+            OrgDashboard ProjectsColumn pattern. No marketing-style
+            eyebrow + large heading combo. The orange dot keeps a
+            tiny brand touch without dominating. */}
+        <div className="flex flex-col">
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+              Current projects
+              <span className="text-ink-500 normal-case font-normal tracking-normal">
+                · {currentProjects.length}
+              </span>
+            </h3>
             <div className="relative">
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search projects…"
-                className="pl-8 pr-3 py-1.5 w-56 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
+                placeholder="Search…"
+                className="pl-8 pr-3 py-1.5 w-44 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
               />
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1574,61 +1737,352 @@ function PersonalDashboard() {
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-1 border border-ink-600 rounded-lg p-1 bg-ink-800 flex-wrap">
-              <FilterTab label="All" count={stats.total} active={filter === 'all'} onClick={() => setFilter('all')} />
-              <FilterTab label="In progress" count={stats.inProgress} active={filter === 'in-progress'} onClick={() => setFilter('in-progress')} />
-              <FilterTab label="Completed" count={stats.completed} active={filter === 'completed'} onClick={() => setFilter('completed')} />
-              <FilterTab label="Won" count={stats.won} active={filter === 'won'} onClick={() => setFilter('won')} />
-              <FilterTab label="Lost" count={stats.lost} active={filter === 'lost'} onClick={() => setFilter('lost')} />
-              <FilterTab label="Pending" count={stats.pending} active={filter === 'pending'} onClick={() => setFilter('pending')} />
-            </div>
           </div>
+
+          {/* Search-miss / all-completed states. Loading + first-
+              project state are handled at the outer level so this
+              section only renders Current when there's something
+              to show OR when the user is actively searching and we
+              need to tell them no matches. */}
+          {currentProjects.length === 0 && (
+            <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 text-ink-400 px-6 py-8 text-center flex flex-col items-center justify-center gap-2">
+              <div className="text-sm">
+                {searchQuery ? (
+                  <>
+                    <div className="text-ink-200 font-medium">No matches.</div>
+                    <div className="text-xs text-ink-500 mt-1">
+                      Nothing matches <strong>"{searchQuery}"</strong>.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-ink-200 font-medium">All caught up.</div>
+                    <div className="text-xs text-ink-500 mt-1">
+                      Every project is filed under Completed.
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {currentProjects.length > 0 && (
+            <>
+              <ul className="space-y-2">
+                {currentProjectsVisible.map((p) => (
+                  <ProjectRow
+                    key={p.id}
+                    project={p}
+                    onDelete={() => handleDelete(p.id)}
+                    onDuplicate={() => handleDuplicate(p)}
+                    onCycleOutcome={() => handleCycleOutcome(p)}
+                  />
+                ))}
+              </ul>
+              {currentHasMore && (
+                <div className="mt-3 flex justify-end">
+                  <Link
+                    to="/projects?status=in-progress"
+                    className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+                  >
+                    View all
+                    <span className="text-ink-500">
+                      · {currentProjects.length}
+                    </span>
+                  </Link>
+                </div>
+              )}
+              {/* Filler — keeps the column visually full when it
+                  has fewer rows than the sidebar's height allows.
+                  Doubles as a soft "start another" affordance so
+                  the placeholder earns its space rather than just
+                  being a blank box. flex-1 absorbs the leftover
+                  vertical room; min-h sets a floor so it doesn't
+                  collapse on a busy column. */}
+              <Link
+                to="/project/block"
+                className="flex-1 mt-3 border border-dashed border-ink-600 hover:border-ink-500 rounded-xl bg-ink-800/30 hover:bg-ink-800/50 text-ink-400 hover:text-ink-200 transition-colors flex items-center justify-center min-h-[4rem] text-xs font-medium gap-1.5"
+              >
+                <span className="text-base">+</span>
+                Start another estimate
+              </Link>
+            </>
+          )}
         </div>
 
-        {loading && (
-          <ul className="space-y-2" aria-label="Loading projects">
-            <ProjectRowSkeleton />
-            <ProjectRowSkeleton />
-            <ProjectRowSkeleton />
-          </ul>
-        )}
-
-        {!loading && filtered.length === 0 && (
-          <div className="border border-dashed border-ink-600 rounded-xl p-12 text-center text-ink-400 bg-ink-800/50">
-            {projects.length === 0 ? (
-              <span>
-                No saved projects yet. Click <strong>+ New estimate</strong>{' '}
-                above to start one.
-              </span>
-            ) : searchQuery ? (
-              <span>
-                No projects match <strong>"{searchQuery}"</strong>.
-              </span>
-            ) : (
-              <span>No projects with this filter.</span>
+        {/* ── Completed ── flex column so the empty state can
+            grow to fill the same height as the Current column on
+            wide screens (items-stretch on the grid above gives the
+            container the height; the inner flex grows the empty
+            state into it). */}
+        {/* Completed column — only renders when the user actually
+            HAS completed projects. Empty completed state used to
+            show a dashed-border "no completed" panel under every
+            in-progress project, which made the dashboard look like
+            it was missing content. Hidden entirely now until at
+            least one project is closed out. */}
+        {completedProjects.length > 0 && (
+          <div className="flex flex-col">
+            <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+              <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+                <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
+                Completed projects
+                <span className="text-ink-500 normal-case font-normal tracking-normal">
+                  · {completedProjects.length}
+                </span>
+              </h3>
+            </div>
+            <ul className="space-y-2">
+              {completedProjectsVisible.map((p) => (
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  onDelete={() => handleDelete(p.id)}
+                  onDuplicate={() => handleDuplicate(p)}
+                  onCycleOutcome={() => handleCycleOutcome(p)}
+                />
+              ))}
+            </ul>
+            {completedHasMore && (
+              <div className="mt-3 flex justify-end">
+                <Link
+                  to="/projects?status=completed"
+                  className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+                >
+                  View all
+                  <span className="text-ink-500">
+                    · {completedProjects.length}
+                  </span>
+                </Link>
+              </div>
             )}
           </div>
         )}
-
-        {!loading && filtered.length > 0 && (
-          <ul className="space-y-2">
-            {filtered.map((p) => (
-              <ProjectRow
-                key={p.id}
-                project={p}
-                onDelete={() => handleDelete(p.id)}
-                onDuplicate={() => handleDuplicate(p)}
-                onCycleOutcome={() => handleCycleOutcome(p)}
-              />
-            ))}
-          </ul>
-        )}
       </section>
+      )}
 
       {/* Material library and Beme guide tiles moved to the dashboard
           sidebar (right rail) — see DashboardSidebar in HomePage. */}
-    </>
+    </div>
   )
+}
+
+/**
+ * Right-hand insights column on the dashboard. Three surfaces:
+ *   1. Recent activity — last 5 projects by updatedAt.
+ *   2. Projects by trade — block / brick / both split as a mini bar.
+ *   3. Quick actions — Resume last, Material library, Settings.
+ *
+ * All driven by the existing projects array + stats so there are no
+ * new fetches or schema changes. Symmetric card pattern with the
+ * stat tiles + new-estimate card so the dashboard reads as a single
+ * cohesive surface.
+ */
+function DashboardInsights({
+  projects,
+  stats,
+}: {
+  projects: SavedProject[]
+  stats: { total: number; inProgress: number; won: number; lost: number; pending: number; completed: number; winRate: number | null }
+}) {
+  // Last 5 most recently updated.
+  const recent = [...projects]
+    .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+    .slice(0, 5)
+
+  // By-trade breakdown from each project's `trades` array (multi-trade)
+  // with `type` as fallback (legacy single-trade projects). Counted
+  // as block-only, brick-only, or both so the bar reads as three
+  // segments rather than overlapping totals.
+  const tradeCounts = projects.reduce(
+    (acc, p) => {
+      const trades = p.trades && p.trades.length > 0 ? p.trades : p.type ? [p.type] : []
+      const hasBlock = trades.includes('block')
+      const hasBrick = trades.includes('brick')
+      if (hasBlock && hasBrick) acc.both++
+      else if (hasBlock) acc.block++
+      else if (hasBrick) acc.brick++
+      else acc.none++
+      return acc
+    },
+    { block: 0, brick: 0, both: 0, none: 0 },
+  )
+  const tradeTotal = tradeCounts.block + tradeCounts.brick + tradeCounts.both
+  const pct = (n: number) => (tradeTotal === 0 ? 0 : (n / tradeTotal) * 100)
+
+  const lastProject = recent[0]
+  const lastProjectHref = lastProject
+    ? `/project/${(lastProject.trades?.[0] ?? lastProject.type ?? 'block')}?id=${lastProject.id}`
+    : null
+
+  return (
+    <section className="mt-10">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+        Insights
+      </h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {/* Recent activity. Empty-state copy nudges the user toward
+          the "New estimate" card above. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-4 pt-3 pb-2">
+          Recent activity
+        </h3>
+        {recent.length === 0 ? (
+          <p className="px-4 pb-4 text-xs text-ink-400 italic">
+            Nothing yet. Start an estimate to see activity here.
+          </p>
+        ) : (
+          <ul className="divide-y divide-ink-700/60">
+            {recent.map((p) => (
+              <li key={p.id}>
+                <Link
+                  to={`/project/${p.trades?.[0] ?? p.type ?? 'block'}?id=${p.id}`}
+                  className="flex items-center justify-between gap-3 px-4 py-2 text-sm hover:bg-ink-700/40 transition-colors"
+                >
+                  <span className="truncate text-ink-100">{p.name || 'Untitled'}</span>
+                  <span className="text-[10px] text-ink-500 flex-shrink-0">
+                    {p.updatedAt ? formatRelativeTime(p.updatedAt) : ''}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Projects by trade — three-segment horizontal bar with a
+          legend below. Reads as a mini-chart without needing a real
+          charting lib. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          By trade
+        </h3>
+        {tradeTotal === 0 ? (
+          <p className="text-xs text-ink-400 italic">No projects yet.</p>
+        ) : (
+          <>
+            <div className="flex h-2 rounded-full overflow-hidden bg-ink-700">
+              <div
+                className="bg-beme-500"
+                style={{ width: `${pct(tradeCounts.block)}%` }}
+                title={`Block: ${tradeCounts.block}`}
+              />
+              <div
+                className="bg-amber-500"
+                style={{ width: `${pct(tradeCounts.brick)}%` }}
+                title={`Brick: ${tradeCounts.brick}`}
+              />
+              <div
+                className="bg-sky-500"
+                style={{ width: `${pct(tradeCounts.both)}%` }}
+                title={`Both: ${tradeCounts.both}`}
+              />
+            </div>
+            <div className="mt-3 flex items-center gap-3 flex-wrap text-[11px] text-ink-300">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-beme-500" />
+                Block <span className="text-ink-500">{tradeCounts.block}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-amber-500" />
+                Brick <span className="text-ink-500">{tradeCounts.brick}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-sky-500" />
+                Both <span className="text-ink-500">{tradeCounts.both}</span>
+              </span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Quick actions — three buttons for common workflows.
+          Resume-last is greyed out when there's no project yet so
+          the empty-state user gets a graceful affordance instead of
+          a dead link. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          Quick actions
+        </h3>
+        <div className="grid grid-cols-1 gap-2">
+          {lastProjectHref ? (
+            <Link
+              to={lastProjectHref}
+              className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
+            >
+              Resume last project
+              <span className="block text-[11px] text-ink-500 mt-0.5 truncate">
+                {lastProject?.name || 'Untitled'}
+              </span>
+            </Link>
+          ) : (
+            <span className="px-3 py-2 rounded-lg border border-ink-700 bg-ink-900/20 text-sm text-ink-500 cursor-not-allowed">
+              Resume last project
+              <span className="block text-[11px] text-ink-600 mt-0.5">No projects yet</span>
+            </span>
+          )}
+          <Link
+            to="/library"
+            className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
+          >
+            Open material library
+            <span className="block text-[11px] text-ink-500 mt-0.5">Blocks, bricks, supply items</span>
+          </Link>
+          <Link
+            to="/settings"
+            className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
+          >
+            Settings
+            <span className="block text-[11px] text-ink-500 mt-0.5">Defaults, theme, region</span>
+          </Link>
+        </div>
+      </div>
+
+      {/* Win rate breakdown — restates the headline stat alongside
+          the raw won / lost / pending counts. Helps the dashboard
+          feel less empty when the user has only a handful of
+          projects but wants to see the shape of them. */}
+      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
+          Outcomes
+        </h3>
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div>
+            <div className="text-xl font-bold text-emerald-300">{stats.won}</div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Won</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold text-rose-300">{stats.lost}</div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Lost</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold text-amber-300">{stats.pending}</div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Pending</div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * "2 minutes ago", "3 hours ago", "yesterday", "5 Jan" — picks a
+ * format based on how old the timestamp is. Falls back to ISO date
+ * for older items so the column doesn't grow to "47 weeks ago".
+ */
+function formatRelativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+  // Older than a week — short date.
+  const d = new Date(iso)
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
 }
 
 // ---------- Shared sub-components ----------
@@ -1743,29 +2197,52 @@ function StatTile({
   label: string
   value: string | number
   sub?: string
-  accent?: 'beme' | 'emerald' | 'amber'
+  accent?: 'beme' | 'emerald' | 'amber' | 'sky'
 }) {
-  // Accent colours bumped one step brighter (300 → 500 for beme,
-  // 300 → 400 for emerald/amber) so the headline numbers carry the
-  // brand orange / green more strongly. Earlier the burnt-tone
-  // beme-300 read as muted brown in light mode.
-  const accentClass =
+  // Accent colours follow the marketing site's tri-colour palette
+  // (beme / amber / sky) plus emerald for "won" — the dot next to the
+  // eyebrow makes the row read like a real category strip rather
+  // than a wall of numbers. Numbers tuned one step brighter than the
+  // eyebrow so the value carries the brand colour strongly.
+  const accentText =
     accent === 'beme'
       ? 'text-beme-500'
       : accent === 'emerald'
         ? 'text-emerald-400'
         : accent === 'amber'
           ? 'text-amber-400'
-          : 'text-ink-50'
+          : accent === 'sky'
+            ? 'text-sky-400'
+            : 'text-ink-50'
+  const dotBg =
+    accent === 'beme'
+      ? 'bg-beme-500'
+      : accent === 'emerald'
+        ? 'bg-emerald-400'
+        : accent === 'amber'
+          ? 'bg-amber-400'
+          : accent === 'sky'
+            ? 'bg-sky-400'
+            : 'bg-ink-500'
+  // All tiles share the same flat panel chrome — plain bg, neutral
+  // border, no gradient washes or atmospheric blobs. The previous
+  // beme/emerald/amber tinted gradients muddied the dashboard with
+  // four different tile flavours; user wanted them dropped. Accent
+  // colour is still conveyed by the dot in the eyebrow and the
+  // tinted number, which is the actual semantic signal — the rest
+  // of the card stays calm white.
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 px-5 py-4 lift">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 flex items-center gap-2">
+        {accent && (
+          <span aria-hidden="true" className={`inline-block w-1.5 h-1.5 rounded-full ${dotBg}`} />
+        )}
         {label}
       </div>
-      <div className={`text-2xl font-extrabold tracking-tight tabular-nums mt-1 ${accentClass}`}>
+      <div className={`text-3xl font-bold tracking-tight tabular-nums mt-2 ${accentText}`}>
         {value}
       </div>
-      {sub && <div className="text-xs text-ink-400 mt-0.5">{sub}</div>}
+      {sub && <div className="text-xs text-ink-400 mt-1">{sub}</div>}
     </div>
   )
 }
@@ -1782,18 +2259,13 @@ function NewEstimateTile() {
     <Link
       to="/project/block"
       title="Start a new masonry estimate — block, brick, or both"
-      className="block border border-ink-600 rounded-xl bg-ink-800 px-4 py-3.5 hover:border-beme-500 hover:bg-ink-700/40 transition-colors group"
+      className="block border border-beme-500/40 rounded-2xl bg-ink-800 px-5 py-4 hover:border-beme-500/70 hover:bg-beme-500/5 transition-colors group lift"
     >
-      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 flex items-center justify-between gap-2">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-500 flex items-center justify-between gap-2">
         <span>Start a new estimate</span>
-        <span className="text-ink-500 group-hover:text-beme-500 transition-colors">→</span>
+        <span className="text-beme-500 group-hover:translate-x-0.5 transition-transform">→</span>
       </div>
-      {/* Title font tuned down from text-2xl/extrabold to a chunkier
-          lg/bold — the long phrase looked squished at the stat-value
-          weight while the digits (6, 9) read fine. Colour bumped to
-          beme-500 so it matches the brighter brand-orange the rail
-          accents use, not the muted beme-300 burnt tone. */}
-      <div className="text-lg font-bold tracking-tight mt-1 text-beme-500 group-hover:text-beme-400">
+      <div className="text-xl font-extrabold tracking-tight mt-1 text-beme-500 group-hover:text-beme-600">
         + New estimate
       </div>
       <div className="text-xs text-ink-400 mt-0.5">
@@ -1880,10 +2352,22 @@ function ProjectRow({
       ? project.projectDetails.siteAddress
       : ''
   const typeLabel = project.type === 'block' ? 'Block' : 'Brick'
+  // Resolve the trade(s) used on this project so we can paint the
+  // left-edge stripe — same encoding as the OrgDashboard's
+  // ProjectInProgressRow / CompletedProjectCard: orange for block,
+  // amber for brick, vertical gradient for mixed.
+  const trades = tradesOf(project)
 
   return (
-    <li className="border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500/60 transition-colors">
-      <div className="flex items-center justify-between flex-wrap gap-3 p-4">
+    <li className="relative border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500/50 hover:shadow-lg hover:shadow-beme-500/5 hover:-translate-y-px transition-all duration-150 overflow-hidden">
+      {/* Trade stripe — matches the org dashboard project rows so the
+          eye can pick block vs brick at a glance across both
+          dashboards without having to read the badge. */}
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
+      />
+      <div className="flex items-center justify-between flex-wrap gap-3 p-4 pl-5">
         <Link
           to={`/project/${project.type}?id=${project.id}`}
           className="flex-1 min-w-0 group"
@@ -1892,15 +2376,13 @@ function ProjectRow({
             <span className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
               {name}
             </span>
-            {/* Reference number pill — same affordance the OrgDashboard
-                rows and ProjectBar show. Personal projects DO get
-                reference numbers allocated by the Postgres trigger on
-                insert; this was simply missing from the personal list
-                view. Quote-by-phone / cross-look-up by 6-digit number
-                works the same way for personal and team projects. */}
+            {/* Reference number chip — proper bg-tinted chip with a
+                soft brand border so the 6-digit reference reads as
+                a structured artifact (something you'd quote on the
+                phone) rather than a stray brand-coloured digit. */}
             {typeof project.referenceNumber === 'number' && (
               <span
-                className="text-[11px] tabular-nums font-semibold text-beme-400/80"
+                className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-beme-500/10 border border-beme-500/20 text-[10px] tabular-nums font-semibold text-beme-300"
                 title="Reference number — quote this when looking the project up."
               >
                 #{formatRef(project.referenceNumber)}

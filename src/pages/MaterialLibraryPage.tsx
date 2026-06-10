@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import Header from '../components/Header'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import LibraryTemplateControls from '../components/LibraryTemplateControls'
 import LibrarySectionControls from '../components/LibrarySectionControls'
 import { useAuth } from '../lib/auth'
+import { confirm } from '../lib/confirm'
+import { toast } from '../lib/toast'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
 import {
@@ -115,9 +116,8 @@ export default function MaterialLibraryPage() {
   const readOnly = !isAdmin
 
   return (
-    <div className="min-h-screen bg-ink-900 text-ink-50">
-      <Header />
-      <main className="px-20 py-10">
+    <>
+      <div className="px-12 py-10">
         <div className="flex items-end justify-between flex-wrap gap-3 mb-2">
           <div>
             <Link
@@ -253,8 +253,8 @@ export default function MaterialLibraryPage() {
             </TabSection>
           )}
         </div>
-      </main>
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -385,15 +385,19 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
   }, [items])
 
   async function saveItem(item: SupplyItem) {
+    const isNew = !items.some((i) => i.id === item.id)
     if (currentOrgId) {
       // Org mode — upsert to Supabase. The org-items singleton
       // optimistically updates so the UI re-renders before the
       // network round-trip completes.
       try {
         await saveOrgSupplyItem(item)
-      } catch {
-        // Error already logged inside saveOrgSupplyItem. Leave the
-        // editor open so the user can retry.
+      } catch (err) {
+        // Error already logged inside saveOrgSupplyItem. Surface it to
+        // the user and leave the editor open so they can retry.
+        toast.error('Could not save supply item', {
+          description: (err as Error)?.message ?? 'See the console for details.',
+        })
         return
       }
     } else {
@@ -402,21 +406,34 @@ function SupplyItemsEditor({ readOnly }: { readOnly: boolean }) {
       updateUserSettings({ supplyItems: [...existing, item] })
     }
     setEditingId(null)
+    toast.success(
+      isNew ? `Supply item "${item.name}" added` : `Supply item "${item.name}" updated`
+    )
   }
 
   async function deleteItem(id: string) {
     const item = items.find((i) => i.id === id)
     if (!item) return
-    if (!window.confirm(`Remove "${item.name}" from your supply items?`)) return
+    const ok = await confirm({
+      title: `Remove "${item.name}"?`,
+      message: 'The supply item will be removed from your library.',
+      confirmLabel: 'Remove',
+      variant: 'destructive',
+    })
+    if (!ok) return
     if (currentOrgId) {
       try {
         await deleteOrgSupplyItem(id)
-      } catch {
+      } catch (err) {
+        toast.error('Could not remove supply item', {
+          description: (err as Error)?.message ?? 'See the console for details.',
+        })
         return
       }
     } else {
       updateUserSettings({ supplyItems: items.filter((i) => i.id !== id) })
     }
+    toast.success(`"${item.name}" removed`)
   }
 
   return (

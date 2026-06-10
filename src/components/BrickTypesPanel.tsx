@@ -2,8 +2,13 @@ import { useEffect, useMemo, useState, type ReactElement } from 'react'
 import type { BrickCourseRange, BrickMakeup } from '../types/walls'
 import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
+import { Link } from 'react-router-dom'
 import { useBrickLibrary } from '../data/brickLibrary'
+import { confirm } from '../lib/confirm'
+import { toast } from '../lib/toast'
 import { wallTypeColor } from '../lib/wallTypeColors'
+import LengthInput from './LengthInput'
+import LibraryGuidance from './LibraryGuidance'
 
 interface BrickTypesPanelProps {
   makeups: BrickMakeup[]
@@ -20,6 +25,15 @@ interface BrickTypesPanelProps {
   onAddMakeup: (makeup: BrickMakeup) => void
   onUpdateMakeup: (makeup: BrickMakeup) => void
   onDeleteMakeup: (id: string) => void
+  /**
+   * Optional curve-draw activator passed from PdfWorkspace. When wired,
+   * the brick wall-type editor surfaces a "Curved" toggle alongside
+   * "Straight" — same affordance the block wall-type modal exposes.
+   * Saving a Curved brick type stamps `kind: 'curved'` on the makeup
+   * so the Draw button routes to 3-click curve-draw mode. Optional so
+   * older host integrations that haven't wired curves still compile.
+   */
+  onToggleCurvedWall?: () => void
 }
 
 function generateMakeupId(): string {
@@ -48,23 +62,34 @@ export default function BrickTypesPanel({
   onAddMakeup,
   onUpdateMakeup,
   onDeleteMakeup,
+  onToggleCurvedWall,
 }: BrickTypesPanelProps) {
   // Palette colours come from the FULL project list (or `makeups`
   // when no separate palette arg was passed). See WallTypesPanel for
   // the same rationale — keeps colours stable across area filters.
   const colorMakeups = paletteMakeups ?? makeups
+  // Library check so the panel can tell the user which knob is the
+  // missing one — "no brick in library, fix that first" vs "library has
+  // bricks, just no wall types yet". Also drives suppression of saved
+  // wall types when the library is empty: showing a "brick wall —
+  // Acme 76mm" card while the library has no Acme 76mm in it would let
+  // the user activate a type whose underlying brick is missing.
+  const { library: brickLibrary, version: brickLibraryVersion } = useBrickLibrary()
+  void brickLibraryVersion
+  const brickLibraryEmpty = Object.keys(brickLibrary).length === 0
+  const visibleMakeups = brickLibraryEmpty ? [] : makeups
   const [editingId, setEditingId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const editingMakeup =
     editingId && editingId !== 'new' ? makeups.find((m) => m.id === editingId) : null
-  const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
-  const orderedMakeups = useMemo(() => {
-    if (!activeMakeup) return makeups
-    return [activeMakeup, ...makeups.filter((m) => m.id !== activeMakeup.id)]
-  }, [makeups, activeMakeup])
+  const activeMakeup = visibleMakeups.find((m) => m.id === activeMakeupId)
+  // No active-to-top reordering — list stays in insertion order so
+  // clicking a card doesn't move it under the cursor. Active state
+  // is communicated via the ring + Active badge instead.
+  const orderedMakeups = visibleMakeups
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
       <div className="flex items-center justify-between mb-2 gap-2">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -80,22 +105,28 @@ export default function BrickTypesPanel({
             {!expanded && activeMakeup ? (
               <>· {activeMakeup.name}</>
             ) : (
-              <>· {makeups.length}</>
+              <>· {visibleMakeups.length}</>
             )}
           </span>
         </button>
         {expanded && (
-          <button
-            onClick={() => setEditingId('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
-          >
-            + Add
-          </button>
+          <LibraryGuidance mode="brick" actionLabel="Add wall type" position="left">
+            <button
+              onClick={() => {
+                if (brickLibraryEmpty) return
+                setEditingId('new')
+              }}
+              disabled={brickLibraryEmpty}
+              className="text-xs px-2 py-1 rounded bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          </LibraryGuidance>
         )}
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-2 pb-1">
+        <div className="flex flex-col gap-1.5 pb-0.5">
           {orderedMakeups.map((m) => {
             const isActive = m.id === activeMakeupId
             const wallCount = wallCountsByMakeupId[m.id] ?? 0
@@ -104,37 +135,45 @@ export default function BrickTypesPanel({
               <button
                 key={m.id}
                 onClick={() => onSetActive(m.id)}
-                className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                className={`group/wt relative w-full p-2 rounded-md border text-left transition-colors ${
                   isActive
-                    ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                    ? 'border-beme-500 ring-1 ring-beme-500/30 bg-beme-500/10'
                     : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
                 }`}
               >
                 {isActive && (
-                  <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                  <span className="absolute top-1.5 right-1.5 text-[10px] px-1.5 py-0 rounded bg-beme-500 text-black font-medium leading-tight">
                     Active
                   </span>
                 )}
-                <div className="flex items-start gap-2 mb-1 pr-12">
+                <div className="flex items-start gap-2 pr-12">
+                  {/* Colour-tinted chip doubling as the type label. */}
                   <span
-                    className="inline-block w-3 h-3 rounded-sm flex-shrink-0 ring-1 ring-black/30 mt-0.5"
-                    style={{ backgroundColor: wallTypeColor(m.id, colorMakeups) }}
-                    aria-hidden
-                  />
-                  {/* Wrap the name onto multiple lines rather than truncate —
-                      the name is the identity of this entry, so the user
-                      always wants it in full even if the card grows taller. */}
-                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30 leading-tight"
+                    style={{
+                      backgroundColor: wallTypeColor(m.id, colorMakeups),
+                    }}
+                    title="Wall colour shown on the plan"
+                  >
+                    {m.kind === 'curved' ? 'Curved' : 'Wall'}
+                  </span>
+                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0 leading-snug">
                     {m.name}
                   </div>
                 </div>
-                <div className="text-xs text-ink-400">
-                  {m.heightMm}mm · brick {m.brickTypeCode || 'project default'}
+                <div className="text-xs text-ink-400 mt-1 leading-tight">
+                  {m.heightMm}mm · {wallCount} wall{wallCount === 1 ? '' : 's'}
                 </div>
-                <div className="text-xs text-ink-500 mt-2">
-                  {wallCount} wall{wallCount === 1 ? '' : 's'} using this
-                </div>
-                <div className="flex gap-3 mt-2">
+                {/* Edit / Duplicate / Delete — hidden by default to keep
+                    the card compact; revealed on hover or when active so
+                    common access stays one click away. */}
+                <div
+                  className={`flex gap-3 mt-1.5 transition-opacity ${
+                    isActive
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover/wt:opacity-100'
+                  }`}
+                >
                   <span
                     role="button"
                     tabIndex={0}
@@ -170,11 +209,17 @@ export default function BrickTypesPanel({
                     <span
                       role="button"
                       tabIndex={0}
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation()
-                        if (window.confirm(`Delete brick wall type "${m.name}"?`)) {
-                          onDeleteMakeup(m.id)
-                        }
+                        const ok = await confirm({
+                          title: `Delete brick wall type "${m.name}"?`,
+                          message:
+                            'Brick walls currently using this type will ' +
+                            'fall back to the default.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDeleteMakeup(m.id)
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                     >
@@ -185,6 +230,42 @@ export default function BrickTypesPanel({
               </button>
             )
           })}
+
+          {/* Empty state — mirrors WallTypesPanel exactly so block + brick
+              workspaces feel the same when the user lands cold. */}
+          {orderedMakeups.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-3 py-4 text-center">
+              {brickLibraryEmpty ? (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No brick wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Add at least one brick to your Material Library, then come
+                    back to create brick wall types here.
+                  </p>
+                  <Link
+                    to="/library#bricks"
+                    className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-beme-300 hover:text-beme-200"
+                  >
+                    Open Material Library
+                    <span aria-hidden="true">→</span>
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No brick wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Hit <span className="font-semibold text-ink-200">+ Add</span>{' '}
+                    above to set up your first brick wall — height, bond, and
+                    brick type.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -194,11 +275,30 @@ export default function BrickTypesPanel({
       {editingId !== null && (
         <BrickTypeEditorModal
           existing={editingId === 'new' ? null : editingMakeup ?? null}
+          // Curved option only available on NEW types (same rule as the
+          // block modal — converting an existing wall type's shape
+          // mid-flight has too many cascading implications). Disabled
+          // when the host hasn't wired a curve-draw activator.
+          curvedAvailable={
+            editingId === 'new' && Boolean(onToggleCurvedWall)
+          }
           onCancel={() => setEditingId(null)}
           onSave={(m) => {
-            if (editingId === 'new') onAddMakeup(m)
+            const isNew = editingId === 'new'
+            if (isNew) onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
+            toast.success(
+              isNew
+                ? `Brick wall type "${m.name}" added`
+                : `Brick wall type "${m.name}" updated`
+            )
+            // The saved brick type sits in the panel labelled "Curved"
+            // (kind flag on the makeup). The user selects it like any
+            // other type and hits Draw — the toolbar's draw routing
+            // checks the active makeup's kind and routes to curve-draw
+            // or straight-draw accordingly. Same flow as the block
+            // wall-type modal.
           }}
         />
       )}
@@ -212,9 +312,23 @@ interface BrickTypeEditorModalProps {
   existing: BrickMakeup | null
   onSave: (makeup: BrickMakeup) => void
   onCancel: () => void
+  /**
+   * Curve option is shown when true. Same rule as the block modal:
+   * only the "+ Add" entry surface offers it (you can't convert an
+   * existing brick type's shape mid-flight). Selecting Curved keeps
+   * the form open so the user can fill out the basics, then saving
+   * stamps `kind: 'curved'` so the parent's draw button routes to
+   * 3-click curve-draw mode the next time this type is active.
+   */
+  curvedAvailable?: boolean
 }
 
-function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorModalProps) {
+function BrickTypeEditorModal({
+  existing,
+  onSave,
+  onCancel,
+  curvedAvailable,
+}: BrickTypeEditorModalProps) {
   const { library } = useBrickLibrary()
   const brickTypes = useMemo(
     () => Object.values(library).sort((a, b) => a.heightMm - b.heightMm),
@@ -255,6 +369,18 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
   type TabKey = 'basics' | 'composition' | 'openings'
   const [activeTab, setActiveTab] = useState<TabKey>('basics')
 
+  // Wall shape — Straight (default) or Curved. Existing brick types
+  // keep their stored kind; new types default to Straight. The Curved
+  // option only renders when the host wired the curve-draw activator
+  // (curvedAvailable). Same UX pattern as the block wall type modal:
+  // picking Curved keeps the form open so the user fills the same
+  // fields as a straight wall; on Save the kind flag is stamped on
+  // the makeup and the parent's Draw button routes to 3-click
+  // curve-draw the next time this type is active.
+  const [selectedKind, setSelectedKind] = useState<'wall' | 'curved'>(
+    existing?.kind ?? 'wall',
+  )
+
   // Esc closes — mirrors WallTypeEditorModal so the keyboard UX is uniform.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -277,6 +403,14 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
     onSave({
       id,
       name: name.trim() || 'New brick type',
+      // Existing brick types keep their stored kind (you can't morph
+      // a straight brick wall type into a curved one mid-flight).
+      // New types pick up whatever the user chose in the kind picker;
+      // 'wall' is the default and stays absent from the persisted
+      // shape (undefined ≡ straight wall, backward-compatible).
+      kind:
+        existing?.kind ??
+        (selectedKind === 'curved' ? 'curved' : 'wall'),
       heightMm,
       brickTypeCode,
       ...(cleanRanges.length > 0 ? { courseRanges: cleanRanges } : {}),
@@ -338,6 +472,49 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
             ×
           </button>
         </header>
+
+        {/* Wall shape picker — visual style mirrors the block modal's
+            KindPicker so the two editors read as the same product.
+            Brick has no pier kinds, so the picker is just Straight /
+            Curved. Renders only on new types when the host wired
+            curve-draw (existing brick types can't morph their shape
+            mid-flight, same rule the block side enforces). */}
+        {!existing && curvedAvailable && (
+          <div className="px-5 py-2.5 border-b border-ink-600 bg-ink-900/20">
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+                Type
+              </span>
+              <div className="inline-flex border border-ink-600 rounded-lg overflow-hidden">
+                {(
+                  [
+                    { value: 'wall', label: 'Wall' },
+                    { value: 'curved', label: 'Curved' },
+                  ] as const
+                ).map((o, i) => {
+                  const isActive = selectedKind === o.value
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      onClick={() => {
+                        if (!isActive) setSelectedKind(o.value)
+                      }}
+                      aria-pressed={isActive}
+                      className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                        isActive
+                          ? 'bg-beme-500 text-black'
+                          : 'bg-ink-800 text-ink-300 hover:bg-ink-700 hover:text-ink-100'
+                      } ${i > 0 ? 'border-l border-ink-600' : ''}`}
+                    >
+                      {o.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Tabs + content — same shell as the blockwork modal: left tab
             rail, scrollable content area, right rail with live preview. */}
@@ -408,14 +585,12 @@ function BrickTypeEditorModal({ existing, onSave, onCancel }: BrickTypeEditorMod
               />
             </label>
             <label className="text-sm block">
-              <span className="block text-ink-300 mb-1">Height (mm)</span>
-              <input
-                type="number"
-                min="200"
-                step="50"
-                value={heightMm}
-                onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              <span className="block text-ink-300 mb-1">Height</span>
+              <LengthInput
+                valueMm={heightMm}
+                onChangeMm={(mm) => setHeightMm(Math.round(mm))}
+                minMm={200}
+                className="w-full"
               />
             </label>
             <label className="text-sm block">

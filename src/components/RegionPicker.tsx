@@ -7,7 +7,8 @@ import {
 import { getBlockLibrary, setBlockLibrary } from '../data/blockLibrary'
 import { BRICK_LIBRARY, setBrickLibrary } from '../data/brickLibrary'
 import { updateUserSettings, getUserSettings } from '../lib/userSettings'
-import { listProjects, saveProject } from '../lib/projectStorage'
+import { confirm } from '../lib/confirm'
+import { listProjectsFull, saveProject } from '../lib/projectStorage'
 import {
   remapBrickMakeupsForLibrary,
   remapMakeupsForLibrary,
@@ -68,7 +69,7 @@ export default function RegionPicker({
     return () => document.removeEventListener('keydown', onKey)
   }, [allowSkip, onCancel])
 
-  function applyTemplate(key: LibraryTemplateKey) {
+  async function applyTemplate(key: LibraryTemplateKey) {
     const template = getLibraryTemplate(key)
     if (!template) return
     const currentBlocks = getBlockLibrary()
@@ -97,13 +98,15 @@ export default function RegionPicker({
       ]
         .filter(Boolean)
         .join(' + ')
-      const ok = window.confirm(
-        `Switch to ${template.displayName}?\n\n` +
-          `This will REPLACE your current library — your ${lossParts} ` +
-          'will be deleted, and the new template will be loaded fresh.\n\n' +
-          'Any custom blocks or bricks you added will be lost. Cancel ' +
-          'if you want to keep them.'
-      )
+      const ok = await confirm({
+        title: `Switch to ${template.displayName}?`,
+        message:
+          `This replaces your current library — your ${lossParts} will be ` +
+          'deleted and the new template loaded fresh. Any custom blocks ' +
+          'or bricks you added will be lost. Cancel if you want to keep them.',
+        confirmLabel: 'Switch template',
+        variant: 'destructive',
+      })
       if (!ok) return
     }
 
@@ -131,7 +134,12 @@ export default function RegionPicker({
         const newLibrary = { ...template.blocks }
         const newBrickLibrary = { ...template.bricks }
         const settingsOpts = { settings: getUserSettings() }
-        const projects = await listProjects()
+        // Migration needs the full project payload (makeups,
+        // pierMakeups, brickMakeups) for every project — the slim
+        // `listProjects` variant strips those to keep the dashboard
+        // fast. Use the full fetch here, which is the heavier path
+        // but only fires on region change.
+        const projects = await listProjectsFull()
         for (const project of projects) {
           const nextMakeups = project.makeups
             ? remapMakeupsForLibrary(

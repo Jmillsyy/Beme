@@ -2,9 +2,9 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
 import type { Opening, Pier, Wall } from '../types/walls'
-import { arcFromThreePoints, isCurvedWall, sampleArc } from '../lib/curveGeom'
-import { formatLengthShort } from '../lib/units'
-import { useUserSettings } from '../lib/userSettings'
+import { arcFromThreePoints, isCurvedWall, projectOntoArc, sampleArc } from '../lib/curveGeom'
+import { formatLengthShort, parseLengthInput } from '../lib/units'
+import { getUserSettings, useUserSettings } from '../lib/userSettings'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { hexToRgba } from '../lib/wallTypeColors'
 import { BLOCK_LIBRARY } from '../data/blockLibrary'
@@ -483,6 +483,18 @@ function distance(a: Point, b: Point) {
 }
 
 function wallLengthMmOf(wall: Wall) {
+  // Curved walls report true arc length along their centreline so
+  // alongMm values returned by projectOntoWall live in the same
+  // measurement space as the wall's overall length. Falls back to
+  // chord distance if the curve geometry is degenerate.
+  if (isCurvedWall(wall) && wall.midX !== undefined && wall.midY !== undefined) {
+    const geom = arcFromThreePoints(
+      { x: wall.startX, y: wall.startY },
+      { x: wall.midX, y: wall.midY },
+      { x: wall.endX, y: wall.endY },
+    )
+    if (geom) return geom.arcLengthMm
+  }
   const dx = wall.endX - wall.startX
   const dy = wall.endY - wall.startY
   return Math.sqrt(dx * dx + dy * dy)
@@ -1064,6 +1076,28 @@ function WallDrawingLayerInner({
   // ---------- Wall geometry helpers ----------
 
   function projectOntoWall(clickPx: Point, wall: Wall): WallProjection | null {
+    // Curved walls — project radially onto the arc, returning the
+    // along-arc distance in mm (so cut-wall / opening tools see the
+    // same alongMm coordinate space they use for straight walls).
+    if (isCurvedWall(wall) && wall.midX !== undefined && wall.midY !== undefined) {
+      const geom = arcFromThreePoints(
+        { x: wall.startX, y: wall.startY },
+        { x: wall.midX, y: wall.midY },
+        { x: wall.endX, y: wall.endY },
+      )
+      if (!geom) {
+        // Degenerate (collinear) — fall through to straight-wall projection.
+      } else {
+        const clickMm = { x: pxToMm(clickPx.x), y: pxToMm(clickPx.y) }
+        const arcProj = projectOntoArc(clickMm, geom)
+        return {
+          wallId: wall.id,
+          alongMm: arcProj.alongMm,
+          px: { x: mmToPx(arcProj.point.x), y: mmToPx(arcProj.point.y) },
+          distFromLinePx: mmToPx(arcProj.distFromArcMm),
+        }
+      }
+    }
     const sx = mmToPx(wall.startX)
     const sy = mmToPx(wall.startY)
     const ex = mmToPx(wall.endX)
@@ -1417,8 +1451,13 @@ function WallDrawingLayerInner({
 
       // CAD-style typed length while drawing — only valid once the first
       // click has anchored startMm. Direction still comes from the cursor;
-      // typing overrides the distance.
+      // typing overrides the distance. Now accepts feet-inches notation
+      // (8'-6", 8'6 1/2") in addition to mm — parseLengthInput handles
+      // both formats and returns mm.
       if (!inField && drawingMode && startMm) {
+        // Allowed keystrokes: digits, decimal point/comma, and the
+        // imperial markers ('", /, -, space). Anything else (including
+        // letters) passes through so existing shortcuts still fire.
         if (e.key >= '0' && e.key <= '9') {
           e.preventDefault()
           setTypedLengthMm((prev) => prev + e.key)
@@ -1429,6 +1468,17 @@ function WallDrawingLayerInner({
           setTypedLengthMm((prev) => (prev.includes('.') ? prev : prev + '.'))
           return
         }
+        if (
+          e.key === "'" ||
+          e.key === '"' ||
+          e.key === '/' ||
+          e.key === '-' ||
+          e.key === ' '
+        ) {
+          e.preventDefault()
+          setTypedLengthMm((prev) => prev + e.key)
+          return
+        }
         if (e.key === 'Backspace') {
           e.preventDefault()
           setTypedLengthMm((prev) => prev.slice(0, -1))
@@ -1436,9 +1486,13 @@ function WallDrawingLayerInner({
         }
         if (e.key === 'Enter' && typedLengthMm.trim()) {
           e.preventDefault()
-          const lengthMm = parseFloat(typedLengthMm)
+          const lengthMm = parseLengthInput(
+            typedLengthMm,
+            getUserSettings().preferences.units,
+          )
           if (
             cursorMm &&
+            lengthMm !== null &&
             Number.isFinite(lengthMm) &&
             lengthMm > 0
           ) {
@@ -1796,8 +1850,13 @@ function WallDrawingLayerInner({
       let posMm: Point = { x: pxToMm(point.x), y: pxToMm(point.y) }
       // Typed value = intended DISPLAYED length. Subtract start corner
       // extension to get the stored centreline so the post-placement
-      // label reads exactly what the user typed.
-      const typedNum = parseFloat(typedLengthMm)
+      // label reads exactly what the user typed. parseLengthInput
+      // handles both metric (2400, 2.4m) and imperial (8'-6") notation.
+      const parsedTyped = parseLengthInput(
+        typedLengthMm,
+        getUserSettings().preferences.units,
+      )
+      const typedNum = parsedTyped ?? NaN
       if (typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0) {
         const dx = posMm.x - startMm.x
         const dy = posMm.y - startMm.y
@@ -1890,13 +1949,19 @@ function WallDrawingLayerInner({
     if (placingControlJoint) {
       const proj = findClosestWallProjection(raw)
       if (!proj) return
-      // Curved walls aren't splittable here.
       const wall = walls.find((w) => w.id === proj.wallId)
-      if (!wall || isCurvedWall(wall)) return
-      onControlJointPlaced?.(
-        proj.wallId,
-        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm
-      )
+      if (!wall) return
+      // Both straight and curved walls are splittable now — projectOntoWall
+      // returns alongMm in arc-length units for curves, and
+      // handleControlJointPlaced uses splitArcAtParameter to derive
+      // the two sub-arcs. Grid snap is skipped on curves (snapping an
+      // arc-length to a 10 mm grid doesn't translate visually the way
+      // it does for a straight wall).
+      const snapped =
+        isCurvedWall(wall) || !useGrid
+          ? proj.alongMm
+          : snapMmToGrid(proj.alongMm, wallSnapMm)
+      onControlJointPlaced?.(proj.wallId, snapped)
       setControlJointHover(null)
       return
     }
@@ -2064,16 +2129,12 @@ function WallDrawingLayerInner({
         setOpeningHoverProjection(null)
       }
     } else if (placingControlJoint) {
-      const proj = findClosestWallProjection(raw)
-      // Don't preview splits on curved walls — control joints only apply to straight walls.
-      if (proj) {
-        const wall = walls.find((w) => w.id === proj.wallId)
-        if (wall && isCurvedWall(wall)) {
-          setControlJointHover(null)
-          return
-        }
-      }
-      setControlJointHover(proj)
+      // Cut wall now works on both straight AND curved walls.
+      // projectOntoWall returns a curve-aware projection (radial onto
+      // the arc, alongMm in arc length), so the hover dot lands on
+      // the curve where the cursor sits and the split point will
+      // match.
+      setControlJointHover(findClosestWallProjection(raw))
     } else if (placingTiedPier) {
       const proj = findClosestWallProjection(raw)
       if (proj) {
@@ -3047,6 +3108,38 @@ function WallDrawingLayerInner({
           )
         })()}
 
+        {/* Bluebeam-style full-canvas crosshair guide.
+            Two solid black lines spanning the canvas at the cursor —
+            horizontal at cursor Y, vertical at cursor X. Stroke is
+            0.75 px so it reads as a touch thinner than the OS CSS
+            crosshair cursor at the centre (the centre still feels
+            like the "real" cursor). Solid + full opacity so the
+            line is a clean ruler, not a dashed guideline.
+            Listening: false so it doesn't intercept clicks. */}
+        {cursorPx &&
+          (drawingMode ||
+            drawingCurveMode ||
+            placingOpening ||
+            placingControlJoint ||
+            placingTiedPier ||
+            placingFreestandingPier ||
+            placingRuler) && (
+            <Group listening={false}>
+              <Line
+                points={[0, cursorPx.y, visualWidth, cursorPx.y]}
+                stroke="#000000"
+                strokeWidth={0.75}
+                listening={false}
+              />
+              <Line
+                points={[cursorPx.x, 0, cursorPx.x, visualHeight]}
+                stroke="#000000"
+                strokeWidth={0.75}
+                listening={false}
+              />
+            </Group>
+          )}
+
         {/* Control-joint hover preview — show where the click would split the wall. */}
         {placingControlJoint && controlJointHover && (() => {
           const wall = walls.find((w) => w.id === controlJointHover.wallId)
@@ -3092,7 +3185,14 @@ function WallDrawingLayerInner({
               // If the user typed a length, project the preview line along the
               // cursor direction at exactly the typed magnitude — that way the
               // dashed preview matches what the click will commit.
-              const typedNum = parseFloat(typedLengthMm)
+              // parseLengthInput accepts both metric (2400) and imperial
+              // (8'-6") notation; the displayed-length preview matches the
+              // commit math at line 1854.
+              const previewParsed = parseLengthInput(
+                typedLengthMm,
+                getUserSettings().preferences.units,
+              )
+              const typedNum = previewParsed ?? NaN
               const hasTyped =
                 !!typedLengthMm.trim() && Number.isFinite(typedNum) && typedNum > 0
               const cursorMmFromPx = {
@@ -3468,31 +3568,23 @@ function renderEndpointMarker({
     ? '#e11d48' // rose = control joint
     : '#ED7D31' // orange = free
 
-  // Control joint: rose ring with a small dot at the centre — visually reads as a "split
-  // here" pin distinct from the other end markers. Both halves' endpoints overlap at the
-  // joint coordinates, so the two pins draw on top of each other (no dedup needed).
+  // Control joint: no marker. After a cut the two halves should read
+  // as two regular walls butting up against each other — same as any
+  // other corner / butt joint in the plan. Render nothing so the cut
+  // point is invisible at rest. (Both halves' endpoints overlap at
+  // the same coordinate, so even a hairline would double-stack.)
+  // When the wall is SELECTED the code falls through to the regular
+  // fallback handle below so the user can still drag the seam if
+  // needed — selecting a wall is an explicit action so showing a
+  // handle there isn't visual noise.
   if (isControlJoint && !isSelected) {
-    return (
-      <>
-        <Circle
-          x={pos.x}
-          y={pos.y}
-          radius={controlJointOuterRadius}
-          stroke={fill}
-          strokeWidth={1.5}
-          fill="white"
-          listening={false}
-        />
-        <Circle
-          x={pos.x}
-          y={pos.y}
-          radius={controlJointInnerRadius}
-          fill={fill}
-          listening={false}
-        />
-      </>
-    )
+    return null
   }
+  // Silence the unused-variable lint that survives now that the rose
+  // ring no longer references these size tokens. Leaving the tokens
+  // in place keeps the corner / T-junction sizing block intact.
+  void controlJointOuterRadius
+  void controlJointInnerRadius
 
   // T-junction: purple diamond (square rotated 45°). Visually distinct from corners
   // without being noisy.

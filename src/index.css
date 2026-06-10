@@ -45,17 +45,21 @@
   --color-beme-800: #9a3f08;
   --color-beme-900: #431407;
 
-  /* Warm ink scale — DEFAULTS to dark mode (Studio Black) */
+  /* Warm ink scale — DEFAULTS to dark mode (Studio Black).
+     Dark surfaces (ink-600 through ink-900) sit one step lighter than
+     the original Studio Black draft — the previous values landed too
+     close to pitch black, which made the page feel heavy. Text colours
+     (ink-50 through ink-500) are unchanged; the lift is dark-end only. */
   --color-ink-50: #f3f3f4;
   --color-ink-100: #d9d9dc;
   --color-ink-200: #b4b4b9;
   --color-ink-300: #9ca0a8;
-  --color-ink-400: #6d717a;
-  --color-ink-500: #4a4d54;
-  --color-ink-600: #2e3036;
-  --color-ink-700: #232328;
-  --color-ink-800: #18181c;
-  --color-ink-900: #0e0e10;
+  --color-ink-400: #7a7e87;  /* +1 step — keeps muted contrast on lifted bg */
+  --color-ink-500: #585b62;  /* +1 step */
+  --color-ink-600: #3a3d44;  /* borders */
+  --color-ink-700: #2e2f35;  /* panel hover */
+  --color-ink-800: #232328;  /* panels / chrome */
+  --color-ink-900: #18181c;  /* page background — softer near-black */
 
   /* Paper canvas — light surface for the PDF + walls; same in both themes */
   --color-paper-50: #fdfcf9;
@@ -96,17 +100,28 @@
    ink-900 = darkest in dark mode → becomes LIGHTEST in light mode (page bg)
    Effectively flips the scale end-to-end so the same `bg-ink-800` / `text-ink-50`
    utilities resolve to the right values in either theme. */
+/* Light-mode palette: orange + black + white with a quiet warm cast.
+   Page surface sits between the old beige cream (#f7f4ec) and the
+   pure neutral gray (#f4f4f5) — just enough warmth that the screen
+   doesn't feel clinical, but cool enough that brand orange + black
+   still read as the dominant tones rather than melting into beige.
+   Universal solution — touch this block, every component using
+   `bg-ink-* / text-ink-* / border-ink-*` re-skins for free. */
 :root.light {
-  --color-ink-50: #0e0c0a;   /* strongest text / heading */
-  --color-ink-100: #1f1d1a;
-  --color-ink-200: #3d3b38;  /* body text */
-  --color-ink-300: #5c5a57;  /* secondary text */
-  --color-ink-400: #8a8782;  /* muted text */
-  --color-ink-500: #b8b4ac;  /* muted icons */
-  --color-ink-600: #e2dfd8;  /* subtle borders */
-  --color-ink-700: #f0ede5;  /* panel hover */
-  --color-ink-800: #ffffff;  /* panels / chrome */
-  --color-ink-900: #f7f4ec;  /* page background — warm off-white */
+  --color-ink-50: #09090b;   /* near-black — strongest text / heading */
+  --color-ink-100: #18181b;  /* primary text on white panels */
+  --color-ink-200: #27272a;  /* body text */
+  --color-ink-300: #52525b;  /* secondary text */
+  --color-ink-400: #74716a;  /* muted text — faint warm cast */
+  --color-ink-500: #a3a098;  /* muted icons — faint warm cast */
+  --color-ink-600: #d6d3cc;  /* card / panel borders — visible on the
+                                  page bg, slight warm tint */
+  --color-ink-700: #e8e4db;  /* panel hover / one-step lift, warm */
+  --color-ink-800: #ffffff;  /* panels / cards / chrome — pure white */
+  --color-ink-900: #f6f4ee;  /* page background — softly warm off-white.
+                                  Sits between the old cream and a
+                                  cool gray so the dashboard has a
+                                  real "page" feel without going beige. */
 }
 
 /* ── Accent colour overrides for light mode ─────────────────────────────────
@@ -254,6 +269,28 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* ── Card hover lift ────────────────────────────────────────────────
+   Mirrors the .lift utility on the marketing site so the dashboard
+   surfaces feel like they belong to the same product. Subtle 3px
+   nudge up + brand-orange border highlight + soft glow on hover.
+   Respects prefers-reduced-motion. */
+.lift {
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.25s ease;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  border-color: var(--color-beme-500);
+  box-shadow: 0 12px 32px rgba(255, 122, 45, 0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lift:hover {
+    transform: none;
+  }
+}
+
 /**
  * Force the closed-hand "grabbing" cursor across the whole canvas while
  * a pan gesture is in progress. The Konva stage and PDF page each set
@@ -266,4 +303,76 @@ button:focus-visible {
 .beme-pan-active,
 .beme-pan-active * {
   cursor: grabbing !important;
+}
+
+/**
+ * Stop-and-start logo spin used by <BemeLoader />.
+ *
+ * The Beme logo rotates a clean 360° over the first 55% of the cycle,
+ * then holds dead still for the remaining 45% before kicking off
+ * again. Because 0° and 360° are visually identical the loop appears
+ * seamless — spin, pause, spin, pause — and reads as a deliberate
+ * mechanical rhythm rather than a generic spinner.
+ *
+ * Easing is `cubic-bezier(0.65, 0, 0.35, 1)` (ease-in-out) so the
+ * spin accelerates from a stop, hits speed in the middle, and decelerates
+ * back to a halt at the pause — like a wheel being given a single
+ * crisp push each cycle.
+ *
+ * 1.6s total feels about right for "I notice it's spinning" without
+ * being annoying. Reduced-motion users get a static logo.
+ */
+@keyframes beme-spin-stop {
+  0% {
+    transform: rotate(0deg);
+  }
+  55% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.beme-spin-stop {
+  animation: beme-spin-stop 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  transform-origin: 50% 50%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beme-spin-stop {
+    animation: none;
+  }
+}
+
+/**
+ * "Just saved" checkmark — pops in next to the save-status pill the
+ * moment a save lands. Scales from 60% to 105% then settles to 100%
+ * so it reads as a beat of confirmation rather than a static glyph.
+ * Plays once on mount (animation duration 350ms, no iteration count
+ * → runs to completion and stays at the final frame). Pair with a
+ * keyed React node so a fresh save remounts the element and replays
+ * the animation; in ProjectBar we re-render via the justSaved state
+ * flipping true so the element appears fresh each time.
+ */
+@keyframes beme-check-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.beme-check-pop {
+  animation: beme-check-pop 350ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: 50% 50%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beme-check-pop {
+    animation: none;
+  }
 }

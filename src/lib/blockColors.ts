@@ -26,7 +26,7 @@
 /** Named palette set. Each palette is a 16-slot array — same shape /
  *  same semantics as the single original palette below. `bandColor`
  *  and `buildBlockColorMap` pick which palette to sample by name. */
-export type PaletteName = 'concrete' | 'brick' | 'sandstone' | 'slate' | 'vibrant'
+export type PaletteName = 'mono' | 'concrete' | 'brick' | 'sandstone' | 'slate' | 'vibrant'
 
 /** 16-slot realistic-masonry palette. Order matters —
  *  buildBlockColorMap walks forward on collision, so visually-near
@@ -60,24 +60,29 @@ export const BAND_COLOR_PALETTE: string[] = [
   'hsl(215,  8%, 46%)', // 16 graphite
 ]
 
-/** Brick / clay tones — saturated reds, oranges, terracottas. */
+/** Brick / clay tones — terracotta-dominant, no brown. Hues sit in
+ *  the 14–28° band (orange-red baked clay through warm sienna),
+ *  saturations 46–64% so slots stay vivid and warm. Lightness floor
+ *  raised to ~44% so even the darker slots read as deep terracotta /
+ *  paprika rather than the muddy browns the previous palette had.
+ *  No slot dips into the dark-brown / mahogany zone. */
 const BAND_COLOR_PALETTE_BRICK: string[] = [
-  'hsl( 12, 42%, 46%)', // 1  classic red brick
-  'hsl( 22, 36%, 58%)', // 2  warm terracotta
-  'hsl(  8, 32%, 38%)', // 3  deep oxblood
-  'hsl( 28, 28%, 64%)', // 4  pale clay
-  'hsl( 16, 38%, 52%)', // 5  burnt sienna
-  'hsl(  6, 24%, 30%)', // 6  charcoal-burnt brick
-  'hsl( 24, 30%, 50%)', // 7  rust
-  'hsl( 18, 44%, 56%)', // 8  bright firebrick
-  'hsl( 14, 26%, 42%)', // 9  dusty red
-  'hsl( 32, 22%, 60%)', // 10 buff
-  'hsl( 10, 36%, 48%)', // 11 paprika
-  'hsl( 20, 40%, 64%)', // 12 salmon brick
-  'hsl(  4, 28%, 34%)', // 13 wine
-  'hsl( 26, 24%, 54%)', // 14 sandy clay
-  'hsl( 18, 32%, 44%)', // 15 mahogany
-  'hsl( 30, 18%, 38%)', // 16 dark taupe
+  'hsl( 18, 58%, 50%)', // 1  classic terracotta
+  'hsl( 22, 50%, 60%)', // 2  warm clay
+  'hsl( 16, 62%, 46%)', // 3  burnt terracotta
+  'hsl( 24, 46%, 68%)', // 4  pale buff terracotta
+  'hsl( 20, 60%, 54%)', // 5  vivid baked clay
+  'hsl( 14, 58%, 44%)', // 6  deep terracotta
+  'hsl( 26, 48%, 52%)', // 7  pottery clay
+  'hsl( 16, 64%, 58%)', // 8  bright terracotta
+  'hsl( 14, 52%, 50%)', // 9  classic flowerpot
+  'hsl( 28, 42%, 66%)', // 10 soft sandstone clay
+  'hsl( 20, 58%, 48%)', // 11 paprika clay
+  'hsl( 22, 54%, 62%)', // 12 coral terracotta
+  'hsl( 18, 56%, 46%)', // 13 rich baked clay
+  'hsl( 26, 46%, 56%)', // 14 baked sienna
+  'hsl( 16, 54%, 52%)', // 15 warm sienna
+  'hsl( 24, 48%, 58%)', // 16 dusty rose terracotta
 ]
 
 /** Warm sandstone — buffs, tans, soft yellows. */
@@ -120,34 +125,65 @@ const BAND_COLOR_PALETTE_SLATE: string[] = [
   'hsl(212, 16%, 66%)', // 16 pale blue
 ]
 
-/** Vibrant — pulls the same hand-tuned bright tones used by the wall
- *  type swatches in the side panels (WALL_TYPE_PALETTE in
- *  wallTypeColors.ts), then extends with 6 more in the same family so
- *  there's a full 16 slots for distinct block / brick codes. Reads as
- *  "colour-coded diagram" rather than realistic masonry — useful when
- *  the user wants to see every code as a distinct hue. */
+/** Vibrant — saturated, varied tones across the full hue wheel for
+ *  maximum visual distinction between codes. Modelled after the
+ *  takeoff-diagram style used by The Brick Counter et al — every
+ *  code reads as a distinct, bold hue so you can scan a 3D model
+ *  and see "that wall type is the red one" instantly. Reads as
+ *  "colour-coded diagram" rather than realistic masonry. Default
+ *  palette for the 3D view because the diagrammatic clarity beats
+ *  realism for an estimating tool. */
 const BAND_COLOR_PALETTE_VIBRANT: string[] = [
-  '#ED7D31', // 1  brand orange
-  '#3B82F6', // 2  blue
-  '#10B981', // 3  emerald
-  '#A855F7', // 4  purple
-  '#F59E0B', // 5  amber
-  '#EC4899', // 6  pink
-  '#14B8A6', // 7  teal
-  '#84CC16', // 8  lime
-  '#EF4444', // 9  red
-  '#6366F1', // 10 indigo
-  '#06B6D4', // 11 cyan
-  '#F97316', // 12 deep orange
-  '#8B5CF6', // 13 violet
-  '#22C55E', // 14 green
-  '#F43F5E', // 15 rose
-  '#0EA5E9', // 16 sky blue
+  '#E53935', // 1  bright red
+  '#26C6DA', // 2  cyan
+  '#FFB300', // 3  amber / mustard
+  '#7CB342', // 4  lime green
+  '#EC407A', // 5  magenta-pink
+  '#5E35B1', // 6  deep purple
+  '#FB8C00', // 7  vivid orange
+  '#1E88E5', // 8  royal blue
+  '#43A047', // 9  green
+  '#8E24AA', // 10 violet
+  '#FDD835', // 11 yellow
+  '#00ACC1', // 12 teal
+  '#F06292', // 13 pink
+  '#3949AB', // 14 indigo
+  '#6D4C41', // 15 chocolate brown
+  '#C0CA33', // 16 olive
 ]
 
-/** Palette-name → 16-slot palette lookup. Default 'concrete' for
- *  backwards compatibility with single-palette callers. */
+/** 16-slot Mono palette — matches the site's brand language
+ *  (orange + black + white + neutral grays). Interleaves brand-orange
+ *  tones with zinc grays so adjacent palette slots don't share a
+ *  family; the hash spreads codes across the whole 16 so two block
+ *  codes in the same project still read as distinct hues even though
+ *  the overall feel is monochromatic. Use this when you want the 3D
+ *  view to read as "part of the Beme app" rather than a
+ *  colour-coded diagram. */
+const BAND_COLOR_PALETTE_MONO: string[] = [
+  '#ff7a2d', // 1  brand orange (beme-500)
+  '#27272a', // 2  near-black (zinc-800)
+  '#d4d4d8', // 3  light gray (zinc-300)
+  '#fb923c', // 4  light orange (orange-400)
+  '#71717a', // 5  mid gray (zinc-500)
+  '#fdba74', // 6  pale orange (orange-300)
+  '#18181b', // 7  black (zinc-900)
+  '#fed7aa', // 8  peach (orange-200)
+  '#52525b', // 9  charcoal (zinc-600)
+  '#ea580c', // 10 deep orange (orange-600)
+  '#a1a1aa', // 11 mid-light gray (zinc-400)
+  '#c2410c', // 12 rust (orange-700)
+  '#3f3f46', // 13 deep charcoal (zinc-700)
+  '#e4e4e7', // 14 light gray (zinc-200)
+  '#f97316', // 15 vivid orange (orange-500)
+  '#ffedd5', // 16 cream-peach (orange-100)
+]
+
+/** Palette-name → 16-slot palette lookup. Default 'mono' so a fresh
+ *  install renders in the brand palette; legacy palettes remain
+ *  selectable through the picker. */
 export const BAND_COLOR_PALETTES: Record<PaletteName, string[]> = {
+  mono: BAND_COLOR_PALETTE_MONO,
   concrete: BAND_COLOR_PALETTE,
   brick: BAND_COLOR_PALETTE_BRICK,
   sandstone: BAND_COLOR_PALETTE_SANDSTONE,
@@ -157,6 +193,7 @@ export const BAND_COLOR_PALETTES: Record<PaletteName, string[]> = {
 
 /** Human-readable names for each palette — used by the picker UI. */
 export const PALETTE_LABELS: Record<PaletteName, string> = {
+  mono: 'Mono',
   concrete: 'Concrete',
   brick: 'Brick',
   sandstone: 'Sandstone',
@@ -188,39 +225,43 @@ function hashCode(code: string): number {
  * slot (about 1-in-16 chance). Use for scopes where multiple codes
  * don't need to be visually distinct from each other.
  */
-export function bandColor(code: string, palette: PaletteName = 'concrete'): string {
+export function bandColor(code: string, palette: PaletteName = 'mono'): string {
   const slots = BAND_COLOR_PALETTES[palette] ?? BAND_COLOR_PALETTE
   return slots[hashCode(code) % slots.length]
 }
 
 /**
- * Collision-free colour map for a known set of codes.
+ * Pure hash → colour map for a known set of codes.
  *
- * Sorts the unique codes alphabetically (stable across re-renders),
- * then for each code seeds at the hash's preferred slot and walks
- * forward through the palette until it finds an unused slot. So:
- *   - codes added independently still tend to land on their "natural"
- *     hue (so the visual identity stays familiar);
- *   - no two codes in the input set ever share a slot, until the
- *     input exceeds the palette size — after which slots wrap and
- *     can repeat (rare in practice for a single project).
+ * Every code lands on its hash-derived palette slot — the same slot
+ * it would land on in any other project. So `20.48` is always red,
+ * `20.01` is always royal blue, etc., regardless of which other
+ * codes are present. The cross-project consistency lets you scan
+ * any 3D view and recognise "the body block by colour" without
+ * having to check the legend each time.
+ *
+ * Trade-off: when two codes happen to hash to the same slot, both
+ * will share that colour within the project. With 16 slots and a
+ * typical project carrying 5-10 distinct codes the collision chance
+ * is small (~1-in-16 per code added beyond the first). When it
+ * happens, the legend still disambiguates them by name — the colour
+ * just isn't unique inside that one project.
+ *
+ * The previous behaviour (walk-forward collision avoidance) gave
+ * uniqueness within a project but meant a code's colour depended on
+ * which other codes were present alongside it — so the same code
+ * could be different colours in different projects. Tradies asked
+ * for the colour identity to be PER-CODE, not per-project.
  */
 export function buildBlockColorMap(
   codes: string[],
-  palette: PaletteName = 'concrete'
+  palette: PaletteName = 'mono'
 ): Map<string, string> {
   const slots = BAND_COLOR_PALETTES[palette] ?? BAND_COLOR_PALETTE
-  const unique = Array.from(new Set(codes.filter(Boolean))).sort()
-  const taken = new Set<number>()
+  const unique = Array.from(new Set(codes.filter(Boolean)))
   const map = new Map<string, string>()
   for (const code of unique) {
-    let idx = hashCode(code) % slots.length
-    let attempts = 0
-    while (taken.has(idx) && attempts < slots.length) {
-      idx = (idx + 1) % slots.length
-      attempts++
-    }
-    taken.add(idx)
+    const idx = hashCode(code) % slots.length
     map.set(code, slots[idx])
   }
   return map

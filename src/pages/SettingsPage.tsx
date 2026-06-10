@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import Header from '../components/Header'
+import BemeLoader from '../components/BemeLoader'
 import {
   resetUserSettings,
   updateUserSettings,
   useUserSettings,
 } from '../lib/userSettings'
 import { toast } from '../lib/toast'
+import { confirm } from '../lib/confirm'
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
 import { useTheme } from '../lib/theme'
 import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
@@ -209,10 +210,8 @@ export default function SettingsPage() {
   )
 
   return (
-    <div className="min-h-screen bg-ink-900 text-ink-50">
-      <Header />
-
-      <main className="px-20 py-10">
+    <>
+      <div className="px-12 py-10">
         <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
           <div>
             <Link
@@ -319,8 +318,8 @@ export default function SettingsPage() {
             {activeTab === 'account' && <AccountTab />}
           </section>
         </div>
-      </main>
-    </div>
+      </div>
+    </>
   )
 }
 
@@ -1245,10 +1244,20 @@ function OrganisationTab() {
   async function handleRemoveMember(member: OrgMember) {
     const isSelf = member.userId === user?.id
     const label = member.displayName || member.email || 'this member'
-    const msg = isSelf
-      ? `Leave ${currentOrg?.name}? You'll lose access to its projects and requests until an admin re-invites you.`
-      : `Remove ${label} from ${currentOrg?.name}? They'll lose access immediately. Existing estimate requests they were assigned to stay in place, just unattributed.`
-    if (!window.confirm(msg)) return
+    const ok = await confirm({
+      title: isSelf
+        ? `Leave ${currentOrg?.name ?? 'this team'}?`
+        : `Remove ${label}?`,
+      message: isSelf
+        ? "You'll lose access to this team's projects and requests until " +
+          'an admin re-invites you.'
+        : `${label} will lose access to ${currentOrg?.name ?? 'this team'} ` +
+          'immediately. Existing estimate requests they were assigned to ' +
+          'stay in place, just unattributed.',
+      confirmLabel: isSelf ? 'Leave team' : 'Remove member',
+      variant: 'destructive',
+    })
+    if (!ok) return
     setBusyMemberId(member.id)
     setMemberError(null)
     try {
@@ -1312,7 +1321,9 @@ function OrganisationTab() {
                 value={currentOrg.logoUrl ?? ''}
                 onChange={(v) => {
                   void updateOrganisationLogo(currentOrg.id, v).catch((err) => {
-                    window.alert(`Failed to update org logo: ${(err as Error).message}`)
+                    toast.error('Failed to update team logo', {
+                      description: (err as Error).message,
+                    })
                   })
                 }}
               />
@@ -1341,7 +1352,9 @@ function OrganisationTab() {
         subtitle={`${members.length} ${members.length === 1 ? 'person' : 'people'} in ${currentOrg.name}.`}
       >
         {loading ? (
-          <p className="text-sm text-ink-400">Loading members…</p>
+          <div className="py-4 flex justify-center">
+            <BemeLoader size={28} caption="Loading members…" />
+          </div>
         ) : members.length === 0 ? (
           <p className="text-sm text-ink-400">
             No members yet — that's unusual since you're seeing this page. Try
@@ -1533,7 +1546,15 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
   }
 
   async function handleRevoke(invitationId: string) {
-    if (!window.confirm('Revoke this invitation? The link will stop working.')) return
+    const ok = await confirm({
+      title: 'Revoke invitation?',
+      message:
+        'The invite link will stop working. The invitee can be re-invited ' +
+        'later if you change your mind.',
+      confirmLabel: 'Revoke invite',
+      variant: 'destructive',
+    })
+    if (!ok) return
     try {
       await revokeInvitation(invitationId)
       if (justCreated?.id === invitationId) setJustCreated(null)
@@ -1607,7 +1628,9 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
           Pending + recent invites
         </h4>
         {loading ? (
-          <p className="text-sm text-ink-400">Loading…</p>
+          <div className="py-4 flex justify-center">
+            <BemeLoader size={28} caption={null} />
+          </div>
         ) : invitations.length === 0 ? (
           <p className="text-sm text-ink-400">No invitations yet.</p>
         ) : (
@@ -1692,16 +1715,19 @@ function AccountTab() {
   void br
 
   async function handleClearLocal() {
-    if (
-      !window.confirm(
-        'Clear all local data on this device (projects, libraries, settings)? This cannot be undone. ' +
-          (signedIn
-            ? 'Your cloud-stored projects are unaffected.'
-            : 'Your local projects WILL be deleted.')
-      )
-    ) {
-      return
-    }
+    const ok = await confirm({
+      title: 'Clear all local data on this device?',
+      message:
+        'Removes every project, library entry and setting stored ' +
+        'locally. ' +
+        (signedIn
+          ? 'Your cloud-stored projects are unaffected.'
+          : 'Your local projects WILL be deleted.') +
+        ' This cannot be undone.',
+      confirmLabel: 'Clear local data',
+      variant: 'destructive',
+    })
+    if (!ok) return
     // Wipe the userData store + projects store.
     try {
       const req = indexedDB.deleteDatabase('beme')
@@ -1772,14 +1798,16 @@ function AccountTab() {
         <div className="flex gap-2 flex-wrap">
           <button
             type="button"
-            onClick={() => {
-              if (
-                window.confirm(
-                  'Reset the block library to SEQ QLD defaults? Custom blocks will be removed.'
-                )
-              ) {
-                resetBlockLibrary()
-              }
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Reset block library?',
+                message:
+                  'Reverts every block to SEQ QLD defaults. Custom ' +
+                  'blocks will be removed.',
+                confirmLabel: 'Reset blocks',
+                variant: 'destructive',
+              })
+              if (ok) resetBlockLibrary()
             }}
             className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
           >
@@ -1787,14 +1815,16 @@ function AccountTab() {
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (
-                window.confirm(
-                  'Reset the brick library to defaults? Custom brick types will be removed.'
-                )
-              ) {
-                resetBrickLibrary()
-              }
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Reset brick library?',
+                message:
+                  'Reverts every brick type to defaults. Custom brick ' +
+                  'types will be removed.',
+                confirmLabel: 'Reset bricks',
+                variant: 'destructive',
+              })
+              if (ok) resetBrickLibrary()
             }}
             className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
           >
@@ -1802,10 +1832,16 @@ function AccountTab() {
           </button>
           <button
             type="button"
-            onClick={() => {
-              if (window.confirm('Reset all settings to defaults?')) {
-                resetUserSettings()
-              }
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Reset all settings to defaults?',
+                message:
+                  'Theme, units, preferences and any per-device ' +
+                  'overrides will revert to the out-of-the-box defaults.',
+                confirmLabel: 'Reset settings',
+                variant: 'destructive',
+              })
+              if (ok) resetUserSettings()
             }}
             className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
           >

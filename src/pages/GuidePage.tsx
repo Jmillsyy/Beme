@@ -1,5 +1,4 @@
 import { Link } from 'react-router-dom'
-import Header from '../components/Header'
 import GuideMedia from '../components/GuideMedia'
 
 /**
@@ -21,9 +20,8 @@ import GuideMedia from '../components/GuideMedia'
  */
 export default function GuidePage() {
   return (
-    <div className="min-h-screen bg-ink-900 text-ink-50">
-      <Header />
-      <main className="px-20 py-10">
+    <>
+      <div className="px-12 py-10">
         <div className="mb-8">
           <Link
             to="/"
@@ -874,8 +872,8 @@ export default function GuidePage() {
             </Section>
           </article>
         </div>
-      </main>
-    </div>
+      </div>
+    </>
   )
 }
 

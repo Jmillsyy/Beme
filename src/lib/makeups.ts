@@ -77,28 +77,43 @@ export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): Wall
     useFractions = true,
     settings,
   } = options
+  // knockoutCorners is part of the public API for callers that want to
+  // express the user's intent ("this wall type uses knockout-corner
+  // blocks"), but the default-corner pick currently routes through the
+  // generic corner role. Acknowledged here so TypeScript doesn't flag
+  // it as unused; a real 'knockout-corner' BlockRole + picker is a
+  // follow-up.
+  void knockoutCorners
 
   // Resolve defaults from the live library by role so a US / UK user
   // creating their first wall type gets THEIR library's body / corner /
   // base / tile codes — not the AU SEQ ones.
   //
-  // Resolution order, per picker: user DefaultsByRole map → library
-  // role-tag scan → the hardcoded AU fallback below (last resort only,
-  // used when the library has no tagged candidate at all).
+  // Resolution order, per picker:
+  //   1. User DefaultsByRole map (e.g. "my preferred corner block is 30.01")
+  //   2. Library role-tag scan (first block tagged with that role)
+  //   3. Body block (fallback so base/top/corner inherit a real code from
+  //      the library — keeps things working in libraries that don't tag
+  //      separate base/top/corner blocks)
+  //   4. First block in the library by any role (last-ditch — picks
+  //      *something real* from the user's catalogue rather than leaking
+  //      a hardcoded AU SEQ code into a US/UK/custom library)
+  //   5. Empty string (truly empty library — caller / user has to add
+  //      blocks before the wall type can be drawn)
   //
-  // Each chain ends with the body-block as a region-aware fallback so
-  // libraries that don't tag (say) a separate base-course or top-course
-  // block STILL land on a real code from the same library (the body),
-  // instead of falling through to an AU code that doesn't exist there.
+  // The empty-string path is INTENTIONAL: if the user has wiped their
+  // library to swap to a different catalogue, we mustn't silently insert
+  // 20.48 / 20.01 as defaults. Better to let the modal open with empty
+  // slots and force the user to assign blocks explicitly.
   const opts: ResolveByRoleOptions = settings ? { settings } : {}
-  const bodyDefault = pickBodyDefault(opts)?.code ?? '20.48'
-  // Knockout-corner is a per-creation toggle (the user's "I want extra
-  // corefill at corners on THIS wall"), not a per-user default — keep it
-  // ignoring the settings-map override. The non-knockout branch still
-  // respects the user's preferred corner.
-  const cornerDefault = knockoutCorners
-    ? '20.21'
-    : pickCornerBlock(opts)?.code ?? bodyDefault
+  const firstInLibrary = Object.keys(BLOCK_LIBRARY)[0] ?? ''
+  const bodyDefault = pickBodyDefault(opts)?.code ?? firstInLibrary
+  // knockoutCorners is a stored hint on the wall type; it doesn't drive
+  // the default-corner pick (the type system has no 'knockout-corner'
+  // role yet — adding one is a follow-up). For now both branches pick
+  // through the same corner → body fallback chain, and the user can
+  // assign a specific knockout-corner block in the wall-type modal.
+  const cornerDefault = pickCornerBlock(opts)?.code ?? bodyDefault
   const baseDefault = pickBaseCourse(opts)?.code ?? bodyDefault
   const topDefault = bondBeamOnTop
     ? pickTopCourse(opts)?.code ?? bodyDefault
@@ -134,8 +149,14 @@ export function createDefaultTiedPierMakeup(
   settings?: ResolveByRoleOptions['settings'],
 ): PierMakeup {
   const opts: ResolveByRoleOptions = settings ? { settings } : {}
-  const pierCode = pickPierBlock(opts)?.code ?? '40.925'
-  const cornerCode = pickCornerBlock(opts)?.code ?? '20.01'
+  // Same fallback chain as the wall makeup factory: role-tag scan →
+  // first block in library → empty string (when the library is truly
+  // empty, the user has to add blocks before this makeup can be drawn).
+  // No hardcoded AU SEQ codes — the previous '40.925' / '20.01'
+  // fallbacks were leaking AU codes into US / UK / custom libraries.
+  const firstInLibrary = Object.keys(BLOCK_LIBRARY)[0] ?? ''
+  const pierCode = pickPierBlock(opts)?.code ?? firstInLibrary
+  const cornerCode = pickCornerBlock(opts)?.code ?? pierCode
   return {
     id: uid(),
     name,
@@ -154,7 +175,9 @@ export function createDefaultFreestandingPierMakeup(
   settings?: ResolveByRoleOptions['settings'],
 ): PierMakeup {
   const opts: ResolveByRoleOptions = settings ? { settings } : {}
-  const pierCode = pickPierBlock(opts)?.code ?? '40.925'
+  // Same library-first fallback chain as the tied-pier factory.
+  const firstInLibrary = Object.keys(BLOCK_LIBRARY)[0] ?? ''
+  const pierCode = pickPierBlock(opts)?.code ?? firstInLibrary
   return {
     id: uid(),
     name,

@@ -1,4 +1,5 @@
 import { memo, useMemo, useState } from 'react'
+import { confirm } from '../lib/confirm'
 import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import {
@@ -91,31 +92,78 @@ function BrickLibraryPanelImpl({
 
       {(expanded || hideChrome) && (
         <div className="flex flex-col gap-1">
+          {/* Empty state — mirrors BlockLibraryPanel. Brick estimates
+              are simpler so the guidance is shorter: pick a brick type
+              and you're set. */}
+          {bricks.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-4 py-6 text-center">
+              <p className="text-sm font-semibold text-ink-100">
+                Your brick library is empty
+              </p>
+              <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                Brick estimates need at least one brick type in your library
+                before you can create brick wall types or draw walls. Hit{' '}
+                <span className="font-semibold text-ink-200">+ Add brick</span>{' '}
+                above to start.
+              </p>
+              <div className="mt-4 text-left max-w-md mx-auto rounded-md border border-ink-700 bg-ink-900/60 p-3">
+                <p className="text-[11px] uppercase tracking-wider font-semibold text-ink-400 mb-2">
+                  What you need
+                </p>
+                <ul className="space-y-2 text-xs text-ink-300">
+                  <li className="flex gap-2">
+                    <span className="text-beme-300 font-semibold">•</span>
+                    <span>
+                      <span className="font-semibold text-ink-100">A brick type</span>{' '}
+                      — code, face dimensions (length × height × depth),
+                      and mortar joint. Bricks-per-m² is auto-derived.
+                    </span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="text-beme-300 font-semibold">•</span>
+                    <span>
+                      Add more brick types if you swap between products
+                      across projects — common, face, mod, paver, etc.
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          )}
+
           {bricks.map((brick) => (
             <BrickRow
               key={brick.code}
               brick={brick}
               readOnly={readOnly}
               onEdit={() => setEditingCode(brick.code)}
-              onDelete={() => {
+              onDelete={async () => {
                 if (PROTECTED_BRICK_CODES.has(brick.code)) return
-                if (window.confirm(`Delete brick type "${brick.name}"?`)) {
-                  removeBrickType(brick.code)
-                }
+                const ok = await confirm({
+                  title: `Delete brick type "${brick.name}"?`,
+                  message:
+                    'The brick is removed from your library. Brick wall ' +
+                    'types referencing it will need to be updated.',
+                  confirmLabel: 'Delete',
+                  variant: 'destructive',
+                })
+                if (ok) removeBrickType(brick.code)
               }}
             />
           ))}
 
           {!readOnly && (
             <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Reset the brick library to defaults? Any custom brick types will be removed.'
-                  )
-                ) {
-                  resetBrickLibrary()
-                }
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Reset the brick library?',
+                  message:
+                    'Reverts every brick type to the defaults. Any custom ' +
+                    'brick types will be removed.',
+                  confirmLabel: 'Reset library',
+                  variant: 'destructive',
+                })
+                if (ok) resetBrickLibrary()
               }}
               className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
             >

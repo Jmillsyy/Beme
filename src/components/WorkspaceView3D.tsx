@@ -67,7 +67,7 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
-import { bandColor, buildBlockColorMap, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
+import { bandColor, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
 import { rasterisePdfPage } from '../lib/pdfRaster'
 import { useTheme, type Theme } from '../lib/theme'
@@ -97,8 +97,13 @@ const DEFAULT_WALL_COLOR = '#a85540'
 // (--color-ink-900 in :root.light). Ground plane / fog / canvas
 // clearColor / PDF page-bg-erase all read from the same pair so the
 // horizon stays seamless in either theme.
-const SCENE_BG_DARK = '#1a1d24'
-const SCENE_BG_LIGHT = '#f7f4ec'
+// Scene bg matches the page bg EXACTLY in each theme — read straight
+// off the ink-900 CSS variable values used by the rest of the app
+// (see :root / :root.light in index.css). Without this match, the 3D
+// canvas leaves a visible navy rectangle in dark mode and a cream
+// rectangle in light mode that breaks the page's two-tone surface.
+const SCENE_BG_DARK = '#18181c'   // matches dark-mode --color-ink-900
+const SCENE_BG_LIGHT = '#f6f4ee'  // matches light-mode --color-ink-900
 function sceneBgFor(theme: Theme): string {
   return theme === 'light' ? SCENE_BG_LIGHT : SCENE_BG_DARK
 }
@@ -106,14 +111,14 @@ function sceneBgRgbFor(theme: Theme): [number, number, number] {
   // Must match sceneBgFor — the PDF threshold pass writes this rgb on
   // every "page background" pixel so the page sheet visually disappears
   // into the scene clearColor. Keep in sync if SCENE_BG_* changes.
-  return theme === 'light' ? [247, 244, 236] : [26, 29, 36]
+  return theme === 'light' ? [246, 244, 238] : [24, 24, 28]
 }
 // Plan-line ink — drawn lines on the rasterised PDF after the threshold
-// pass. Dark theme: pure white over slate. Light theme: dark slate over
-// the warm page bg. The user wants the same plan to read as inverted
-// blueprints between themes.
+// pass. Dark theme: pure white over near-black. Light theme: near-black
+// over the clean light-gray page bg. Stays inverted between themes so
+// the plan reads as a blueprint either way.
 function planLineRgbFor(theme: Theme): [number, number, number] {
-  return theme === 'light' ? [26, 29, 36] : [255, 255, 255]
+  return theme === 'light' ? [9, 9, 11] : [255, 255, 255]
 }
 const GROUND_COLOR_DARK = SCENE_BG_DARK
 const GROUND_COLOR_LIGHT = SCENE_BG_LIGHT
@@ -134,10 +139,14 @@ const FALLBACK_BODY_WIDTH_MM = 390
  *  camera distances without producing thick / glitchy seams. */
 const MORTAR_GAP_M = 0.006
 
-/** Mortar fill colour — warm medium-grey reading as cement between the
- *  block faces. Renders behind each block course so the gaps between
- *  blocks show mortar rather than empty space (the dark wrapper bg). */
-const MORTAR_COLOR = '#6a635a'
+/** Mortar fill colour — light warm-grey reading as dry Portland cement
+ *  between the block faces. Was the darker #6a635a; lightened so the
+ *  mortar reads more clearly against both the concrete-grey blocks and
+ *  the vibrant-palette blocks, where the previous value blended into
+ *  darker faces and lost the "joints between blocks" visual.
+ *  Renders behind each block course so the gaps between blocks show
+ *  mortar rather than empty space (the dark wrapper bg). */
+const MORTAR_COLOR = '#c4bfb6'
 
 /** Fraction of wall thickness the mortar layer occupies. Less than 1.0
  *  means the mortar is RECESSED — set inside the wall slightly so block
@@ -346,20 +355,33 @@ function resolveWallCourses(
     for (let i = 0; i < band.count; i++) {
       const resolved = resolveCourseBlocks(scopedMakeup, courseNum)
       // Per-course body code resolution order:
-      //   - Course 1 (base course): baseCourseBlockCode from makeup /
-      //     series-range. Typically 20.45 cleanout (with internal
-      //     50.45 tile — not visualised separately).
-      //   - Last course (top course): topCourseBlockCode from makeup.
-      //     Typically 20.48 H block or 20.20 bond beam when a slab sits
-      //     above.
-      //   - Height-makeup courses: use band.blockCode (20.71 / 20.140)
-      //     directly so they render with their own height-makeup
-      //     colour and aren't overridden by the generic body code.
-      //   - Middle body courses: series-range body overlay, falling
-      //     through to band code (which is the makeup's bodyBlockCode
-      //     by default).
+      //   - Curved walls: ALL courses use the makeup's bodyBlockCode
+      //     (no base / top / height-makeup variation). Matches what
+      //     calculateCurvedWallTally counts — the curve tally
+      //     simplifies to "body-only" because base / top / height-
+      //     makeup blocks aren't built into the wedge math for v1.
+      //     The 3D used to keep the base / top variants here even on
+      //     a curve, which made a wall spec'd as "all 20.03CW" still
+      //     render the first course as the rectangular 20.45 cleanout
+      //     and the top as the 20.20 bond beam. Aligning the 3D with
+      //     the tally fixes that mismatch.
+      //   - Straight walls keep the standard variation:
+      //     - Course 1 (base course): baseCourseBlockCode from makeup /
+      //       series-range. Typically 20.45 cleanout (with internal
+      //       50.45 tile — not visualised separately).
+      //     - Last course (top course): topCourseBlockCode from makeup.
+      //       Typically 20.48 H block or 20.20 bond beam when a slab
+      //       sits above.
+      //     - Height-makeup courses: use band.blockCode (20.71 / 20.140)
+      //       directly so they render with their own height-makeup
+      //       colour and aren't overridden by the generic body code.
+      //     - Middle body courses: series-range body overlay, falling
+      //       through to band code (which is the makeup's bodyBlockCode
+      //       by default).
       let bodyCode: BlockCode
-      if (courseNum === 1) {
+      if (isCurvedWall(wall)) {
+        bodyCode = scopedMakeup.bodyBlockCode || resolved.bodyBlockCode || band.blockCode
+      } else if (courseNum === 1) {
         bodyCode = resolved.baseCourseBlockCode || resolved.bodyBlockCode || band.blockCode
       } else if (courseNum === totalCourses) {
         bodyCode = scopedMakeup.topCourseBlockCode || resolved.bodyBlockCode || band.blockCode
@@ -368,6 +390,20 @@ function resolveWallCourses(
       } else {
         bodyCode = resolved.bodyBlockCode || band.blockCode
       }
+      // Curved walls: every cell — body AND end terminations — uses the
+      // makeup's bodyBlockCode. Matches calculateCurvedWallTally, which
+      // tallies the whole curve as a single body block ('all 20.03CW',
+      // not 'mostly 20.03CW with 20.01 / 20.03 at the ends'). Without
+      // this, the virtual-straight-wall path in segmentsForCurvedWall
+      // still injects a standard corner/half at each alternating
+      // course, which the user saw as the "standard blocks" mixed
+      // into their curve.
+      const curveCorner = isCurvedWall(wall)
+        ? scopedMakeup.bodyBlockCode || resolved.cornerBlockCode
+        : resolved.cornerBlockCode
+      const curveHalf = isCurvedWall(wall)
+        ? scopedMakeup.bodyBlockCode || resolved.halfBlockCode
+        : resolved.halfBlockCode
       // Course height: size by the BLOCK actually being rendered in
       // this course, not the band's nominal blockCode. If the user
       // sets a 40mm capping tile as topCourseBlockCode (or a base
@@ -388,8 +424,8 @@ function resolveWallCourses(
         y0: y,
         y1: y + courseHeightM,
         bodyCode,
-        cornerCode: resolved.cornerBlockCode,
-        halfCode: resolved.halfBlockCode,
+        cornerCode: curveCorner,
+        halfCode: curveHalf,
       })
       y += courseHeightM
       courseNum++
@@ -1244,7 +1280,16 @@ function segmentsForStraightWall(
                 : wallHeightMod200 === 150
                   ? [150]
                   : []
-            const spec = selectBlockLintel(headHeightMm, extras)
+            // Pass the per-opening lintelBlockCodeOverride so the 3D
+            // render matches the calc tally — both honour the same
+            // user pick. Auto-fallback still happens inside
+            // selectBlockLintel if the override code is missing or
+            // no longer tagged as a lintel.
+            const spec = selectBlockLintel(
+              headHeightMm,
+              extras,
+              sourceOp?.lintelBlockCodeOverride
+            )
             if (spec) code = spec.code as BlockCode
           }
           if (!code) return null
@@ -1252,12 +1297,26 @@ function segmentsForStraightWall(
           if (!block) return null
           const lintelHeightM = block.dimensions.heightMm / 1000
           const lintelBlockW = block.dimensions.widthMm / 1000
+          // Clip the lintel at the wall top so a 390mm lintel chosen
+          // for a 200mm head area renders as 200mm tall instead of
+          // poking out above the wall. Matches how the lintel would
+          // be cut on site — the block above wall top is sawn off,
+          // the count in the tally still includes the whole block
+          // (you still buy and cut a whole one). Without this clip
+          // the 3D view shows a phantom block above the wall and
+          // the lintel footprint extends into "no-wall" space which
+          // breaks downstream cell-removal and mortar emission.
+          // `totalHeightM` comes from the outer wall scope so the
+          // clamp uses the same wall top the rest of the render
+          // honours.
+          const y1Raw = op.head + lintelHeightM
+          const y1 = Math.min(y1Raw, totalHeightM)
           return {
             code,
             spanStart: op.start,
             spanEnd: op.end,
             y0: op.head,
-            y1: op.head + lintelHeightM,
+            y1,
             blockWidthM: lintelBlockW,
           }
         })
@@ -1461,8 +1520,27 @@ function segmentsForStraightWall(
     //
     // In stack bond ownership doesn't alternate; the lower-id wall
     // always owns so widths stay constant and bodies don't offset.
-    const halfBlockW =
-      widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
+    // Half-end slot face width is dictated by the BOND, not by whichever
+    // block the user nominated for the slot. Stretcher bond's half-end
+    // position must offset the body grid by exactly half a body+mortar
+    // module — geometry-locked. So the slot face = (bodyFace − mortar)
+    // / 2 regardless of what block is in there. If the user picks a
+    // full block (e.g. 20.01 = 390 mm) for the half slot, the 3D
+    // caps the render width at the slot, visually cutting the block
+    // to fit. The bond is preserved no matter what; the block adapts.
+    //
+    // For 20.48 (390 mm body): half slot face = (390 − 10) / 2 = 190 mm
+    // For 30.48 (290 mm body): half slot face = (290 − 10) / 2 = 140 mm
+    //
+    // Stack bond never uses the half slot, so this only kicks in when
+    // useHalfLeft / useHalfRight is true. The library width still
+    // serves as the floor — if the user picks a 20.03 half (190 mm)
+    // for a 20.48 wall, library width = slot width, no cut visible.
+    const BLOCK_MORTAR_MM = 10
+    const bodyFaceMm = widthOf(course.bodyCode, library, FALLBACK_BODY_WIDTH_MM)
+    const halfSlotFaceMm = Math.max(1, (bodyFaceMm - BLOCK_MORTAR_MM) / 2)
+    const halfBlockLibraryWMm = widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM)
+    const halfBlockW = Math.min(halfBlockLibraryWMm, halfSlotFaceMm) / 1000
     const cornerWidth =
       widthOf(course.cornerCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
     // Corner cube depth on this wall's axis = perpendicular wall's
@@ -1974,6 +2052,71 @@ function segmentsForStraightWall(
       y1: lintel.y1,
       blockWidthM: lintel.blockWidthM,
     })
+
+    // ── Gap-fill above the lintel ──────────────────────────────────
+    //
+    // When the lintel doesn't fully consume the head area modular-
+    // cleanly (typical with a user override — e.g. picking a 200mm
+    // lintel under a 300mm head leaves a 100mm gap), drop in a
+    // course of the closest height-makeup-tagged block to bridge
+    // the leftover. Mirrors the calc-side gap-fill in blockCalc.ts
+    // so the 3D render and the tally agree on what's there.
+    //
+    // Decomposition: gap above lintel = N×200mm body courses + a
+    // remainder. The remainder is what a height-makeup course
+    // covers; if it's tiny (<50mm) treat it as mortar slop and skip.
+    const gapAboveMm = (totalHeightM - lintel.y1) * 1000
+    if (gapAboveMm >= 50) {
+      const BODY_MM = 200
+      const MORTAR_MM = DEFAULT_MORTAR_JOINT_MM
+      const bodyCoursesAbove = Math.floor(gapAboveMm / BODY_MM)
+      const makeupGapMm = gapAboveMm - bodyCoursesAbove * BODY_MM
+      if (makeupGapMm >= 50) {
+        // Smallest height-makeup block whose face fits the gap
+        // (after one mortar joint above the makeup). Mirrors
+        // pickHeightMakeupBlockIn's preference: exact match first,
+        // closest-under otherwise.
+        const targetFaceMm = makeupGapMm - MORTAR_MM
+        const makeupCandidates = Object.values(library)
+          .filter((b) => b.roles.includes('height-makeup'))
+          .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
+        const makeup =
+          makeupCandidates.find(
+            (b) => b.dimensions.heightMm === targetFaceMm
+          ) ??
+          makeupCandidates.find((b) => b.dimensions.heightMm <= targetFaceMm)
+        if (makeup) {
+          const makeupFaceM = makeup.dimensions.heightMm / 1000
+          const makeupWidthM = makeup.dimensions.widthMm / 1000
+          // Position: directly above the lintel + any whole body
+          // courses that come first. With bodyCoursesAbove=0 (the
+          // common 100mm-gap case) the makeup sits flush on top of
+          // the lintel.
+          const yMakeup0 = lintel.y1 + (bodyCoursesAbove * BODY_MM) / 1000
+          const yMakeup1 = yMakeup0 + makeupFaceM
+          // Clear body cells in the gap-fill's y-range so the
+          // makeup block isn't underlaid by stray body geometry.
+          // Same span as the lintel — gap-fill is one course wide.
+          for (const entry of grid) {
+            const { course, cells } = entry
+            if (course.y1 <= yMakeup0 + 0.001) continue
+            if (course.y0 >= yMakeup1 - 0.001) continue
+            stampZone(cells, lintel.spanStart, lintel.spanEnd, null)
+          }
+          // Emit through the same lintel-mesh pipeline (Phase 6).
+          // The mesh shape is identical so we reuse it.
+          lintelMeshes.push({
+            code: makeup.code as BlockCode,
+            color: colorOf(makeup.code as BlockCode),
+            s0: lintel.spanStart,
+            s1: lintel.spanEnd,
+            y0: yMakeup0,
+            y1: yMakeup1,
+            blockWidthM: makeupWidthM,
+          })
+        }
+      }
+    }
   }
 
   // ── Phase 4b: sill course override (windows only) ───────────────
@@ -2918,11 +3061,17 @@ function CaptureExposer() {
  */
 export type NavStyle = 'autocad' | 'sketchup' | 'three' | 'maya'
 
+// Nav-style labels are intentionally generic — referencing the
+// industry-standard CAD/3D packages each binding emulates makes the
+// dropdown read like an integration list, which we don't want. The
+// HINT line under each option still describes the exact mouse
+// bindings, so the user can pick the one that matches whatever
+// they're used to without us naming any third-party software.
 export const NAV_STYLE_LABELS: Record<NavStyle, string> = {
-  autocad: 'AutoCAD / Revit',
-  sketchup: 'SketchUp / Blender',
-  three: 'Three.js Orbit',
-  maya: 'Maya / Cinema 4D',
+  autocad: 'Style 1',
+  sketchup: 'Style 2',
+  three: 'Style 3',
+  maya: 'Style 4',
 }
 
 export const NAV_STYLE_HINTS: Record<NavStyle, string> = {
@@ -3295,8 +3444,8 @@ function Scene({
   const { segments, wedges, mortarShells, segmentBounds, resolvedCodes } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
-    // view. Pass the complete set to buildBlockColorMap so every code
-    // lands on a distinct palette slot — same logic as the 2D preview.
+    // view. Codes are coloured via the pure-hash `bandColor`, so the
+    // same code always lands on the same colour across every project.
     const wallResolutions = walls.map((wall) => {
       if (wall.trade === 'brick') return null
       return resolveWallCourses(wall, makeupsById, library)
@@ -3402,7 +3551,11 @@ function Scene({
                 : wallHeightMod200 === 150
                   ? [150]
                   : []
-            const spec = selectBlockLintel(headHeightMm, extras)
+            const spec = selectBlockLintel(
+              headHeightMm,
+              extras,
+              op.lintelBlockCodeOverride
+            )
             if (spec) allCodes.push(spec.code)
           }
         }
@@ -3448,15 +3601,20 @@ function Scene({
         }
       }
     }
-    // Build the colour map via buildBlockColorMap so every code lands
-    // on a UNIQUE palette slot until the set exceeds 16 codes (after
-    // which the walk wraps and slots can repeat). This avoids the
-    // collision the user hit where 20.71 and 20.140 hashed to the same
-    // slot and rendered in identical dark red. The trade-off: the
-    // same code may land in a different slot in the WallTypesPanel
-    // preview (which builds its own smaller code set). Cross-view
-    // consistency is therefore not guaranteed, but every code in the
-    // 3D view is visually distinct from every other.
+    // Build the colour map via the raw hash `bandColor` rather than
+    // `buildBlockColorMap`. The hash is pure-function-of-code, so
+    // "30.01" always lands on the same palette slot — in this project,
+    // the next project, the legend, the WallTypesPanel preview, every
+    // 3D capture. Cross-estimate consistency: the supplier looking at
+    // a brick schedule will see Standard Block in the same colour every
+    // time.
+    //
+    // Trade-off: the per-project collision avoidance in
+    // buildBlockColorMap is gone, so occasionally two codes that hash
+    // to the same slot will share a colour. The legend label sits next
+    // to the swatch so this is readable rather than ambiguous. The
+    // 16-slot vibrant palette gives a ~1-in-16 collision rate per
+    // additional code, low enough that most projects don't hit it.
     //
     // Filter to ONLY codes that exist in the current library. When the
     // user switches library templates, makeups keep their old codes in
@@ -3464,7 +3622,10 @@ function Scene({
     // this filter the legend would show ghosts from the old library long
     // after the switch.
     const presentCodes = allCodes.filter((code) => library[code] !== undefined)
-    const colorMap = buildBlockColorMap(presentCodes, palette)
+    const colorMap = new Map<string, string>()
+    for (const code of presentCodes) {
+      colorMap.set(code, bandColor(code, palette))
+    }
 
     const out: WallSegmentBox[] = []
     const outWedges: WallSegmentWedge[] = []
@@ -3893,10 +4054,15 @@ function Scene({
           } as Block,
         }
 
-        // Colour: same concrete-grey palette as blocks (bandColor)
-        // keyed on the brick type code so each brick type gets a
-        // consistent palette slot project-wide.
-        const brickPaletteKey = brickMakeup?.brickTypeCode ?? wall.makeupId
+        // Colour: each wall TYPE (makeup) gets its own palette slot via
+        // bandColor(wall.makeupId). Two walls sharing the same brick
+        // library entry but different wall types still render in
+        // distinct colours — keyed by makeupId, not by brickTypeCode.
+        // Per-course range bricks (sill/head/middle bands) keep using
+        // their brick code as the key so those bands still stand out
+        // visually against the body colour.
+        const brickWallTypePaletteKey = wall.makeupId
+        const brickPaletteKey = brickWallTypePaletteKey
         const brickColorMap = new Map([['__brick__', bandColor(brickPaletteKey, palette)]])
 
         // Use the per-wall opening head adjustment computed once at
@@ -3952,7 +4118,7 @@ function Scene({
         // Each band gets its own pair of entries:
         //   __brick_<typeCode>__       — full brick at THIS type's dims
         //   __brick_<typeCode>_half__  — half brick at THIS type's dims
-        const ensureSyntheticEntries = (code: string) => {
+        const ensureSyntheticEntries = (code: string, isBodyDefault: boolean) => {
           const fullKey = `__brick_${code}__`
           const halfKey = `__brick_${code}_half__`
           if (brickLibrary[fullKey]) return { fullKey, halfKey }
@@ -3974,7 +4140,13 @@ function Scene({
             dimensions: { widthMm: w / 2, heightMm: h, depthMm: d },
             roles: ['end-termination'],
           } as Block
-          const colour = bandColor(code || brickPaletteKey, palette)
+          // Body courses paint with the wall-TYPE colour; range
+          // overrides paint with their brick code so the band stays
+          // distinct from the body. Falls back to the wall type key
+          // when the range code is somehow blank.
+          const colour = isBodyDefault
+            ? bandColor(brickWallTypePaletteKey, palette)
+            : bandColor(code || brickWallTypePaletteKey, palette)
           brickColorMap.set(fullKey, colour)
           brickColorMap.set(halfKey, colour)
           return { fullKey, halfKey }
@@ -3985,10 +4157,16 @@ function Scene({
         while (cursorMm < heightMm - 0.5) {
           const courseNum = courseIdx + 1
           const typeCode = brickTypeForCourse(courseNum)
+          // A course is a "body default" when NO range applies — those
+          // pick up the wall-type colour. Range-covered courses keep
+          // their brick code as the palette key.
+          const isBodyCourse = !sortedRanges.some(
+            (r) => courseNum < r.fromCourse,
+          )
           const bt = typeCode ? BRICK_LIBRARY[typeCode] : undefined
           const courseBrickHeight = bt?.heightMm ?? brickHeightMm
           const courseModMm = courseBrickHeight + BRICK_MORTAR_MM
-          const { fullKey, halfKey } = ensureSyntheticEntries(typeCode)
+          const { fullKey, halfKey } = ensureSyntheticEntries(typeCode, isBodyCourse)
           const y0Mm = cursorMm
           const y1Mm = Math.min(heightMm, cursorMm + courseBrickHeight)
           if (y1Mm - y0Mm > 0.5) {
@@ -4051,6 +4229,48 @@ function Scene({
         // Also override this wall's own entry so any internal
         // lookups (e.g. fallback paths) see the same value.
         brickCubeThicknessMap[wall.id] = cubeHalfBrick
+
+        // ── Curved brick wall fast-path ───────────────────────────
+        //
+        // Curved walls bypass the straight-wall pipeline: no
+        // openings, no trim, no jamb-mortar cover (curves don't
+        // host openings yet — same constraint the block curve path
+        // has). We feed the brick courses + synthetic library into
+        // the shared segmentsForCurvedWall helper which lays the
+        // bricks out along the outer arc length, then collect a
+        // curved-mortar shell so the recessed joints read between
+        // adjacent brick wedges.
+        if (isCurvedWall(wall)) {
+          outWedges.push(
+            ...segmentsForCurvedWall(
+              wall,
+              thicknessMm,
+              brickCourses,
+              totalHeightM,
+              'stretcher',
+              brickColorMap,
+              brickLibrary,
+              brickCubeThicknessMap,
+            ),
+          )
+          // Mortar shell sized to the largest brick width across all
+          // courses — keeps the shell tucked behind the worst-case
+          // chord midpoint on tight radii. Single brick width is the
+          // common case; mixed-width course ranges pick up the max.
+          let maxBrickWidthMm = brickWidthMm
+          for (const c of brickCourses) {
+            const w = brickLibrary[c.bodyCode]?.dimensions.widthMm ?? 0
+            if (w > maxBrickWidthMm) maxBrickWidthMm = w
+          }
+          collectCurvedMortarShell(
+            wall,
+            thicknessMm,
+            totalHeightM,
+            maxBrickWidthMm,
+            outMortarShells,
+          )
+          return
+        }
 
         // ── Sill / head trim — anchored at opening edge ─────────────
         //
@@ -5168,28 +5388,16 @@ function Scene({
       if (wall.trade !== 'brick') continue
       const m = brickMakeupsById[wall.makeupId]
       if (!m) continue
-      // Primary brick type — used by every course unless overridden by
-      // a courseRange entry.
-      if (m.brickTypeCode && !codes.has(m.brickTypeCode)) {
-        codes.set(m.brickTypeCode, bandColor(m.brickTypeCode, palette))
-      }
-      // Course-range brick types — each band can declare its own brick
-      // type (e.g. base course in common, body in face brick, soldier
-      // course in clinker). Surface every one in the legend so the
-      // estimator can match the colour in the 3D view to a real code.
-      for (const range of m.courseRanges ?? []) {
-        if (range.brickTypeCode && !codes.has(range.brickTypeCode)) {
-          codes.set(range.brickTypeCode, bandColor(range.brickTypeCode, palette))
-        }
-      }
-      // Opening-trim brick types — sill course / head course. Same
-      // colour treatment as bands so the 3D overlay reads against the
-      // legend.
-      if (m.sillBrickCode && !codes.has(m.sillBrickCode)) {
-        codes.set(m.sillBrickCode, bandColor(m.sillBrickCode, palette))
-      }
-      if (m.headBrickCode && !codes.has(m.headBrickCode)) {
-        codes.set(m.headBrickCode, bandColor(m.headBrickCode, palette))
+      // Brick legend lists one entry per wall TYPE — the makeup name
+      // with its body colour. Range / sill / head brick codes are
+      // intentionally NOT surfaced as separate legend rows: the user
+      // wants the legend to read as "these are the walls in the
+      // model" rather than "these are the brick codes". The 3D
+      // scene still paints those bands in their per-code colour so
+      // the bands are visually distinct, just unlabelled.
+      const wtKey = `wt:${m.id}`
+      if (!codes.has(wtKey)) {
+        codes.set(wtKey, bandColor(m.id, palette))
       }
     }
     // Pier block codes — piers render via bandColor directly without
@@ -5429,11 +5637,13 @@ function snapshotsStorageKey(
 }
 
 /** Read the persisted block-colour palette from localStorage, falling
- *  back to 'concrete' (the original masonry-grey set). */
+ *  back to 'mono' (orange + black + white, matches the rest of the
+ *  app). Legacy palettes stay selectable through the picker. */
 function loadPalette(): PaletteName {
-  if (typeof window === 'undefined') return 'concrete'
+  if (typeof window === 'undefined') return 'mono'
   const v = window.localStorage.getItem(PALETTE_STORAGE_KEY)
   if (
+    v === 'mono' ||
     v === 'concrete' ||
     v === 'brick' ||
     v === 'sandstone' ||
@@ -5442,7 +5652,7 @@ function loadPalette(): PaletteName {
   ) {
     return v
   }
-  return 'concrete'
+  return 'mono'
 }
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
@@ -5490,16 +5700,28 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   )
   const legendItems = useMemo(() => {
     return Array.from(resolvedCodes.entries())
-      .map(([code, color]) => ({
-        code,
-        label:
-          props.library[code]?.name ??
-          BRICK_LIBRARY[code]?.name ??
+      .map(([code, color]) => {
+        // Wall-type entries (prefix `wt:<makeupId>`) resolve their
+        // label off the brick makeups list — display the user-facing
+        // wall type name, not the synthetic id. Falls back to a
+        // generic 'Wall' label when the makeup has been deleted but
+        // a render is still using its colour mid-state-update.
+        if (code.startsWith('wt:')) {
+          const makeupId = code.slice(3)
+          const name = props.brickMakeupsById[makeupId]?.name
+          return { code, label: name ?? 'Wall type', color }
+        }
+        return {
           code,
-        color,
-      }))
+          label:
+            props.library[code]?.name ??
+            BRICK_LIBRARY[code]?.name ??
+            code,
+          color,
+        }
+      })
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [resolvedCodes, props.library])
+  }, [resolvedCodes, props.library, props.brickMakeupsById])
 
   // Snapshots: captured 3D viewport PNGs the user queued for the
   // export. STATE IS OWNED BY PdfWorkspace and threaded in through
@@ -5695,11 +5917,9 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
     // height`, which is smaller than `sizeMax` itself — so fitting
     // the camera to `sizeMax` over-shoots distance and leaves the
     // building taking ~50% of the canvas. Multiplier 0.40 brings the
-    // camera in tight so the projected building fills the viewport
-    // close to edge-to-edge; long thin buildings may clip on the
-    // long axis but F-fit lets the user recover. (Was 0.55 — left
-    // visible empty 3D scene space on the right + bottom of the
-    // canvas; user feedback wanted a tighter frame.)
+    // camera in tight; long thin buildings may clip on the long axis
+    // but F-fit lets the user recover. (Tried 0.28 — too aggressive,
+    // camera ended up INSIDE the model on small footprints.)
     const dist = (sizeMax / 2) / Math.tan(FIT_FOV_RAD / 2) * 0.40
     // Place at 45° around the building, slightly elevated. Keeping
     // Y proportional to dist (0.55) gives a comfortable 3/4 view.
@@ -5748,8 +5968,16 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
             gl.setSize(width, height, true)
           }}
           style={{
-            width: `${width}px`,
-            height: `${height}px`,
+            // CSS sizing uses 100% so the canvas element ALWAYS visually
+            // fills its parent, regardless of whether our ManualResizeCanvas
+            // got a stale or pre-final measurement. The pixel-precise
+            // `width` / `height` props are still passed below to drive
+            // the WebGL framebuffer resolution via gl.setSize, but the
+            // displayed CSS size is decoupled — so even if the
+            // framebuffer is a frame behind, the visible canvas surface
+            // doesn't show the wrapper's bg through gaps.
+            width: '100%',
+            height: '100%',
             display: 'block',
           }}
           // Key on theme so the clearColor takes effect on theme flip.
@@ -5855,6 +6083,42 @@ function ManualResizeCanvas({
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    // Shared measure-and-commit so the ResizeObserver, window-resize,
+    // and transition-end paths all produce identical updates.
+    const measureAndCommit = () => {
+      const rect = el.getBoundingClientRect()
+      const w = Math.round(rect.width)
+      const h = Math.round(rect.height)
+      if (w === 0 || h === 0) return
+      setSize((prev) =>
+        prev.width === w && prev.height === h ? prev : { width: w, height: h }
+      )
+    }
+    // Schedule a follow-up measure after CSS transitions land. The
+    // LeftNav toggle animates its width over 200ms; r3f's internal
+    // useMeasure races with our ResizeObserver during the
+    // transition and the LAST observation to fire wins the gl size.
+    // Half the time r3f's stale intermediate reading lands last and
+    // the canvas freezes at a sub-final size. Re-measuring ~280ms
+    // after any size change (slightly past the 200ms transition end)
+    // guarantees we apply the FINAL post-transition dimensions even
+    // if r3f overrode us mid-flight.
+    let trailingTimer: ReturnType<typeof setTimeout> | null = null
+    const scheduleTrailingMeasure = () => {
+      if (trailingTimer !== null) clearTimeout(trailingTimer)
+      trailingTimer = setTimeout(() => {
+        trailingTimer = null
+        measureAndCommit()
+        // After the size has settled, refit the camera so the model
+        // fills the new canvas dimensions. Without this, switching
+        // 2D↔3D, toggling panels, or resizing the window leaves the
+        // model floating small inside a larger canvas. window.__beme3dFit
+        // is the same hook the F-key + Fit-button use, so this path
+        // produces an identical framing.
+        type Win = Window & { __beme3dFit?: () => void }
+        ;(window as Win).__beme3dFit?.()
+      }, 280)
+    }
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = Math.round(entry.contentRect.width)
@@ -5867,21 +6131,58 @@ function ManualResizeCanvas({
           prev.width === w && prev.height === h ? prev : { width: w, height: h }
         )
       }
+      scheduleTrailingMeasure()
     })
     observer.observe(el)
+    // Window-resize fallback. ResizeObserver SHOULD fire on every
+    // size change, but in practice — especially when this layout
+    // sits inside an html-zoom container with a sticky flex parent
+    // — some browser resize gestures (drag-resize, devtools open /
+    // close, zoom via Ctrl+/-) leave the observer silent while the
+    // wrapper IS actually re-sizing. Re-measure on window resize as
+    // a belt-and-braces fallback so the canvas always tracks the
+    // viewport. requestAnimationFrame defers the read past the
+    // browser's layout pass so we read the post-resize dimensions
+    // not the pre-resize ones.
+    let rafId = 0
+    const onWindowResize = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        measureAndCommit()
+        scheduleTrailingMeasure()
+      })
+    }
+    window.addEventListener('resize', onWindowResize)
+    // Catch CSS width / height transitions completing anywhere in
+    // the ancestor chain — the LeftNav toggle is the main culprit,
+    // but any future animated panel that affects this column will
+    // also trigger a re-measure. We listen at the wrapper so events
+    // bubbling up from nested elements still reach us.
+    const onTransitionEnd = (e: TransitionEvent) => {
+      if (e.propertyName === 'width' || e.propertyName === 'height') {
+        measureAndCommit()
+      }
+    }
+    window.addEventListener('transitionend', onTransitionEnd)
     // Seed synchronously so the canvas mounts on the first render
     // cycle (ResizeObserver only fires on the NEXT frame).
-    const rect = el.getBoundingClientRect()
-    if (rect.width > 0 && rect.height > 0) {
-      setSize({ width: Math.round(rect.width), height: Math.round(rect.height) })
+    measureAndCommit()
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', onWindowResize)
+      window.removeEventListener('transitionend', onTransitionEnd)
+      cancelAnimationFrame(rafId)
+      if (trailingTimer !== null) clearTimeout(trailingTimer)
     }
-    return () => observer.disconnect()
   }, [])
 
   // Drive gl.setSize manually on every size change. Bypasses r3f's
   // built-in useMeasure (which was the root cause of the stuck
-  // canvas). updateStyle=true makes r3f also update the CSS width /
-  // height of the canvas element to match the framebuffer size.
+  // canvas). updateStyle=true forces the framebuffer + canvas CSS
+  // to match our measured size — paired with the absolute-position
+  // CSS injection in the Canvas style below so the canvas surface
+  // always covers its wrapper, even if the measured size is briefly
+  // smaller than the wrapper's true flex-resolved size.
   useEffect(() => {
     const gl = glRef.current
     if (!gl || size.width === 0 || size.height === 0) return
@@ -5894,7 +6195,28 @@ function ManualResizeCanvas({
       className="absolute inset-0"
       style={{ width: '100%', height: '100%' }}
     >
-      {size.width > 0 && size.height > 0 && children(size.width, size.height, glRef)}
+      {/* Hard override for r3f's canvas element. r3f's internal
+          useMeasure fires AFTER mount and writes pixel width/height
+          directly onto the canvas inline style, sometimes with a
+          stale undersized reading — which produced the "flash then
+          shrink" behaviour where the canvas mounted at full size,
+          then resized smaller a frame later, leaving workspace bg
+          visible to the right and below. This style rule forces
+          the canvas to ALWAYS render at 100% of its wrapper
+          regardless of what r3f writes, decoupling the visible
+          surface from r3f's measurement. The framebuffer resolution
+          still updates correctly via our own ManualResizeCanvas
+          measurement → gl.setSize path. */}
+      <style>{`
+        .beme-3d-canvas-fill canvas {
+          width: 100% !important;
+          height: 100% !important;
+          display: block !important;
+        }
+      `}</style>
+      <div className="beme-3d-canvas-fill w-full h-full">
+        {size.width > 0 && size.height > 0 && children(size.width, size.height, glRef)}
+      </div>
     </div>
   )
 }
@@ -5954,22 +6276,32 @@ function BlockLegend({
         Legend
       </div>
       <ul className="py-1">
-        {items.map((it) => (
-          <li
-            key={it.code}
-            className="flex items-center gap-2 px-2 py-1 leading-tight"
-            title={it.code}
-          >
-            <span
-              className="inline-block w-3 h-3 rounded-sm border border-ink-600/60 flex-shrink-0"
-              style={{ backgroundColor: it.color }}
-            />
-            <span className="text-ink-100 truncate">{it.label}</span>
-            <span className="text-ink-500 text-[10px] ml-auto pl-1 flex-shrink-0">
-              {it.code}
-            </span>
-          </li>
-        ))}
+        {items.map((it) => {
+          // Wall-type entries carry a `wt:<makeupId>` code that's a
+          // UUID — useless to show in the row. Hide the code column
+          // for those; the label IS the identity. Brick / block code
+          // rows keep the secondary code so estimators can match a
+          // colour to the underlying material code.
+          const isWallTypeRow = it.code.startsWith('wt:')
+          return (
+            <li
+              key={it.code}
+              className="flex items-center gap-2 px-2 py-1 leading-tight"
+              title={isWallTypeRow ? it.label : it.code}
+            >
+              <span
+                className="inline-block w-3 h-3 rounded-sm border border-ink-600/60 flex-shrink-0"
+                style={{ backgroundColor: it.color }}
+              />
+              <span className="text-ink-100 truncate">{it.label}</span>
+              {!isWallTypeRow && (
+                <span className="text-ink-500 text-[10px] ml-auto pl-1 flex-shrink-0">
+                  {it.code}
+                </span>
+              )}
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
@@ -5978,7 +6310,13 @@ function BlockLegend({
 /** List of captured 3D viewport snapshots queued for the export.
  *  Each row shows a thumbnail (clipped to a fixed aspect) and a
  *  delete (×) button. Rendered immediately below the BlockLegend in
- *  the same column so they share the top-right overlay strip. */
+ *  the same column so they share the top-right overlay strip.
+ *
+ *  Header acts as a collapse toggle — clicking it hides the thumbnail
+ *  list so the panel shrinks to just its title row. Useful when the
+ *  user has stacked up a lot of snapshots and the thumbnails are
+ *  starting to block the canvas. Default state is expanded so a
+ *  fresh capture is visible without needing an extra click. */
 function SnapshotsPanel({
   snapshots,
   onDelete,
@@ -5986,38 +6324,54 @@ function SnapshotsPanel({
   snapshots: Array<{ id: string; dataUrl: string; createdAt: number }>
   onDelete: (id: string) => void
 }) {
+  // Minimised by default — the snapshot thumbnails are tall and can
+  // obscure the canvas, so the user opts in to seeing them. Header
+  // chip with count tells them captures are queued without needing
+  // the strip open.
+  const [expanded, setExpanded] = useState(false)
   return (
     <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[40vh] overflow-y-auto min-w-[140px]">
-      <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between">
-        <span>Snapshots</span>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between gap-2 hover:text-ink-200 transition-colors text-left"
+        aria-expanded={expanded}
+        title={expanded ? 'Hide snapshots' : 'Show snapshots'}
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="text-[10px]">{expanded ? '▾' : '▸'}</span>
+          <span>Snapshots</span>
+        </span>
         <span className="text-ink-500 text-[10px]">{snapshots.length}</span>
-      </div>
-      <ul className="p-1.5 space-y-1.5">
-        {snapshots.map((s, i) => (
-          <li
-            key={s.id}
-            className="relative group rounded overflow-hidden border border-ink-600/50 bg-ink-900/60"
-          >
-            <img
-              src={s.dataUrl}
-              alt={`Snapshot ${i + 1}`}
-              className="block w-full h-auto"
-            />
-            <div className="absolute top-1 left-1 text-[10px] text-ink-200 bg-ink-900/70 px-1 py-0.5 rounded">
-              {`#${i + 1}`}
-            </div>
-            <button
-              type="button"
-              onClick={() => onDelete(s.id)}
-              title="Remove snapshot"
-              className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-ink-900/70 hover:bg-rose-500/80 text-ink-100 text-[12px] leading-none transition-colors"
-              aria-label="Remove snapshot"
+      </button>
+      {expanded && (
+        <ul className="p-1.5 space-y-1.5">
+          {snapshots.map((s, i) => (
+            <li
+              key={s.id}
+              className="relative group rounded overflow-hidden border border-ink-600/50 bg-ink-900/60"
             >
-              ×
-            </button>
-          </li>
-        ))}
-      </ul>
+              <img
+                src={s.dataUrl}
+                alt={`Snapshot ${i + 1}`}
+                className="block w-full h-auto"
+              />
+              <div className="absolute top-1 left-1 text-[10px] text-ink-200 bg-ink-900/70 px-1 py-0.5 rounded">
+                {`#${i + 1}`}
+              </div>
+              <button
+                type="button"
+                onClick={() => onDelete(s.id)}
+                title="Remove snapshot"
+                className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-ink-900/70 hover:bg-rose-500/80 text-ink-100 text-[12px] leading-none transition-colors"
+                aria-label="Remove snapshot"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

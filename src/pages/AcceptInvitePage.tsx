@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Header from '../components/Header'
+import BemeLoader from '../components/BemeLoader'
 import { useAuth, signUpWithPassword, signInWithPassword, signOut } from '../lib/auth'
 import {
   acceptInvitation,
@@ -171,8 +172,8 @@ export default function AcceptInvitePage() {
     return (
       <div className="min-h-screen bg-ink-900 text-ink-50">
         <Header />
-        <main className="max-w-md mx-auto px-6 py-16">
-          <p className="text-sm text-ink-400 text-center">Loading invitation…</p>
+        <main className="max-w-md mx-auto px-6 py-16 flex justify-center">
+          <BemeLoader caption="Loading invitation…" />
         </main>
       </div>
     )

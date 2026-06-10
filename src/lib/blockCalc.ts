@@ -941,6 +941,15 @@ export function planWall(
     const invC1Gap = Math.abs(lengthMm - invOddFit.actualLengthMm)
     const syncC2Gap = Math.abs(lengthMm - syncEvenFit.actualLengthMm)
     const invC2Gap = Math.abs(lengthMm - invEvenFit.actualLengthMm)
+    // Mark these as referenced — the wallC1OwnsItsCorner branch below
+    // computes its own gaps for corner walls; the length-based branch
+    // uses these gaps as a tiebreak. The unconditional-INV path
+    // doesn't read them but we keep them computed because TS would
+    // warn unused otherwise.
+    void syncC1Gap
+    void invC1Gap
+    void syncC2Gap
+    void invC2Gap
     let invWins: boolean
     if (wallC1OwnsItsCorner !== null) {
       // Ownership-aware decision. The choice between SYNC and INV
@@ -997,10 +1006,17 @@ export function planWall(
       const invOwnC1Gap = Math.abs(lengthMm - invOwnC1.actualLengthMm)
       invWins = invOwnC1Gap < syncOwnC1Gap
     } else {
-      // Length-based fallback (no corner end, or no wallsById).
-      invWins =
-        invC1Gap < syncC1Gap ||
-        (invC1Gap === syncC1Gap && invC2Gap < syncC2Gap)
+      // No corner ends — both sides free. ALWAYS invert for the
+      // "snakes and ladders" / running-bond layout the user
+      // explicitly asked for. Each course shows full on one side and
+      // half on the other; the next course mirrors. Even if SYNC
+      // would give a marginally cleaner fit, the inverted layout is
+      // visually cleaner (alternating sides instead of mixed
+      // symmetric-then-asymmetric courses), so we commit
+      // unconditionally. The fit's body row absorbs whatever cut is
+      // needed for non-modular wall lengths — same place cuts
+      // already land for canonical stretcher.
+      invWins = true
     }
     if (invWins) {
       // Commit the inversion on the chosen side. Swap odd↔even on
@@ -2026,8 +2042,35 @@ export function planWallLayout(
       )
     }
 
-    const startEndWidth = widthOf(startBlock)
-    const endEndWidth = widthOf(endBlock)
+    // ── Half-end slot cap ────────────────────────────────────────
+    //
+    // Stretcher bond's half-end position is geometry-locked: the
+    // slot face must equal (bodyFace − mortar) / 2 so the body grid
+    // offsets by exactly half a body+mortar module between odd and
+    // even courses. If the user nominates a full-width block for
+    // the halfBlockCode slot (e.g. CMU8 in both Full + Half), the
+    // render must CUT that block to the slot's required face width
+    // so the bond is preserved.
+    //
+    // Cap only applies to non-corner ends — corner ends always use
+    // the full corner block. Stack bond ignores this branch
+    // because junctionType !== 'corner' check above never picks
+    // halfBlockCode (resolveEndForCourse returns cornerBlockCode).
+    const halfSlotFaceMm = Math.max(1, (bodyBlockWidthMm - MORTAR_MM) / 2)
+    const isStartStretcherHalfEnd =
+      makeup.bondType === 'stretcher' &&
+      wall.startJunction.type !== 'corner' &&
+      !startParityOdd
+    const isEndStretcherHalfEnd =
+      makeup.bondType === 'stretcher' &&
+      wall.endJunction.type !== 'corner' &&
+      !endParityOdd
+    const startEndWidth = isStartStretcherHalfEnd
+      ? Math.min(widthOf(startBlock), halfSlotFaceMm)
+      : widthOf(startBlock)
+    const endEndWidth = isEndStretcherHalfEnd
+      ? Math.min(widthOf(endBlock), halfSlotFaceMm)
+      : widthOf(endBlock)
     const leadInWidth = leadInCode ? widthOf(leadInCode) : 0
 
     // ---- Lay blocks left-to-right ----
@@ -2648,7 +2691,11 @@ function applyOpeningAdjustments(
     if (courseType === 'height-71') extraCourseModulesMm.push(100)
     else if (courseType === 'height-140') extraCourseModulesMm.push(150)
   }
-  const lintel = selectBlockLintel(headHeightMm, extraCourseModulesMm)
+  const lintel = selectBlockLintel(
+    headHeightMm,
+    extraCourseModulesMm,
+    opening.lintelBlockCodeOverride
+  )
   if (!lintel) return
 
   // Lintel span = opening width + bearing on each side. Bearing is
@@ -2684,6 +2731,53 @@ function applyOpeningAdjustments(
 
   for (let i = 0; i < lintelCoursesToUse; i++) {
     subtractCourseBody(headStartIdx + i, bodyPerLintelCourse)
+  }
+
+  // ---- Gap-fill above the lintel ----
+  //
+  // When the chosen lintel doesn't fully consume the head area
+  // modular-cleanly (typical with a user override — e.g. 200mm lintel
+  // under a 300mm head leaves a 100mm gap), drop in a height-makeup
+  // course above the lintel to bridge the leftover.
+  //
+  // Decomposition: gap = N×200 (whole body courses) + remainder. The
+  // body courses cost nothing here (the head area's body courses are
+  // already counted in the wall-body tally — see the comment above).
+  // The remainder is what a height-makeup course covers.
+  //
+  // Only emits when (a) there's a height-makeup block in the library
+  // whose face fits the remainder modular, and (b) there's an actual
+  // course slot to put it in (the makeup course slot fits within
+  // the wall). Failures fall through silently — the existing 3D
+  // clipping handles the visual case.
+  const gapAboveLintelMm = headHeightMm - lintel.verticalModuleMm
+  if (gapAboveLintelMm > 0) {
+    const bodyCoursesAboveLintel = Math.floor(gapAboveLintelMm / BODY_BLOCK_MODULE_MM)
+    const makeupRemainderMm =
+      gapAboveLintelMm - bodyCoursesAboveLintel * BODY_BLOCK_MODULE_MM
+    // 50mm threshold: smaller residuals are mortar/dimension slop and
+    // don't warrant a course. A 100mm remainder lands a 20.71 (90mm
+    // face + 10mm mortar = 100mm modular); a 150mm remainder lands a
+    // 20.140 (140 + 10 = 150).
+    const MIN_MAKEUP_GAP_MM = 50
+    if (makeupRemainderMm >= MIN_MAKEUP_GAP_MM) {
+      const targetFaceMm = makeupRemainderMm - DEFAULT_MORTAR_JOINT_MM
+      const makeupBlock = pickHeightMakeupBlock(targetFaceMm)
+      if (makeupBlock) {
+        const makeupHorizontalModuleMm =
+          makeupBlock.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM
+        const makeupCount = Math.ceil(lintelSpanMm / makeupHorizontalModuleMm)
+        addToTally(tally, makeupBlock.code, makeupCount)
+        // Body subtraction for the makeup course — sits directly
+        // above the lintel + any whole body courses between. Only
+        // applied if the course slot actually exists in the wall.
+        const makeupCourseIdx =
+          headStartIdx + lintelCoursesNeeded + bodyCoursesAboveLintel
+        if (makeupCourseIdx < courses.length) {
+          subtractCourseBody(makeupCourseIdx, bodyPerLintelCourse)
+        }
+      }
+    }
   }
 }
 

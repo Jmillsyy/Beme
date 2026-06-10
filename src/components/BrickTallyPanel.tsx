@@ -3,28 +3,41 @@ import type { BrickMakeup, BrickSettings, Opening, Wall } from '../types/walls'
 import { calculateBrickTally } from '../lib/brickCalc'
 import { useBrickLibrary } from '../data/brickLibrary'
 import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
+import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import { brickLintelWarnings } from '../lib/lintelCoverage'
 import LintelCoverageBand from './LintelCoverageBand'
+import AnimatedNumber from './AnimatedNumber'
 
 interface BrickTallyPanelProps {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
-  /** Brick wall types — needed for per-makeup course composition. */
+  /** Brick wall types — needed for per-wall heights when the calc
+   *  derives area. */
   makeups?: BrickMakeup[]
 }
 
 /**
- * Right-rail tally for brick estimates — wall count, total length,
- * total brickwork area, brick count. Supply items (ties, plascourse,
- * lintels, flashings, etc.) live in the SupplyItemsPanel and are
- * managed via the material library.
+ * Right-rail tally for brick estimates — intentionally minimal.
  *
- * When at least one brick wall type uses `courseRanges`, the panel
- * shows a per-brick-type breakdown (e.g. "↳ Standard 230×76 — 540 /
- * ↳ Double-height 230×162 — 1,210") under the headline brick count so
- * the reader can see the mix at a glance. Single-brick projects keep
- * the old single-line look.
+ * Two numbers, surfaced loud:
+ *   - Total brickwork area (m²) — drives every quantity downstream
+ *     when multiplied by the brick rate
+ *   - Total wall lineal m — the run figure for spec-by-the-metre items
+ *     (ties, plascourse, flashing)
+ *
+ * The per-wall-type breakdown (area, head lineals, sill lineals) lives
+ * in the EXPORT PDF, not in the workspace rail. Reasoning: the rail
+ * is glanceable headline-only feedback while the estimator's drawing;
+ * the export is the deliverable where the breakdown actually gets
+ * used. Stuffing both into the rail makes the most-used affordance
+ * (the headline area) compete with information that belongs on
+ * paper.
+ *
+ * Lintel coverage warnings still surface here because they're a
+ * data-quality nudge — the estimator needs to know about misconfigured
+ * openings WHILE they're still drawing, not when they generate the PDF.
  *
  * Memoised so re-renders driven by zoom / pan don't recompute the tally.
  */
@@ -35,6 +48,25 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   // off each band's brick type at calc time).
   const { version: brickLibraryVersion } = useBrickLibrary()
   const { settings: userSettings } = useUserSettings()
+  const { currentOrgId } = useOrganisations()
+  const { items: orgItems, orgId: orgItemsOrgId } = useOrgSupplyItems()
+
+  // Pick the right supply-items source. When the user is in an org,
+  // the org's supply items (Supabase) are the source of truth; the
+  // local userSettings.supplyItems list is only used for personal /
+  // offline accounts. The MaterialLibraryPage uses the same source
+  // selection — without matching that here, the warnings checked an
+  // empty list and flagged every opening as uncovered, even when the
+  // user clearly had Galintels covering those widths.
+  //
+  // Race guard: only trust orgItems when their carrier orgId matches
+  // the current org. During an org switch the singleton briefly holds
+  // the previous org's items.
+  const activeSupplyItems = useMemo(() => {
+    if (currentOrgId && orgItemsOrgId === currentOrgId) return orgItems
+    if (!currentOrgId) return userSettings.supplyItems ?? []
+    return []
+  }, [currentOrgId, orgItemsOrgId, orgItems, userSettings.supplyItems])
 
   const tally = useMemo(() => {
     void brickLibraryVersion
@@ -45,13 +77,13 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
   // match any per-opening lintel supply item with a width range, and
   // overlapping ranges that would double-count. See lib/lintelCoverage.
   const lintelWarnings = useMemo(
-    () => brickLintelWarnings(openings, userSettings.supplyItems),
-    [openings, userSettings.supplyItems],
+    () => brickLintelWarnings(openings, activeSupplyItems),
+    [openings, activeSupplyItems],
   )
 
   if (walls.length === 0) {
     return (
-      <div className="border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm">
+      <div className="border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm bg-ink-800/50">
         Draw your first wall to see the brick tally.
       </div>
     )
@@ -59,33 +91,23 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
 
   const areaSqM = tally.totalAreaSqMm / 1_000_000
   const lengthM = tally.totalLinealMm / 1000
-  // Lineal-metre figures the export relies on. Surface them in the
-  // workspace tally too so the user sees the head / sill totals at
-  // a glance without generating the PDF first. Course substitute
-  // was removed in favour of the simpler "Total length" row above
-  // — the per-course-pitch math was confusing the user and the
-  // total wall lineal m gives them what they actually wanted.
-  const headLinealM =
-    Object.values(tally.headLinealMmByType).reduce((s, n) => s + n, 0) / 1000
-  const sillLinealM =
-    Object.values(tally.sillLinealMmByType).reduce((s, n) => s + n, 0) / 1000
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 overflow-hidden">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="w-full bg-ink-700 px-3 py-2 border-b border-ink-600 flex items-center justify-between gap-2 text-left group"
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-beme-400 group-hover:text-beme-300 text-xs">
+          <span className="text-ink-400 group-hover:text-ink-200 text-xs">
             {expanded ? '▾' : '▸'}
           </span>
-          <h3 className="text-sm font-bold text-beme-300">Brick tally</h3>
+          <h3 className="text-sm font-bold text-ink-50">Brick tally</h3>
           <span className="text-xs text-beme-300 tabular-nums truncate">
-            · {areaSqM.toFixed(2)} m²
+            · <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
           </span>
         </div>
-        <span className="text-xs text-beme-300 tabular-nums flex-shrink-0">
+        <span className="text-xs text-ink-400 tabular-nums flex-shrink-0">
           {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
         </span>
       </button>
@@ -97,44 +119,88 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
       )}
 
       {expanded && (
-        <table className="w-full text-sm">
-          <tbody>
-            <tr className="border-b border-ink-700/60">
-              <td className="px-3 py-1.5 text-ink-300">Total length</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                {lengthM.toFixed(2)} m
-              </td>
-            </tr>
-            <tr className="border-b border-ink-700/60 bg-ink-700/30">
-              <td className="px-3 py-1.5 text-ink-200 font-medium">Brickwork area</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-beme-300">
-                {areaSqM.toFixed(2)} m²
-              </td>
-            </tr>
-            <tr className="border-b border-ink-700/60">
-              <td className="px-3 py-1.5 text-ink-300">Openings</td>
-              <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                {tally.openingCount}
-              </td>
-            </tr>
-            {headLinealM > 0 && (
-              <tr className="border-b border-ink-700/60">
-                <td className="px-3 py-1.5 text-ink-300">Head courses</td>
-                <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                  {headLinealM.toFixed(2)} m
-                </td>
-              </tr>
-            )}
-            {sillLinealM > 0 && (
-              <tr>
-                <td className="px-3 py-1.5 text-ink-300">Sill courses</td>
-                <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
-                  {sillLinealM.toFixed(2)} m
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <>
+          {/* Big total card — orange hero, exact same structure as
+              BlockTallyPanel: uppercase eyebrow, big extrabold
+              headline number, single-line subtitle stacking the
+              supporting figures. Keeps the brand-colour real estate
+              tight to the headline so the panel reads as "one
+              feature card on a neutral surface" rather than "all
+              orange". */}
+          <div className="px-3 py-3 bg-gradient-to-br from-beme-500 to-beme-600 text-ink-900">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] opacity-85">
+              Total brickwork area
+            </div>
+            <div className="text-3xl font-extrabold tracking-tight leading-none mt-1 tabular-nums">
+              <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
+            </div>
+            <div className="text-xs opacity-85 mt-1 tabular-nums">
+              {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'} ·{' '}
+              <AnimatedNumber value={lengthM} format={(n) => n.toFixed(2)} /> m run
+            </div>
+          </div>
+
+          {/* Metadata strip — opening count + head/sill/total opening
+              lineal metres. The user wanted these surfaced inline
+              with the openings count instead of waiting for the
+              export. Total = head + sill (overhang counted twice
+              on windows — both above and below — same as the export
+              tally). Doors are excluded from sill (they sit on the
+              floor, no sill course). */}
+          {(() => {
+            const headLinealM =
+              Object.values(tally.headLinealMmByType).reduce(
+                (s, v) => s + v,
+                0,
+              ) / 1000
+            const sillLinealM =
+              Object.values(tally.sillLinealMmByType).reduce(
+                (s, v) => s + v,
+                0,
+              ) / 1000
+            const totalOpeningLinealM = headLinealM + sillLinealM
+            return (
+              <div className="px-3 py-2.5 text-xs border-t border-ink-600 grid grid-cols-2 gap-x-3 gap-y-2 tabular-nums">
+                <div>
+                  <div className="text-ink-400 text-[11px]">Openings</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber value={tally.openingCount} />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-400 text-[11px]">Total Lineal m</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber
+                      value={totalOpeningLinealM}
+                      format={(n) => n.toFixed(2)}
+                    />{' '}
+                    m
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-400 text-[11px]">Head Lineal m</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber
+                      value={headLinealM}
+                      format={(n) => n.toFixed(2)}
+                    />{' '}
+                    m
+                  </div>
+                </div>
+                <div>
+                  <div className="text-ink-400 text-[11px]">Sill Lineal m</div>
+                  <div className="text-ink-100 font-medium text-sm mt-0.5">
+                    <AnimatedNumber
+                      value={sillLinealM}
+                      format={(n) => n.toFixed(2)}
+                    />{' '}
+                    m
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+        </>
       )}
     </div>
   )

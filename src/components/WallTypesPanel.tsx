@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useUserSettings } from '../lib/userSettings'
+import { toast } from '../lib/toast'
+import { confirm } from '../lib/confirm'
 import type {
   Pier,
   PierMakeup,
@@ -35,6 +37,8 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { bandColor } from '../lib/blockColors'
+import LengthInput from './LengthInput'
+import LibraryGuidance from './LibraryGuidance'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -145,6 +149,23 @@ export default function WallTypesPanel({
   // arg was passed (single-area or legacy callers).
   const colorMakeups = paletteMakeups ?? makeups
   const colorPierMakeups = palettePierMakeups ?? pierMakeups
+  // Library check so the empty-state messaging below can tell the user
+  // exactly what's missing — "no wall types yet, hit + Add" vs "your
+  // block library is empty, fix that first then come back".
+  //
+  // Also drives suppression: when the library is empty we hide existing
+  // wall types from the list (they reference codes that no longer
+  // exist, so showing them would let the user activate a wall type
+  // that can't draw anything sensible). The makeups data is preserved
+  // — adding blocks back re-surfaces them.
+  const { library: blockLibrary, version: blockLibraryVersion } = useBlockLibrary()
+  void blockLibraryVersion
+  const blockLibraryEmpty = Object.keys(blockLibrary).length === 0
+  // Effective lists shown in the panel. We don't mutate `makeups` /
+  // `pierMakeups` so the parent's data stays intact; we just don't
+  // render rows for them while the library is empty.
+  const visibleMakeups = blockLibraryEmpty ? [] : makeups
+  const visiblePierMakeups = blockLibraryEmpty ? [] : pierMakeups
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
   const [editingId, setEditingId] = useState<string | null>(null)
   /** When the pier editor swaps over to the wall modal via the Curved
@@ -175,19 +196,19 @@ export default function WallTypesPanel({
       ? makeups.find((m) => m.id === editingId) ?? null
       : null
 
-  const activeMakeup = makeups.find((m) => m.id === activeMakeupId)
+  const activeMakeup = visibleMakeups.find((m) => m.id === activeMakeupId)
 
-  // Sort so the active wall type sits at the top of the list and stays there
-  // — handy when there are 4+ types and the user spends most of their time
-  // drawing with one of them. The remaining types keep their original order
-  // so the user's mental map of "the second one I created" doesn't shuffle.
-  const orderedMakeups = useMemo(() => {
-    if (!activeMakeup) return makeups
-    return [activeMakeup, ...makeups.filter((m) => m.id !== activeMakeup.id)]
-  }, [makeups, activeMakeup])
+  // List order matches `visibleMakeups` exactly — no float-active-to-top
+  // shuffle. The previous "active type pops to position 0" behaviour
+  // moved cards under the cursor when the user picked one, which broke
+  // muscle memory: the second card you wanted to try was now the third
+  // (the freshly activated one took its slot). Keeping insertion order
+  // means every click leaves the list still, and the active card stays
+  // visible via the ring + Active badge rather than relocation.
+  const orderedMakeups = visibleMakeups
 
   return (
-    <div className="border border-ink-600 rounded-xl bg-ink-800 p-3">
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
       <div className="flex items-center justify-between mb-2 gap-2">
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -203,22 +224,28 @@ export default function WallTypesPanel({
             {!expanded && activeMakeup ? (
               <>· {activeMakeup.name}</>
             ) : (
-              <>· {makeups.length}</>
+              <>· {visibleMakeups.length}</>
             )}
           </span>
         </button>
         {expanded && (
-          <button
-            onClick={() => setEditingId('new')}
-            className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
-          >
-            + Add
-          </button>
+          <LibraryGuidance mode="block" actionLabel="Add wall type" position="left">
+            <button
+              onClick={() => {
+                if (blockLibraryEmpty) return
+                setEditingId('new')
+              }}
+              disabled={blockLibraryEmpty}
+              className="text-xs px-2 py-1 rounded bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          </LibraryGuidance>
         )}
       </div>
 
       {expanded && (
-        <div className="flex flex-col gap-2 pb-1">
+        <div className="flex flex-col gap-1.5 pb-0.5">
           {orderedMakeups.map((m) => {
             // Wall card only lights up when the live kind is 'wall'.
             // Without this gate, switching to a pier left the last
@@ -232,25 +259,21 @@ export default function WallTypesPanel({
               <button
                 key={m.id}
                 onClick={() => onSetActive(m.id)}
-                className={`relative w-full p-2.5 rounded-lg border text-left transition-colors ${
+                className={`group/wt relative w-full p-2 rounded-md border text-left transition-colors ${
                   isActive
-                    ? 'border-beme-500 ring-2 ring-beme-500/20 bg-beme-500/10'
+                    ? 'border-beme-500 ring-1 ring-beme-500/30 bg-beme-500/10'
                     : 'border-ink-600 hover:border-beme-500/50 bg-ink-700/40'
                 }`}
               >
                 {isActive && (
-                  <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-beme-500 text-black font-medium">
+                  <span className="absolute top-1.5 right-1.5 text-[10px] px-1.5 py-0 rounded bg-beme-500 text-black font-medium leading-tight">
                     Active
                   </span>
                 )}
-                <div className="flex items-start gap-2 mb-1 pr-12">
-                  {/* "Wall" chip painted with the type's own plan
-                      colour so the chip itself doubles as the
-                      colour-id swatch — no separate swatch needed.
-                      White text + black/30 ring keeps the label
-                      readable on any palette colour. */}
+                <div className="flex items-start gap-2 pr-12">
+                  {/* "Wall" chip painted with the type's own plan colour. */}
                   <span
-                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30"
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30 leading-tight"
                     style={{
                       backgroundColor: masonryTypeColor(
                         m.id,
@@ -265,35 +288,31 @@ export default function WallTypesPanel({
                       ? 'Curved'
                       : 'Wall'}
                   </span>
-                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
+                  <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0 leading-snug">
                     {m.name}
                   </div>
                 </div>
-                <div className="text-xs text-ink-400">
-                  {m.bondType} bond · {getMakeupHeightMm(m)}mm · Body {m.bodyBlockCode}
+                <div className="text-xs text-ink-400 mt-1 leading-tight">
+                  {m.bondType} bond · {getMakeupHeightMm(m)}mm · {wallCount} wall{wallCount === 1 ? '' : 's'}
                 </div>
                 {m.coursePattern && m.coursePattern.length > 0 && (
-                  <div className="text-xs text-beme-300 mt-1 font-mono">
-                    Pattern:{' '}
+                  <div className="text-xs text-beme-300 mt-1 font-mono leading-tight truncate">
                     {m.coursePattern.map((b) => `${b.count}×${b.blockCode}`).join(' + ')}
                   </div>
                 )}
                 {m.courseOverrides && m.courseOverrides.length > 0 && (
-                  <div className="text-xs text-ink-400 mt-1">
-                    {m.courseOverrides.length} course override
+                  <div className="text-xs text-ink-400 mt-1 leading-tight">
+                    {m.courseOverrides.length} override
                     {m.courseOverrides.length === 1 ? '' : 's'}
                   </div>
                 )}
-                {m.courseSeriesRanges && m.courseSeriesRanges.length > 0 && (
-                  <div className="text-xs text-ink-400 mt-1">
-                    {m.courseSeriesRanges.length} series range
-                    {m.courseSeriesRanges.length === 1 ? '' : 's'}
-                  </div>
-                )}
-                <div className="text-xs text-ink-500 mt-2">
-                  {wallCount} wall{wallCount === 1 ? '' : 's'} using this
-                </div>
-                <div className="flex gap-3 mt-2">
+                <div
+                  className={`flex gap-3 mt-1.5 transition-opacity ${
+                    isActive
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover/wt:opacity-100'
+                  }`}
+                >
                   <span
                     role="button"
                     tabIndex={0}
@@ -329,11 +348,17 @@ export default function WallTypesPanel({
                     <span
                       role="button"
                       tabIndex={0}
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation()
-                        if (window.confirm(`Delete wall type "${m.name}"?`)) {
-                          onDeleteMakeup(m.id)
-                        }
+                        const ok = await confirm({
+                          title: `Delete wall type "${m.name}"?`,
+                          message:
+                            'Walls currently using this type will fall back ' +
+                            'to the default. This can be undone.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDeleteMakeup(m.id)
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                     >
@@ -345,13 +370,52 @@ export default function WallTypesPanel({
             )
           })}
 
+          {/* Empty state. Distinguishes the two reasons this list might
+              be empty so the user knows which knob to turn: an empty
+              block library (go fix that first) vs a populated library
+              with no wall types yet (hit + Add). Hidden once any wall
+              or pier card exists — those already self-explain. */}
+          {orderedMakeups.length === 0 && visiblePierMakeups.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-3 py-4 text-center">
+              {blockLibraryEmpty ? (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Add at least one block to your Material Library, then come
+                    back to create wall types here.
+                  </p>
+                  <Link
+                    to="/library#blocks"
+                    className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-beme-300 hover:text-beme-200"
+                  >
+                    Open Material Library
+                    <span aria-hidden="true">→</span>
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs font-semibold text-ink-200">
+                    No wall types yet
+                  </p>
+                  <p className="text-[11px] text-ink-400 mt-1 leading-relaxed">
+                    Hit <span className="font-semibold text-ink-200">+ Add</span>{' '}
+                    above to set up your first wall — bond, height, body and
+                    corner blocks.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
           {/* Pier types render inline with wall types — a pier is just
               another card in this list. Selecting one and pressing
               Draw wall on the toolbar drops the pier (single-click
               placement); selecting a wall card behaves exactly the
               same (two-click draw). The Tied / Free chip is the
               only visual hint that this card is a pier. */}
-          {pierMakeups.map((pm) => {
+          {visiblePierMakeups.map((pm) => {
             // Pier card only lights up when the live kind is 'pier'.
             // Mirror of the wall-card guard a few lines above —
             // exactly one card across both kinds reads as Active at
@@ -429,11 +493,17 @@ export default function WallTypesPanel({
                       <span
                         role="button"
                         tabIndex={0}
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           e.stopPropagation()
-                          if (window.confirm(`Delete pier type "${pm.name}"?`)) {
-                            onDeletePierMakeup(pm.id)
-                          }
+                          const ok = await confirm({
+                            title: `Delete pier type "${pm.name}"?`,
+                            message:
+                              'Piers currently using this type will fall ' +
+                              'back to the default.',
+                            confirmLabel: 'Delete',
+                            variant: 'destructive',
+                          })
+                          if (ok) onDeletePierMakeup(pm.id)
                         }}
                         className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
                       >
@@ -489,10 +559,18 @@ export default function WallTypesPanel({
             setEditingSeedKind('wall')
           }}
           onSave={(m) => {
-            if (editingId === 'new') onAddMakeup(m)
+            const isNew = editingId === 'new'
+            if (isNew) onAddMakeup(m)
             else onUpdateMakeup(m)
             setEditingId(null)
             setEditingSeedKind('wall')
+            // Confirmation toast — the modal vanishes, the new type
+            // appears in the wall-types panel, but the panel might be
+            // long enough that the new entry is below the fold. Toast
+            // makes the save explicit and labels the type by name.
+            toast.success(
+              isNew ? `Wall type "${m.name}" added` : `Wall type "${m.name}" updated`
+            )
             // No auto curve-draw activation here. The saved wall type
             // sits in the panel labelled "Curved" (kind flag on the
             // makeup); the user selects it like any other type and
@@ -541,7 +619,8 @@ export default function WallTypesPanel({
             setPierEditingSeedPlacement(undefined)
           }}
           onSave={(pm) => {
-            if (pierEditingId === 'new') {
+            const isNew = pierEditingId === 'new'
+            if (isNew) {
               onAddPierMakeup(pm)
               onSetActivePier(pm.id)
             } else {
@@ -549,6 +628,9 @@ export default function WallTypesPanel({
             }
             setPierEditingId(null)
             setPierEditingSeedPlacement(undefined)
+            toast.success(
+              isNew ? `Pier type "${pm.name}" added` : `Pier type "${pm.name}" updated`
+            )
           }}
         />
       )}
@@ -809,7 +891,7 @@ function WallTypeEditorModal({
     })
   }
 
-  function convertCurrentToBands() {
+  async function convertCurrentToBands() {
     const draft: WallMakeup = {
       id: existing?.id ?? 'draft',
       name,
@@ -833,29 +915,34 @@ function WallTypeEditorModal({
       skipHeightMakeup: true,
     })
     if (bands.length === 0) {
-      window.alert('Wall is too short to convert (less than one course).')
+      toast.error('Wall is too short to convert (less than one course).')
       return
     }
-    if (
-      lossy &&
-      !window.confirm(
-        'This wall type has per-course overrides which can’t be translated band-for-band. ' +
-          'Convert anyway? The overrides will be cleared.'
-      )
-    ) {
-      return
+    if (lossy) {
+      const ok = await confirm({
+        title: 'Convert to course pattern?',
+        message:
+          "This wall type has per-course overrides that can't be " +
+          'translated band-for-band. The overrides will be cleared.',
+        confirmLabel: 'Convert anyway',
+        variant: 'destructive',
+      })
+      if (!ok) return
     }
     setCoursePattern(bands)
     if (lossy) setCourseOverrides([])
   }
 
-  function clearCoursePattern() {
-    if (
-      !window.confirm(
-        'Clear the course pattern and revert this wall type to the uniform-height makeup? ' +
-          'The Height field will take over again.'
-      )
-    ) {
+  async function clearCoursePattern() {
+    const ok = await confirm({
+      title: 'Clear the course pattern?',
+      message:
+        'Reverts this wall type to the uniform-height makeup. ' +
+        'The Height field will take over again.',
+      confirmLabel: 'Clear pattern',
+      variant: 'destructive',
+    })
+    if (!ok) {
       return
     }
     setCoursePattern([])
@@ -1560,14 +1647,12 @@ function BasicsTab({
             </span>
           )}
         </span>
-        <input
-          type="number"
-          min="200"
-          step="50"
-          value={hasCoursePattern ? patternTotalHeight : heightMm}
-          onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
+        <LengthInput
+          valueMm={hasCoursePattern ? patternTotalHeight : heightMm}
+          onChangeMm={(mm) => setHeightMm(Math.round(mm))}
+          minMm={200}
           disabled={hasCoursePattern}
-          className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 disabled:bg-ink-800 disabled:text-ink-400 disabled:cursor-not-allowed"
+          className="w-full"
         />
         {!hasCoursePattern && !wedgeDisablesCourseMix && (
           <p className="text-[11px] text-ink-500 mt-1.5">

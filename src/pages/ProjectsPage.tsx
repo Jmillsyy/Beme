@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import Header from '../components/Header'
+import BemeLoader from '../components/BemeLoader'
 import { useAuth } from '../lib/auth'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
 import { listProjects, type ProjectStatus, type SavedProject } from '../lib/projectStorage'
@@ -197,9 +197,8 @@ export default function ProjectsPage() {
   }, [projects, typeFilter, ownerFilter, refFilter, period])
 
   return (
-    <div className="min-h-screen bg-ink-900 text-ink-50">
-      <Header />
-      <main className="px-20 py-10">
+    <>
+      <div className="px-12 py-10">
         <Link
           to="/"
           className="inline-flex items-center gap-1.5 text-sm text-ink-400 hover:text-beme-300 transition-colors mb-3"
@@ -348,7 +347,9 @@ export default function ProjectsPage() {
 
         {/* List */}
         {loading || orgLoading ? (
-          <p className="text-sm text-ink-400 py-8 text-center">Loading…</p>
+          <div className="py-16 flex justify-center">
+            <BemeLoader caption="Loading projects…" />
+          </div>
         ) : sorted.length === 0 ? (
           <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 p-8 text-center">
             <div className="text-sm text-ink-300">No projects match these filters.</div>
@@ -363,8 +364,8 @@ export default function ProjectsPage() {
             ))}
           </ul>
         )}
-      </main>
-    </div>
+      </div>
+    </>
   )
 }
 

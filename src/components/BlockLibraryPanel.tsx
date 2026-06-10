@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { confirm } from '../lib/confirm'
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
 import {
   PROTECTED_BLOCK_CODES,
@@ -173,6 +174,80 @@ export default function BlockLibraryPanel({
             </select>
           </div>
 
+          {/* Empty state. Two flavours: a) library has nothing in it
+              (first-run / wiped), b) filter excludes everything but the
+              library has entries. Different messaging because different
+              fixes — add a block vs change the filter. */}
+          {blocks.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-4 py-6 text-center">
+              {Object.keys(library).length === 0 ? (
+                <>
+                  <p className="text-sm font-semibold text-ink-100">
+                    Your block library is empty
+                  </p>
+                  <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                    Block estimates need at least one block in your library
+                    before you can create wall types or draw walls. Hit{' '}
+                    <span className="font-semibold text-ink-200">+ Add block</span>{' '}
+                    above to start.
+                  </p>
+                  <div className="mt-4 text-left max-w-md mx-auto rounded-md border border-ink-700 bg-ink-900/60 p-3">
+                    <p className="text-[11px] uppercase tracking-wider font-semibold text-ink-400 mb-2">
+                      What you need
+                    </p>
+                    <ul className="space-y-2 text-xs text-ink-300">
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A body block</span>{' '}
+                          — the main course block (tag it with the{' '}
+                          <span className="font-mono text-ink-200">body</span>{' '}
+                          role).
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A corner block</span>{' '}
+                          — for L-junctions and free ends (tag{' '}
+                          <span className="font-mono text-ink-200">corner</span>).
+                          Often the same block as the body — assign both roles.
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A half block</span>{' '}
+                          (recommended) — for accurate course staggering
+                          (tag <span className="font-mono text-ink-200">half</span>).
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">Bond beam, lintel, base course</span>{' '}
+                          — optional, but recommended for richer estimates.
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-ink-100">
+                    No blocks match this filter
+                  </p>
+                  <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                    No block in your library is tagged with the selected role.
+                    Try the <span className="font-semibold text-ink-200">All blocks</span>{' '}
+                    filter to see the full catalogue, or add the role to an
+                    existing block via Edit.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
           {/* List */}
           <div className="flex flex-col gap-1">
             {blocks.map((block) => (
@@ -181,11 +256,40 @@ export default function BlockLibraryPanel({
                 block={block}
                 readOnly={readOnly}
                 onEdit={() => setEditingCode(block.code)}
-                onDelete={() => {
-                  if (PROTECTED_BLOCK_CODES.has(block.code)) return
-                  if (window.confirm(`Delete block "${block.code} — ${block.name}"?`)) {
-                    removeBlock(block.code)
+                onDelete={async () => {
+                  const isProtected = PROTECTED_BLOCK_CODES.has(block.code)
+                  if (isProtected) {
+                    // Strong confirm — protected codes are referenced
+                    // by name in the calc engine and as defaults in
+                    // wall-type creation. Force-deleting is allowed so
+                    // users can truly start fresh with a custom library
+                    // (e.g. US CMU, UK metric), but they need to know
+                    // any wall type using this code will go missing.
+                    const ok = await confirm({
+                      title: `Delete protected block "${block.code} — ${block.name}"?`,
+                      message:
+                        'This block is a default reference in the calc ' +
+                        'engine. Any existing wall type referencing this ' +
+                        'code will point at a missing block, and new wall ' +
+                        'types created in an empty library will open with ' +
+                        'empty slots instead of being pre-filled. Use this ' +
+                        'when wiping the library to swap to a different ' +
+                        'catalogue (US CMU, UK metric, custom supplier range).',
+                      confirmLabel: 'Delete anyway',
+                      variant: 'destructive',
+                    })
+                    if (ok) removeBlock(block.code, { force: true })
+                    return
                   }
+                  const ok = await confirm({
+                    title: `Delete block "${block.code} — ${block.name}"?`,
+                    message:
+                      'The block is removed from your library. Wall types ' +
+                      'referencing it will need to be updated.',
+                    confirmLabel: 'Delete',
+                    variant: 'destructive',
+                  })
+                  if (ok) removeBlock(block.code)
                 }}
               />
             ))}
@@ -194,14 +298,16 @@ export default function BlockLibraryPanel({
           {/* Reset to defaults — admins only. */}
           {!readOnly && (
             <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Reset the entire block library to SEQ QLD defaults? Custom blocks will be removed and renames lost.'
-                  )
-                ) {
-                  resetBlockLibrary()
-                }
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Reset the block library?',
+                  message:
+                    'Reverts every block to the SEQ QLD defaults. Custom ' +
+                    'blocks will be removed and any renames lost.',
+                  confirmLabel: 'Reset library',
+                  variant: 'destructive',
+                })
+                if (ok) resetBlockLibrary()
               }}
               className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
             >
@@ -277,9 +383,12 @@ function BlockRow({
           </button>
           <button
             onClick={onDelete}
-            disabled={protectedBlock}
-            title={protectedBlock ? 'Built-in blocks can be renamed but not deleted' : 'Delete this block'}
-            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title={
+              protectedBlock
+                ? 'Default block — delete only when wiping the library to swap to a different block catalogue (warning prompt before it actually removes)'
+                : 'Delete this block'
+            }
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 transition-colors"
           >
             Delete
           </button>
@@ -594,42 +703,12 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
                   <fieldset className="border border-ink-700 bg-ink-900/40 rounded-lg p-3">
                     <legend className="px-1 text-ink-300 text-xs">Lintel rules</legend>
                     <p className="text-[11px] text-ink-400 mb-3 leading-relaxed">
-                      How this block is selected and sized when used as a lintel.
-                      All optional — leave blank for sensible defaults. Min and
-                      Max head height are both <em>inclusive</em>: a range of
-                      200–300 covers heads from 200mm to 300mm.
+                      How this block is sized when used as a lintel. Selection
+                      is automatic — when an opening needs a lintel, beme picks
+                      the smallest lintel-tagged block whose face height covers
+                      the head. No ranges to maintain.
                     </p>
                     <div className="grid grid-cols-3 gap-3">
-                      <label className="block">
-                        <span className="block text-ink-300 text-xs mb-1">Min head (mm)</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={50}
-                          value={lintelMinHeadHeightMm}
-                          onChange={(e) => {
-                            const v = e.target.value
-                            setLintelMinHeadHeightMm(v === '' ? '' : parseInt(v, 10))
-                          }}
-                          placeholder="e.g. 200"
-                          className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="block text-ink-300 text-xs mb-1">Max head (mm)</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={50}
-                          value={lintelMaxHeadHeightMm}
-                          onChange={(e) => {
-                            const v = e.target.value
-                            setLintelMaxHeadHeightMm(v === '' ? '' : parseInt(v, 10))
-                          }}
-                          placeholder="e.g. 300"
-                          className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                        />
-                      </label>
                       <label className="block">
                         <span className="block text-ink-300 text-xs mb-1">Bearing each side (mm)</span>
                         <input

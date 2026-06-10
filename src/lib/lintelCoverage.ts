@@ -150,64 +150,26 @@ function rangeOverlap(
   }
 }
 
-// ─── Block: lintel-tagged blocks with head-height buckets ─────────────────
+// ─── Block: lintel-tagged blocks ──────────────────────────────────────────
 
 /**
- * Block-mode lintel warnings — currently just overlapping bucket
- * ranges between lintel-tagged blocks. There's no "uncovered openings"
- * warning here because, unlike brick, block lintels never fail to
- * span: when an opening's head height exceeds the tallest lintel,
- * the lintel spans the opening and body blocks fill the remaining
- * head area as normal masonry. That's correct behaviour, not a defect
- * — so flagging it would just be noise.
+ * Block-mode lintel warnings — historically flagged overlapping
+ * head-height buckets between lintel-tagged blocks. That diagnostic
+ * existed because the picker was bucket-based and overlaps led to
+ * non-deterministic selection.
  *
- * Signature kept narrow (only the library) so callers don't have to
- * thread walls / openings / makeups they don't need. If a future
- * warning genuinely needs the geometry, widen the signature then.
+ * The picker is now `pickLintelBlockIn` (modular-fit, smallest covering
+ * lintel) which has no overlap ambiguity to resolve — it just picks
+ * the closest block whose face height covers the head. So there's
+ * nothing left to warn about: returns an empty list.
+ *
+ * Kept as a stable export with the same signature so any callers that
+ * import it don't break, and so re-introducing block-side diagnostics
+ * later has an obvious home.
  */
 export function blockLintelWarnings(
-  library: Record<BlockCode, Block>,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _library: Record<BlockCode, Block>,
 ): LintelWarning[] {
-  const lintels = Object.values(library).filter((b) => b.roles.includes('lintel'))
-  if (lintels.length === 0) return []
-
-  const warnings: LintelWarning[] = []
-
-  // Overlapping head-height bucket ranges.
-  for (let i = 0; i < lintels.length; i++) {
-    for (let j = i + 1; j < lintels.length; j++) {
-      const a = lintels[i]
-      const b = lintels[j]
-      // Only blocks with at least one bucket bound participate — blocks
-      // without bucket metadata fall through to the height-based path
-      // and don't claim a range.
-      if (
-        a.lintelMinHeadHeightMm === undefined &&
-        a.lintelMaxHeadHeightMm === undefined
-      )
-        continue
-      if (
-        b.lintelMinHeadHeightMm === undefined &&
-        b.lintelMaxHeadHeightMm === undefined
-      )
-        continue
-      const overlap = rangeOverlap(
-        a.lintelMinHeadHeightMm,
-        a.lintelMaxHeadHeightMm,
-        b.lintelMinHeadHeightMm,
-        b.lintelMaxHeadHeightMm,
-      )
-      if (overlap) {
-        warnings.push({
-          kind: 'overlap',
-          a: `${a.code} (${a.name})`,
-          b: `${b.code} (${b.name})`,
-          overlapLabel: `${overlap.min}–${overlap.max} mm head heights`,
-          hint: 'Bucket-based selection will pick whichever block comes first — adjust one range to remove the ambiguity.',
-        })
-      }
-    }
-  }
-
-  return warnings
+  return []
 }

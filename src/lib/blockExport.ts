@@ -88,6 +88,20 @@ interface ExportParams {
    */
   supplyItemNameOverrides?: Record<string, string>
   /**
+   * Per-export cover page text overrides — title, subtitle, intro.
+   * Each field is plain text; the exporter HTML-escapes before
+   * rendering. When ALL three are missing / empty, no cover page is
+   * rendered and the document opens directly into Assumptions like
+   * the legacy flow. When any field is set, a dedicated cover page
+   * is prepended to the body using `projectDetails` as fallback for
+   * the title.
+   */
+  coverOverrides?: {
+    title?: string
+    subtitle?: string
+    intro?: string
+  }
+  /**
    * Per-block quantity ADJUSTMENTS (a count to subtract from the
    * computed tally). Used when the user has some blocks already on
    * site or reused from another job and doesn't want them on the
@@ -97,6 +111,36 @@ interface ExportParams {
    * to >= 0 so a too-aggressive adjustment can't render a negative.
    */
   blockAdjustments?: Record<BlockCode, number>
+  /**
+   * Per-area overrides from the export modal's Quantities section.
+   * For each area the user can override:
+   *   - `sqM`: replaces the calc-engine m² for that area's wall
+   *     subset; flows into supply-item per-m² math + summary.
+   *   - `blocks`: per-block-code count overrides for that area.
+   *     Each override replaces the auto-tally count for that code
+   *     in that area; deltas are summed globally and applied to
+   *     the project-wide block tally.
+   *
+   * Keyed by areaId (or `__unassigned__` for the unassigned
+   * bucket). Missing fields fall back to the calc-engine value.
+   */
+  perAreaBlockOverrides?: Record<
+    string,
+    {
+      sqM?: number
+      blocks?: Record<string, number>
+      /** Per-wall-type drilldown overrides within this area. Keyed
+       *  by makeup id. Each entry can override that wall type's m²
+       *  contribution and per-code counts in this area. Deltas are
+       *  computed against the per-(area, makeup) auto totals and
+       *  applied to the project-wide tally the same way the
+       *  area-level overrides are. */
+      byMakeup?: Record<
+        string,
+        { sqM?: number; blocks?: Record<string, number> }
+      >
+    }
+  >
   walls: Wall[]
   makeups: WallMakeup[]
   openings: Opening[]
@@ -1198,6 +1242,93 @@ export async function buildBlockEstimateHtml(
     piers,
     pierMakeupsById
   )
+
+  // Apply per-area per-block-code overrides from the export modal's
+  // Quantities section, BEFORE the blockAdjustments pass below.
+  // For every (area, code) the user has overridden, compute the
+  // auto count on the area's wall subset, then mutate rawTally by
+  // the delta (override - auto). End result: blockAdjustments work
+  // as before on top of an already-adjusted rawTally.
+  const perAreaBlockOv = params.perAreaBlockOverrides ?? {}
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      const blockOv = ov.blocks
+      if (!blockOv || Object.keys(blockOv).length === 0) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      const piersInArea = piers.filter((p) => {
+        const pWallId = (p as { wallId?: string }).wallId
+        if (pWallId) return wallIds.has(pWallId)
+        return true
+      })
+      const areaTally = calculateProjectTally(
+        wallsInArea,
+        makeupsById,
+        openingsInArea,
+        piersInArea,
+        pierMakeupsById,
+      )
+      for (const [code, overrideCount] of Object.entries(blockOv)) {
+        if (typeof overrideCount !== 'number') continue
+        const c = code as BlockCode
+        const autoCount = areaTally[c] ?? 0
+        const delta = overrideCount - autoCount
+        if (delta === 0) continue
+        const currentGlobal = rawTally[c] ?? 0
+        rawTally[c] = Math.max(0, currentGlobal + delta)
+      }
+    }
+  }
+
+  // Apply per-(area, makeup) per-block-code overrides — the
+  // wall-type drilldown inside each area. Computes the auto count
+  // on the wall subset filtered to BOTH the area and the makeup,
+  // then applies (override - auto) deltas to rawTally. Runs after
+  // the area-level pass so per-wall-type edits stack on top of
+  // any area-level edits the user made.
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      const byMakeup = ov.byMakeup
+      if (!byMakeup) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+        const blockOv = mkOv.blocks
+        if (!blockOv || Object.keys(blockOv).length === 0) continue
+        const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+        if (mkWalls.length === 0) continue
+        const mkWallIds = new Set(mkWalls.map((w) => w.id))
+        const mkOpenings = openings.filter((o) => mkWallIds.has(o.wallId))
+        const mkPiers = piers.filter((p) => {
+          const pWallId = (p as { wallId?: string }).wallId
+          if (!pWallId) return false
+          return mkWallIds.has(pWallId)
+        })
+        const mkAutoTally = calculateProjectTally(
+          mkWalls,
+          makeupsById,
+          mkOpenings,
+          mkPiers,
+          pierMakeupsById,
+        )
+        for (const [code, overrideCount] of Object.entries(blockOv)) {
+          if (typeof overrideCount !== 'number') continue
+          const c = code as BlockCode
+          const autoCount = mkAutoTally[c] ?? 0
+          const delta = overrideCount - autoCount
+          if (delta === 0) continue
+          const currentGlobal = rawTally[c] ?? 0
+          rawTally[c] = Math.max(0, currentGlobal + delta)
+        }
+      }
+    }
+  }
   // Apply per-block adjustments. Each entry in `blockAdjustments` is
   // a SIGNED delta to subtract from the tally:
   //   - positive number → remove from tally (already on site, reused).
@@ -1242,6 +1373,84 @@ export async function buildBlockEstimateHtml(
     totalAreaSqMm_supply -= o.widthMm * o.heightMm
   }
   if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+
+  // Apply per-area m² overrides from the export modal's Quantities
+  // section. For each area with an override, compute the auto m²
+  // on that area's wall subset and apply the delta to the global
+  // totalAreaSqMm_supply. Drives the blockwork-area figure used by
+  // per-m² supply items + summary lines; the block schedule (counts
+  // per code) is geometry-bound and remains untouched.
+  // (`perAreaBlockOv` is the same map already captured above for the
+  // per-code overrides — reuse it here for the m² delta pass.)
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const areaId of Object.keys(perAreaBlockOv)) {
+      const ov = perAreaBlockOv[areaId]
+      if (!ov || typeof ov.sqM !== 'number') continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      let autoAreaSqMm = 0
+      for (const w of wallsInArea) {
+        const dx = w.endX - w.startX
+        const dy = w.endY - w.startY
+        const lenMm = Math.sqrt(dx * dx + dy * dy)
+        const h =
+          w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+        autoAreaSqMm += lenMm * h
+      }
+      for (const o of openingsInArea) {
+        autoAreaSqMm -= o.widthMm * o.heightMm
+      }
+      autoAreaSqMm = Math.max(0, autoAreaSqMm)
+      const overrideSqMm = ov.sqM * 1_000_000
+      totalAreaSqMm_supply += overrideSqMm - autoAreaSqMm
+    }
+    if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+  }
+
+  // Per-(area, makeup) m² overrides — wall-type drilldown sqM.
+  // These only apply when the area itself has no area-level sqM
+  // override (otherwise the area-level value is the boss for total
+  // m² and we'd double-count). For each unrestricted area, sum the
+  // (override - auto) deltas across its makeup-level overrides and
+  // apply to totalAreaSqMm_supply.
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      if (typeof ov.sqM === 'number') continue // area-level wins
+      const byMakeup = ov.byMakeup
+      if (!byMakeup) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+        if (typeof mkOv.sqM !== 'number') continue
+        const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+        if (mkWalls.length === 0) continue
+        const mkWallIds = new Set(mkWalls.map((w) => w.id))
+        const mkOpenings = openings.filter((o) => mkWallIds.has(o.wallId))
+        let mkAutoSqMm = 0
+        for (const w of mkWalls) {
+          const dx = w.endX - w.startX
+          const dy = w.endY - w.startY
+          const lenMm = Math.sqrt(dx * dx + dy * dy)
+          const h =
+            w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+          mkAutoSqMm += lenMm * h
+        }
+        for (const o of mkOpenings) {
+          mkAutoSqMm -= o.widthMm * o.heightMm
+        }
+        mkAutoSqMm = Math.max(0, mkAutoSqMm)
+        const mkOverrideSqMm = mkOv.sqM * 1_000_000
+        totalAreaSqMm_supply += mkOverrideSqMm - mkAutoSqMm
+      }
+    }
+    if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+  }
 
   // User-defined supply items applicable to block estimates. Source
   // of truth: when an org is active, use the org-synced Supabase
@@ -1509,6 +1718,43 @@ export async function buildBlockEstimateHtml(
     if (rows.length === 0) return ''
     return `<div class="meta">${rows.join('')}</div>`
   })()
+
+  // Page 0: Cover page — only when the user customised any of the
+  // cover fields via the export modal. Falls back to the project
+  // name when no title override is set so the cover still reads
+  // sensibly. Document opens directly into Assumptions when all
+  // overrides are empty (legacy behaviour, no blank cover page).
+  const coverTitle = params.coverOverrides?.title?.trim() ?? ''
+  const coverSubtitle = params.coverOverrides?.subtitle?.trim() ?? ''
+  const coverIntro = params.coverOverrides?.intro?.trim() ?? ''
+  const hasCover = !!(coverTitle || coverSubtitle || coverIntro)
+  const coverTitleResolved =
+    coverTitle ||
+    projectDetails.projectName.trim() ||
+    projectDetails.siteAddress.trim() ||
+    'Block Takeoff'
+  const coverPage = hasCover
+    ? `
+      <section class="page cover-page">
+        ${pageHeader}
+        <div class="cover-body">
+          <div class="cover-eyebrow">Block estimate${referenceText ? ` · ${escapeHtml(referenceText)}` : ''}</div>
+          <div class="cover-head">
+            <div>
+              <h1 class="cover-title">${escapeHtml(coverTitleResolved)}</h1>
+              ${coverSubtitle ? `<p class="cover-subtitle">${escapeHtml(coverSubtitle)}</p>` : ''}
+            </div>
+            <dl class="cover-meta">
+              ${projectDetails.siteAddress.trim() && projectDetails.siteAddress.trim() !== coverTitleResolved ? `<div><dt>Site</dt><dd>${escapeHtml(projectDetails.siteAddress)}</dd></div>` : ''}
+              ${projectDetails.clientName.trim() ? `<div><dt>Client</dt><dd>${escapeHtml(projectDetails.clientName)}</dd></div>` : ''}
+              ${projectDetails.date ? `<div><dt>Date</dt><dd>${formatDate(projectDetails.date)}</dd></div>` : ''}
+            </dl>
+          </div>
+          ${coverIntro ? `<div class="cover-intro">${escapeHtml(coverIntro).replace(/\n/g, '<br/>')}</div>` : ''}
+        </div>
+      </section>
+    `
+    : ''
 
   // Page 1: Assumptions — rendered as categorised groups with
   // subheadings so the reader can scan to the relevant area
@@ -1902,6 +2148,7 @@ export async function buildBlockEstimateHtml(
   // wrapper) get the full assembled doc just like before.
 
   const bodyContent = `
+  ${coverPage}
   ${assumptionsPage}
   ${/* 3D snapshots come FIRST after the assumptions pages so the
        reader sees the project in 3D as soon as they've finished
@@ -1979,6 +2226,78 @@ export async function buildBlockEstimateHtml(
     max-width: 150px;
     display: block;
     margin-bottom: 4px;
+  }
+
+  /* Cover page — A4 landscape layout. Title block takes the LEFT
+     half of the page (3 cols of a 5-col grid), meta block takes
+     the RIGHT half (2 cols). Intro paragraph spans the full width
+     below them, separated by a divider so the eye lands on the
+     title-meta split first. Title can grow larger than the portrait
+     version because landscape has the horizontal room to support
+     a ~44px headline without crowding. */
+  .cover-page .cover-body {
+    padding: 28px 12px 0 12px;
+    max-width: 100%;
+  }
+  .cover-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 10px;
+    color: #6B7280;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .cover-head {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    column-gap: 36px;
+    align-items: start;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #E5E7EB;
+  }
+  .cover-title {
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+    color: #111827;
+    margin: 0 0 6px 0;
+  }
+  .cover-subtitle {
+    font-size: 15px;
+    color: #4B5563;
+    margin: 8px 0 0 0;
+    line-height: 1.45;
+    max-width: 540px;
+  }
+  .cover-meta {
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 10px;
+    margin: 4px 0 0 0;
+    padding: 0 0 0 24px;
+    border-left: 1px solid #E5E7EB;
+  }
+  .cover-meta dt {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 9px;
+    color: #6B7280;
+    margin-bottom: 2px;
+  }
+  .cover-meta dd {
+    font-size: 12px;
+    color: #1F2937;
+    font-weight: 500;
+    margin: 0;
+  }
+  .cover-intro {
+    font-size: 12px;
+    color: #374151;
+    line-height: 1.6;
+    margin-top: 24px;
+    max-width: 100%;
+    white-space: pre-wrap;
   }
   /* Logo used as the primary brand mark — bigger than the inline logo
      because no text name accompanies it. Capped at 80 px tall / 280 px

@@ -89,7 +89,10 @@ export default function ProjectBar({
   canSave,
   saveBlockedReason,
   mode,
-  createdByDisplayName,
+  // `createdByDisplayName` prop intentionally not destructured —
+  // the "Started by <user>" pill it fed was removed from the bar
+  // to keep the row single-line on narrow workspace columns.
+  // Kept in the props interface so callers don't have to change.
   referenceNumber,
   isSaving = false,
   onSave,
@@ -101,6 +104,27 @@ export default function ProjectBar({
 }: ProjectBarProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+
+  // Brief celebratory "just saved" state. We watch lastSavedAt for a
+  // change to a new non-null value — that's the most reliable signal
+  // that a save actually succeeded (as opposed to isSaving going
+  // false because the request errored out, which we don't want to
+  // celebrate). On detection we flip justSaved to true, render a
+  // green-pulse pill with a checkmark, then clear it 1.5s later so
+  // the bar settles back into its neutral "Saved · 2m ago" timestamp
+  // state. First render is a no-op: useRef seeds prev = lastSavedAt
+  // so re-mounting on an already-saved project doesn't fire the
+  // celebration.
+  const prevLastSavedAt = useRef<string | null>(lastSavedAt)
+  const [justSaved, setJustSaved] = useState(false)
+  useEffect(() => {
+    const prev = prevLastSavedAt.current
+    prevLastSavedAt.current = lastSavedAt
+    if (!lastSavedAt || lastSavedAt === prev) return
+    setJustSaved(true)
+    const timeout = setTimeout(() => setJustSaved(false), 1500)
+    return () => clearTimeout(timeout)
+  }, [lastSavedAt])
 
   // Close the menu on outside click / Escape
   useEffect(() => {
@@ -142,18 +166,28 @@ export default function ProjectBar({
   })()
 
   return (
-    // Full-width bar with px-20 so the back-to-dashboard pill, breadcrumb,
-    // project identity, and save actions line up with the workspace columns
-    // below and the Beme logo + org/user pills in the header above. Matches
-    // the estimate workspace's px-20 outer padding.
-    <div className="bg-ink-800/60 border-b border-ink-600 px-20 py-2 flex items-center gap-3 flex-wrap">
+    // Full-width bar with px-4 so the back-to-dashboard pill, project
+    // identity, and save actions sit with a small breathing gutter
+    // from the workspace edges. Matches the workspace sticky
+    // container below (px-4) so this bar and the canvas line up
+    // edge-to-edge with the same gutter.
+    // Wrapper is intentionally transparent + borderless so the bar
+    // dissolves into the page background. Per-pill borders still give
+    // each control a tappable shape, but there's no slab wash to
+    // separate the bar from the workspace below.
+    // Single-row layout: `flex-wrap` removed so the bar stays on one
+    // line even when the expanded LeftNav has eaten into the main
+    // column. The project identity button has its own max-w +
+    // truncate so it shrinks gracefully when there isn't room for
+    // every pill at full width.
+    <div className="px-4 py-2 flex items-center gap-3 min-w-0">
       {/* LEFT — back-to-dashboard pill so the user can hop out of the
           workspace from anywhere. Request-breadcrumb is gone with the
           inbox flow; sharing a project is now a reference-number copy
           paste away. */}
       <Link
         to="/"
-        className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-200 hover:bg-ink-700 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
+        className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700/40 hover:border-beme-500/50 hover:text-beme-300 transition-colors flex-shrink-0"
         title="Back to dashboard"
       >
         <span className="text-base leading-none">←</span>
@@ -164,20 +198,15 @@ export default function ProjectBar({
       <div className="flex-1" />
 
       {/* RIGHT — project identity + actions, all matching pill sizes so the
-          right side reads as one cohesive control cluster. */}
-      <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-        {createdByDisplayName && (
-          <span
-            className="hidden lg:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 text-sm text-ink-300"
-            title="Estimator who started this project"
-          >
-            <span className="text-ink-500 text-xs uppercase tracking-wider">Started by</span>
-            <span className="font-medium text-ink-100">{createdByDisplayName}</span>
-          </span>
-        )}
+          right side reads as one cohesive control cluster. The
+          "Started by <user>" pill was dropped from this row — it was
+          the first thing pushing the bar onto a second line when the
+          LeftNav opened. Creator info still surfaces inside the
+          project details drawer (click the project identity pill). */}
+      <div className="flex items-center gap-2 flex-shrink min-w-0">
         <button
           onClick={onOpenDetails}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 bg-ink-800/60 group text-left text-sm hover:bg-ink-700 hover:border-beme-500/50 transition-colors"
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 group text-left text-sm hover:bg-ink-700/40 hover:border-beme-500/50 transition-colors min-w-0 flex-shrink"
           title={`${statusLabel} · click to edit project details`}
         >
           {mode && (
@@ -193,7 +222,7 @@ export default function ProjectBar({
           )}
           {typeof referenceNumber === 'number' && (
             <span
-              className="text-[10px] px-1.5 py-0.5 rounded tabular-nums font-semibold bg-ink-700 text-ink-200 border border-ink-500"
+              className="text-[10px] px-1.5 py-0.5 rounded tabular-nums font-semibold text-ink-300 border border-ink-600"
               title={`Reference number — quote this when looking the project up. #${formatReferenceNumber(referenceNumber)}`}
             >
               #{formatReferenceNumber(referenceNumber)}
@@ -207,7 +236,7 @@ export default function ProjectBar({
             {displayName}
           </span>
           {subtitle && (
-            <span className="text-ink-400 text-xs hidden lg:inline truncate max-w-[200px]">
+            <span className="text-ink-400 text-xs hidden xl:inline truncate max-w-[200px]">
               · {subtitle}
             </span>
           )}
@@ -218,10 +247,12 @@ export default function ProjectBar({
             "Saved Xm ago" while the in-flight save is happening. */}
         {(isSaving || lastSavedAt) && (
           <span
-            className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] ${
+            className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-colors duration-300 ${
               isSaving
                 ? 'bg-beme-500/15 text-beme-300 border border-beme-500/30'
-                : 'text-ink-400 border border-transparent'
+                : justSaved
+                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40'
+                  : 'text-ink-400 border border-transparent'
             }`}
             aria-live="polite"
           >
@@ -231,11 +262,32 @@ export default function ProjectBar({
                 aria-hidden
               />
             )}
+            {!isSaving && justSaved && (
+              // Animated checkmark — draws in over 350ms with a slight
+              // scale pop so it reads as a beat of confirmation rather
+              // than a static glyph that was always there.
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="beme-check-pop"
+                aria-hidden
+              >
+                <path d="M3 8.5 L7 12.5 L13.5 4" />
+              </svg>
+            )}
             {isSaving
               ? 'Saving…'
-              : lastSavedAt
-                ? `Saved · ${formatRelativeTime(lastSavedAt)}`
-                : null}
+              : justSaved
+                ? 'Saved'
+                : lastSavedAt
+                  ? `Saved · ${formatRelativeTime(lastSavedAt)}`
+                  : null}
           </span>
         )}
         <button
