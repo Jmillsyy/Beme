@@ -1447,11 +1447,18 @@ export async function buildBrickEstimateHtml(
       </table>
     `
   }
-  const headTotalMm = Object.values(tally.headLinealMmByType ?? {}).reduce(
+  // Source the totals from byMakeup, not byType — byMakeup populates
+  // for every wall with openings regardless of whether the wall type
+  // specifies a head/sill brick code (a 3D-render concern), so the
+  // head/sill course rows still print when "Opening visuals" was
+  // never touched. byType only contains entries that have an
+  // explicit brick code, which would silently hide the rows on
+  // perfectly normal projects.
+  const headTotalMm = Object.values(tally.headLinealMmByMakeup ?? {}).reduce(
     (s, v) => s + v,
     0,
   )
-  const sillTotalMm = Object.values(tally.sillLinealMmByType ?? {}).reduce(
+  const sillTotalMm = Object.values(tally.sillLinealMmByMakeup ?? {}).reduce(
     (s, v) => s + v,
     0,
   )
