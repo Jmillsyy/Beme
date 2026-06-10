@@ -2082,6 +2082,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // Snapshot fingerprint builder — keep file objects (which JSON.stringify
   // would render as `{}`) keyed by their stable metadata so renaming or
   // re-uploading the same file counts as a real change.
+  //
+  // PDF-render state (pagesData, referencePdfPagesDataById) is intentionally
+  // NOT in the fingerprint: those fields get mutated by the PDF
+  // rendering pipeline AFTER project load (page width/height get read
+  // off the PDF metadata and written back even if they already matched
+  // the saved values, plus floating-point drift can creep in). Tracking
+  // them flagged every newly-opened project as "dirty" within seconds
+  // of opening. Calibration handlers + PDF apply handlers explicitly
+  // mark dirty via setHasUnsavedChanges(true) so genuine user changes
+  // still gate the Save changes button.
   const buildSnapshotFingerprint = (): string => {
     const fileFp = (f: File | null | undefined) =>
       f ? { name: f.name, size: f.size, lastModified: f.lastModified } : null
@@ -2097,12 +2107,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       supplyItemSelections,
       supplyItemRateOverrides,
       pdfFile: fileFp(pdfFile),
-      pagesData,
       referencePdfFiles: referencePdfFiles.map(fileFp),
       referencePdfPaths,
       referencePdfIds,
       referencePdfSelectedPages,
-      referencePdfPagesDataById,
       referencePdfMeasurementsByPageById,
       isEmptyWorkspace,
     })
@@ -2155,12 +2163,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     supplyItemSelections,
     supplyItemRateOverrides,
     pdfFile,
-    pagesData,
+    // pagesData / referencePdfPagesDataById intentionally NOT in deps —
+    // they're populated by the PDF render pipeline on every load and
+    // would re-flag the project dirty within seconds of opening.
+    // Calibration + PDF apply handlers mark dirty explicitly instead.
     referencePdfFiles,
     referencePdfPaths,
     referencePdfIds,
     referencePdfSelectedPages,
-    referencePdfPagesDataById,
     referencePdfMeasurementsByPageById,
     isEmptyWorkspace,
     hasUnsavedChanges,
@@ -5751,6 +5761,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setZoom(1)
     setRenderedZoom(1)
     cancelCalibration()
+    // PDF + pagesData aren't both in the dirty fingerprint anymore
+    // (pagesData drifts on every PDF render). Mark dirty explicitly
+    // here so the Save button lights up after a fresh upload.
+    setHasUnsavedChanges(true)
   }
 
   const acceptFile = async (file: File | undefined | null) => {
@@ -6026,6 +6040,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       },
     }))
     cancelCalibration()
+    // Calibration mutates pagesData (no longer in the dirty fingerprint
+    // because the PDF render writes to it on every load). Mark dirty
+    // explicitly so Save lights up after the user re-calibrates.
+    setHasUnsavedChanges(true)
     // Calibration is the most-consequential silent state change in the
     // app — wrong calibration silently breaks every length downstream.
     // Toast confirms the ratio that landed so the user can sanity-check
@@ -6054,6 +6072,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       },
     }))
     cancelCalibration()
+    // See applyScale — pagesData isn't in the dirty fingerprint, so
+    // calibration has to mark dirty itself.
+    setHasUnsavedChanges(true)
     toast.success(`Scale set to 1:${Math.round(ratio)}`, {
       description: `Page ${currentPage} — picked from common ratios.`,
     })
