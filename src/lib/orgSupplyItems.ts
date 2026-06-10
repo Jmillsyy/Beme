@@ -56,6 +56,10 @@ interface Row {
   category: string | null
   opening_width_min_mm: number | null
   opening_width_max_mm: number | null
+  /** Display precision for the quantity. 0 = whole units, 1–3 = decimals.
+   *  Nullable because the column was added after the original schema; old
+   *  rows return NULL and resolve to 0 via supplyItemDecimals downstream. */
+  decimal_places: number | null
 }
 
 function rowToItem(row: Row): SupplyItem {
@@ -72,6 +76,9 @@ function rowToItem(row: Row): SupplyItem {
     category: row.category ?? undefined,
     openingWidthMinMm: row.opening_width_min_mm ?? undefined,
     openingWidthMaxMm: row.opening_width_max_mm ?? undefined,
+    // Pre-migration rows return NULL; supplyItemDecimals defaults that
+    // to 0 (whole units), so legacy items keep their existing display.
+    decimalPlaces: row.decimal_places ?? undefined,
   }
 }
 
@@ -88,6 +95,7 @@ function itemToRow(item: SupplyItem, orgId: string): Omit<Row, 'id'> & { id?: st
     category: item.category ?? null,
     opening_width_min_mm: item.openingWidthMinMm ?? null,
     opening_width_max_mm: item.openingWidthMaxMm ?? null,
+    decimal_places: item.decimalPlaces ?? null,
   }
 }
 
@@ -110,7 +118,7 @@ export async function listOrgSupplyItems(orgId: string): Promise<SupplyItem[]> {
   const { data, error } = await client
     .from('org_supply_items')
     .select(
-      'id, organisation_id, name, description, unit, rate, applies_to, enabled_by_default, category, opening_width_min_mm, opening_width_max_mm'
+      'id, organisation_id, name, description, unit, rate, applies_to, enabled_by_default, category, opening_width_min_mm, opening_width_max_mm, decimal_places'
     )
     .eq('organisation_id', orgId)
     .order('created_at', { ascending: true })

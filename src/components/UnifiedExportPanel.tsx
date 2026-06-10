@@ -863,6 +863,17 @@ function ExportEstimateModal({
     >
   >({})
 
+  // Wastage % applied to brick / block headline totals only (NOT
+  // supply items — those are already user-managed allowances). When
+  // `wastageEnabled` is on AND `wastagePercent` is a positive number,
+  // the brick and block exporters add a "+ X% wastage" column to
+  // their area summary, with a wastage-uplifted total alongside the
+  // net figure. Off by default so existing projects export unchanged.
+  const [wastageEnabled, setWastageEnabled] = useState<boolean>(false)
+  const [wastagePercent, setWastagePercent] = useState<number | undefined>(
+    undefined,
+  )
+
   /**
    * Resolve a per-area metric: return the override if the user has set
    * one, otherwise the auto-computed value. Tiny helper so the JSX
@@ -1399,6 +1410,13 @@ function ExportEstimateModal({
             blockAdjustments,
             // Per-area m² overrides from the Quantities section.
             perAreaBlockOverrides,
+            // Wastage uplift % — undefined when the checkbox is off
+            // (exporter renders no wastage column). Brick / block
+            // totals only; supply items unaffected.
+            wastagePercent:
+              wastageEnabled && wastagePercent && wastagePercent > 0
+                ? wastagePercent
+                : undefined,
             view3dSnapshots,
           })
         } else {
@@ -1419,6 +1437,13 @@ function ExportEstimateModal({
             // the Quantities section. Empty when the user hasn't
             // touched any field — exporter falls back to auto values.
             perAreaBrickOverrides,
+            // Wastage uplift % — undefined when the checkbox is off.
+            // Applied to the headline brick m² figure only; supply
+            // schedule + per-area Quantities pass through unchanged.
+            wastagePercent:
+              wastageEnabled && wastagePercent && wastagePercent > 0
+                ? wastagePercent
+                : undefined,
             view3dSnapshots,
           })
         }
@@ -1812,10 +1837,66 @@ function ExportEstimateModal({
                   Auto-calculated per area from the walls and openings
                   on the plan. Expand any area to override the m² (and
                   for brick, the head / sill lineal m) — useful when
-                  you need to bump for waste, account for a renovation,
-                  or hand-tune for unusual geometry. Empty fields fall
-                  back to the auto value.
+                  you need to account for a renovation, or hand-tune
+                  for unusual geometry. Empty fields fall back to the
+                  auto value.
                 </p>
+
+                {/* Wastage uplift — single project-wide % applied to
+                    the brick + block area / count totals on the
+                    export. Wastage doesn't touch the per-area
+                    overrides or the supply schedule (those are
+                    estimator-managed allowances); it just stacks a
+                    "+ X% wastage" column onto the area summary so the
+                    deliverable shows BOTH the net figure AND the
+                    ordered-with-wastage figure. */}
+                <div className="mb-3 rounded-md border border-ink-700/80 bg-ink-900/40 px-3 py-2.5">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={wastageEnabled}
+                      onChange={(e) => {
+                        const next = e.target.checked
+                        setWastageEnabled(next)
+                        // Seed a sensible default the first time the box
+                        // is ticked so the user isn't staring at an
+                        // empty field.
+                        if (next && wastagePercent === undefined) {
+                          setWastagePercent(10)
+                        }
+                      }}
+                      className="w-4 h-4 accent-beme-500"
+                    />
+                    <span className="text-sm font-medium text-ink-100">
+                      Add wastage to brick + block totals
+                    </span>
+                  </label>
+                  {wastageEnabled && (
+                    <div className="mt-2 flex items-center gap-2 pl-6">
+                      <label className="text-xs text-ink-300">Percent</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.5"
+                        value={wastagePercent ?? ''}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value)
+                          setWastagePercent(
+                            Number.isFinite(v) && v >= 0 ? v : undefined,
+                          )
+                        }}
+                        placeholder="10"
+                        className="w-20 px-2 py-1 border border-ink-600 rounded text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 tabular-nums"
+                      />
+                      <span className="text-sm text-ink-300">%</span>
+                      <span className="text-[11px] text-ink-500 ml-2">
+                        Adds a "+ wastage" column next to each net
+                        figure on the export.
+                      </span>
+                    </div>
+                  )}
+                </div>
 
                 {/* Brick areas */}
                 {Object.keys(perAreaBrickMetrics).length > 0 && (
