@@ -159,6 +159,48 @@ function migrateBrickWalls(
   return out
 }
 
+/**
+ * Repair orphan wall.makeupId references — any wall whose makeupId
+ * doesn't match a current makeup of its trade gets reassigned to the
+ * first available makeup of that trade.
+ *
+ * Why this happens: previous versions of the panel let you delete a
+ * wall type even when walls referenced it (orphaning them), and our
+ * own `dedupeWalls` migration picks the first occurrence of a duplicate
+ * geometry pair — which can land on a makeupId that later gets deleted
+ * via the new always-on Delete button. Either way the wall is visible
+ * on canvas but invisible to the wall-type counts (and gets the default
+ * orange because its colour lookup falls through). Reassigning on load
+ * brings the wall back into the count and back under the right colour.
+ *
+ * Block walls reassign to first block makeup, brick walls to first
+ * brick makeup. Walls with empty makeupId are left for migrateBrickWalls
+ * to handle (it has the brick default).
+ */
+function migrateOrphanMakeupIds(
+  wallsByPage: Record<number, Wall[]>,
+  blockMakeups: WallMakeup[],
+  brickMakeups: BrickMakeup[]
+): Record<number, Wall[]> {
+  const blockIds = new Set(blockMakeups.map((m) => m.id))
+  const brickIds = new Set(brickMakeups.map((m) => m.id))
+  const firstBlock = blockMakeups[0]?.id
+  const firstBrick = brickMakeups[0]?.id
+  const out: Record<number, Wall[]> = {}
+  for (const [pageStr, walls] of Object.entries(wallsByPage)) {
+    out[Number(pageStr)] = walls.map((w) => {
+      if (!w.makeupId) return w
+      const trade = w.trade ?? 'block'
+      const validIds = trade === 'brick' ? brickIds : blockIds
+      if (validIds.has(w.makeupId)) return w
+      const fallback = trade === 'brick' ? firstBrick : firstBlock
+      if (!fallback) return w
+      return { ...w, makeupId: fallback }
+    })
+  }
+  return out
+}
+
 function computeWallThicknessByWallId(
   walls: Wall[],
   makeupsById: Record<string, WallMakeup>,
@@ -1740,7 +1782,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           : proj.wallsByPage
         const areaMigratedWallsByPage = migrateWallsAreaId(migratedWallsByPage)
         const dedupedWallsByPage = dedupeWalls(areaMigratedWallsByPage)
-        setWallsByPage(dedupedWallsByPage ?? {})
+        // Orphan-makeup repair — hydrate block makeups eagerly so we
+        // can pass both lists to the migration. Walls whose makeupId
+        // no longer exists in their trade's list get pointed at the
+        // first available makeup of that trade. Bug we're catching:
+        // delete-with-walls + the on-load dedup picking the wrong side
+        // of a duplicate pair, leaving 24 walls referencing a deleted
+        // brick wall type and reading as "0 walls" in the panel.
+        const hydratedBlockMakeups =
+          proj.makeups && proj.makeups.length > 0
+            ? proj.makeups.map(migrateMakeup)
+            : makeups
+        const orphanRepairedWallsByPage = migrateOrphanMakeupIds(
+          dedupedWallsByPage ?? {},
+          hydratedBlockMakeups,
+          hydratedBrickMakeups,
+        )
+        setWallsByPage(orphanRepairedWallsByPage)
         setOpeningsByPage(proj.openingsByPage ?? {})
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
         // Hydrate pier makeups from save (or reset to empty if the project
