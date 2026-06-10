@@ -12,6 +12,7 @@ import type {
   WallMakeup,
 } from '../types/walls'
 import type { SupplyItem } from '../types/userSettings'
+import { roundSupplyQuantity } from '../types/userSettings'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { PageInfo } from '../lib/blockExport'
 import { exportBlockEstimate } from '../lib/blockExport'
@@ -1105,7 +1106,9 @@ function ExportEstimateModal({
         break
       }
     }
-    return Math.max(0, Math.ceil(raw))
+    // Match the exporter exactly: round up at the item's chosen
+    // decimal precision (0 dp → whole units, 1–3 dp → finer step).
+    return Math.max(0, roundSupplyQuantity(raw, item))
   }
 
   // Trade-keyed base tallies for the supply table — { itemId → qty }

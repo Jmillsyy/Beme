@@ -50,16 +50,18 @@ export default function AppShell({
         aria-hidden="true"
         className="pointer-events-none absolute top-0 right-0 w-[60%] h-[420px] bg-[radial-gradient(ellipse_at_top_right,rgba(255,122,45,0.10),transparent_60%)] light:bg-[radial-gradient(ellipse_at_top_right,rgba(255,122,45,0.04),transparent_60%)] z-0"
       />
+      {/* Thin brand accent bar — 2px gradient stripe spanning the FULL
+          viewport width, INCLUDING the LeftNav. Absolutely positioned
+          so it overlays both the rail and the main column as one
+          unbroken band instead of starting at the LeftNav's right
+          edge. pointer-events-none + z-20 so it never intercepts
+          clicks but sits above the LeftNav + content. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-beme-500 via-beme-400 to-transparent z-20"
+      />
       {signedIn && <LeftNav />}
       <div className="flex-1 min-w-0 flex flex-col relative z-10">
-        {/* Thin brand accent bar at the very top — a 2px gradient
-            stripe across the main column. Subtle but unmistakably
-            Beme; visually answers "what is this product?" before the
-            user reads a single word of content. */}
-        <div
-          aria-hidden="true"
-          className="h-[2px] bg-gradient-to-r from-beme-500 via-beme-400 to-transparent flex-shrink-0"
-        />
         {/* Mobile top brand strip — only on narrow viewports (<lg)
             where the left rail is hidden. Keeps a clickable Beme
             mark so users can always get home. */}

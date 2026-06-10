@@ -2224,55 +2224,25 @@ function StatTile({
           : accent === 'sky'
             ? 'bg-sky-400'
             : 'bg-ink-500'
-  // Accented tiles get a subtle brand-tinted gradient backdrop +
-  // glow so they read as "the one to look at" without screaming.
-  // Non-accented tiles stay flat and quiet. The accent dot drives
-  // the gradient hue so beme / emerald / amber / sky all feel
-  // visually consistent with their respective semantics.
-  const accentBg =
-    accent === 'beme'
-      ? 'bg-gradient-to-br from-beme-500/10 via-ink-800 to-ink-800 border-beme-500/30 shadow-md shadow-beme-500/10'
-      : accent === 'emerald'
-        ? 'bg-gradient-to-br from-emerald-500/10 via-ink-800 to-ink-800 border-emerald-500/25'
-        : accent === 'amber'
-          ? 'bg-gradient-to-br from-amber-500/10 via-ink-800 to-ink-800 border-amber-500/25'
-          : accent === 'sky'
-            ? 'bg-gradient-to-br from-sky-500/10 via-ink-800 to-ink-800 border-sky-500/25'
-            : 'bg-ink-800 border-ink-600'
+  // All tiles share the same flat panel chrome — plain bg, neutral
+  // border, no gradient washes or atmospheric blobs. The previous
+  // beme/emerald/amber tinted gradients muddied the dashboard with
+  // four different tile flavours; user wanted them dropped. Accent
+  // colour is still conveyed by the dot in the eyebrow and the
+  // tinted number, which is the actual semantic signal — the rest
+  // of the card stays calm white.
   return (
-    <div
-      className={`border rounded-2xl px-5 py-4 lift relative overflow-hidden ${accentBg}`}
-    >
-      {/* Decorative top-right gradient blob for accented tiles —
-          adds a hint of brand atmosphere without crowding the
-          numeric content. Hidden on non-accented tiles so the
-          dashboard rhythm stays varied (loud-quiet-loud-quiet). */}
-      {accent && (
-        <div
-          aria-hidden="true"
-          className={`pointer-events-none absolute -top-8 -right-8 w-24 h-24 rounded-full blur-2xl opacity-50 ${
-            accent === 'beme'
-              ? 'bg-beme-500/30'
-              : accent === 'emerald'
-                ? 'bg-emerald-500/25'
-                : accent === 'amber'
-                  ? 'bg-amber-500/25'
-                  : 'bg-sky-500/25'
-          }`}
-        />
-      )}
-      <div className="relative">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 flex items-center gap-2">
-          {accent && (
-            <span aria-hidden="true" className={`inline-block w-1.5 h-1.5 rounded-full ${dotBg}`} />
-          )}
-          {label}
-        </div>
-        <div className={`text-3xl font-bold tracking-tight tabular-nums mt-2 ${accentText}`}>
-          {value}
-        </div>
-        {sub && <div className="text-xs text-ink-400 mt-1">{sub}</div>}
+    <div className="border border-ink-600 rounded-2xl bg-ink-800 px-5 py-4 lift">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-400 flex items-center gap-2">
+        {accent && (
+          <span aria-hidden="true" className={`inline-block w-1.5 h-1.5 rounded-full ${dotBg}`} />
+        )}
+        {label}
       </div>
+      <div className={`text-3xl font-bold tracking-tight tabular-nums mt-2 ${accentText}`}>
+        {value}
+      </div>
+      {sub && <div className="text-xs text-ink-400 mt-1">{sub}</div>}
     </div>
   )
 }
@@ -2289,26 +2259,17 @@ function NewEstimateTile() {
     <Link
       to="/project/block"
       title="Start a new masonry estimate — block, brick, or both"
-      className="relative block border border-beme-500/40 rounded-2xl bg-gradient-to-br from-beme-500/15 via-beme-500/5 to-ink-800 px-5 py-4 hover:border-beme-500/70 hover:from-beme-500/25 transition-colors group overflow-hidden lift"
+      className="block border border-beme-500/40 rounded-2xl bg-ink-800 px-5 py-4 hover:border-beme-500/70 hover:bg-beme-500/5 transition-colors group lift"
     >
-      {/* Brand glow corner — same atmospheric trick as the accented
-          StatTiles, but stronger because this is the primary CTA of
-          the dashboard. Soft radial in the top-right of the card. */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-10 -right-10 w-32 h-32 rounded-full bg-beme-500/40 blur-2xl opacity-60 group-hover:opacity-80 transition-opacity"
-      />
-      <div className="relative">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-300 flex items-center justify-between gap-2">
-          <span>Start a new estimate</span>
-          <span className="text-beme-400 group-hover:translate-x-0.5 transition-transform">→</span>
-        </div>
-        <div className="text-xl font-extrabold tracking-tight mt-1 text-beme-400 group-hover:text-beme-300">
-          + New estimate
-        </div>
-        <div className="text-xs text-ink-300 mt-0.5">
-          Block, brick, or both — switch trades inside
-        </div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-500 flex items-center justify-between gap-2">
+        <span>Start a new estimate</span>
+        <span className="text-beme-500 group-hover:translate-x-0.5 transition-transform">→</span>
+      </div>
+      <div className="text-xl font-extrabold tracking-tight mt-1 text-beme-500 group-hover:text-beme-600">
+        + New estimate
+      </div>
+      <div className="text-xs text-ink-400 mt-0.5">
+        Block, brick, or both — switch trades inside
       </div>
     </Link>
   )

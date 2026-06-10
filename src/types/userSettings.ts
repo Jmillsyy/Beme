@@ -185,6 +185,58 @@ export interface SupplyItem {
    */
   openingWidthMinMm?: number
   openingWidthMaxMm?: number
+  /**
+   * Decimal places to display this item's quantity at. Whole-unit items
+   * (bricks, blocks, lintels, ties) stay at 0 so they keep rounding up to
+   * a whole count; consumable items like cement / sand / flashing where
+   * a fractional quantity is meaningful can pick 1–3 so the deliverable
+   * reads "0.30 m³" rather than "1" or "0".
+   *
+   * The rounding mode is still "ceil" — fractional quantities round UP
+   * to the next tick at the chosen precision so the estimator never
+   * under-orders. Defaults to 0 when missing so existing libraries keep
+   * the original whole-unit behaviour.
+   */
+  decimalPlaces?: number
+}
+
+/** Clamp a SupplyItem's decimalPlaces to a sane range (0–3) and default
+ *  missing values to 0. Centralised so the panel / brick export / block
+ *  export all agree on the same precision per row. */
+export function supplyItemDecimals(item: Pick<SupplyItem, 'decimalPlaces'>): number {
+  const d = item.decimalPlaces ?? 0
+  if (!Number.isFinite(d)) return 0
+  return Math.max(0, Math.min(3, Math.floor(d)))
+}
+
+/** Round a quantity UP to the item's chosen precision. 0 dp → whole
+ *  units (Math.ceil), 1 dp → ceil to 0.1, etc. Used everywhere the
+ *  quantity surfaces so the panel, the tally line, and the PDF row
+ *  always print the same number. */
+export function roundSupplyQuantity(
+  qty: number,
+  item: Pick<SupplyItem, 'decimalPlaces'>,
+): number {
+  const places = supplyItemDecimals(item)
+  const factor = Math.pow(10, places)
+  return Math.ceil(qty * factor) / factor
+}
+
+/** Format a quantity at the item's chosen precision. Always emits the
+ *  full decimals (toFixed) so 0.30 doesn't collapse to 0.3 in the
+ *  schedule — keeps columns visually aligned. Uses toLocaleString for
+ *  the integer-side grouping (1,200 not 1200) to match the panel's
+ *  existing display. */
+export function formatSupplyQuantity(
+  qty: number,
+  item: Pick<SupplyItem, 'decimalPlaces'>,
+): string {
+  const places = supplyItemDecimals(item)
+  const rounded = roundSupplyQuantity(qty, item)
+  return rounded.toLocaleString(undefined, {
+    minimumFractionDigits: places,
+    maximumFractionDigits: places,
+  })
 }
 
 /**

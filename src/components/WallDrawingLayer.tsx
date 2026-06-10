@@ -293,9 +293,13 @@ interface WallDrawingLayerProps {
 }
 
 /** Pixel radius for snapping to an existing wall's endpoint (corner candidate).
- *  Kept tight so close-but-distinct endpoints (parallel walls a few mm apart)
- *  don't get pulled into one. The user can hold Shift to bypass snap entirely. */
-const SNAP_THRESHOLD_PX = 5
+ *  Used as the PERPENDICULAR-to-wall tolerance during the corner-snap check —
+ *  the along-wall direction is handled separately with a larger radius (see
+ *  `snapRadiusPx` below) so a click at the visible end face still hits. 8 px
+ *  is the comfortable aim margin: close-but-distinct parallel endpoints stay
+ *  separable but the user doesn't need pixel-precise targeting. Shift bypasses
+ *  snap entirely. */
+const SNAP_THRESHOLD_PX = 8
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
  *  click precision against a visible wall — the user targets the wall on screen. Tightened
@@ -1017,23 +1021,24 @@ function WallDrawingLayerInner({
             }
           }
         } else if (junction.type === 'free') {
-          // Pull the snap target HALF-MODULAR in from the data endpoint
-          // along the wall direction — that's (thickness + mortar) / 2,
-          // not just thickness / 2. The extra 5 mm puts the snap line
-          // on the modular grid where the NEW wall's first mortar joint
-          // would sit when it corners against this wall. For AU 190 mm
-          // walls that's 100 mm in (not 95 mm), which keeps every new
-          // corner clean on the 50 mm wall-length grid. Drawing snaps to
-          // halfThickness was a 5 mm off-grid error that propagated
-          // through every wall drawn off another wall's corner.
+          // Pull the snap target halfThickness in from the data endpoint
+          // along the wall direction — that's the exact geometric point
+          // where the outer corner of the new wall will land. Matches the
+          // overlap formula in wallLengthMm (which adds halfThickness at
+          // a corner), so the typed length equals the final wall length:
+          //   typed 2400 → centreline 2305 → wallLengthMm 2305 + 95 = 2400.
+          // Earlier this was halfModular for modular-grid alignment but
+          // the 5 mm gap between snap target and wall corner showed up as
+          // both a visual offset at the L and a 5 mm shortfall in every
+          // typed length.
           const farX = end === 'start' ? w.endX : w.startX
           const farY = end === 'start' ? w.endY : w.startY
           const dx = dataX - farX
           const dy = dataY - farY
           const len = Math.sqrt(dx * dx + dy * dy)
           if (len > 0) {
-            const halfModularMm = (thickness + DEFAULT_MORTAR_JOINT_MM) / 2
-            const offset = Math.min(halfModularMm, len)
+            const halfThicknessMm = thickness / 2
+            const offset = Math.min(halfThicknessMm, len)
             const ux = dx / len
             const uy = dy / len
             snapX = dataX - ux * offset
@@ -1041,9 +1046,13 @@ function WallDrawingLayerInner({
           }
         }
 
-        // Snap radius: large enough to catch the cursor anywhere in the end-block area.
-        // halfThickness covers from the snap target out to either the wall's end face or
-        // its inner edge, plus a small buffer.
+        // Snap radius (along-wall direction): snap target sits
+        // halfThickness IN from the data endpoint, so a zone of
+        // halfThickness covers from the data endpoint all the way to
+        // 2× halfThickness inside the wall — anything deeper is
+        // T-junction (face-snap) territory anyway. SNAP_THRESHOLD_PX
+        // is the floor for very-low-zoom views where everything in mm
+        // collapses to sub-pixel.
         const snapRadiusPx = Math.max(SNAP_THRESHOLD_PX, halfThicknessPx)
 
         // Direction vector (unit, in pixels) pointing from the far end outward
@@ -1718,11 +1727,13 @@ function WallDrawingLayerInner({
   function cornerLengthAdjustAt(pointMm: Point): number {
     for (const w of walls) {
       if (isCurvedWall(w)) continue
-      // Half-modular = (thickness + mortar) / 2. Matches the snap-target
-      // offset above so the live preview length stays consistent with
-      // where the user is actually clicking.
-      const halfModular =
-        ((wallThicknessByWallId[w.id] ?? 190) + DEFAULT_MORTAR_JOINT_MM) / 2
+      // halfThickness — matches both the snap-target offset (drawn
+      // halfThickness IN from the data endpoint) and the corner
+      // overlap formula in wallLengthMm (which adds halfThickness back
+      // for the outer corner extension). Subtracting halfThickness from
+      // the user's typed length here gives a centreline that, after
+      // wallLengthMm's add-back, lands exactly on the typed value.
+      const halfThickness = (wallThicknessByWallId[w.id] ?? 190) / 2
       for (const which of ['start' as const, 'end' as const]) {
         const junction = which === 'start' ? w.startJunction : w.endJunction
         if (junction.type !== 'free') continue
@@ -1734,13 +1745,13 @@ function WallDrawingLayerInner({
         const ddy = dataY - farY
         const len = Math.sqrt(ddx * ddx + ddy * ddy)
         if (len < 0.001) continue
-        const insetX = dataX - (ddx / len) * halfModular
-        const insetY = dataY - (ddy / len) * halfModular
+        const insetX = dataX - (ddx / len) * halfThickness
+        const insetY = dataY - (ddy / len) * halfThickness
         if (
           Math.abs(pointMm.x - insetX) < 1 &&
           Math.abs(pointMm.y - insetY) < 1
         ) {
-          return halfModular
+          return halfThickness
         }
       }
     }
@@ -1883,14 +1894,14 @@ function WallDrawingLayerInner({
       //     T-junction / wall body), posMm is already a snap point and
       //     the next wall should chain from there as-is.
       //   - Otherwise the click is a free end. resolveDrawSnap returned
-      //     the data endpoint, but the visual corner / corner-block-
-      //     centre sits halfMODULAR (= (thickness + mortar) / 2 = 100mm
-      //     for 200-series) IN from there along the wall's direction —
+      //     the data endpoint, but the visual outer-corner point sits
+      //     halfThickness IN from there along the wall's direction —
       //     matching endpointsPx's snap target for existing walls AND
-      //     junctions.ts's endpointsFormCorner check. Using halfThickness
-      //     here (95mm) puts the chained anchor 5mm off-grid, and the
-      //     next wall placed off it lands outside the corner detection
-      //     window — corners don't form, the two free ends just overlap.
+      //     junctions.ts's endpointsFormCorner check (both use
+      //     halfThickness now). Mismatching halfModular vs halfThickness
+      //     here puts the next wall 5 mm off the corner-detection
+      //     window so corners stop forming and the two free ends just
+      //     overlap — the exact bug the user reported on chained draws.
       let chainAnchor: Point = posMm
       if (!clickSnap) {
         const dx = posMm.x - startMm.x
@@ -1899,11 +1910,10 @@ function WallDrawingLayerInner({
         if (dist > 0.001) {
           const ux = dx / dist
           const uy = dy / dist
-          const halfMod =
-            (activeWallThicknessMm + DEFAULT_MORTAR_JOINT_MM) / 2
+          const halfT = activeWallThicknessMm / 2
           chainAnchor = {
-            x: posMm.x - ux * halfMod,
-            y: posMm.y - uy * halfMod,
+            x: posMm.x - ux * halfT,
+            y: posMm.y - uy * halfT,
           }
         }
       }

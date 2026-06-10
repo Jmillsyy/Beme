@@ -23,6 +23,10 @@ import { rasterisePdfPage } from './pdfRaster'
 import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
 import { getCurrentOrgId } from './organisations'
+import {
+  formatSupplyQuantity,
+  roundSupplyQuantity,
+} from '../types/userSettings'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 
@@ -1006,6 +1010,10 @@ export async function buildBrickEstimateHtml(
   type SupplyRow = {
     name: string
     qty: number
+    /** Pre-formatted quantity using the item's decimalPlaces (0 dp = whole
+     *  units, 1–3 dp = decimal precision). Display only — `qty` is still
+     *  the numeric ceil result for any downstream maths. */
+    display: string
     noteRate: string
     category: string
   }
@@ -1071,7 +1079,10 @@ export async function buildBrickEstimateHtml(
         // Brick estimate — block-relative rates don't apply.
         continue
     }
-    const rounded = Math.ceil(qty)
+    // Round at the item's chosen precision (0 dp → whole units, 1–3 dp
+    // → 0.1 / 0.01 / 0.001 increments). Same ceil semantics as before
+    // — no under-ordering — just at a finer step for consumables.
+    const rounded = roundSupplyQuantity(qty, item)
     // Apply the user's per-supply-item adjustment (positive = remove,
     // negative = add) AFTER rounding so the modal's preview number
     // matches the row that lands in the PDF. Clamp to >= 0; skip
@@ -1088,12 +1099,13 @@ export async function buildBrickEstimateHtml(
     supplyRows.push({
       name: overriddenName || item.name,
       qty: finalQty,
+      display: formatSupplyQuantity(finalQty, item),
       noteRate,
       category: item.category?.trim() || 'Uncategorised',
     })
   }
   const supplyItemNotes = supplyRows.map(
-    (r) => `${r.name} allowance at ${r.noteRate} — ${r.qty.toLocaleString()} included.`
+    (r) => `${r.name} allowance at ${r.noteRate} — ${r.display} included.`
   )
 
   // Build a human-readable summary of the distinct wall heights actually
@@ -1546,7 +1558,7 @@ export async function buildBrickEstimateHtml(
       const itemRows = rows
         .map(
           (r) =>
-            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${r.qty.toLocaleString()}</td></tr>`
+            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${r.display}</td></tr>`
         )
         .join('')
       return headerRow + itemRows

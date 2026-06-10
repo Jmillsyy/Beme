@@ -7321,7 +7321,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </span>
             ) : (() => {
               // Quick stats — count, run-metres on the current page, and a
-              // running count of openings/piers if any. Cheap to compute on
+              // running count of piers if any. Cheap to compute on
               // every render: just a sum over the current page's walls.
               let totalRunMm = 0
               for (const w of currentPageWalls) {
@@ -7338,8 +7338,43 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 }
               }
               const totalRunM = totalRunMm / 1000
+              // Lead the strip with the active area name (bold) so the
+              // user always sees which bucket they're drawing into.
+              // When the project has areas but none is picked, replace
+              // the whole strip with a nudge to pick one — drawing is
+              // blocked in that state anyway. Openings count was dropped
+              // to free up width; the count still surfaces in the right-
+              // rail tally.
+              const activeArea = activeAreaId
+                ? areas.find((a) => a.id === activeAreaId) ?? null
+                : null
+              const needsAreaPick = activeAreaId === null && areas.length > 0
+              if (needsAreaPick) {
+                return (
+                  <span className="text-ink-300">
+                    <span className="font-bold text-ink-100">
+                      Select an area to draw
+                    </span>
+                  </span>
+                )
+              }
               return (
                 <span className="text-ink-200">
+                  {activeArea && (
+                    <>
+                      <span className="font-bold text-ink-50 inline-flex items-center gap-1.5">
+                        {activeArea.colorHex && (
+                          <span
+                            aria-hidden="true"
+                            className="inline-block w-2 h-2 rounded-full"
+                            style={{ backgroundColor: activeArea.colorHex }}
+                          />
+                        )}
+                        {activeArea.name}
+                      </span>
+                      <span className="text-ink-400"> · </span>
+                    </>
+                  )}
                   <AnimatedNumber value={currentPageWalls.length} />{' '}
                   wall{currentPageWalls.length === 1 ? '' : 's'}
                   {currentPageWalls.length > 0 && (
@@ -7351,13 +7386,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                           format={(n) => n.toFixed(2)}
                         />{' '}m
                       </span> run
-                    </span>
-                  )}
-                  {currentPageOpenings.length > 0 && (
-                    <span className="text-ink-400">
-                      {' '}
-                      · <AnimatedNumber value={currentPageOpenings.length} /> opening
-                      {currentPageOpenings.length === 1 ? '' : 's'}
                     </span>
                   )}
                   {currentPagePiers.length > 0 && (

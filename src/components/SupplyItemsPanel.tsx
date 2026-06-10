@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { SupplyItem, SupplyItemUnit } from '../types/userSettings'
+import { formatSupplyQuantity } from '../types/userSettings'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import { useOrganisations } from '../lib/organisations'
@@ -273,7 +274,12 @@ function SupplyItemsPanelImpl({
                           // live in the Export estimate modal.
                           const rate = effectiveRate(item, rateOverrides)
                           const qty = quantityFor(item, rate, metrics)
-                          const rounded = Math.max(0, Math.ceil(qty))
+                          // formatSupplyQuantity handles both the ceil
+                          // rounding AND the toFixed formatting at the
+                          // item's chosen precision so "0 decimals"
+                          // items still ceil to whole units the same
+                          // way the export does.
+                          const display = formatSupplyQuantity(Math.max(0, qty), item)
                           return (
                             <div
                               key={item.id}
@@ -284,7 +290,7 @@ function SupplyItemsPanelImpl({
                                   {item.name}
                                 </span>
                                 <span className="ml-auto text-xs tabular-nums font-semibold text-beme-300">
-                                  {rounded.toLocaleString()}
+                                  {display}
                                 </span>
                               </div>
                               <div className="mt-1 text-xs text-ink-400">
