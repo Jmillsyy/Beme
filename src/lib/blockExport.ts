@@ -150,6 +150,14 @@ interface ExportParams {
   openings: Opening[]
   piers?: Pier[]
   pierMakeups?: PierMakeup[]
+  /** Wastage uplift percent for the block schedule's headline counts.
+   *  When supplied (> 0), the Block Schedule table grows a "+ X%
+   *  wastage" column showing each block code's count uplifted, plus
+   *  a wastage-uplifted Total Blocks figure. Supply items, per-area
+   *  Quantities overrides, and the per-wall-type breakdown stay on
+   *  the net numbers — wastage is a single project-wide uplift on
+   *  the ordering figure. */
+  wastagePercent?: number
   /**
    * Optional business identity (from user settings). When provided, the
    * exported document header shows the user's company instead of the generic
@@ -326,6 +334,12 @@ function buildPlanOverviewPage(
   makeups: WallMakeup[],
   makeupsById: Record<string, WallMakeup>,
   thicknessByWallId: Record<string, number>,
+  /** Lookup so wallLengthMm can resolve the OTHER wall at each corner
+   *  and add the outer-edge corner extension, matching what the user
+   *  sees on the 2D canvas. Without this the export labels would just
+   *  print the raw centreline distance, which is ~halfThickness short
+   *  at any corner end. */
+  wallsById: Record<string, Wall>,
   totalBlocks: number,
   pageHeader: string,
   background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null,
@@ -371,19 +385,16 @@ function buildPlanOverviewPage(
   // Compute the at-a-glance summary stats shown above the diagram. These
   // give the reader a sense of project size before they look at the
   // numbered breakdown — walls × total length × wall area × counts.
-  const wallLengthsMm = walls.map((w) => {
-    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
-      const geom = arcFromThreePoints(
-        { x: w.startX, y: w.startY },
-        { x: w.midX, y: w.midY },
-        { x: w.endX, y: w.endY }
-      )
-      if (geom) return geom.arcLengthMm
-    }
-    const dx = w.endX - w.startX
-    const dy = w.endY - w.startY
-    return Math.sqrt(dx * dx + dy * dy)
-  })
+  //
+  // Use wallLengthMm (the same helper the 2D canvas, tally, and supply
+  // maths use) so the label printed on each wall in the layout PDF
+  // matches the number the estimator saw on screen. Earlier this
+  // computed the raw centreline distance only, which is
+  // ~halfThickness shorter at every corner end — a wall drawn as
+  // 4.80 m on the canvas surfaced as 4.71 m on the export.
+  const wallLengthsMm = walls.map((w) =>
+    wallLengthMm(w, thicknessByWallId, wallsById),
+  )
   const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
   const totalWallAreaSqMm = walls.reduce((sum, w, i) => {
     const makeup = makeupsById[w.makeupId]
@@ -1809,6 +1820,26 @@ export async function buildBlockEstimateHtml(
   // one with the real numbers. The old "Grand Total per Block Type" page
   // that appeared AFTER the per-wall-type breakdown showed the pre-dedup
   // sum and was confusing — that's been removed below.
+  // Wastage uplift — when configured, a second column on the Grand
+  // Total table shows each row with X% added (rounded UP to the next
+  // whole block so the estimator can order against a real integer
+  // count) plus a wastage-uplifted Total Blocks line. Supply items
+  // are intentionally untouched — those are estimator-managed
+  // allowances, wastage is a single project-wide ordering buffer on
+  // the masonry tally only.
+  const blockWastagePct =
+    typeof params.wastagePercent === 'number' && params.wastagePercent > 0
+      ? params.wastagePercent
+      : null
+  const blockWastageFactor = blockWastagePct ? 1 + blockWastagePct / 100 : 1
+  const blockWastageHeader = blockWastagePct
+    ? `<th class="right" style="width: 120px">+ ${formatNumber(blockWastagePct, 1)}% wastage</th>`
+    : ''
+  const blockWastageCell = (count: number): string =>
+    blockWastagePct
+      ? `<td class="right">${formatNumber(Math.ceil(count * blockWastageFactor))}</td>`
+      : ''
+
   const scheduleTable = inclusions.blockSchedule && entries.length > 0
     ? `
       <h2 class="section-title">Grand Total</h2>
@@ -1818,18 +1849,20 @@ export async function buildBlockEstimateHtml(
             <th style="width: 100px">Code</th>
             <th>Block</th>
             <th class="right" style="width: 100px">Quantity</th>
+            ${blockWastageHeader}
           </tr>
         </thead>
         <tbody>
           ${entries
             .map(
               ([code, count]) =>
-                `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td></tr>`
+                `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td>${blockWastageCell(count)}</tr>`
             )
             .join('')}
           <tr class="bold">
             <td colspan="2">Total blocks</td>
             <td class="right">${formatNumber(totalBlocks)}</td>
+            ${blockWastageCell(totalBlocks)}
           </tr>
         </tbody>
       </table>
@@ -1976,6 +2009,7 @@ export async function buildBlockEstimateHtml(
         makeups,
         makeupsById,
         thicknessByWallId,
+        wallsById,
         pageBlockTotal,
         pageHeader,
         pageBackground,

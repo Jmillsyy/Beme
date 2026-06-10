@@ -18,6 +18,7 @@ import type {
 } from '../types/walls'
 import type { ProjectArea } from './projectStorage'
 import { calculateBrickTally } from './brickCalc'
+import { wallLengthMm } from './blockCalc'
 import { downloadPdfFromHtml } from './pdfExport'
 import { rasterisePdfPage } from './pdfRaster'
 import { getUserSettings } from './userSettings'
@@ -201,6 +202,14 @@ interface ExportParams {
       >
     }
   >
+  /** Wastage uplift percent for the brick AREA total (m²) only.
+   *  When supplied (> 0), the Brick Area Summary table grows a
+   *  second column showing the net area + X% wastage. Supply items,
+   *  per-area Quantities overrides, and the per-wall-type breakdown
+   *  are intentionally not touched — supplies are estimator-managed
+   *  allowances, and wastage is a single project-wide uplift on the
+   *  headline figure used to order brick. */
+  wastagePercent?: number
   /** Optional business identity (from user settings). Same shape as block export. */
   business?: BusinessExportInfo
   /** The primary plan PDF — when supplied alongside pagesInfo, each Wall
@@ -282,11 +291,22 @@ function buildBrickPlanOverviewPage(
   const fallbackColour = BRICK_WALL_TYPE_PALETTE[0]
   const colourFor = (w: Wall) => colourByMakeupId[w.makeupId] ?? fallbackColour
 
-  // Per-wall length. Curved walls (kind === 'curved') use true arc
-  // length along the centreline so a curved brick wall reports its
-  // real lineal m — mirrors the brickCalc helper. Falls back to
-  // Euclidean distance if the curve geometry is degenerate.
-  const wallLengthsMm = walls.map((w) => wallLinealMm(w))
+  // Per-wall length. Routes through wallLengthMm (same helper the 2D
+  // canvas + tally use) so corner ends pick up the halfThickness
+  // extension out to the outer-edge corner — without this the export
+  // labels read ~halfThickness shorter than what the user drew at
+  // every corner. Curved walls still resolve to true arc length via
+  // wallLengthMm's internal isCurvedWall path. Brick is single-skin
+  // so every wall shares the same thickness for the helper.
+  const thicknessByWallId: Record<string, number> = {}
+  const wallsById: Record<string, Wall> = {}
+  for (const w of walls) {
+    thicknessByWallId[w.id] = brickThicknessMm
+    wallsById[w.id] = w
+  }
+  const wallLengthsMm = walls.map((w) =>
+    wallLengthMm(w, thicknessByWallId, wallsById),
+  )
   const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
   const openingsAreaSqMm = openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
   const netWallAreaSqMm = Math.max(0, brickwork.totalAreaSqMm)
@@ -1349,17 +1369,33 @@ export async function buildBrickEstimateHtml(
   const openingsAreaSqM = openings.reduce((sum, op) => sum + op.widthMm * op.heightMm, 0) / 1_000_000
   const grossAreaSqM = areaSqM + openingsAreaSqM
 
+  // Wastage uplift — when configured, a second column on the area
+  // summary shows each row with X% added so the estimator can order
+  // bricks against the inflated number. Supply items are not touched.
+  const wastagePct =
+    typeof params.wastagePercent === 'number' && params.wastagePercent > 0
+      ? params.wastagePercent
+      : null
+  const wastageFactor = wastagePct ? 1 + wastagePct / 100 : 1
+  const wastageHeaderCell = wastagePct
+    ? `<th class="right">+ ${formatNumber(wastagePct, 1)}% wastage (m²)</th>`
+    : ''
+  const wastageCell = (v: number, sign: '' | '-' = ''): string =>
+    wastagePct
+      ? `<td class="right">${sign}${formatNumber(v * wastageFactor, 3)} m²</td>`
+      : ''
+
   const summaryTable = inclusions.brickAreaSummary
     ? `
       <h2 class="section-title">Brick Area Summary</h2>
       <table>
         <thead>
-          <tr><th>Description</th><th class="right">Area (m²)</th></tr>
+          <tr><th>Description</th><th class="right">Area (m²)</th>${wastageHeaderCell}</tr>
         </thead>
         <tbody>
-          <tr><td>Gross Wall Area</td><td class="right">${formatNumber(grossAreaSqM, 3)} m²</td></tr>
-          <tr><td>Less Openings</td><td class="right">-${formatNumber(openingsAreaSqM, 3)} m²</td></tr>
-          <tr class="bold"><td>Net Wall Area</td><td class="right">${formatNumber(areaSqM, 3)} m²</td></tr>
+          <tr><td>Gross Wall Area</td><td class="right">${formatNumber(grossAreaSqM, 3)} m²</td>${wastageCell(grossAreaSqM)}</tr>
+          <tr><td>Less Openings</td><td class="right">-${formatNumber(openingsAreaSqM, 3)} m²</td>${wastageCell(openingsAreaSqM, '-')}</tr>
+          <tr class="bold"><td>Net Wall Area</td><td class="right">${formatNumber(areaSqM, 3)} m²</td>${wastageCell(areaSqM)}</tr>
         </tbody>
       </table>
     `
@@ -1376,12 +1412,26 @@ export async function buildBrickEstimateHtml(
   // so the bricklayer can price by their own per-metre rates. One
   // table per category, each hidden when its bucket is empty so
   // projects without trim / substitute bricks see no blank sections.
+  // Head / sill course tables — summarised to a single total per
+  // section. Per-brick-code rows were removed: the brick code that
+  // gets used at the head / sill is a 3D-render concern (set in the
+  // wall type modal's "Opening visuals" tab) and the estimator
+  // doesn't need it in the deliverable. What they need is the
+  // lineal-m total they can multiply by their lay rate. Wastage, if
+  // configured, adds a second column with the uplifted figure.
   const renderLinealTable = (
     title: string,
     blurb: string,
-    entries: [string, number][]
+    totalMm: number,
   ): string => {
-    if (entries.length === 0) return ''
+    if (totalMm <= 0) return ''
+    const metres = (totalMm / 1000).toFixed(2)
+    const wastageHeader = wastagePct
+      ? `<th class="right" style="width: 160px">+ ${formatNumber(wastagePct, 1)}% wastage</th>`
+      : ''
+    const wastageRow = wastagePct
+      ? `<td class="right">${((totalMm * wastageFactor) / 1000).toFixed(2)} m</td>`
+      : ''
     return `
       <h2 class="section-title">${escapeHtml(title)}</h2>
       <p style="margin: 4px 0 8px; color: #555; font-size: 12px;">
@@ -1389,26 +1439,21 @@ export async function buildBrickEstimateHtml(
       </p>
       <table>
         <thead>
-          <tr><th>Brick</th><th class="right">Lineal m</th></tr>
+          <tr><th></th><th class="right">Lineal m</th>${wastageHeader}</tr>
         </thead>
         <tbody>
-          ${entries
-            .map(([code, mm]) => {
-              const brick = BRICK_LIBRARY[code]
-              const label = brick?.name ?? code ?? 'Project default'
-              const metres = (mm / 1000).toFixed(2)
-              return `<tr><td>${escapeHtml(label)}</td><td class="right">${metres}</td></tr>`
-            })
-            .join('')}
+          <tr><td>Brickwork</td><td class="right">${metres} m</td>${wastageRow}</tr>
         </tbody>
       </table>
     `
   }
-  const headEntries = Object.entries(tally.headLinealMmByType ?? {}).sort(
-    (a, b) => b[1] - a[1],
+  const headTotalMm = Object.values(tally.headLinealMmByType ?? {}).reduce(
+    (s, v) => s + v,
+    0,
   )
-  const sillEntries = Object.entries(tally.sillLinealMmByType ?? {}).sort(
-    (a, b) => b[1] - a[1],
+  const sillTotalMm = Object.values(tally.sillLinealMmByType ?? {}).reduce(
+    (s, v) => s + v,
+    0,
   )
   // Course substitute section removed — the per-course lineal m
   // value was confusing on walls with mixed brick heights (e.g. a
@@ -1421,15 +1466,14 @@ export async function buildBrickEstimateHtml(
       'Head courses',
       `Lineal metres of head course above every opening (doors and
        windows). Span is opening width plus bearing overhang at each
-       end. Multiply by your per-metre lay rate for the head brick.`,
-      headEntries,
+       end. Multiply by your per-metre lay rate.`,
+      headTotalMm,
     ) +
     renderLinealTable(
       'Sill courses',
       `Lineal metres of sill course under every window. Doors are
-       excluded (no sill course). Multiply by your per-metre lay rate
-       for the sill brick.`,
-      sillEntries,
+       excluded (no sill course). Multiply by your per-metre lay rate.`,
+      sillTotalMm,
     )
 
   // Per-wall-type breakdown — mirrors the headline aggregates (area,
@@ -1472,6 +1516,25 @@ export async function buildBrickEstimateHtml(
     })
     .sort((a, b) => b.netAreaSqMm - a.netAreaSqMm)
 
+  // Wastage uplift on the consumable totals (Area, Head, Sill) — wall
+  // count and Length stay on the net figure because those are the
+  // physical wall geometry, they don't change with wastage. Helper
+  // formats each m / m² figure with its wastage twin in the same
+  // cell so the table stays at 6 columns regardless of wastage state.
+  const fmtWithWaste = (
+    valueMm: number,
+    unit: 'm' | 'm²',
+    divisor: number,
+  ): string => {
+    const net = valueMm > 0 ? formatNumber(valueMm / divisor, 2) : '—'
+    if (!wastagePct || valueMm <= 0) return net
+    const uplift = formatNumber((valueMm * wastageFactor) / divisor, 2)
+    return `${net} <span style="color:#9a3f08;font-weight:600">(+${uplift} ${unit})</span>`
+  }
+
+  const totalHeadMm = makeupRows.reduce((s, r) => s + r.headLinealMm, 0)
+  const totalSillMm = makeupRows.reduce((s, r) => s + r.sillLinealMm, 0)
+
   const makeupBreakdownTable = makeupRows.length > 0
     ? `
       <h2 class="section-title">Brickwork by Wall Type</h2>
@@ -1479,7 +1542,11 @@ export async function buildBrickEstimateHtml(
         Per wall type: total brickwork area (after opening deductions),
         wall lineal length, and the head &amp; sill course metres the
         type contributes. Multiply each by the bricklayer's per-metre
-        or per-m² rate to price each type independently.
+        or per-m² rate to price each type independently.${
+          wastagePct
+            ? ` Each Area / Head / Sill cell shows the net figure with the wastage-uplifted figure beside it in parentheses.`
+            : ''
+        }
       </p>
       <table>
         <thead>
@@ -1487,9 +1554,9 @@ export async function buildBrickEstimateHtml(
             <th>Wall type</th>
             <th class="right" style="width: 70px">Walls</th>
             <th class="right" style="width: 100px">Length (m)</th>
-            <th class="right" style="width: 100px">Area (m²)</th>
-            <th class="right" style="width: 90px">Head (m)</th>
-            <th class="right" style="width: 90px">Sill (m)</th>
+            <th class="right" style="width: ${wastagePct ? '160px' : '100px'}">Area (m²)</th>
+            <th class="right" style="width: ${wastagePct ? '140px' : '90px'}">Head (m)</th>
+            <th class="right" style="width: ${wastagePct ? '140px' : '90px'}">Sill (m)</th>
           </tr>
         </thead>
         <tbody>
@@ -1499,9 +1566,9 @@ export async function buildBrickEstimateHtml(
                 <td>${escapeHtml(r.label)}</td>
                 <td class="right">${r.wallCount}</td>
                 <td class="right">${formatNumber(r.totalLinealMm / 1000, 2)}</td>
-                <td class="right">${formatNumber(r.netAreaSqMm / 1_000_000, 2)}</td>
-                <td class="right">${r.headLinealMm > 0 ? formatNumber(r.headLinealMm / 1000, 2) : '—'}</td>
-                <td class="right">${r.sillLinealMm > 0 ? formatNumber(r.sillLinealMm / 1000, 2) : '—'}</td>
+                <td class="right">${fmtWithWaste(r.netAreaSqMm, 'm²', 1_000_000)}</td>
+                <td class="right">${fmtWithWaste(r.headLinealMm, 'm', 1000)}</td>
+                <td class="right">${fmtWithWaste(r.sillLinealMm, 'm', 1000)}</td>
               </tr>`
             })
             .join('')}
@@ -1509,15 +1576,9 @@ export async function buildBrickEstimateHtml(
             <td>Total</td>
             <td class="right">${tally.wallCount}</td>
             <td class="right">${formatNumber(tally.totalLinealMm / 1000, 2)}</td>
-            <td class="right">${formatNumber(tally.totalAreaSqMm / 1_000_000, 2)}</td>
-            <td class="right">${formatNumber(
-              makeupRows.reduce((s, r) => s + r.headLinealMm, 0) / 1000,
-              2
-            )}</td>
-            <td class="right">${formatNumber(
-              makeupRows.reduce((s, r) => s + r.sillLinealMm, 0) / 1000,
-              2
-            )}</td>
+            <td class="right">${fmtWithWaste(tally.totalAreaSqMm, 'm²', 1_000_000)}</td>
+            <td class="right">${fmtWithWaste(totalHeadMm, 'm', 1000)}</td>
+            <td class="right">${fmtWithWaste(totalSillMm, 'm', 1000)}</td>
           </tr>
         </tbody>
       </table>
