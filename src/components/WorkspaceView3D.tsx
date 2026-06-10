@@ -97,8 +97,13 @@ const DEFAULT_WALL_COLOR = '#a85540'
 // (--color-ink-900 in :root.light). Ground plane / fog / canvas
 // clearColor / PDF page-bg-erase all read from the same pair so the
 // horizon stays seamless in either theme.
-const SCENE_BG_DARK = '#1a1d24'
-const SCENE_BG_LIGHT = '#f7f4ec'
+// Scene bg matches the page bg EXACTLY in each theme — read straight
+// off the ink-900 CSS variable values used by the rest of the app
+// (see :root / :root.light in index.css). Without this match, the 3D
+// canvas leaves a visible navy rectangle in dark mode and a cream
+// rectangle in light mode that breaks the page's two-tone surface.
+const SCENE_BG_DARK = '#18181c'   // matches dark-mode --color-ink-900
+const SCENE_BG_LIGHT = '#f6f4ee'  // matches light-mode --color-ink-900
 function sceneBgFor(theme: Theme): string {
   return theme === 'light' ? SCENE_BG_LIGHT : SCENE_BG_DARK
 }
@@ -106,14 +111,14 @@ function sceneBgRgbFor(theme: Theme): [number, number, number] {
   // Must match sceneBgFor — the PDF threshold pass writes this rgb on
   // every "page background" pixel so the page sheet visually disappears
   // into the scene clearColor. Keep in sync if SCENE_BG_* changes.
-  return theme === 'light' ? [247, 244, 236] : [26, 29, 36]
+  return theme === 'light' ? [246, 244, 238] : [24, 24, 28]
 }
 // Plan-line ink — drawn lines on the rasterised PDF after the threshold
-// pass. Dark theme: pure white over slate. Light theme: dark slate over
-// the warm page bg. The user wants the same plan to read as inverted
-// blueprints between themes.
+// pass. Dark theme: pure white over near-black. Light theme: near-black
+// over the clean light-gray page bg. Stays inverted between themes so
+// the plan reads as a blueprint either way.
 function planLineRgbFor(theme: Theme): [number, number, number] {
-  return theme === 'light' ? [26, 29, 36] : [255, 255, 255]
+  return theme === 'light' ? [9, 9, 11] : [255, 255, 255]
 }
 const GROUND_COLOR_DARK = SCENE_BG_DARK
 const GROUND_COLOR_LIGHT = SCENE_BG_LIGHT
@@ -3056,11 +3061,17 @@ function CaptureExposer() {
  */
 export type NavStyle = 'autocad' | 'sketchup' | 'three' | 'maya'
 
+// Nav-style labels are intentionally generic — referencing the
+// industry-standard CAD/3D packages each binding emulates makes the
+// dropdown read like an integration list, which we don't want. The
+// HINT line under each option still describes the exact mouse
+// bindings, so the user can pick the one that matches whatever
+// they're used to without us naming any third-party software.
 export const NAV_STYLE_LABELS: Record<NavStyle, string> = {
-  autocad: 'AutoCAD / Revit',
-  sketchup: 'SketchUp / Blender',
-  three: 'Three.js Orbit',
-  maya: 'Maya / Cinema 4D',
+  autocad: 'Style 1',
+  sketchup: 'Style 2',
+  three: 'Style 3',
+  maya: 'Style 4',
 }
 
 export const NAV_STYLE_HINTS: Record<NavStyle, string> = {
@@ -4043,10 +4054,15 @@ function Scene({
           } as Block,
         }
 
-        // Colour: same concrete-grey palette as blocks (bandColor)
-        // keyed on the brick type code so each brick type gets a
-        // consistent palette slot project-wide.
-        const brickPaletteKey = brickMakeup?.brickTypeCode ?? wall.makeupId
+        // Colour: each wall TYPE (makeup) gets its own palette slot via
+        // bandColor(wall.makeupId). Two walls sharing the same brick
+        // library entry but different wall types still render in
+        // distinct colours — keyed by makeupId, not by brickTypeCode.
+        // Per-course range bricks (sill/head/middle bands) keep using
+        // their brick code as the key so those bands still stand out
+        // visually against the body colour.
+        const brickWallTypePaletteKey = wall.makeupId
+        const brickPaletteKey = brickWallTypePaletteKey
         const brickColorMap = new Map([['__brick__', bandColor(brickPaletteKey, palette)]])
 
         // Use the per-wall opening head adjustment computed once at
@@ -4102,7 +4118,7 @@ function Scene({
         // Each band gets its own pair of entries:
         //   __brick_<typeCode>__       — full brick at THIS type's dims
         //   __brick_<typeCode>_half__  — half brick at THIS type's dims
-        const ensureSyntheticEntries = (code: string) => {
+        const ensureSyntheticEntries = (code: string, isBodyDefault: boolean) => {
           const fullKey = `__brick_${code}__`
           const halfKey = `__brick_${code}_half__`
           if (brickLibrary[fullKey]) return { fullKey, halfKey }
@@ -4124,7 +4140,13 @@ function Scene({
             dimensions: { widthMm: w / 2, heightMm: h, depthMm: d },
             roles: ['end-termination'],
           } as Block
-          const colour = bandColor(code || brickPaletteKey, palette)
+          // Body courses paint with the wall-TYPE colour; range
+          // overrides paint with their brick code so the band stays
+          // distinct from the body. Falls back to the wall type key
+          // when the range code is somehow blank.
+          const colour = isBodyDefault
+            ? bandColor(brickWallTypePaletteKey, palette)
+            : bandColor(code || brickWallTypePaletteKey, palette)
           brickColorMap.set(fullKey, colour)
           brickColorMap.set(halfKey, colour)
           return { fullKey, halfKey }
@@ -4135,10 +4157,16 @@ function Scene({
         while (cursorMm < heightMm - 0.5) {
           const courseNum = courseIdx + 1
           const typeCode = brickTypeForCourse(courseNum)
+          // A course is a "body default" when NO range applies — those
+          // pick up the wall-type colour. Range-covered courses keep
+          // their brick code as the palette key.
+          const isBodyCourse = !sortedRanges.some(
+            (r) => courseNum < r.fromCourse,
+          )
           const bt = typeCode ? BRICK_LIBRARY[typeCode] : undefined
           const courseBrickHeight = bt?.heightMm ?? brickHeightMm
           const courseModMm = courseBrickHeight + BRICK_MORTAR_MM
-          const { fullKey, halfKey } = ensureSyntheticEntries(typeCode)
+          const { fullKey, halfKey } = ensureSyntheticEntries(typeCode, isBodyCourse)
           const y0Mm = cursorMm
           const y1Mm = Math.min(heightMm, cursorMm + courseBrickHeight)
           if (y1Mm - y0Mm > 0.5) {
@@ -5360,28 +5388,16 @@ function Scene({
       if (wall.trade !== 'brick') continue
       const m = brickMakeupsById[wall.makeupId]
       if (!m) continue
-      // Primary brick type — used by every course unless overridden by
-      // a courseRange entry.
-      if (m.brickTypeCode && !codes.has(m.brickTypeCode)) {
-        codes.set(m.brickTypeCode, bandColor(m.brickTypeCode, palette))
-      }
-      // Course-range brick types — each band can declare its own brick
-      // type (e.g. base course in common, body in face brick, soldier
-      // course in clinker). Surface every one in the legend so the
-      // estimator can match the colour in the 3D view to a real code.
-      for (const range of m.courseRanges ?? []) {
-        if (range.brickTypeCode && !codes.has(range.brickTypeCode)) {
-          codes.set(range.brickTypeCode, bandColor(range.brickTypeCode, palette))
-        }
-      }
-      // Opening-trim brick types — sill course / head course. Same
-      // colour treatment as bands so the 3D overlay reads against the
-      // legend.
-      if (m.sillBrickCode && !codes.has(m.sillBrickCode)) {
-        codes.set(m.sillBrickCode, bandColor(m.sillBrickCode, palette))
-      }
-      if (m.headBrickCode && !codes.has(m.headBrickCode)) {
-        codes.set(m.headBrickCode, bandColor(m.headBrickCode, palette))
+      // Brick legend lists one entry per wall TYPE — the makeup name
+      // with its body colour. Range / sill / head brick codes are
+      // intentionally NOT surfaced as separate legend rows: the user
+      // wants the legend to read as "these are the walls in the
+      // model" rather than "these are the brick codes". The 3D
+      // scene still paints those bands in their per-code colour so
+      // the bands are visually distinct, just unlabelled.
+      const wtKey = `wt:${m.id}`
+      if (!codes.has(wtKey)) {
+        codes.set(wtKey, bandColor(m.id, palette))
       }
     }
     // Pier block codes — piers render via bandColor directly without
@@ -5621,11 +5637,13 @@ function snapshotsStorageKey(
 }
 
 /** Read the persisted block-colour palette from localStorage, falling
- *  back to 'concrete' (the original masonry-grey set). */
+ *  back to 'mono' (orange + black + white, matches the rest of the
+ *  app). Legacy palettes stay selectable through the picker. */
 function loadPalette(): PaletteName {
-  if (typeof window === 'undefined') return 'vibrant'
+  if (typeof window === 'undefined') return 'mono'
   const v = window.localStorage.getItem(PALETTE_STORAGE_KEY)
   if (
+    v === 'mono' ||
     v === 'concrete' ||
     v === 'brick' ||
     v === 'sandstone' ||
@@ -5634,7 +5652,7 @@ function loadPalette(): PaletteName {
   ) {
     return v
   }
-  return 'vibrant'
+  return 'mono'
 }
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
@@ -5682,16 +5700,28 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   )
   const legendItems = useMemo(() => {
     return Array.from(resolvedCodes.entries())
-      .map(([code, color]) => ({
-        code,
-        label:
-          props.library[code]?.name ??
-          BRICK_LIBRARY[code]?.name ??
+      .map(([code, color]) => {
+        // Wall-type entries (prefix `wt:<makeupId>`) resolve their
+        // label off the brick makeups list — display the user-facing
+        // wall type name, not the synthetic id. Falls back to a
+        // generic 'Wall' label when the makeup has been deleted but
+        // a render is still using its colour mid-state-update.
+        if (code.startsWith('wt:')) {
+          const makeupId = code.slice(3)
+          const name = props.brickMakeupsById[makeupId]?.name
+          return { code, label: name ?? 'Wall type', color }
+        }
+        return {
           code,
-        color,
-      }))
+          label:
+            props.library[code]?.name ??
+            BRICK_LIBRARY[code]?.name ??
+            code,
+          color,
+        }
+      })
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [resolvedCodes, props.library])
+  }, [resolvedCodes, props.library, props.brickMakeupsById])
 
   // Snapshots: captured 3D viewport PNGs the user queued for the
   // export. STATE IS OWNED BY PdfWorkspace and threaded in through
@@ -6246,22 +6276,32 @@ function BlockLegend({
         Legend
       </div>
       <ul className="py-1">
-        {items.map((it) => (
-          <li
-            key={it.code}
-            className="flex items-center gap-2 px-2 py-1 leading-tight"
-            title={it.code}
-          >
-            <span
-              className="inline-block w-3 h-3 rounded-sm border border-ink-600/60 flex-shrink-0"
-              style={{ backgroundColor: it.color }}
-            />
-            <span className="text-ink-100 truncate">{it.label}</span>
-            <span className="text-ink-500 text-[10px] ml-auto pl-1 flex-shrink-0">
-              {it.code}
-            </span>
-          </li>
-        ))}
+        {items.map((it) => {
+          // Wall-type entries carry a `wt:<makeupId>` code that's a
+          // UUID — useless to show in the row. Hide the code column
+          // for those; the label IS the identity. Brick / block code
+          // rows keep the secondary code so estimators can match a
+          // colour to the underlying material code.
+          const isWallTypeRow = it.code.startsWith('wt:')
+          return (
+            <li
+              key={it.code}
+              className="flex items-center gap-2 px-2 py-1 leading-tight"
+              title={isWallTypeRow ? it.label : it.code}
+            >
+              <span
+                className="inline-block w-3 h-3 rounded-sm border border-ink-600/60 flex-shrink-0"
+                style={{ backgroundColor: it.color }}
+              />
+              <span className="text-ink-100 truncate">{it.label}</span>
+              {!isWallTypeRow && (
+                <span className="text-ink-500 text-[10px] ml-auto pl-1 flex-shrink-0">
+                  {it.code}
+                </span>
+              )}
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
@@ -6270,7 +6310,13 @@ function BlockLegend({
 /** List of captured 3D viewport snapshots queued for the export.
  *  Each row shows a thumbnail (clipped to a fixed aspect) and a
  *  delete (×) button. Rendered immediately below the BlockLegend in
- *  the same column so they share the top-right overlay strip. */
+ *  the same column so they share the top-right overlay strip.
+ *
+ *  Header acts as a collapse toggle — clicking it hides the thumbnail
+ *  list so the panel shrinks to just its title row. Useful when the
+ *  user has stacked up a lot of snapshots and the thumbnails are
+ *  starting to block the canvas. Default state is expanded so a
+ *  fresh capture is visible without needing an extra click. */
 function SnapshotsPanel({
   snapshots,
   onDelete,
@@ -6278,38 +6324,54 @@ function SnapshotsPanel({
   snapshots: Array<{ id: string; dataUrl: string; createdAt: number }>
   onDelete: (id: string) => void
 }) {
+  // Minimised by default — the snapshot thumbnails are tall and can
+  // obscure the canvas, so the user opts in to seeing them. Header
+  // chip with count tells them captures are queued without needing
+  // the strip open.
+  const [expanded, setExpanded] = useState(false)
   return (
     <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[40vh] overflow-y-auto min-w-[140px]">
-      <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between">
-        <span>Snapshots</span>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between gap-2 hover:text-ink-200 transition-colors text-left"
+        aria-expanded={expanded}
+        title={expanded ? 'Hide snapshots' : 'Show snapshots'}
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="text-[10px]">{expanded ? '▾' : '▸'}</span>
+          <span>Snapshots</span>
+        </span>
         <span className="text-ink-500 text-[10px]">{snapshots.length}</span>
-      </div>
-      <ul className="p-1.5 space-y-1.5">
-        {snapshots.map((s, i) => (
-          <li
-            key={s.id}
-            className="relative group rounded overflow-hidden border border-ink-600/50 bg-ink-900/60"
-          >
-            <img
-              src={s.dataUrl}
-              alt={`Snapshot ${i + 1}`}
-              className="block w-full h-auto"
-            />
-            <div className="absolute top-1 left-1 text-[10px] text-ink-200 bg-ink-900/70 px-1 py-0.5 rounded">
-              {`#${i + 1}`}
-            </div>
-            <button
-              type="button"
-              onClick={() => onDelete(s.id)}
-              title="Remove snapshot"
-              className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-ink-900/70 hover:bg-rose-500/80 text-ink-100 text-[12px] leading-none transition-colors"
-              aria-label="Remove snapshot"
+      </button>
+      {expanded && (
+        <ul className="p-1.5 space-y-1.5">
+          {snapshots.map((s, i) => (
+            <li
+              key={s.id}
+              className="relative group rounded overflow-hidden border border-ink-600/50 bg-ink-900/60"
             >
-              ×
-            </button>
-          </li>
-        ))}
-      </ul>
+              <img
+                src={s.dataUrl}
+                alt={`Snapshot ${i + 1}`}
+                className="block w-full h-auto"
+              />
+              <div className="absolute top-1 left-1 text-[10px] text-ink-200 bg-ink-900/70 px-1 py-0.5 rounded">
+                {`#${i + 1}`}
+              </div>
+              <button
+                type="button"
+                onClick={() => onDelete(s.id)}
+                title="Remove snapshot"
+                className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded bg-ink-900/70 hover:bg-rose-500/80 text-ink-100 text-[12px] leading-none transition-colors"
+                aria-label="Remove snapshot"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }

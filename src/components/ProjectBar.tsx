@@ -89,7 +89,10 @@ export default function ProjectBar({
   canSave,
   saveBlockedReason,
   mode,
-  createdByDisplayName,
+  // `createdByDisplayName` prop intentionally not destructured —
+  // the "Started by <user>" pill it fed was removed from the bar
+  // to keep the row single-line on narrow workspace columns.
+  // Kept in the props interface so callers don't have to change.
   referenceNumber,
   isSaving = false,
   onSave,
@@ -172,7 +175,12 @@ export default function ProjectBar({
     // dissolves into the page background. Per-pill borders still give
     // each control a tappable shape, but there's no slab wash to
     // separate the bar from the workspace below.
-    <div className="px-4 py-2 flex items-center gap-3 flex-wrap">
+    // Single-row layout: `flex-wrap` removed so the bar stays on one
+    // line even when the expanded LeftNav has eaten into the main
+    // column. The project identity button has its own max-w +
+    // truncate so it shrinks gracefully when there isn't room for
+    // every pill at full width.
+    <div className="px-4 py-2 flex items-center gap-3 min-w-0">
       {/* LEFT — back-to-dashboard pill so the user can hop out of the
           workspace from anywhere. Request-breadcrumb is gone with the
           inbox flow; sharing a project is now a reference-number copy
@@ -190,20 +198,15 @@ export default function ProjectBar({
       <div className="flex-1" />
 
       {/* RIGHT — project identity + actions, all matching pill sizes so the
-          right side reads as one cohesive control cluster. */}
-      <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-        {createdByDisplayName && (
-          <span
-            className="hidden lg:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-ink-600 text-sm text-ink-300"
-            title="Estimator who started this project"
-          >
-            <span className="text-ink-500 text-xs uppercase tracking-wider">Started by</span>
-            <span className="font-medium text-ink-100">{createdByDisplayName}</span>
-          </span>
-        )}
+          right side reads as one cohesive control cluster. The
+          "Started by <user>" pill was dropped from this row — it was
+          the first thing pushing the bar onto a second line when the
+          LeftNav opened. Creator info still surfaces inside the
+          project details drawer (click the project identity pill). */}
+      <div className="flex items-center gap-2 flex-shrink min-w-0">
         <button
           onClick={onOpenDetails}
-          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 group text-left text-sm hover:bg-ink-700/40 hover:border-beme-500/50 transition-colors"
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-md border border-ink-600 group text-left text-sm hover:bg-ink-700/40 hover:border-beme-500/50 transition-colors min-w-0 flex-shrink"
           title={`${statusLabel} · click to edit project details`}
         >
           {mode && (
@@ -233,7 +236,7 @@ export default function ProjectBar({
             {displayName}
           </span>
           {subtitle && (
-            <span className="text-ink-400 text-xs hidden lg:inline truncate max-w-[200px]">
+            <span className="text-ink-400 text-xs hidden xl:inline truncate max-w-[200px]">
               · {subtitle}
             </span>
           )}

@@ -26,7 +26,7 @@
 /** Named palette set. Each palette is a 16-slot array — same shape /
  *  same semantics as the single original palette below. `bandColor`
  *  and `buildBlockColorMap` pick which palette to sample by name. */
-export type PaletteName = 'concrete' | 'brick' | 'sandstone' | 'slate' | 'vibrant'
+export type PaletteName = 'mono' | 'concrete' | 'brick' | 'sandstone' | 'slate' | 'vibrant'
 
 /** 16-slot realistic-masonry palette. Order matters —
  *  buildBlockColorMap walks forward on collision, so visually-near
@@ -152,9 +152,38 @@ const BAND_COLOR_PALETTE_VIBRANT: string[] = [
   '#C0CA33', // 16 olive
 ]
 
-/** Palette-name → 16-slot palette lookup. Default 'concrete' for
- *  backwards compatibility with single-palette callers. */
+/** 16-slot Mono palette — matches the site's brand language
+ *  (orange + black + white + neutral grays). Interleaves brand-orange
+ *  tones with zinc grays so adjacent palette slots don't share a
+ *  family; the hash spreads codes across the whole 16 so two block
+ *  codes in the same project still read as distinct hues even though
+ *  the overall feel is monochromatic. Use this when you want the 3D
+ *  view to read as "part of the Beme app" rather than a
+ *  colour-coded diagram. */
+const BAND_COLOR_PALETTE_MONO: string[] = [
+  '#ff7a2d', // 1  brand orange (beme-500)
+  '#27272a', // 2  near-black (zinc-800)
+  '#d4d4d8', // 3  light gray (zinc-300)
+  '#fb923c', // 4  light orange (orange-400)
+  '#71717a', // 5  mid gray (zinc-500)
+  '#fdba74', // 6  pale orange (orange-300)
+  '#18181b', // 7  black (zinc-900)
+  '#fed7aa', // 8  peach (orange-200)
+  '#52525b', // 9  charcoal (zinc-600)
+  '#ea580c', // 10 deep orange (orange-600)
+  '#a1a1aa', // 11 mid-light gray (zinc-400)
+  '#c2410c', // 12 rust (orange-700)
+  '#3f3f46', // 13 deep charcoal (zinc-700)
+  '#e4e4e7', // 14 light gray (zinc-200)
+  '#f97316', // 15 vivid orange (orange-500)
+  '#ffedd5', // 16 cream-peach (orange-100)
+]
+
+/** Palette-name → 16-slot palette lookup. Default 'mono' so a fresh
+ *  install renders in the brand palette; legacy palettes remain
+ *  selectable through the picker. */
 export const BAND_COLOR_PALETTES: Record<PaletteName, string[]> = {
+  mono: BAND_COLOR_PALETTE_MONO,
   concrete: BAND_COLOR_PALETTE,
   brick: BAND_COLOR_PALETTE_BRICK,
   sandstone: BAND_COLOR_PALETTE_SANDSTONE,
@@ -164,6 +193,7 @@ export const BAND_COLOR_PALETTES: Record<PaletteName, string[]> = {
 
 /** Human-readable names for each palette — used by the picker UI. */
 export const PALETTE_LABELS: Record<PaletteName, string> = {
+  mono: 'Mono',
   concrete: 'Concrete',
   brick: 'Brick',
   sandstone: 'Sandstone',
@@ -195,7 +225,7 @@ function hashCode(code: string): number {
  * slot (about 1-in-16 chance). Use for scopes where multiple codes
  * don't need to be visually distinct from each other.
  */
-export function bandColor(code: string, palette: PaletteName = 'vibrant'): string {
+export function bandColor(code: string, palette: PaletteName = 'mono'): string {
   const slots = BAND_COLOR_PALETTES[palette] ?? BAND_COLOR_PALETTE
   return slots[hashCode(code) % slots.length]
 }
@@ -225,7 +255,7 @@ export function bandColor(code: string, palette: PaletteName = 'vibrant'): strin
  */
 export function buildBlockColorMap(
   codes: string[],
-  palette: PaletteName = 'vibrant'
+  palette: PaletteName = 'mono'
 ): Map<string, string> {
   const slots = BAND_COLOR_PALETTES[palette] ?? BAND_COLOR_PALETTE
   const unique = Array.from(new Set(codes.filter(Boolean)))

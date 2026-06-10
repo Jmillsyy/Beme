@@ -45,17 +45,21 @@
   --color-beme-800: #9a3f08;
   --color-beme-900: #431407;
 
-  /* Warm ink scale — DEFAULTS to dark mode (Studio Black) */
+  /* Warm ink scale — DEFAULTS to dark mode (Studio Black).
+     Dark surfaces (ink-600 through ink-900) sit one step lighter than
+     the original Studio Black draft — the previous values landed too
+     close to pitch black, which made the page feel heavy. Text colours
+     (ink-50 through ink-500) are unchanged; the lift is dark-end only. */
   --color-ink-50: #f3f3f4;
   --color-ink-100: #d9d9dc;
   --color-ink-200: #b4b4b9;
   --color-ink-300: #9ca0a8;
-  --color-ink-400: #6d717a;
-  --color-ink-500: #4a4d54;
-  --color-ink-600: #2e3036;
-  --color-ink-700: #232328;
-  --color-ink-800: #18181c;
-  --color-ink-900: #0e0e10;
+  --color-ink-400: #7a7e87;  /* +1 step — keeps muted contrast on lifted bg */
+  --color-ink-500: #585b62;  /* +1 step */
+  --color-ink-600: #3a3d44;  /* borders */
+  --color-ink-700: #2e2f35;  /* panel hover */
+  --color-ink-800: #232328;  /* panels / chrome */
+  --color-ink-900: #18181c;  /* page background — softer near-black */
 
   /* Paper canvas — light surface for the PDF + walls; same in both themes */
   --color-paper-50: #fdfcf9;
@@ -96,17 +100,28 @@
    ink-900 = darkest in dark mode → becomes LIGHTEST in light mode (page bg)
    Effectively flips the scale end-to-end so the same `bg-ink-800` / `text-ink-50`
    utilities resolve to the right values in either theme. */
+/* Light-mode palette: orange + black + white with a quiet warm cast.
+   Page surface sits between the old beige cream (#f7f4ec) and the
+   pure neutral gray (#f4f4f5) — just enough warmth that the screen
+   doesn't feel clinical, but cool enough that brand orange + black
+   still read as the dominant tones rather than melting into beige.
+   Universal solution — touch this block, every component using
+   `bg-ink-* / text-ink-* / border-ink-*` re-skins for free. */
 :root.light {
-  --color-ink-50: #0e0c0a;   /* strongest text / heading */
-  --color-ink-100: #1f1d1a;
-  --color-ink-200: #3d3b38;  /* body text */
-  --color-ink-300: #5c5a57;  /* secondary text */
-  --color-ink-400: #8a8782;  /* muted text */
-  --color-ink-500: #b8b4ac;  /* muted icons */
-  --color-ink-600: #e2dfd8;  /* subtle borders */
-  --color-ink-700: #f0ede5;  /* panel hover */
-  --color-ink-800: #ffffff;  /* panels / chrome */
-  --color-ink-900: #f7f4ec;  /* page background — warm off-white */
+  --color-ink-50: #09090b;   /* near-black — strongest text / heading */
+  --color-ink-100: #18181b;  /* primary text on white panels */
+  --color-ink-200: #27272a;  /* body text */
+  --color-ink-300: #52525b;  /* secondary text */
+  --color-ink-400: #74716a;  /* muted text — faint warm cast */
+  --color-ink-500: #a3a098;  /* muted icons — faint warm cast */
+  --color-ink-600: #d6d3cc;  /* card / panel borders — visible on the
+                                  page bg, slight warm tint */
+  --color-ink-700: #e8e4db;  /* panel hover / one-step lift, warm */
+  --color-ink-800: #ffffff;  /* panels / cards / chrome — pure white */
+  --color-ink-900: #f6f4ee;  /* page background — softly warm off-white.
+                                  Sits between the old cream and a
+                                  cool gray so the dashboard has a
+                                  real "page" feel without going beige. */
 }
 
 /* ── Accent colour overrides for light mode ─────────────────────────────────

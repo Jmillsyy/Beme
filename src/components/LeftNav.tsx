@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
 import { useOrganisations } from '../lib/organisations'
@@ -29,7 +28,11 @@ import BemeMark from './BemeMark'
  * the bottom of the rail" works whether the rail is showing labels
  * or just icons.
  */
-const STORAGE_KEY = 'beme.leftnav.collapsed'
+// Local-storage persistence was removed when the rail switched to
+// "auto-apply defaultCollapsed on every mount" — the AppShell vs
+// workspace prop is now the source of truth for the start state,
+// and the user's manual toggle only lasts as long as the current
+// shell mount.
 
 export default function LeftNav({
   defaultCollapsed = false,
@@ -39,44 +42,26 @@ export default function LeftNav({
   const location = useLocation()
   const { signedIn } = useAuth()
 
-  // Collapsed state is user-controlled (toggle button below) with
-  // localStorage persistence. `defaultCollapsed` only kicks in on
-  // first visit before the user has expressed a preference; after
-  // that, the stored value wins regardless of which page they
-  // happen to be on. Workspace pages pass true so first-time canvas
-  // users get the icon-only rail without having to discover the
-  // toggle.
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    // `defaultCollapsed` true (workspace pages) FORCES collapsed on
-    // mount regardless of any stored expansion preference. Trades
-    // global localStorage persistence for per-page auto-collapse —
-    // the user wanted the rail to auto-minimise when opening a
-    // project even if they normally keep it expanded on the
-    // dashboard. They can still manually expand within the session
-    // via the toggle, and that toggle persists for non-workspace
-    // pages (dashboard, projects, etc.).
-    if (defaultCollapsed === true) return true
-    if (typeof window === 'undefined') return defaultCollapsed
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY)
-      if (stored === '1') return true
-      if (stored === '0') return false
-    } catch {
-      // localStorage can throw on Safari private mode etc.
-    }
-    return defaultCollapsed
-  })
+  // Collapsed state is user-controlled (toggle button at the bottom
+  // of the rail) with localStorage persistence WITHIN a session of
+  // the same shell. `defaultCollapsed` is treated as the authoritative
+  // start state on every mount — the LeftNav unmounts on workspace ↔
+  // AppShell transitions, so each remount re-applies the prop. That
+  // gives us:
+  //   • Workspace pages (defaultCollapsed=true) → always start
+  //     collapsed when the user opens a project, even if they had it
+  //     expanded on the dashboard.
+  //   • AppShell pages (defaultCollapsed=false) → always start
+  //     expanded when the user navigates back to the dashboard /
+  //     library / settings, even if they had collapsed it before
+  //     entering a project.
+  // The localStorage toggle still persists across reloads OF THE SAME
+  // shell mount — handy if the user explicitly minimises the rail on
+  // the dashboard and refreshes — but it's overridden by the prop on
+  // each fresh navigation between shells.
+  const [collapsed, setCollapsed] = useState<boolean>(() => defaultCollapsed)
   function toggleCollapsed() {
-    setCollapsed((prev) => {
-      const next = !prev
-      try {
-        window.localStorage.setItem(STORAGE_KEY, next ? '1' : '0')
-      } catch {
-        // Ignore — preference doesn't persist, but the toggle still
-        // works for this session.
-      }
-      return next
-    })
+    setCollapsed((prev) => !prev)
   }
 
   const isActive = (path: string) =>
@@ -92,25 +77,6 @@ export default function LeftNav({
       // UserMenuRail below).
       className={`hidden lg:flex ${railWidth} flex-shrink-0 border-r border-ink-700 bg-ink-900 flex-col h-screen sticky top-0 transition-[width] duration-200 relative group/rail`}
     >
-      {/* Collapse / expand toggle — lives in a thin header strip at
-          the very top of the rail. Always visible (no hover gate)
-          and inside the rail bounds so it reads as part of the
-          chrome rather than floating outside. Persisted to
-          localStorage so the choice survives reloads on non-
-          workspace pages; workspace pages force collapsed on mount
-          (see defaultCollapsed handling in the state init above). */}
-      <div className="flex items-center justify-center h-12 px-2">
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className="w-9 h-9 rounded-lg border border-ink-700 bg-ink-800/60 text-ink-300 hover:text-ink-50 hover:bg-ink-700 hover:border-beme-500/40 flex items-center justify-center text-base leading-none transition-colors"
-        >
-          {collapsed ? '›' : '‹'}
-        </button>
-      </div>
-
       {/* Brand block — Beme square mark. In expanded mode the
           wordmark + tagline sit alongside; collapsed mode shows just
           the square so the icon row below lines up vertically with
@@ -230,6 +196,46 @@ export default function LeftNav({
             </svg>
           }
         />
+        {/* Collapse / expand toggle — sits as the last item in the
+            nav list so it groups visually with the primary surfaces
+            instead of floating in its own header strip. Matches the
+            NavItem sizing and icon-only treatment so collapsed-mode
+            renders as one continuous icon column ending at this
+            button. */}
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className={`group flex items-center ${
+            collapsed
+              ? 'justify-center w-12 h-12 mx-auto mb-2'
+              : 'gap-3 px-3.5 py-3 text-base font-medium mb-1.5 w-full'
+          } rounded-lg text-sm transition-colors text-ink-300 hover:text-ink-100 hover:bg-ink-800/80`}
+        >
+          <span className="flex-shrink-0 text-ink-400 group-hover:text-ink-200">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px]">
+              {collapsed ? (
+                <>
+                  {/* Right-pointing double chevron — "expand" affordance */}
+                  <path d="M7 6l6 6-6 6" />
+                  <path d="M13 6l6 6-6 6" />
+                </>
+              ) : (
+                <>
+                  {/* Left-pointing double chevron — "collapse" affordance */}
+                  <path d="M17 6l-6 6 6 6" />
+                  <path d="M11 6l-6 6 6 6" />
+                </>
+              )}
+            </svg>
+          </span>
+          {!collapsed && (
+            <span className="truncate">
+              {collapsed ? 'Expand' : 'Collapse'}
+            </span>
+          )}
+        </button>
       </nav>
 
       {/* Account block. Expanded mode = ACCOUNT eyebrow + offline pill
@@ -438,55 +444,16 @@ function UserMenuRail({
   const [theme, setTheme] = useTheme()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const buttonRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-  // Fixed-position coords for the portal-rendered dropdown. Computed
-  // from the avatar button's bounding rect when `open` flips true so
-  // the menu sits adjacent to the trigger but escapes any z-stacking
-  // / overflow:hidden ancestors (modals, AppShell, etc.).
-  const [coords, setCoords] = useState<{ top: number; left: number }>({
-    top: 0,
-    left: 0,
-  })
 
-  // Position-on-open + reposition-on-resize.
-  useEffect(() => {
-    if (!open) return
-    function reposition() {
-      const btn = buttonRef.current
-      if (!btn) return
-      const rect = btn.getBoundingClientRect()
-      if (collapsed) {
-        // Fly out to the right of the avatar, top-aligned with the
-        // avatar. ml-2 equivalent (8px gap).
-        setCoords({ top: rect.top, left: rect.right + 8 })
-      } else {
-        // Drop below the user pill, left-aligned with it.
-        setCoords({ top: rect.bottom + 8, left: rect.left })
-      }
-    }
-    reposition()
-    window.addEventListener('resize', reposition)
-    window.addEventListener('scroll', reposition, true)
-    return () => {
-      window.removeEventListener('resize', reposition)
-      window.removeEventListener('scroll', reposition, true)
-    }
-  }, [open, collapsed])
-
+  // Click anywhere outside the user-menu region closes it. No portal
+  // anymore — the menu renders inline inside the rail itself (a
+  // waterfall that pushes content above out of the way when expanded;
+  // an icon column when the rail is collapsed) — so the single ref
+  // covers both the avatar trigger and the option list.
   useEffect(() => {
     if (!open) return
     function handleClick(e: MouseEvent) {
-      const target = e.target as Node
-      // Click anywhere outside the avatar button OR the portal menu
-      // closes the menu. Both refs are consulted because the portal
-      // menu lives outside the avatar's DOM subtree.
-      if (
-        !ref.current?.contains(target) &&
-        !menuRef.current?.contains(target)
-      ) {
-        setOpen(false)
-      }
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false)
@@ -521,10 +488,50 @@ function UserMenuRail({
   const initials = initialsOf(user)
   const isLight = theme === 'light'
 
+  // ── Inline option list ────────────────────────────────────────
+  // Same three actions either way; render mode flips on `collapsed`:
+  //   • Expanded → icon + label, full-width hover row.
+  //   • Collapsed → icon-only square button, stacked below the
+  //     avatar. Hover tooltip carries the label so the affordance
+  //     stays discoverable.
+  const optionRowClass = collapsed
+    ? 'flex items-center justify-center w-11 h-11 mx-auto rounded-lg text-ink-300 hover:text-ink-100 hover:bg-ink-800/80 transition-colors'
+    : 'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-ink-100 hover:bg-ink-800/80 transition-colors text-sm'
+  const optionIconClass = 'flex-shrink-0 text-ink-400'
+
+  // Inline SVG icons — single stroke, 20×20, match the primary-nav
+  // glyph weight so the menu reads as part of the rail's icon family.
+  const settingsIcon = (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06A2 2 0 1 1 4.21 16.96l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 4.21l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.5.2.91.6 1.18 1.06" />
+    </svg>
+  )
+  // Sun ↔ moon depending on current theme — the icon shows what
+  // you'll FLIP TO so the affordance reads as a switch, not a state.
+  const themeIcon = isLight ? (
+    // Currently light → button switches to dark → moon glyph.
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  ) : (
+    // Currently dark → button switches to light → sun glyph.
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+    </svg>
+  )
+  const signOutIcon = (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
+    </svg>
+  )
+
   return (
-    <div className={collapsed ? 'relative' : 'relative w-full'} ref={ref}>
+    <div className={collapsed ? 'flex flex-col items-center' : 'w-full'} ref={ref}>
       <button
-        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         title={collapsed ? primaryLabel : undefined}
@@ -536,7 +543,7 @@ function UserMenuRail({
         }
         aria-expanded={open}
       >
-        <span className={`w-11 h-11 rounded-full bg-beme-500 text-black text-sm font-bold flex items-center justify-center flex-shrink-0 shadow-md shadow-beme-500/30`}>
+        <span className="w-11 h-11 rounded-full bg-beme-500 text-black text-sm font-bold flex items-center justify-center flex-shrink-0 shadow-md shadow-beme-500/30">
           {initials}
         </span>
         {!collapsed && (
@@ -551,68 +558,76 @@ function UserMenuRail({
                 </span>
               )}
             </span>
-            <span className="text-ink-400 text-sm flex-shrink-0">▾</span>
+            {/* Caret rotates 180° when open so the affordance reads
+                as "click to close" rather than a static glyph. */}
+            <span
+              className={`text-ink-400 text-sm flex-shrink-0 transition-transform ${
+                open ? 'rotate-180' : ''
+              }`}
+            >
+              ▾
+            </span>
           </>
         )}
       </button>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            style={{
-              position: 'fixed',
-              top: coords.top,
-              left: coords.left,
-              width: collapsed ? '14rem' : buttonRef.current?.getBoundingClientRect().width,
+      {open && (
+        // Waterfall list — sits inline in the rail directly under the
+        // avatar / user pill. No portal, no fixed-position math; the
+        // rail just grows downward. Account block above sits in the
+        // rail's bottom section so there's room to drop a few rows.
+        <div
+          className={
+            collapsed
+              ? 'mt-2 flex flex-col items-center gap-1'
+              : 'mt-1 w-full flex flex-col gap-0.5 px-1'
+          }
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              navigate('/settings')
             }}
-            className="rounded-lg border border-ink-600 bg-ink-800 shadow-xl shadow-black/40 z-[100] py-1 text-sm"
+            title={collapsed ? 'Settings' : undefined}
+            aria-label="Settings"
+            className={optionRowClass}
           >
-            {collapsed && (
-              <div className="px-3 py-2 border-b border-ink-700/60">
-                <div className="text-sm font-medium text-ink-100 truncate">
-                  {primaryLabel}
-                </div>
-                {showEmailSubtitle && (
-                  <div className="text-[10px] text-ink-500 truncate mt-0.5">
-                    {user.email}
-                  </div>
-                )}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false)
-                navigate('/settings')
-              }}
-              className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
-            >
-              <span className="text-ink-400">⚙</span> Settings
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTheme(isLight ? 'dark' : 'light')
-              }}
-              className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
-            >
-              <span className="text-ink-400">{isLight ? '☀' : '☾'}</span>
-              {isLight ? 'Light theme' : 'Dark theme'}
-            </button>
-            <div className="border-t border-ink-600 my-1" />
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false)
-                void signOut()
-              }}
-              className="w-full text-left px-3 py-2 text-ink-100 hover:bg-ink-700 transition-colors"
-            >
-              Sign out
-            </button>
-          </div>,
-          document.body,
-        )}
+            <span className={optionIconClass}>{settingsIcon}</span>
+            {!collapsed && <span>Settings</span>}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTheme(isLight ? 'dark' : 'light')
+            }}
+            title={
+              collapsed
+                ? isLight
+                  ? 'Switch to dark theme'
+                  : 'Switch to light theme'
+                : undefined
+            }
+            aria-label={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+            className={optionRowClass}
+          >
+            <span className={optionIconClass}>{themeIcon}</span>
+            {!collapsed && <span>{isLight ? 'Dark theme' : 'Light theme'}</span>}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              void signOut()
+            }}
+            title={collapsed ? 'Sign out' : undefined}
+            aria-label="Sign out"
+            className={optionRowClass}
+          >
+            <span className={optionIconClass}>{signOutIcon}</span>
+            {!collapsed && <span>Sign out</span>}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
