@@ -254,7 +254,13 @@ export default function WallTypesPanel({
             // was actually going to use.
             const isActive = m.id === activeMakeupId && activeTypeKind === 'wall'
             const wallCount = wallCountsByMakeupId[m.id] ?? 0
-            const canDelete = makeups.length > 1 && wallCount === 0
+            // Delete is always available when there's a fallback type
+            // to land on. Used to additionally require wallCount === 0
+            // but that left users stuck when two duplicate types each
+            // held walls (e.g. corrupt state). The confirm dialog
+            // below names the wall count explicitly so the user
+            // knows they're losing those walls.
+            const canDelete = makeups.length > 1
             return (
               <button
                 key={m.id}
@@ -353,9 +359,13 @@ export default function WallTypesPanel({
                         const ok = await confirm({
                           title: `Delete wall type "${m.name}"?`,
                           message:
-                            'Walls currently using this type will fall back ' +
-                            'to the default. This can be undone.',
-                          confirmLabel: 'Delete',
+                            wallCount > 0
+                              ? `This wall type has ${wallCount} wall${wallCount === 1 ? '' : 's'} drawn against it. Deleting the type will also delete ${wallCount === 1 ? 'that wall' : 'those walls'}.`
+                              : 'No walls reference this wall type — deleting it is safe.',
+                          confirmLabel:
+                            wallCount > 0
+                              ? `Delete type + ${wallCount} wall${wallCount === 1 ? '' : 's'}`
+                              : 'Delete',
                           variant: 'destructive',
                         })
                         if (ok) onDeleteMakeup(m.id)

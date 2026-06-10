@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   formatLengthInputValue,
   lengthInputPlaceholder,
@@ -41,6 +41,7 @@ export default function LengthInput({
   ariaLabel,
   className,
   onEnter,
+  autoFocus,
 }: {
   valueMm: number
   onChangeMm: (mm: number) => void
@@ -54,6 +55,11 @@ export default function LengthInput({
   className?: string
   /** Optional callback when the user presses Enter (e.g. submit a form). */
   onEnter?: () => void
+  /** Auto-focus the input on mount AND select-all its text so the
+   *  user can start typing a replacement value immediately. Useful on
+   *  modal-summoned inputs where the user's first action is usually
+   *  "type a value". */
+  autoFocus?: boolean
 }) {
   const { settings } = useUserSettings()
   const units = settings.preferences.units
@@ -67,6 +73,19 @@ export default function LengthInput({
     // only re-format when the field is not focused.
     if (!focused) setText(formatLengthInputValue(valueMm, units))
   }, [valueMm, units, focused])
+  // Manual autoFocus so we can select() the contents after focusing —
+  // the native React `autoFocus` attribute focuses but doesn't select,
+  // which leaves the cursor at one end of the text and forces the
+  // user to triple-click before overtyping. Doing it ourselves gives
+  // the "summon modal, type, hit Enter" flow.
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (!autoFocus) return
+    const el = inputRef.current
+    if (!el) return
+    el.focus()
+    el.select()
+  }, [autoFocus])
 
   const handleChange = (next: string) => {
     setText(next)
@@ -80,6 +99,7 @@ export default function LengthInput({
   return (
     <div className={`inline-flex items-stretch ${className ?? ''}`}>
       <input
+        ref={inputRef}
         type="text"
         inputMode="text"
         value={text}

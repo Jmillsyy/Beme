@@ -1932,7 +1932,14 @@ function WallDrawingLayerInner({
 
     if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
-      const proj = findClosestWallProjection(raw, onlyWall)
+      // Try a fresh projection first; if the cursor has wandered off
+      // the wall mid-placement, fall back to the last valid hover so a
+      // brief drag-off doesn't lose the in-progress opening. The first
+      // click still requires a real wall hit (otherwise we have no
+      // anchor to project against).
+      const projFresh = findClosestWallProjection(raw, onlyWall)
+      const proj =
+        projFresh ?? (openingPlacementStart ? openingHoverProjection : null)
       if (!proj) return
       // Round alongMm to the 10 mm OPENING grid so both edges of every
       // opening land on a clean increment and the width comes out as a
@@ -2135,9 +2142,15 @@ function WallDrawingLayerInner({
           alongMm: snappedAlong,
           px: snappedPx,
         })
-      } else {
+      } else if (!openingPlacementStart) {
+        // No anchor yet → no preview to keep alive.
         setOpeningHoverProjection(null)
       }
+      // Cursor left the wall mid-placement: deliberately DON'T clear
+      // the hover. Holding the last valid projection means a brief
+      // wander off the wall (mouse jitter, dragging past an end, etc.)
+      // doesn't abort the in-progress opening — the live width readout
+      // and the second-click commit both keep using the last snap.
     } else if (placingControlJoint) {
       // Cut wall now works on both straight AND curved walls.
       // projectOntoWall returns a curve-aware projection (radial onto

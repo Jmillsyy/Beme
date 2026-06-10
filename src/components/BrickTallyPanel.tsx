@@ -140,41 +140,32 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
             </div>
           </div>
 
-          {/* Metadata strip — opening count + head/sill/total opening
-              lineal metres. The user wanted these surfaced inline
-              with the openings count instead of waiting for the
-              export. Total = head + sill (overhang counted twice
-              on windows — both above and below — same as the export
-              tally). Doors are excluded from sill (they sit on the
-              floor, no sill course). */}
+          {/* Metadata strip — opening count + head/sill lineal metres.
+              Sources from byMakeup so the values populate for any
+              opening regardless of whether the wall type names a
+              head/sill brick code (the brick code is a 3D-render
+              concern, the lineal m is a real takeoff metric). Doors
+              are excluded from sill (they sit on the floor, no sill
+              course). "Total Lineal m" was removed — it summed head
+              + sill which double-counts every window opening and
+              made the figure read as unusually large. */}
           {(() => {
             const headLinealM =
-              Object.values(tally.headLinealMmByType).reduce(
+              Object.values(tally.headLinealMmByMakeup ?? {}).reduce(
                 (s, v) => s + v,
                 0,
               ) / 1000
             const sillLinealM =
-              Object.values(tally.sillLinealMmByType).reduce(
+              Object.values(tally.sillLinealMmByMakeup ?? {}).reduce(
                 (s, v) => s + v,
                 0,
               ) / 1000
-            const totalOpeningLinealM = headLinealM + sillLinealM
             return (
-              <div className="px-3 py-2.5 text-xs border-t border-ink-600 grid grid-cols-2 gap-x-3 gap-y-2 tabular-nums">
+              <div className="px-3 py-2.5 text-xs border-t border-ink-600 grid grid-cols-3 gap-x-3 gap-y-2 tabular-nums">
                 <div>
                   <div className="text-ink-400 text-[11px]">Openings</div>
                   <div className="text-ink-100 font-medium text-sm mt-0.5">
                     <AnimatedNumber value={tally.openingCount} />
-                  </div>
-                </div>
-                <div>
-                  <div className="text-ink-400 text-[11px]">Total Lineal m</div>
-                  <div className="text-ink-100 font-medium text-sm mt-0.5">
-                    <AnimatedNumber
-                      value={totalOpeningLinealM}
-                      format={(n) => n.toFixed(2)}
-                    />{' '}
-                    m
                   </div>
                 </div>
                 <div>
