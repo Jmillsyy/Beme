@@ -39,6 +39,10 @@ import { getEffectiveWallThicknessMm, getMakeupHeightMm } from './makeups'
 import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
 import { getCurrentOrgId } from './organisations'
+import {
+  formatSupplyQuantity,
+  roundSupplyQuantity,
+} from '../types/userSettings'
 
 interface ExportParams {
   projectDetails: ProjectDetails
@@ -1468,6 +1472,10 @@ export async function buildBlockEstimateHtml(
   const supplyRows: {
     name: string
     qty: number
+    /** Pre-formatted quantity at the item's chosen decimalPlaces — used
+     *  by the schedule + assumption notes so the same row prints the
+     *  same number wherever it appears in the PDF. */
+    display: string
     noteRate: string
     category: string
   }[] = []
@@ -1529,7 +1537,11 @@ export async function buildBlockEstimateHtml(
         // Block estimate — brick-relative rates don't apply.
         continue
     }
-    const rounded = Math.ceil(qty)
+    // Round at the item's chosen precision (0 dp → whole units, 1–3 dp
+    // → finer granularity). Same ceil semantics as before — no under-
+    // ordering — just at a smaller step for consumables that need
+    // decimals (cement m³, sand m³, flashing m).
+    const rounded = roundSupplyQuantity(qty, item)
     // Apply the user's per-supply-item adjustment (positive = remove,
     // negative = add) AFTER rounding so the modal's preview number
     // matches what lands in the PDF. Clamp to >= 0 to avoid negative
@@ -1547,6 +1559,7 @@ export async function buildBlockEstimateHtml(
     supplyRows.push({
       name: overriddenName || item.name,
       qty: finalQty,
+      display: formatSupplyQuantity(finalQty, item),
       noteRate,
       category: item.category?.trim() || 'Uncategorised',
     })
@@ -1627,7 +1640,7 @@ export async function buildBlockEstimateHtml(
   }
 
   const supplyItemNotes = supplyRows.map(
-    (r) => `${r.name} allowance at ${r.noteRate} — ${r.qty.toLocaleString()} included.`
+    (r) => `${r.name} allowance at ${r.noteRate} — ${r.display} included.`
   )
   const assumptions = buildAssumptions(
     inclusions,
@@ -1862,7 +1875,7 @@ export async function buildBlockEstimateHtml(
       const itemRows = rows
         .map(
           (r) =>
-            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${formatNumber(r.qty)}</td></tr>`
+            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${r.display}</td></tr>`
         )
         .join('')
       return headerRow + itemRows

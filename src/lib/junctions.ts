@@ -186,17 +186,15 @@ function endpointsFormCorner(
 
   if (pointsMatch(aPoint, bPoint)) return true
 
-  // Use halfModular (= halfThickness + mortar/2) to match the drawing
-  // layer's snap-target offset exactly. WallDrawingLayer.tsx places the
-  // green corner-snap dot at halfModular inset from each free end; if
-  // this check uses halfThickness instead, the snapped click lands 5mm
-  // off the corner-detection window and the corner doesn't form.
-  const halfModA =
-    (thicknessByWallId[wallA.id] ?? 190) / 2 + DEFAULT_MORTAR_JOINT_MM / 2
-  const halfModB =
-    (thicknessByWallId[wallB.id] ?? 190) / 2 + DEFAULT_MORTAR_JOINT_MM / 2
-  const aCornerPt = freeEndCornerPoint(wallA, endA, halfModA)
-  const bCornerPt = freeEndCornerPoint(wallB, endB, halfModB)
+  // halfThickness — matches the drawing layer's snap-target offset
+  // exactly. WallDrawingLayer.tsx places the green corner-snap dot
+  // halfThickness inset from each free end (the geometric outer-
+  // corner point), so this check uses the same offset and the snapped
+  // click lands inside the corner-detection window.
+  const halfThicknessA = (thicknessByWallId[wallA.id] ?? 190) / 2
+  const halfThicknessB = (thicknessByWallId[wallB.id] ?? 190) / 2
+  const aCornerPt = freeEndCornerPoint(wallA, endA, halfThicknessA)
+  const bCornerPt = freeEndCornerPoint(wallB, endB, halfThicknessB)
 
   if (pointsMatch(aPoint, bCornerPt)) return true
   if (pointsMatch(bPoint, aCornerPt)) return true

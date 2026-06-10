@@ -635,6 +635,13 @@ function SupplyItemForm({
   const [openingWidthMax, setOpeningWidthMax] = useState<number | ''>(
     existing?.openingWidthMaxMm ?? ''
   )
+  // Display decimals — drives the rounding precision in the panel +
+  // export. Default 0 (whole units) so brick / block / lintel counts
+  // round up to a whole unit as before; users can pick 1–3 for things
+  // like cement bags, sand m³, flashing m where decimals matter.
+  const [decimalPlaces, setDecimalPlaces] = useState<number>(
+    existing?.decimalPlaces ?? 0
+  )
 
   const canSave =
     name.trim().length > 0 && rate > 0 && (appliesToBlock || appliesToBrick)
@@ -669,6 +676,10 @@ function SupplyItemForm({
       ...(isPerOpening && openingWidthMax !== ''
         ? { openingWidthMaxMm: openingWidthMax }
         : {}),
+      // Only persist decimalPlaces when non-zero — keeps the legacy
+      // (no field) and "0 decimals" cases on the same shape so
+      // existing serialised libraries don't gain a trailing 0.
+      ...(decimalPlaces > 0 ? { decimalPlaces } : {}),
     })
   }
 
@@ -754,7 +765,7 @@ function SupplyItemForm({
           />
         </label>
 
-        <label className="text-sm md:col-span-2">
+        <label className="text-sm">
           <span className="block text-ink-300 mb-1">Unit</span>
           <select
             value={unit}
@@ -768,6 +779,26 @@ function SupplyItemForm({
             ))}
           </select>
           {unitHint && <p className="text-xs text-ink-400 mt-1">{unitHint}</p>}
+        </label>
+
+        <label className="text-sm">
+          <span className="block text-ink-300 mb-1">Decimals on quantity</span>
+          <select
+            value={decimalPlaces}
+            onChange={(e) => setDecimalPlaces(parseInt(e.target.value, 10) || 0)}
+            className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+          >
+            <option value={0}>0 — whole units (12)</option>
+            <option value={1}>1 decimal (1.2)</option>
+            <option value={2}>2 decimals (0.12)</option>
+            <option value={3}>3 decimals (0.123)</option>
+          </select>
+          <p className="text-xs text-ink-400 mt-1">
+            How fine the quantity prints in the panel and on the export
+            schedule. Higher precision suits consumables (cement, sand,
+            flashing); leave at 0 for whole-unit items (bricks, blocks,
+            lintels, ties).
+          </p>
         </label>
 
         {/* Opening-width range — only shown for per-opening supplies.
