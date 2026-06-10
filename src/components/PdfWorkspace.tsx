@@ -1692,6 +1692,36 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           return out
         }
 
+        // Strip exact-duplicate walls — same start, same end, same
+        // trade — on a per-page basis. Two walls at the exact same
+        // coordinates within the same trade should never exist; if
+        // they do, the second is a phantom (some old save/load bug
+        // duplicated the geometry into a parallel wall type) which
+        // doubles every brick / block tally figure for that wall.
+        // Picks the FIRST occurrence to preserve makeupId stability —
+        // if the user wants the other wall type's height to win, they
+        // can reassign after the dedup. Cross-trade overlaps (a brick
+        // skin sharing geometry with a block leaf) are kept; only
+        // within-trade exact copies get pruned.
+        const dedupeWalls = (
+          src: Record<number, Wall[]> | undefined,
+        ): Record<number, Wall[]> | undefined => {
+          if (!src) return src
+          const out: Record<number, Wall[]> = {}
+          for (const [pageStr, walls] of Object.entries(src)) {
+            const seen = new Set<string>()
+            const kept: Wall[] = []
+            for (const w of walls) {
+              const key = `${w.trade ?? 'block'}|${w.startX}|${w.startY}|${w.endX}|${w.endY}`
+              if (seen.has(key)) continue
+              seen.add(key)
+              kept.push(w)
+            }
+            out[Number(pageStr)] = kept
+          }
+          return out
+        }
+
         // Brick walls used to be saved with makeupId === '' because they
         // had no per-wall type. Now they reference a BrickMakeup the same way
         // block walls reference a WallMakeup. Migrate on load: hydrate the
@@ -1709,7 +1739,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           ? migrateBrickWalls(proj.wallsByPage, defaultBrickMakeupId)
           : proj.wallsByPage
         const areaMigratedWallsByPage = migrateWallsAreaId(migratedWallsByPage)
-        setWallsByPage(areaMigratedWallsByPage ?? {})
+        const dedupedWallsByPage = dedupeWalls(areaMigratedWallsByPage)
+        setWallsByPage(dedupedWallsByPage ?? {})
         setOpeningsByPage(proj.openingsByPage ?? {})
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
         // Hydrate pier makeups from save (or reset to empty if the project
@@ -3205,18 +3236,32 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // the brand orange fallback. The canvas reads this to colour each wall's
   // body so users can tell types apart at a glance; the WallTypesPanel reads
   // the same helper directly for the swatches in its list.
+  //
+  // Sources off `allWallsRaw` (the unfiltered wall set across every trade
+  // and area) so the map ALWAYS contains an entry for any wall the canvas
+  // might render — including walls visible on other pages, walls in
+  // different areas, etc. The previous version sourced from `allWalls`
+  // (area-filtered), which meant navigating between area pages dropped
+  // colour entries for walls in the new area's view → those walls fell
+  // back to the placeholder orange and looked recoloured until the user
+  // clicked their wall type. Mode still picks the right palette (block /
+  // brick) so each wall is keyed against its own trade's makeup list.
   const wallColorByWallId = useMemo(() => {
     const map: Record<string, string> = {}
-    // Pick the right makeup list for the active mode — block walls colour by
-    // WallMakeup, brick walls colour by BrickMakeup. Without this brick walls
-    // all fell back to the placeholder orange because their makeupId never
-    // appeared in the block `makeups` list.
-    const palette = mode === 'brick' ? brickMakeups : makeups
-    for (const w of allWalls) {
-      map[w.id] = w.makeupId ? wallTypeColor(w.makeupId, palette) : '#ED7D31'
+    const blockPalette = makeups
+    const brickPalette = brickMakeups
+    for (const w of allWallsRaw) {
+      if (!w.makeupId) {
+        map[w.id] = '#ED7D31'
+        continue
+      }
+      const wallTrade = w.trade ?? 'block'
+      const palette = wallTrade === 'brick' ? brickPalette : blockPalette
+      map[w.id] = wallTypeColor(w.makeupId, palette)
     }
     return map
-  }, [allWalls, makeups, brickMakeups, mode])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allWallsRaw, makeups, brickMakeups])
 
   // ── Memoised props for <WallDrawingLayer> ─────────────────────────
   //
@@ -3998,6 +4043,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       }
       return remaining
     })
+    // Wipe walls assigned to this type across every page. Used to be
+    // gated upstream (delete button only visible when wallCount === 0),
+    // but that trapped users with duplicate wall types each holding
+    // walls. The panel now warns about the wall count in the confirm
+    // dialog, so by the time we land here the user has explicitly
+    // opted in to losing those walls.
+    setWallsByPage((prev) => {
+      const next: Record<number, Wall[]> = {}
+      let changed = false
+      for (const [pageStr, walls] of Object.entries(prev)) {
+        const kept = walls.filter((w) => w.makeupId !== id)
+        if (kept.length !== walls.length) changed = true
+        next[Number(pageStr)] = kept
+      }
+      return changed ? next : prev
+    })
   }
 
   /**
@@ -4117,6 +4178,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       if (remaining.length === 0) return prev
       if (activeBrickMakeupId === id) setActiveBrickMakeupId(remaining[0].id)
       return remaining
+    })
+    // Same as the block path — drop every wall referencing this
+    // brick wall type. The panel's confirm dialog explicitly names
+    // the count so the user knows what they're agreeing to.
+    setWallsByPage((prev) => {
+      const next: Record<number, Wall[]> = {}
+      let changed = false
+      for (const [pageStr, walls] of Object.entries(prev)) {
+        const kept = walls.filter((w) => w.makeupId !== id)
+        if (kept.length !== walls.length) changed = true
+        next[Number(pageStr)] = kept
+      }
+      return changed ? next : prev
     })
   }
 
@@ -7859,6 +7933,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                         onChangeMm={(mm) => setBlockOpeningHeadMm(Math.round(mm))}
                         minMm={0}
                         className="w-full"
+                        autoFocus
+                        onEnter={() => {
+                          if (!tooSmall && !tooTall) handleSavePendingOpening()
+                        }}
                       />
                     </label>
                     <label className="block">
@@ -7868,6 +7946,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                         onChangeMm={(mm) => setBlockOpeningSillMm(Math.round(mm))}
                         minMm={0}
                         className="w-full"
+                        onEnter={() => {
+                          if (!tooSmall && !tooTall) handleSavePendingOpening()
+                        }}
                       />
                     </label>
                   </div>
@@ -8125,6 +8206,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       onChangeMm={(mm) => setBrickOpeningHeightMm(Math.round(mm))}
                       minMm={0}
                       className="w-40"
+                      autoFocus
+                      onEnter={() => {
+                        if (!(brickOpeningHeightMm < 0) && !(brickOpeningHeightMm > wallHeightMm)) {
+                          handleSavePendingOpening()
+                        }
+                      }}
                     />
                     <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
                       Auto sill{' '}

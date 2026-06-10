@@ -130,7 +130,14 @@ export default function BrickTypesPanel({
           {orderedMakeups.map((m) => {
             const isActive = m.id === activeMakeupId
             const wallCount = wallCountsByMakeupId[m.id] ?? 0
-            const canDelete = makeups.length > 1 && wallCount === 0
+            // Allow delete whenever there's at least one other wall type
+            // to fall back to — the gate used to require wallCount === 0,
+            // which trapped the user when a project had two duplicate
+            // wall types each holding walls (e.g. after a corrupt
+            // save/load duplicated the geometry across two makeups).
+            // Walls of the deleted type are removed too; confirmation
+            // below states the count loudly.
+            const canDelete = makeups.length > 1
             return (
               <button
                 key={m.id}
@@ -214,9 +221,13 @@ export default function BrickTypesPanel({
                         const ok = await confirm({
                           title: `Delete brick wall type "${m.name}"?`,
                           message:
-                            'Brick walls currently using this type will ' +
-                            'fall back to the default.',
-                          confirmLabel: 'Delete',
+                            wallCount > 0
+                              ? `This wall type has ${wallCount} wall${wallCount === 1 ? '' : 's'} drawn against it. Deleting the type will also delete ${wallCount === 1 ? 'that wall' : 'those walls'}.`
+                              : 'No walls reference this wall type — deleting it is safe.',
+                          confirmLabel:
+                            wallCount > 0
+                              ? `Delete type + ${wallCount} wall${wallCount === 1 ? '' : 's'}`
+                              : 'Delete',
                           variant: 'destructive',
                         })
                         if (ok) onDeleteMakeup(m.id)
