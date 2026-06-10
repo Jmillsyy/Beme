@@ -2059,37 +2059,54 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   /**
-   * Snapshot of the key state references at the last load/save. We compare by
-   * reference because every state setter we use returns a fresh object/array
-   * via `(prev) => ...`, so any real edit changes a reference. Storing the
-   * snapshot in a ref keeps the comparison effect from looping.
+   * Snapshot of the key state at the last load/save — stored as a
+   * JSON FINGERPRINT (string) rather than the object references.
+   *
+   * Why the change from reference equality: PDF rendering + reference
+   * doc hydration both run async AFTER the project-load batch, and
+   * each one calls a state setter with a new reference (functional
+   * updates spread/map, etc.). Reference-equality dirty tracking
+   * flagged the project as dirty on every such async update, even
+   * though the user hadn't touched anything — which is why you saw
+   * "Save changes before leaving?" on a project you only opened.
+   *
+   * The fingerprint avoids that: same DATA → same string → not dirty,
+   * regardless of reference churn. File objects are reduced to
+   * { name, size, lastModified } since File can't be JSON-stringified
+   * meaningfully. Plain JSON state (walls, makeups, settings) goes
+   * straight into the stringify.
+   *
+   * Storing in a ref keeps the comparison effect from looping.
    */
-  const savedSnapshotRef = useRef<{
-    walls: typeof wallsByPage
-    openings: typeof openingsByPage
-    piers: typeof piersByPage
-    makeups: typeof makeups
-    pierMakeups: typeof pierMakeups
-    details: typeof projectDetails
-    brick: typeof brickSettings
-    brickMakeups: typeof brickMakeups
-    supplyItemSelections: typeof supplyItemSelections
-    supplyItemRateOverrides: typeof supplyItemRateOverrides
-    // Plan attachments + workspace mode have to live in the snapshot too
-    // — uploading a PDF, switching into the empty-workspace mode, or
-    // attaching a reference PDF all materially change what the project
-    // looks like at next load, so they should flip `hasUnsavedChanges`
-    // and unblock the Save button just like drawing a wall does.
-    pdfFile: typeof pdfFile
-    pagesData: typeof pagesData
-    referencePdfFiles: typeof referencePdfFiles
-    referencePdfPaths: typeof referencePdfPaths
-    referencePdfIds: typeof referencePdfIds
-    referencePdfSelectedPages: typeof referencePdfSelectedPages
-    referencePdfPagesDataById: typeof referencePdfPagesDataById
-    referencePdfMeasurementsByPageById: typeof referencePdfMeasurementsByPageById
-    isEmptyWorkspace: typeof isEmptyWorkspace
-  } | null>(null)
+  const savedSnapshotRef = useRef<string | null>(null)
+  // Snapshot fingerprint builder — keep file objects (which JSON.stringify
+  // would render as `{}`) keyed by their stable metadata so renaming or
+  // re-uploading the same file counts as a real change.
+  const buildSnapshotFingerprint = (): string => {
+    const fileFp = (f: File | null | undefined) =>
+      f ? { name: f.name, size: f.size, lastModified: f.lastModified } : null
+    return JSON.stringify({
+      walls: wallsByPage,
+      openings: openingsByPage,
+      piers: piersByPage,
+      makeups,
+      pierMakeups,
+      details: projectDetails,
+      brick: brickSettings,
+      brickMakeups,
+      supplyItemSelections,
+      supplyItemRateOverrides,
+      pdfFile: fileFp(pdfFile),
+      pagesData,
+      referencePdfFiles: referencePdfFiles.map(fileFp),
+      referencePdfPaths,
+      referencePdfIds,
+      referencePdfSelectedPages,
+      referencePdfPagesDataById,
+      referencePdfMeasurementsByPageById,
+      isEmptyWorkspace,
+    })
+  }
 
   /**
    * In-flight save guard. Both handleSaveProject and handleToggleProjectStatus
@@ -2110,55 +2127,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const inFlightProjectIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    const current = {
-      walls: wallsByPage,
-      openings: openingsByPage,
-      piers: piersByPage,
-      makeups,
-      pierMakeups,
-      details: projectDetails,
-      brick: brickSettings,
-      brickMakeups,
-      supplyItemSelections,
-      supplyItemRateOverrides,
-      pdfFile,
-      pagesData,
-      referencePdfFiles,
-      referencePdfPaths,
-      referencePdfIds,
-      referencePdfSelectedPages,
-      referencePdfPagesDataById,
-      referencePdfMeasurementsByPageById,
-      isEmptyWorkspace,
-    }
+    // Don't compute dirty while the project is mid-load — the load
+    // batches several setState calls, and the snapshot can't be a
+    // reliable baseline until every async hydration step (PDF render,
+    // reference-doc dim measurement, etc.) has settled. The load
+    // handler nulls the snapshot when it finishes; first run with a
+    // null snapshot seeds it from current state.
+    if (isProjectLoading) return
+    const current = buildSnapshotFingerprint()
     if (!savedSnapshotRef.current) {
-      // First render — seed the snapshot so the very first effect run doesn't
-      // mark the project dirty before anyone's touched it.
+      // Seed the snapshot so the first effect run doesn't mark the
+      // project dirty before anyone's touched it.
       savedSnapshotRef.current = current
       return
     }
-    const snap = savedSnapshotRef.current
-    const dirty =
-      current.walls !== snap.walls ||
-      current.openings !== snap.openings ||
-      current.piers !== snap.piers ||
-      current.makeups !== snap.makeups ||
-      current.pierMakeups !== snap.pierMakeups ||
-      current.details !== snap.details ||
-      current.brick !== snap.brick ||
-      current.brickMakeups !== snap.brickMakeups ||
-      current.supplyItemSelections !== snap.supplyItemSelections ||
-      current.supplyItemRateOverrides !== snap.supplyItemRateOverrides ||
-      current.pdfFile !== snap.pdfFile ||
-      current.pagesData !== snap.pagesData ||
-      current.referencePdfFiles !== snap.referencePdfFiles ||
-      current.referencePdfPaths !== snap.referencePdfPaths ||
-      current.referencePdfIds !== snap.referencePdfIds ||
-      current.referencePdfSelectedPages !== snap.referencePdfSelectedPages ||
-      current.referencePdfPagesDataById !== snap.referencePdfPagesDataById ||
-      current.referencePdfMeasurementsByPageById !==
-        snap.referencePdfMeasurementsByPageById ||
-      current.isEmptyWorkspace !== snap.isEmptyWorkspace
+    const dirty = current !== savedSnapshotRef.current
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
     wallsByPage,
@@ -2181,6 +2164,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     referencePdfMeasurementsByPageById,
     isEmptyWorkspace,
     hasUnsavedChanges,
+    isProjectLoading,
   ])
 
   // Reasons save might be blocked, evaluated each render. A PDF is NO LONGER required —
@@ -2399,27 +2383,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       }
       setLastSavedAt(now)
       // Refresh the dirty-state baseline so the Save changes button greys
-      // out until the user actually edits something next. Keep this shape
-      // in sync with the dirty-tracker useEffect above — fields missing
-      // here would always read as different from `current` and the project
-      // would stay perpetually 'dirty' after save.
-      savedSnapshotRef.current = {
-        walls: wallsByPage,
-        openings: openingsByPage,
-        piers: piersByPage,
-        makeups,
-        pierMakeups,
-        details: projectDetails,
-        brick: brickSettings,
-        brickMakeups,
-        supplyItemSelections,
-        supplyItemRateOverrides,
-        pdfFile,
-        pagesData,
-        referencePdfFiles,
-        referencePdfPaths,
-        isEmptyWorkspace,
-      }
+      // out until the user actually edits something next. Uses the same
+      // fingerprint helper as the dirty-tracker effect so save + load
+      // baselines can't drift apart.
+      savedSnapshotRef.current = buildSnapshotFingerprint()
       setHasUnsavedChanges(false)
       // Save persisted to the cloud — discard the local draft so a
       // future restore prompt doesn't offer to re-apply data that's
