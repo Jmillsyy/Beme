@@ -48,6 +48,7 @@ function lazyWithReload<T extends ComponentType<any>>(
 const WorkspaceView3D = lazyWithReload(() => import('./WorkspaceView3D'))
 import { PDFDocument } from 'pdf-lib'
 import { Document, Page, pdfjs } from 'react-pdf'
+import { renderPdfRegion, type PdfRegionTask } from '../lib/pdfViewportRender'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
@@ -310,7 +311,7 @@ const MM_PER_INCH = 25.4
 
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 8
-const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
+const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32]
 
 /**
  * Cap on how high the PDF + Konva canvases will rasterise.
@@ -5307,6 +5308,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * whenever the source values change so they're always current.
    */
   const renderedZoomRef = useRef(1)
+  // ── Hi-res viewport overlay (sharp PDF above the raster ceiling) ──
+  // Region-rendered crop of the visible page, repainted when the view
+  // settles. See the settle effect near the zoom buttons.
+  const hiResWrapRef = useRef<HTMLDivElement>(null)
+  const hiResCanvasRef = useRef<HTMLCanvasElement>(null)
+  const hiResTaskRef = useRef<PdfRegionTask | null>(null)
+  const [viewSettleTick, setViewSettleTick] = useState(0)
   const renderedPageWidthRef = useRef(0)
   const renderedPageHeightRef = useRef<number | null>(null)
   /**
@@ -5373,6 +5381,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // primary view falls back to the primary's pagesData via the
   // selector.
   const pageData = activePagesData[currentPage]
+
+  // ── Scale-aware zoom ceiling ──
+  // A 1:100 plan needs ~2x the zoom of a 1:50 to inspect the same wall
+  // at the same screen size, so the ceiling scales with the calibrated
+  // plan ratio: 8x at 1:50 and finer, growing to 32x for site-plan
+  // scales. The hi-res viewport overlay keeps the sheet sharp up there
+  // — the whole-page raster still caps at MAX_RENDERED_ZOOM.
+  const planRatioForZoom = pageData?.pageScaleRatio ?? 50
+  const maxZoomDynamic = Math.min(
+    32,
+    Math.max(MAX_ZOOM, MAX_ZOOM * (planRatioForZoom / 50))
+  )
+  const maxZoomRef = useRef(maxZoomDynamic)
+  useEffect(() => {
+    maxZoomRef.current = maxZoomDynamic
+    // Pull the live zoom back inside the ceiling if the plan ratio
+    // drops (e.g. recalibrating 1:200 -> 1:50 while zoomed deep).
+    if (zoomRef.current > maxZoomDynamic) setZoom(maxZoomDynamic)
+  }, [maxZoomDynamic])
   /**
    * Canvas-pixels per real-world-mm at zoom = 1.
    *
@@ -5617,7 +5644,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // sensitivity matters less.
       const sensitivity = pendingCtrlKey ? 0.01 : 0.0012
       const factor = Math.exp(-delta * sensitivity)
-      const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM)
+      const newZoom = clamp(oldZoom * factor, MIN_ZOOM, maxZoomRef.current)
       if (newZoom === oldZoom) return
 
       const pageEl = pageWrapperRef.current
@@ -5687,6 +5714,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = newZoom / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
+      // Hi-res overlay is stale the moment the view moves — hide until
+      // the settle effect repaints it for the new viewport.
+      if (hiResWrapRef.current) hiResWrapRef.current.style.display = 'none'
 
       // 3) Debounce the React state commit so consumers that depend on
       //    `zoom` (toolbar %, layout effects, render of giant subtrees)
@@ -5786,6 +5816,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = zoomRef.current / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
+      // Hi-res overlay is position-stale during a pan — hide it; the
+      // settle effect repaints on mouseup.
+      if (hiResWrapRef.current) hiResWrapRef.current.style.display = 'none'
     }
 
     const handleDocMouseUp = (e: MouseEvent) => {
@@ -5794,6 +5827,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         if (containerRef.current) {
           containerRef.current.classList.remove('beme-pan-active')
         }
+        // Pan finished — let the hi-res overlay repaint for the new
+        // viewport (zoom state hasn't changed, so this tick is the
+        // only signal the settle effect gets).
+        setViewSettleTick((t) => t + 1)
       }
       // Right-click never fires a 'click' event for the capture-phase
       // listener to swallow, so clear the pan-during-press flag here on a
@@ -6206,10 +6243,94 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setIsDragging(false)
   }, [])
 
+  // ── Hi-res viewport overlay: settle repaint ──
+  //
+  // Above the whole-page raster ceiling the base canvas is CSS-
+  // stretched and goes soft. Once the view settles (zoom commit, pan
+  // release, page/file change), render just the VISIBLE region of the
+  // PDF at the true zoom into a viewport-sized canvas that sits between
+  // the PDF canvas and the wall layer. Bluebeam behaviour: soft while
+  // the gesture is in flight, pixel-sharp the moment it lands. The
+  // canvas never exceeds the viewport, so memory is constant no matter
+  // how deep the zoom goes.
+  //
+  // Geometry note: the overlay lives INSIDE the transformed page
+  // wrapper, so it's positioned in rendered-page coordinates (divide
+  // the zoomed-space crop by visualScale) while its BITMAP is backed at
+  // true screen resolution — the wrapper's CSS scale then maps bitmap
+  // pixels 1:1 onto screen pixels.
+  useEffect(() => {
+    const wrap = hiResWrapRef.current
+    const canvas = hiResCanvasRef.current
+    const container = containerRef.current
+    if (!wrap || !canvas || !container) return
+    hiResTaskRef.current?.cancel()
+    hiResTaskRef.current = null
+    // Hide immediately: any dependency change (zoom, page, file)
+    // invalidates the current crop. Gesture frames already hid it, so
+    // this only visibly matters on page/file switches.
+    wrap.style.display = 'none'
+    if (!displayedPdfFile || isEmptyWorkspace || !aspectRatio) return
+    // Base canvas is rendered AT or ABOVE the live zoom -> already sharp.
+    if (zoom <= renderedZoom + 0.01) return
+    const timer = setTimeout(() => {
+      const visualScaleNow = zoom / (renderedZoom || 1)
+      const zoomedW = baseWidth * zoom
+      const zoomedH = zoomedW * aspectRatio
+      const tx = viewTxRef.current
+      const ty = viewTyRef.current
+      const cropX = Math.max(0, -tx)
+      const cropY = Math.max(0, -ty)
+      const cropW = Math.min(
+        zoomedW - cropX,
+        container.clientWidth - Math.max(0, tx)
+      )
+      const cropH = Math.min(
+        zoomedH - cropY,
+        container.clientHeight - Math.max(0, ty)
+      )
+      if (cropW < 8 || cropH < 8) return
+      // DPR capped at 2 — beyond that the GPU downscale is invisible
+      // and the fill-rate cost isn't.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const task = renderPdfRegion({
+        file: displayedPdfFile,
+        pageNumber: currentPage,
+        cropX,
+        cropY,
+        cropW,
+        cropH,
+        zoomedPageWidthPx: zoomedW,
+        dpr,
+        canvas,
+      })
+      hiResTaskRef.current = task
+      void task.done.then((ok) => {
+        if (!ok || hiResTaskRef.current !== task) return
+        wrap.style.left = `${cropX / visualScaleNow}px`
+        wrap.style.top = `${cropY / visualScaleNow}px`
+        wrap.style.width = `${cropW / visualScaleNow}px`
+        wrap.style.height = `${cropH / visualScaleNow}px`
+        wrap.style.display = 'block'
+      })
+    }, 180)
+    return () => clearTimeout(timer)
+    // viewSettleTick: pan-release signal (transform refs aren't reactive).
+  }, [
+    zoom,
+    renderedZoom,
+    viewSettleTick,
+    displayedPdfFile,
+    currentPage,
+    aspectRatio,
+    baseWidth,
+    isEmptyWorkspace,
+  ])
+
   // ---------- Zoom (button) ----------
 
   function zoomInButton() {
-    const next = ZOOM_LEVELS.find((z) => z > zoom)
+    const next = ZOOM_LEVELS.find((z) => z > zoom && z <= maxZoomDynamic)
     if (next) setZoom(next)
   }
 
@@ -7382,7 +7503,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           </button>
           <button
             onClick={zoomInButton}
-            disabled={zoom >= MAX_ZOOM - 0.001}
+            disabled={zoom >= maxZoomDynamic - 0.001}
             className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Zoom in"
           >
@@ -9303,6 +9424,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   />
                 </Document>
               )}
+
+              {/* Hi-res viewport overlay — sharp crop of the visible
+                  PDF region once zoom exceeds the whole-page raster
+                  ceiling. ABOVE the PDF canvas, BELOW the wall layer;
+                  pointer-events off so drawing is unaffected. Painted
+                  and positioned by the settle effect. */}
+              <div
+                ref={hiResWrapRef}
+                style={{
+                  position: 'absolute',
+                  display: 'none',
+                  pointerEvents: 'none',
+                }}
+              >
+                <canvas
+                  ref={hiResCanvasRef}
+                  style={{ display: 'block', width: '100%', height: '100%' }}
+                />
+              </div>
 
               {/* Wall drawing layer — at renderedZoom resolution; scales with
                   parent. On reference PDFs the layer ONLY mounts when the user
