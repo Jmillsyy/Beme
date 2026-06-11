@@ -5952,6 +5952,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * load that smaller PDF into the workspace. Single-page uploads skip the
    * picker entirely.
    */
+  /**
+   * Original-as-uploaded PDF. Stashed when acceptFile probes a multi-
+   * page PDF so the "+ Add page" toolbar action can re-open the page
+   * picker against the FULL doc without making the user find the file
+   * on disk again. Session-only — not persisted to the project save —
+   * so loading an older project falls back to the file-dialog path.
+   */
+  const originalPdfFileRef = useRef<File | null>(null)
   const [pagePicker, setPagePicker] = useState<{
     file: File
     totalPages: number
@@ -5994,6 +6002,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const bytes = await file.arrayBuffer()
       const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
       const pageCount = doc.getPageCount()
+      // Stash the original-as-uploaded file so the "+ Add page"
+      // toolbar action can re-open the picker against it later —
+      // without making the user re-find the file on disk.
+      originalPdfFileRef.current = file
       if (pageCount > 1) {
         // Default selection: all pages selected. The user usually wants
         // most of them; deselecting one or two is easier than starting
@@ -6013,6 +6025,33 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       console.warn('Page-count probe failed; loading PDF without page picker', err)
     }
     applyPdfFile(file)
+  }
+
+  /**
+   * "+ Add page" handler that re-uses the original PDF stashed during
+   * upload. Re-probes its page count (the user might have appended in
+   * a previous step, so we want the current truth) and opens the
+   * picker in 'append' mode with nothing selected. Falls back to the
+   * file dialog when no original is in memory — e.g. after a project
+   * reload where we only kept the sliced version on disk.
+   */
+  const openAddPagePicker = async () => {
+    const original = originalPdfFileRef.current
+    if (!original || !pdfFile) return
+    try {
+      const bytes = await original.arrayBuffer()
+      const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
+      const pageCount = doc.getPageCount()
+      setPagePicker({
+        file: original,
+        totalPages: pageCount,
+        selected: new Set(),
+        mode: 'append',
+      })
+    } catch (err) {
+      console.warn('Could not re-open original PDF for append', err)
+      alert("Couldn't re-read the original PDF. Try uploading the file again.")
+    }
   }
 
   /**
@@ -7281,13 +7320,26 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 →
               </button>
               {/* Append-pages affordance — visible only when working
-                  against the primary PDF (not a reference). Opens a
-                  file picker; the selected pages get merged onto the
-                  end of the existing PDF, preserving all takeoff so
-                  far. Useful when the user picked a subset on initial
-                  upload and now needs to bring in another sheet from
-                  the source plan. */}
-              {!activeReferenceSelectedPages && pdfFile && (
+                  against the primary PDF (not a reference) and only
+                  when we have the original-as-uploaded file in memory
+                  to pick from. Opens the page-picker modal directly
+                  against the original (no file dialog), so the user
+                  can tick pages they didn't import on the first pass
+                  and merge them onto the end of the existing PDF
+                  without losing any takeoff. Fall-back UPLOAD path
+                  next to it covers the case where the original isn't
+                  in memory (e.g. after a project reload). */}
+              {!activeReferenceSelectedPages && pdfFile && originalPdfFileRef.current && (
+                <button
+                  type="button"
+                  onClick={() => void openAddPagePicker()}
+                  className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 transition-colors whitespace-nowrap"
+                  title="Add a page from the PDF you uploaded — merges into this estimate without resetting your takeoff"
+                >
+                  + Add page
+                </button>
+              )}
+              {!activeReferenceSelectedPages && pdfFile && !originalPdfFileRef.current && (
                 <label
                   className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 cursor-pointer transition-colors whitespace-nowrap"
                   title="Add a page from a PDF — merges into this estimate without resetting your takeoff"
