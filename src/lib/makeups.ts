@@ -809,13 +809,27 @@ export function convertMakeupToBands(
   // vice versa). Optional / undefined-default so libraries that only
   // carry one depth of height-makeup blocks still get a result.
   const bodyDepthMm = BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+  // matchExactHeight=false swaps the dedicated height-makeup block for
+  // a cut-down body block in the 71 / 140 slot. We mirror that here so
+  // convertMakeupToBands surfaces the actual code that gets rendered
+  // (body block) instead of the height-makeup code that would have
+  // been used under the legacy default. Without this, the legend +
+  // 3D renderer pull the ghost height-makeup code via this band list
+  // even though buildCourses emits a body-block course at calc time.
+  // Defaults to true so callers that don't know about the flag (and
+  // legacy makeups with `undefined`) keep the existing behaviour.
+  const matchExactHeight = makeup.matchExactHeight ?? true
   const heightMakeup150 =
     !skipHeightMakeup && has140
-      ? pickHeightMakeupBlock(HEIGHT_140, bodyDepthMm)
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(HEIGHT_140, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: HEIGHT_140 } }
       : undefined
   const heightMakeup100 =
     !skipHeightMakeup && has71
-      ? pickHeightMakeupBlock(HEIGHT_71, bodyDepthMm)
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(HEIGHT_71, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: HEIGHT_71 } }
       : undefined
   const effectiveHas140 = has140 && !!heightMakeup150
   const effectiveHas71 = has71 && !!heightMakeup100
