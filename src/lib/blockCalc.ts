@@ -1190,13 +1190,20 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
   }
 
   // ---- Height-makeup courses (placed before the top, so they end up "second from top") ----
+  // Body block's depth — passed to pickHeightMakeupBlock so a 300-series
+  // wall (290mm body depth) picks a 290mm-deep height-makeup block
+  // instead of falling onto the 200-series 20.140 (190mm deep). Falls
+  // back to "any height-makeup block" if no depth-matching variant
+  // exists in the library.
+  const heightMakeupDepthMm =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
   if (stack.has140) {
     // Pick the 140 mm height-makeup block by role — falls back to the SEQ
     // 20.140 in AU libraries (which is role-tagged), and a US / UK user can
     // tag their equivalent (e.g. a 4" tall CMU) to make this work.
     const courseNumber = courses.length + 1
     void courseNumber
-    const block140 = pickHeightMakeupBlock(140)
+    const block140 = pickHeightMakeupBlock(140, heightMakeupDepthMm)
     if (block140) {
       courses.push({ type: 'height-140', bodyBlock: block140.code })
     }
@@ -2762,7 +2769,11 @@ function applyOpeningAdjustments(
     const MIN_MAKEUP_GAP_MM = 50
     if (makeupRemainderMm >= MIN_MAKEUP_GAP_MM) {
       const targetFaceMm = makeupRemainderMm - DEFAULT_MORTAR_JOINT_MM
-      const makeupBlock = pickHeightMakeupBlock(targetFaceMm)
+      // Scope by body depth — see comment in buildCourses' height-makeup
+      // resolution. Keeps 300-series walls off the 200-series 20.140.
+      const heightMakeupDepthMm =
+        BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+      const makeupBlock = pickHeightMakeupBlock(targetFaceMm, heightMakeupDepthMm)
       if (makeupBlock) {
         const makeupHorizontalModuleMm =
           makeupBlock.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM

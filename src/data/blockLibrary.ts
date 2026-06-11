@@ -842,21 +842,44 @@ export function pickFractionBlocks(): Block[] {
  * Height-makeup block whose height exactly equals `targetHeightMm`, or the
  * closest under it if no exact match exists. Returns undefined if no
  * height-makeup blocks are defined.
+ *
+ * `preferredDepthMm` (optional) — when supplied, scope the candidates to
+ * blocks whose depth matches the body block's depth, so a 300-series wall
+ * (290mm deep) picks 30.140 instead of the 200-series 20.140 (190mm
+ * deep). If no depth-matching candidate exists, fall back to any
+ * height-makeup block — keeps the result populated for libraries that
+ * don't carry a depth-matched variant.
  */
 export function pickHeightMakeupBlockIn(
   library: Record<BlockCode, Block>,
-  targetHeightMm: number
+  targetHeightMm: number,
+  preferredDepthMm?: number,
 ): Block | undefined {
-  const candidates = Object.values(library)
+  const DEPTH_TOLERANCE_MM = 5
+  const all = Object.values(library)
     .filter((b) => b.roles.includes('height-makeup'))
     .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
-  return (
+  // First pass: depth-scoped candidates (when preferred depth supplied).
+  // Second pass: any height-makeup block (fallback for libraries that
+  // don't carry a matching depth).
+  const depthScoped =
+    preferredDepthMm === undefined
+      ? all
+      : all.filter(
+          (b) =>
+            Math.abs(b.dimensions.depthMm - preferredDepthMm) <=
+            DEPTH_TOLERANCE_MM,
+        )
+  const pickFrom = (candidates: Block[]): Block | undefined =>
     candidates.find((b) => b.dimensions.heightMm === targetHeightMm) ??
     candidates.find((b) => b.dimensions.heightMm <= targetHeightMm)
-  )
+  return pickFrom(depthScoped) ?? pickFrom(all)
 }
-export function pickHeightMakeupBlock(targetHeightMm: number): Block | undefined {
-  return pickHeightMakeupBlockIn(BLOCK_LIBRARY, targetHeightMm)
+export function pickHeightMakeupBlock(
+  targetHeightMm: number,
+  preferredDepthMm?: number,
+): Block | undefined {
+  return pickHeightMakeupBlockIn(BLOCK_LIBRARY, targetHeightMm, preferredDepthMm)
 }
 
 /**

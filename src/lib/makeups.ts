@@ -804,10 +804,19 @@ export function convertMakeupToBands(
   // height-makeup band isn't available, skip the corresponding course
   // entirely rather than emit a code that doesn't exist in the library.
   // skipHeightMakeup short-circuits these picks entirely.
+  // Body block's depth — used to scope the height-makeup pick so the
+  // 200-series 20.140 doesn't get picked on a 300-series wall (and
+  // vice versa). Optional / undefined-default so libraries that only
+  // carry one depth of height-makeup blocks still get a result.
+  const bodyDepthMm = BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
   const heightMakeup150 =
-    !skipHeightMakeup && has140 ? pickHeightMakeupBlock(HEIGHT_140) : undefined
+    !skipHeightMakeup && has140
+      ? pickHeightMakeupBlock(HEIGHT_140, bodyDepthMm)
+      : undefined
   const heightMakeup100 =
-    !skipHeightMakeup && has71 ? pickHeightMakeupBlock(HEIGHT_71) : undefined
+    !skipHeightMakeup && has71
+      ? pickHeightMakeupBlock(HEIGHT_71, bodyDepthMm)
+      : undefined
   const effectiveHas140 = has140 && !!heightMakeup150
   const effectiveHas71 = has71 && !!heightMakeup100
   // In preview-only mode, if there's leftover height after the std-count
