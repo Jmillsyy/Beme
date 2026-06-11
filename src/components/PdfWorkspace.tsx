@@ -662,6 +662,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       setActiveBrickMakeupId(seeded.id)
       return [...stamped, seeded]
     })
+    // Drop the dirty baseline so the post-bootstrap state becomes the
+    // new "saved" reference. Without this the dirty-tracker sees the
+    // area + makeup stamping as a user edit and the unsaved-changes
+    // prompt fires the moment the user tries to leave a fresh
+    // workspace they haven't actually touched. (The dirty effect
+    // reseeds when this ref is null on its next pass.)
+    savedSnapshotRef.current = null
+    setHasUnsavedChanges(false)
   }, [areas.length, isProjectLoading])
   /**
    * Per-page calibration + intrinsic dimensions. Has to be declared up here
