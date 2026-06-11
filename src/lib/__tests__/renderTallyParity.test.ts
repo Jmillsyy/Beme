@@ -240,3 +240,31 @@ describe('project totals: corners deduplicated like the render', () => {
     expect(total(withOp)).toBeLessThan(total(noOp))
   })
 })
+
+describe('Rule 4: free-standing walls pick the cleaner end scheme', () => {
+  it('modular wall (2800): full+full / half+half, no inversion', () => {
+    const wall = freeWall('w1', 2800)
+    const layout = planWallLayout(wall, MAKEUP)
+    const ends = (c: number) =>
+      layout.blocks
+        .filter((b) => b.courseIdx === c && b.role !== 'paired-tile')
+        .sort((a, b) => a.s0Mm - b.s0Mm)
+    const c1 = ends(0), c2 = ends(1)
+    expect([c1[0].code, c1[c1.length - 1].code]).toEqual(['20.01', '20.01'])
+    expect([c2[0].code, c2[c2.length - 1].code]).toEqual(['20.03', '20.03'])
+    // No cut blocks: every body on c1/c2 is full width.
+    for (const b of [...c1, ...c2]) expect(b.widthMm).toBeGreaterThanOrEqual(190)
+  })
+
+  it('half-modular wall (3000): inverted full+half fits with zero cuts', () => {
+    const wall = freeWall('w1', 3000)
+    const layout = planWallLayout(wall, MAKEUP)
+    const c1 = layout.blocks
+      .filter((b) => b.courseIdx === 0 && b.role !== 'paired-tile')
+      .sort((a, b) => a.s0Mm - b.s0Mm)
+    expect([c1[0].code, c1[c1.length - 1].code].sort()).toEqual(['20.01', '20.03'])
+    // Exact fit: blocks + mortar joints span the wall precisely.
+    const last = c1[c1.length - 1]
+    expect(last.s0Mm + last.widthMm).toBe(3000)
+  })
+})

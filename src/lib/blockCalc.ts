@@ -940,13 +940,8 @@ export function planWall(
     const invC1Gap = Math.abs(lengthMm - invOddFit.actualLengthMm)
     const syncC2Gap = Math.abs(lengthMm - syncEvenFit.actualLengthMm)
     const invC2Gap = Math.abs(lengthMm - invEvenFit.actualLengthMm)
-    // Mark these as referenced — the wallC1OwnsItsCorner branch below
-    // computes its own gaps for corner walls; the length-based branch
-    // uses these gaps as a tiebreak. The unconditional-INV path
-    // doesn't read them but we keep them computed because TS would
-    // warn unused otherwise.
-    void syncC1Gap
-    void invC1Gap
+    // For free+free walls both parities share the same residue mod 400,
+    // so the C1 comparison decides; C2 gaps kept for the corner path.
     void syncC2Gap
     void invC2Gap
     let invWins: boolean
@@ -1005,17 +1000,18 @@ export function planWall(
       const invOwnC1Gap = Math.abs(lengthMm - invOwnC1.actualLengthMm)
       invWins = invOwnC1Gap < syncOwnC1Gap
     } else {
-      // No corner ends — both sides free. ALWAYS invert for the
-      // "snakes and ladders" / running-bond layout the user
-      // explicitly asked for. Each course shows full on one side and
-      // half on the other; the next course mirrors. Even if SYNC
-      // would give a marginally cleaner fit, the inverted layout is
-      // visually cleaner (alternating sides instead of mixed
-      // symmetric-then-asymmetric courses), so we commit
-      // unconditionally. The fit's body row absorbs whatever cut is
-      // needed for non-modular wall lengths — same place cuts
-      // already land for canonical stretcher.
-      invWins = true
+      // No corner ends — both sides free. Pick by fit quality: INV
+      // only when it is STRICTLY cleaner — i.e. half-modular walls
+      // (600 + N×400 fits exactly) where SYNC would cut ~200 mm on
+      // every course. On modular walls AND on ties, SYNC wins:
+      // Course 1 lays [full][bodies][full], Course 2
+      // [half][bodies+1][half] — two clean end terminations, any cut
+      // lands in the body row, and the bond staggers a clean 200 mm
+      // everywhere. (The previous unconditional-INV rule forced a cut
+      // right next to an end block on modular walls, leaving a
+      // near-vertical seam where the cut's joint landed ~10 mm from
+      // the joint on the neighbouring courses.)
+      invWins = invC1Gap < syncC1Gap
     }
     if (invWins) {
       // Commit the inversion on the chosen side. Swap odd↔even on
