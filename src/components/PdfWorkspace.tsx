@@ -537,6 +537,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // walls drawn while an area is active get its id stamped on them.
   const [areas, setAreas] = useState<ProjectArea[]>([])
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null)
+  // Remember the wall type the user had selected last time they were in
+  // each area, keyed by trade. Restored on area switch so jumping back
+  // into an area lands on the wall type you were drawing with — not
+  // whatever was active when you left. Per-session only (never persisted)
+  // because wall types live on the project anyway; this is just a UX
+  // shortcut to skip "what was I using here?" hunting.
+  const lastWallTypeByAreaRef = useRef<
+    Record<string, { block?: string; brick?: string }>
+  >({})
   // Backfill colorHex for any areas that loaded without one (older
   // projects predate auto-colouring). Done once per area-list change
   // and only when there's something to fill, so we don't trigger
@@ -1686,7 +1695,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const wallsNeedAreaMigration = Object.values(
           proj.wallsByPage ?? {},
         ).some((walls) => walls.some((w) => isOrphanAreaId(w.areaId)))
+        // Always bootstrap a default area if the project has none —
+        // even a brand-new empty project should land on a real area
+        // rather than the read-only "All areas" view, so the user can
+        // start drawing straight away. The migration branch also picks
+        // this up to catch orphan makeups / walls on legacy projects.
         const needsAreaForMigration =
+          hydratedAreas.length === 0 ||
           (proj.makeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
           (proj.brickMakeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
           wallsNeedAreaMigration
@@ -1814,11 +1829,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setActivePierMakeupId(resolvedActive)
         setCurrentPage(proj.currentPage || 1)
         // Hydrate project Areas (including any synthesised Default area
-        // from the migration block above). activeAreaId stays as its
-        // default (null → "All" tab) on load — landing in a specific
-        // area on every reopen would be surprising. User picks the
-        // area to focus on after the project loads.
-        if (hydratedAreas.length > 0) setAreas(hydratedAreas)
+        // from the migration block above). If the project carries at
+        // least one area, default activeAreaId to the FIRST one — landing
+        // on a real area is more guided than dropping the user into the
+        // read-only "All areas" view, where they can't draw anything
+        // until they pick somewhere. Fresh projects with no walls drawn
+        // yet then start on the right side of the area-picker workflow.
+        if (hydratedAreas.length > 0) {
+          setAreas(hydratedAreas)
+          setActiveAreaId(hydratedAreas[0].id)
+        }
         if (proj.makeups && proj.makeups.length > 0) {
           setMakeups(proj.makeups.map(migrateMakeup))
           if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
@@ -4106,6 +4126,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    */
   function handleActivateMakeup(id: string) {
     setActiveMakeupId(id)
+    // Remember this pick for the active area so jumping back here
+    // later restores it. Per-trade so block + brick selections
+    // don't trample each other.
+    if (activeAreaId) {
+      const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+      lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, block: id }
+    }
     // Flip the kind tracker so the shared toolbar's Draw wall button
     // returns to wall-draw mode after the user previously had a pier
     // type active.
@@ -4236,6 +4263,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    */
   function handleActivateBrickMakeup(id: string) {
     setActiveBrickMakeupId(id)
+    // Same per-area memory as handleActivateMakeup — see comment there.
+    if (activeAreaId) {
+      const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+      lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, brick: id }
+    }
     setShowActiveMakeupHighlight(true)
   }
 
@@ -9094,8 +9126,64 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             <AreaTabs
               areas={areas}
               activeAreaId={activeAreaId}
+              wallCountByAreaId={(() => {
+                // Count walls per area for the ACTIVE trade — block view
+                // counts block walls, brick view counts brick walls.
+                // Walks every page so areas that span multiple pages get
+                // their full count, not just whatever's on the current
+                // page.
+                const counts: Record<string, number> = {}
+                for (const walls of Object.values(wallsByPage)) {
+                  for (const w of walls) {
+                    if (!w.areaId) continue
+                    const tradeMatch =
+                      mode === 'brick'
+                        ? w.trade === 'brick'
+                        : w.trade !== 'brick'
+                    if (!tradeMatch) continue
+                    counts[w.areaId] = (counts[w.areaId] ?? 0) + 1
+                  }
+                }
+                return counts
+              })()}
               onSelect={(areaId) => {
+                // Remember the wall type for the area we're leaving so
+                // the restore-on-return path below has something to
+                // pick up. Only when leaving a real area (the "All"
+                // view doesn't carry a per-area selection).
+                if (activeAreaId) {
+                  const prev =
+                    lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+                  lastWallTypeByAreaRef.current[activeAreaId] = {
+                    ...prev,
+                    block: activeMakeupId,
+                    brick: activeBrickMakeupId ?? undefined,
+                  }
+                }
                 setActiveAreaId(areaId)
+                // Restore the last wall type the user had selected in
+                // the new area, per trade. Falls back to the first
+                // wall type scoped to this area, then to leaving the
+                // current selection alone — never lands on a wall
+                // type from a different area unless nothing else is
+                // available.
+                if (areaId !== null) {
+                  const remembered = lastWallTypeByAreaRef.current[areaId]
+                  const blockPick =
+                    (remembered?.block &&
+                      makeups.find(
+                        (m) => m.id === remembered.block && m.areaId === areaId,
+                      )?.id) ??
+                    makeups.find((m) => m.areaId === areaId)?.id
+                  if (blockPick) setActiveMakeupId(blockPick)
+                  const brickPick =
+                    (remembered?.brick &&
+                      brickMakeups.find(
+                        (m) => m.id === remembered.brick && m.areaId === areaId,
+                      )?.id) ??
+                    brickMakeups.find((m) => m.areaId === areaId)?.id
+                  if (brickPick) setActiveBrickMakeupId(brickPick)
+                }
                 // When picking a real area (not "All"), jump to the
                 // PDF page that has the most walls of the active trade
                 // in that area. Without this, switching area in 3D
@@ -9227,15 +9315,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               }}
               onDelete={(areaId) => {
                 const removed = areas.find((a) => a.id === areaId)
-                setAreas((prev) => prev.filter((a) => a.id !== areaId))
-                // If the deleted area was active, fall back to All so the
-                // user doesn't land on a now-empty filter that hides
-                // everything. The deleted area's walls keep their old
-                // areaId — they become "orphaned" but still visible in
-                // All. Could prune them too but that's destructive on a
-                // simple delete click; user can re-create an area and
+                const remaining = areas.filter((a) => a.id !== areaId)
+                setAreas(remaining)
+                // Drop the deleted area's wall-type memory so a re-created
+                // area at the same id (shouldn't happen — uuid — but defensive)
+                // doesn't inherit stale picks.
+                delete lastWallTypeByAreaRef.current[areaId]
+                // If the deleted area was active, land on the next
+                // remaining area rather than the "All" view. Avoids
+                // dumping the user into a read-only view they didn't
+                // ask for. Falls back to "All" only when nothing's
+                // left to switch to.
+                if (activeAreaId === areaId) {
+                  setActiveAreaId(remaining[0]?.id ?? null)
+                }
+                // The deleted area's walls keep their old areaId — they
+                // become "orphaned" but still visible in All. Could
+                // prune them too but that's destructive on a simple
+                // delete click; user can re-create an area and
                 // bulk-assign in v2.
-                if (activeAreaId === areaId) setActiveAreaId(null)
                 if (removed) {
                   toast.success(`Area "${removed.name}" removed`, {
                     description:

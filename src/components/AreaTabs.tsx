@@ -28,6 +28,7 @@ import { confirm } from '../lib/confirm'
 export default function AreaTabs({
   areas,
   activeAreaId,
+  wallCountByAreaId,
   onSelect,
   onCreate,
   onRename,
@@ -36,6 +37,11 @@ export default function AreaTabs({
   areas: ProjectArea[]
   /** null = the "All" view. */
   activeAreaId: string | null
+  /** Wall counts per area for the active trade. Used as a "12 walls"
+   *  subtitle on each row so the user can tell at a glance which areas
+   *  have content. Optional — when omitted, rows render without the
+   *  count. */
+  wallCountByAreaId?: Record<string, number>
   onSelect: (areaId: string | null) => void
   /** Called with the new area's display name + a flag indicating whether
    *  to clone the walls from the current view into the new area.
@@ -193,31 +199,46 @@ export default function AreaTabs({
               <div className="border-t border-ink-700 my-1" />
             </>
           )}
-          {areas.map((area) => (
-            <AreaMenuRow
-              key={area.id}
-              label={area.name}
-              colorHex={area.colorHex}
-              active={activeAreaId === area.id}
-              onSelect={() => onSelect(area.id)}
-              onRename={() => setEditingId(area.id)}
-              onDelete={
-                onDelete
-                  ? async () => {
-                      const ok = await confirm({
-                        title: `Delete area "${area.name}"?`,
-                        message:
-                          'Walls in this area become unassigned but stay ' +
-                          'visible in the All tab. The area itself is removed.',
-                        confirmLabel: 'Delete area',
-                        variant: 'destructive',
-                      })
-                      if (ok) onDelete(area.id)
-                    }
-                  : undefined
-              }
-            />
-          ))}
+          {areas.map((area) => {
+            const wallCount = wallCountByAreaId?.[area.id]
+            const subLabel =
+              typeof wallCount === 'number'
+                ? `${wallCount} wall${wallCount === 1 ? '' : 's'}`
+                : undefined
+            return (
+              <AreaMenuRow
+                key={area.id}
+                label={area.name}
+                subLabel={subLabel}
+                colorHex={area.colorHex}
+                active={activeAreaId === area.id}
+                onSelect={() => onSelect(area.id)}
+                onRename={() => setEditingId(area.id)}
+                onDelete={
+                  onDelete
+                    ? async () => {
+                        // Include the wall count in the confirmation so
+                        // the user knows what they're orphaning when they
+                        // delete an area with walls in it. Loud message
+                        // when there's content, quiet one when there
+                        // isn't.
+                        const countMessage =
+                          typeof wallCount === 'number' && wallCount > 0
+                            ? `${wallCount} wall${wallCount === 1 ? '' : 's'} in this area will become unassigned (still visible in All until you reassign or delete them).`
+                            : 'Walls in this area become unassigned but stay visible in the All tab. The area itself is removed.'
+                        const ok = await confirm({
+                          title: `Delete area "${area.name}"?`,
+                          message: countMessage,
+                          confirmLabel: 'Delete area',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDelete(area.id)
+                      }
+                    : undefined
+                }
+              />
+            )
+          })}
           <div className="border-t border-ink-700 my-1" />
           {/* One-click create: skips the modal and creates an area
               with the next auto-numbered "New Area N" name. Rename
@@ -261,6 +282,7 @@ export default function AreaTabs({
 
 function AreaMenuRow({
   label,
+  subLabel,
   colorHex,
   active,
   onSelect,
@@ -268,6 +290,9 @@ function AreaMenuRow({
   onDelete,
 }: {
   label: string
+  /** Optional secondary line — used for wall counts. Renders muted to
+   *  the right of the label so the area name stays primary. */
+  subLabel?: string
   colorHex?: string
   active: boolean
   onSelect: () => void
@@ -295,6 +320,15 @@ function AreaMenuRow({
         <span className="inline-block w-1.5 h-1.5 flex-shrink-0" />
       )}
       <span className="flex-1 truncate">{label}</span>
+      {subLabel && (
+        <span
+          className={`text-[10px] tabular-nums flex-shrink-0 ${
+            active ? 'text-beme-300/70' : 'text-ink-400'
+          }`}
+        >
+          {subLabel}
+        </span>
+      )}
       {onRename && (
         <button
           type="button"
