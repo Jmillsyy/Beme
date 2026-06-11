@@ -3619,15 +3619,15 @@ function Scene({
           allCodes.push(makeup.heightMakeup140BlockCode)
         }
       }
-      // Per-range height-makeup overrides stay on the legacy read —
-      // buildCourses doesn't expose them on a CourseSpec, and any range
-      // that fires writes its code into resolveCourseBlocks at calc
-      // time anyway.
-      for (const range of makeup.courseSeriesRanges ?? []) {
-        if (range.heightMakeup71BlockCode) {
-          allCodes.push(range.heightMakeup71BlockCode)
-        }
-      }
+      // Per-range height-makeup overrides used to be pushed here
+      // unconditionally — that produced phantom legend entries when
+      // the range existed in the makeup but didn't cover the actual
+      // 71 / 140 course position (e.g. range fromCourse=1 toCourse=5
+      // on a wall where the 71 row lands at course 14). The
+      // buildCourses path above already returns the resolved code for
+      // wherever the 71 / 140 course actually lands, which honours
+      // any range that genuinely covers that position. So the per-
+      // range push is redundant AND ghost-producing — dropped.
     }
     // Build the colour map via the raw hash `bandColor` rather than
     // `buildBlockColorMap`. The hash is pure-function-of-code, so
