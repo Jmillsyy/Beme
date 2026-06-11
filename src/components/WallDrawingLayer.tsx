@@ -1168,14 +1168,73 @@ function WallDrawingLayerInner({
     // Modest threshold so the curve picks up an existing wall when the user
     // is clearly targeting one (cursor within ~25 px of the wall's drawn
     // line), but doesn't reach across dense layouts. Outside this radius we
-    // fall through to a 'free' anchor at the raw cursor position so the user
-    // can draw a curve between any two points without needing existing walls
-    // to anchor on — that's the dominant case now that free placement is
-    // supported, so over-snapping costs more than under-snapping.
+    // fall through to a 'free' anchor at the raw cursor position.
     const CURVE_ANCHOR_THRESHOLD_PX = 25
+    const cursorMm = { x: pxToMm(cursorPx.x), y: pxToMm(cursorPx.y) }
 
-    let best: { wallId: string; distPx: number; tUnclamped: number } | null = null
+    let best: {
+      wallId: string
+      distPx: number
+      xMm: number
+      yMm: number
+    } | null = null
+    const consider = (wallId: string, distPx: number, xMm: number, yMm: number) => {
+      if (distPx > CURVE_ANCHOR_THRESHOLD_PX) return
+      if (!best || distPx < best.distPx) best = { wallId, distPx, xMm, yMm }
+    }
+
     for (const wall of walls) {
+      const halfTmm = (wallThicknessByWallId[wall.id] ?? 190) / 2
+
+      // Curved walls: measure against the ACTUAL ARC, not the chord. The
+      // chord of a deep arc runs through empty space far from the drawn
+      // wall, so chord-distance snapping grabbed the cursor from way
+      // outside the visible curve — and the straight-wall side-anchor
+      // normal doesn't apply to an arc anyway.
+      if (
+        isCurvedWall(wall) &&
+        wall.midX !== undefined &&
+        wall.midY !== undefined
+      ) {
+        const geom = arcFromThreePoints(
+          { x: wall.startX, y: wall.startY },
+          { x: wall.midX, y: wall.midY },
+          { x: wall.endX, y: wall.endY }
+        )
+        if (!geom) continue
+        const arcProj = projectOntoArc(cursorMm, geom)
+        const distPx = mmToPx(arcProj.distFromArcMm)
+        // End anchors: projectOntoArc clamps to the arc's ends, so a
+        // boundary hit means the cursor sits past that tip.
+        const END_ZONE_MM = 1
+        if (arcProj.alongMm <= END_ZONE_MM) {
+          consider(wall.id, distPx, wall.startX, wall.startY)
+        } else if (arcProj.alongMm >= geom.arcLengthMm - END_ZONE_MM) {
+          consider(wall.id, distPx, wall.endX, wall.endY)
+        } else {
+          // Side-face anchor on the cursor's side of the arc: offset the
+          // centreline projection radially — outward when the cursor is
+          // outside the arc's radius, inward when inside.
+          const rdx = arcProj.point.x - geom.centerX
+          const rdy = arcProj.point.y - geom.centerY
+          const rLen = Math.hypot(rdx, rdy)
+          if (rLen < 1e-9) continue
+          const cursorR = Math.hypot(
+            cursorMm.x - geom.centerX,
+            cursorMm.y - geom.centerY
+          )
+          const sign = cursorR >= geom.radiusMm ? 1 : -1
+          consider(
+            wall.id,
+            distPx,
+            arcProj.point.x + (rdx / rLen) * sign * halfTmm,
+            arcProj.point.y + (rdy / rLen) * sign * halfTmm
+          )
+        }
+        continue
+      }
+
+      // Straight walls: chord projection (the chord IS the wall).
       const sx = mmToPx(wall.startX)
       const sy = mmToPx(wall.startY)
       const ex = mmToPx(wall.endX)
@@ -1184,76 +1243,50 @@ function WallDrawingLayerInner({
       const dy = ey - sy
       const lenSq = dx * dx + dy * dy
       if (lenSq === 0) continue
-      const tUnclamped = ((cursorPx.x - sx) * dx + (cursorPx.y - sy) * dy) / lenSq
+      const tUnclamped =
+        ((cursorPx.x - sx) * dx + (cursorPx.y - sy) * dy) / lenSq
       const tClamped = Math.max(0, Math.min(1, tUnclamped))
       const projX = sx + tClamped * dx
       const projY = sy + tClamped * dy
       const distPx = Math.hypot(cursorPx.x - projX, cursorPx.y - projY)
-      if (distPx > CURVE_ANCHOR_THRESHOLD_PX) continue
-      if (!best || distPx < best.distPx) {
-        best = { wallId: wall.id, distPx, tUnclamped }
+
+      // End-face anchors: cursor past the wall's tip — anchor on the
+      // centreline endpoint so a curve drawn from here continues
+      // straight off the end of the wall.
+      if (tUnclamped > 1) {
+        consider(wall.id, distPx, wall.endX, wall.endY)
+        continue
       }
+      if (tUnclamped < 0) {
+        consider(wall.id, distPx, wall.startX, wall.startY)
+        continue
+      }
+      // Side-face anchor: half-thickness off the centreline projection,
+      // on the cursor's side of the wall.
+      const dxMm = wall.endX - wall.startX
+      const dyMm = wall.endY - wall.startY
+      const lenMm = Math.hypot(dxMm, dyMm)
+      if (lenMm <= 0) continue
+      const projXmm = wall.startX + tUnclamped * dxMm
+      const projYmm = wall.startY + tUnclamped * dyMm
+      const normXmm = -dyMm / lenMm
+      const normYmm = dxMm / lenMm
+      const dot =
+        (cursorMm.x - projXmm) * normXmm + (cursorMm.y - projYmm) * normYmm
+      const sign = dot >= 0 ? 1 : -1
+      consider(
+        wall.id,
+        distPx,
+        projXmm + sign * halfTmm * normXmm,
+        projYmm + sign * halfTmm * normYmm
+      )
     }
-    // No wall nearby → free anchor at the cursor. The curve still works
-    // geometrically; it just isn't tied to a wall.
+
     if (!best) {
-      return {
-        wallId: null,
-        xMm: pxToMm(cursorPx.x),
-        yMm: pxToMm(cursorPx.y),
-      }
+      return { wallId: null, xMm: cursorMm.x, yMm: cursorMm.y }
     }
-
-    const wall = walls.find((w) => w.id === best!.wallId)
-    if (!wall) {
-      return {
-        wallId: null,
-        xMm: pxToMm(cursorPx.x),
-        yMm: pxToMm(cursorPx.y),
-      }
-    }
-    const lengthMm = wallLengthMmOf(wall)
-    if (lengthMm <= 0) {
-      return {
-        wallId: null,
-        xMm: pxToMm(cursorPx.x),
-        yMm: pxToMm(cursorPx.y),
-      }
-    }
-
-    // End-face anchors: cursor is past the wall's tip in the wall's own
-    // direction. Anchor sits on the centreline endpoint with no perpendicular
-    // offset, so a curve drawn from here visually continues off the end of
-    // the wall rather than peeling off one of its sides.
-    if (best.tUnclamped > 1) {
-      return { wallId: wall.id, xMm: wall.endX, yMm: wall.endY }
-    }
-    if (best.tUnclamped < 0) {
-      return { wallId: wall.id, xMm: wall.startX, yMm: wall.startY }
-    }
-
-    // Side-face anchor: existing behaviour for cursor alongside the wall.
-    // The anchor sits on the cursor's side of the wall, half-thickness off
-    // the centreline projection.
-    const cursorXmm = pxToMm(cursorPx.x)
-    const cursorYmm = pxToMm(cursorPx.y)
-    const dxMm = wall.endX - wall.startX
-    const dyMm = wall.endY - wall.startY
-    const projXmm = wall.startX + best.tUnclamped * dxMm
-    const projYmm = wall.startY + best.tUnclamped * dyMm
-    const dirXmm = dxMm / lengthMm
-    const dirYmm = dyMm / lengthMm
-    const normXmm = -dirYmm
-    const normYmm = dirXmm
-    const dot =
-      (cursorXmm - projXmm) * normXmm + (cursorYmm - projYmm) * normYmm
-    const sign = dot >= 0 ? 1 : -1
-    const halfTmm = (wallThicknessByWallId[wall.id] ?? 190) / 2
-    return {
-      wallId: wall.id,
-      xMm: projXmm + sign * halfTmm * normXmm,
-      yMm: projYmm + sign * halfTmm * normYmm,
-    }
+    const resolved: { wallId: string; distPx: number; xMm: number; yMm: number } = best
+    return { wallId: resolved.wallId, xMm: resolved.xMm, yMm: resolved.yMm }
   }
 
   /** A point along a wall, in pixel coords, given start-along-wall in mm. */
