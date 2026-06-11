@@ -1887,8 +1887,21 @@ function WallDrawingLayerInner({
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     if (lenPx <= 0) return { point: axisSnapped, snap: null }
     const lenMm = pxToMm(lenPx)
-    const snappedMm = snapMmToGrid(lenMm, wallSnapMm)
-    if (snappedMm < wallSnapMm) {
+    // Grid-snap the DISPLAYED (outer) length, not the raw centreline.
+    // An anchor that will form a corner sits halfThickness inside the
+    // outer corner, and wallLengthMm adds that extension back after
+    // placement — so snapping the centreline to 50s made the displayed
+    // length read 1045 / 1095 / ... off a 190-thick corner. Same
+    // correction the typed-length path applies via
+    // cornerLengthAdjustAt: snap (length + extension) to the grid,
+    // then store the centreline remainder.
+    const startAdjust = cornerLengthAdjustAt({
+      x: pxToMm(anchor.x),
+      y: pxToMm(anchor.y),
+    })
+    const snappedDisplayMm = snapMmToGrid(lenMm + startAdjust, wallSnapMm)
+    const snappedMm = snappedDisplayMm - startAdjust
+    if (snappedMm < Math.min(wallSnapMm, 50) || snappedMm <= 0) {
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
