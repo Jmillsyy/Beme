@@ -561,6 +561,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       )
     )
   }, [areas])
+  // Defensive area bootstrap — guarantees the workspace ALWAYS has at
+  // least one area once project loading has settled. The project-load
+  // handler already creates a default area when the saved project
+  // doesn't carry any, but flows like "Start with an empty workspace"
+  // (no project loaded) and edge cases where the saved project has
+  // areas:[] explicitly didn't pick that up. This effect catches both:
+  // it watches areas + isProjectLoading and synthesises an area + its
+  // stamped wall types when the workspace is open but the area list
+  // is empty.
+  useEffect(() => {
+    if (isProjectLoading) return
+    if (areas.length > 0) return
+    const newAreaId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `area-${Date.now()}`
+    const colorHex = AREA_PALETTE[0]
+    setAreas([{ id: newAreaId, name: 'New Area', colorHex }])
+    setActiveAreaId(newAreaId)
+    // Stamp any orphan wall types with the new area so the Wall types
+    // panel surfaces them under this area's filter. Same backfill the
+    // project-load handler does for fresh estimates.
+    setMakeups((prev) =>
+      prev.map((m) =>
+        m.areaId ? m : ({ ...m, areaId: newAreaId } as typeof m),
+      ),
+    )
+    setBrickMakeups((prev) =>
+      prev.map((m) =>
+        m.areaId ? m : ({ ...m, areaId: newAreaId } as typeof m),
+      ),
+    )
+  }, [areas.length, isProjectLoading])
   // Workspace view mode — '2d' is the Konva canvas (editing surface); '3d'
   // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
   // state, never persisted. Toggle button in the unified toolbar flips it.
@@ -6544,7 +6577,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </div>
             </div>
 
-            {/* ── Right rail: same as workspace mode ── */}
+            {/* ── Right rail ──
+                Used to mirror the workspace right rail on the upload-zone
+                page, but the panel surfaces (Area / Wall types / Supply
+                items) are noise before the user picks a PDF — they can't
+                even draw to use those configs. Wrapped in `false` so the
+                JSX stays in source (easy to flip back if we want to
+                preview them again) while the rendered page stays focused
+                on the upload affordance.
+
+                Note the upload-zone hides the right rail entirely; the
+                workspace-mode render (below the upload-zone return)
+                still renders this rail with all panels. */}
+            {false && (
             <aside className="w-full mt-3 space-y-3 lg:w-[272px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
                 <WallTypesPanel
@@ -6614,6 +6659,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               )}
             </aside>
+            )}
           </div>
         </div>
       </div>
