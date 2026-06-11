@@ -285,6 +285,161 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 90, depthMm: 290 },
     roles: ['height-makeup'],
   },
+
+  // ── 100mm series (90mm wide) — National Masonry SEQ price list ──
+  '10.01': {
+    code: '10.01',
+    name: '100-series Standard',
+    description:
+      'Standard 100-series block, 390 × 190 × 90mm — partition and ' +
+      'veneer-backing walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['body', 'corner', 'end-termination'],
+  },
+  '10.02': {
+    code: '10.02',
+    name: '100-series Three Quarter',
+    description: '3/4-length closure, 290 × 190 × 90mm.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 90 },
+    roles: ['fraction'],
+    fraction: 0.75,
+  },
+  '10.03': {
+    code: '10.03',
+    name: '100-series Half',
+    description:
+      'Half-length block, 190 × 190 × 90mm (doubles as the 200-series ' +
+      'quarter, 20.04).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 90 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '10.31': {
+    code: '10.31',
+    name: '100-series Solid',
+    description: 'Solid 100-series block, 390 × 190 × 90mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['body'],
+  },
+  '10.71': {
+    code: '10.71',
+    name: '100-series Half Height',
+    description:
+      'Half-height unit, 390 × 90 × 90mm — height makeup on 100-series ' +
+      'walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 90 },
+    roles: ['height-makeup'],
+  },
+
+  // ── 150mm series (140mm wide) — National Masonry SEQ price list ──
+  '15.48': {
+    code: '15.48',
+    name: '150-series H Block',
+    description:
+      'Open-web H block, 390 × 190 × 140mm — the main reinforced body ' +
+      'unit for 150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['body'],
+  },
+  '15.01': {
+    code: '15.01',
+    name: '150-series Standard',
+    description:
+      'Standard closed-end block, 390 × 190 × 140mm — corners and wall ' +
+      'ends on 150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['corner', 'end-termination'],
+  },
+  '15.02': {
+    code: '15.02',
+    name: '150-series Three Quarter',
+    description: '3/4-length closure, 290 × 190 × 140mm.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 140 },
+    roles: ['fraction'],
+    fraction: 0.75,
+  },
+  '15.03': {
+    code: '15.03',
+    name: '150-series Half',
+    description: 'Half-length block, 190 × 190 × 140mm.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '15.22': {
+    code: '15.22',
+    name: '150-series Seven Eighths',
+    description: '7/8-length closure, 340 × 190 × 140mm.',
+    dimensions: { widthMm: 340, heightMm: 190, depthMm: 140 },
+    roles: ['fraction'],
+    fraction: 0.875,
+  },
+  '15.12': {
+    code: '15.12',
+    name: '150-series Lintel',
+    description:
+      'Full-length lintel unit, 390 × 190 × 140mm — opening heads on ' +
+      '150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 0,
+    lintelMaxHeadHeightMm: 400,
+  },
+  '15.20': {
+    code: '15.20',
+    name: '150-series Knockout Bond Beam',
+    description:
+      'Knockout bond-beam block, 390 × 190 × 140mm — reinforced top ' +
+      'course on 150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['top-course'],
+  },
+  '15.45': {
+    code: '15.45',
+    name: '150-series Cleanout',
+    description:
+      'Cleanout block, 390 × 190 × 140mm — grouted base course.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['base-course'],
+  },
+  '15.71': {
+    code: '15.71',
+    name: '150-series Half Height',
+    description:
+      'Half-height unit, 390 × 90 × 140mm — height makeup on 150-series ' +
+      'walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 140 },
+    roles: ['height-makeup'],
+  },
+  '50.15': {
+    code: '50.15',
+    name: '150-series Cap',
+    description:
+      'Capping tile, 390 × 40 × 140mm — closes the cores on top of a ' +
+      'finished 150-series wall.',
+    dimensions: { widthMm: 390, heightMm: 40, depthMm: 140 },
+    roles: ['cap'],
+  },
+
+  // ── Caps + 400 series — National Masonry SEQ price list ──
+  '50.31': {
+    code: '50.31',
+    name: '200-series Cap',
+    description:
+      'Capping tile, 390 × 40 × 190mm — closes the cores on top of a ' +
+      'finished 200-series wall.',
+    dimensions: { widthMm: 390, heightMm: 40, depthMm: 190 },
+    roles: ['cap'],
+  },
+  '40.48': {
+    code: '40.48',
+    name: '400-series H Block',
+    description:
+      'Open-web H block, 390 × 190 × 390mm — heavy retaining and ' +
+      'foundation walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
+    roles: ['body'],
+  },
 }
 
 /** Codes from the seed library that should never be deletable — the calc engine depends on them. */

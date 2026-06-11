@@ -897,10 +897,11 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'AU',
     mortarJointMm: 10,
     description:
-      'South-east QLD masonry block set — 20.48 H block body, 20.01 / 20.03 ' +
-      'corners, 20.71 / 20.140 height makeup, 20.13 / 20.25 / 20.18 lintels, ' +
-      '40.925 piers, 50.45 cleanout tiles, and the 300-series footing blocks. ' +
-      'Bricks: 230×76 standard + maxi + double-height.',
+      'South-east QLD masonry set across the 100 / 150 / 200 / 300 / 400 ' +
+      'series — H blocks, corners, halves and fractions, height makeup, ' +
+      'lintels, knockout bond beams, cleanouts, caps and piers, per the ' +
+      'National Masonry SEQ catalogue. Bricks: 230×76 standard + maxi + ' +
+      'double-height.',
     blocks: DEFAULT_BLOCK_LIBRARY,
     bricks: AU_BRICK_LIBRARY,
   },
