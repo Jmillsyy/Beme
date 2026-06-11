@@ -3154,6 +3154,40 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }, [wallsByPage, areas])
 
+  // ── Sweep orphan WALL TYPES (makeups) into the first area ──────────
+  //
+  // Same idea as the wall-areaId sweep above but for wall TYPES.
+  // Anything in `makeups` / `brickMakeups` without an `areaId` is
+  // invisible inside any specific area's panel and only surfaces in
+  // the "All areas" view — confusing because the user creates a new
+  // area and then sees a phantom type they didn't make. Repaired
+  // makeups land on the FIRST area's id (matches the load-time
+  // migration), and the active makeup id is preserved.
+  //
+  // Most paths already stamp areaId at creation (handleAddMakeup /
+  // handleAddBrickMakeup / new-area onCreate / project-load
+  // migrateMakeup). This is the safety net for state that snuck
+  // through any older flow, or saves loaded from before the area
+  // model. Cheap: the early-return when nothing is orphan means it
+  // costs one scan per dependency change.
+  useEffect(() => {
+    if (areas.length === 0) return
+    const firstAreaId = areas[0].id
+    const hasOrphanBlock = makeups.some((m) => !m.areaId)
+    const hasOrphanBrick = brickMakeups.some((m) => !m.areaId)
+    if (!hasOrphanBlock && !hasOrphanBrick) return
+    if (hasOrphanBlock) {
+      setMakeups((prev) =>
+        prev.map((m) => (m.areaId ? m : { ...m, areaId: firstAreaId })),
+      )
+    }
+    if (hasOrphanBrick) {
+      setBrickMakeups((prev) =>
+        prev.map((m) => (m.areaId ? m : { ...m, areaId: firstAreaId })),
+      )
+    }
+  }, [makeups, brickMakeups, areas])
+
   // Migrate legacy wedge curve makeups in-place. Old wedge curves were
   // created with the default 20.45 cleanout + 50.45 tile base course
   // because createDefaultWallMakeup seeds them and the wedge override
