@@ -143,6 +143,108 @@ export const US_CMU_LIBRARY: Record<BlockCode, Block> = {
     roles: ['lintel'],
     lintelMinHeadHeightMm: 400,
   },
+  'CMU8-HH': {
+    code: 'CMU8-HH',
+    name: '8" Half-High CMU',
+    description:
+      'Half-height unit (15-5/8" × 3-5/8" face, ~397 × 92mm) — the ' +
+      'height-makeup block for wall heights off the 8" course module.',
+    dimensions: { widthMm: 397, heightMm: 92, depthMm: 194 },
+    roles: ['height-makeup'],
+  },
+  'CMU8-CO': {
+    code: 'CMU8-CO',
+    name: '8" Open-End A Block',
+    description:
+      'Open-end (A-shaped) unit used on grouted base courses and cleanout ' +
+      'courses — lets the grout key through and the inspector see the ' +
+      'footing interface.',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 194 },
+    roles: ['base-course'],
+  },
+  'CMU8-CAP': {
+    code: 'CMU8-CAP',
+    name: '8" Solid Cap',
+    description:
+      'Solid 2-1/4" cap unit (397 × 57 × 194mm) — closes the cores on the ' +
+      'top of a finished wall.',
+    dimensions: { widthMm: 397, heightMm: 57, depthMm: 194 },
+    roles: ['cap'],
+  },
+  'CMU-COL16': {
+    code: 'CMU-COL16',
+    name: '16" × 16" Column Block',
+    description:
+      'Pilaster / column unit, 15-5/8" square (397 × 194 × 397mm) — ' +
+      'freestanding and tied piers.',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 397 },
+    roles: ['pier'],
+  },
+  CMU4: {
+    code: 'CMU4',
+    name: '4" CMU (body)',
+    description:
+      'Partition unit, 15-5/8" × 7-5/8" × 3-5/8" (397 × 194 × 92mm).',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 92 },
+    roles: ['body'],
+  },
+  'CMU4-H': {
+    code: 'CMU4-H',
+    name: '4" CMU Half',
+    description: 'Half-length closure for 4" walls (194 × 194 × 92mm).',
+    dimensions: { widthMm: 194, heightMm: 194, depthMm: 92 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  CMU6: {
+    code: 'CMU6',
+    name: '6" CMU (body)',
+    description:
+      'Intermediate width, 15-5/8" × 7-5/8" × 5-5/8" (397 × 194 × 143mm).',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 143 },
+    roles: ['body'],
+  },
+  'CMU6-C': {
+    code: 'CMU6-C',
+    name: '6" CMU Corner',
+    description: 'Flat-ended corner / end unit for 6" walls.',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 143 },
+    roles: ['corner', 'end-termination'],
+  },
+  'CMU6-H': {
+    code: 'CMU6-H',
+    name: '6" CMU Half',
+    description: 'Half-length closure for 6" walls (194 × 194 × 143mm).',
+    dimensions: { widthMm: 194, heightMm: 194, depthMm: 143 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  CMU10: {
+    code: 'CMU10',
+    name: '10" CMU (body)',
+    description:
+      'Heavy wall / foundation unit, 15-5/8" × 7-5/8" × 9-5/8" ' +
+      '(397 × 194 × 244mm).',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 244 },
+    roles: ['body'],
+  },
+  CMU12: {
+    code: 'CMU12',
+    name: '12" CMU (body)',
+    description:
+      'Foundation / retaining unit, 15-5/8" × 7-5/8" × 11-5/8" ' +
+      '(397 × 194 × 295mm).',
+    dimensions: { widthMm: 397, heightMm: 194, depthMm: 295 },
+    roles: ['body'],
+  },
+  'CMU12-H': {
+    code: 'CMU12-H',
+    name: '12" CMU Half',
+    description: 'Half-length closure for 12" walls (194 × 194 × 295mm).',
+    dimensions: { widthMm: 194, heightMm: 194, depthMm: 295 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
 }
 
 // ─── UK — Concrete block (dense aggregate) ─────────────────────────────────
@@ -220,6 +322,94 @@ export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 600, heightMm: 430, depthMm: 100 },
     roles: ['lintel'],
     lintelMinHeadHeightMm: 400,
+  },
+  'CB-65': {
+    code: 'CB-65',
+    name: 'Coursing Brick 215×65',
+    description:
+      'Concrete coursing brick (215 × 65 × 100mm) — the height-makeup ' +
+      'unit for wall heights off the 225mm course module, and for ' +
+      'levelling up to lintel bearings.',
+    dimensions: { widthMm: 215, heightMm: 65, depthMm: 100 },
+    roles: ['height-makeup'],
+  },
+  'BLK-140': {
+    code: 'BLK-140',
+    name: '140mm Block (body)',
+    description:
+      'Dense aggregate block, 440 × 215 × 140mm — party walls and ' +
+      'heavier loadbearing leaves.',
+    dimensions: { widthMm: 440, heightMm: 215, depthMm: 140 },
+    roles: ['body'],
+  },
+  'BLK-140-C': {
+    code: 'BLK-140-C',
+    name: '140mm Corner Block',
+    description: 'Full-size 140mm unit for corners and odd-course ends.',
+    dimensions: { widthMm: 440, heightMm: 215, depthMm: 140 },
+    roles: ['corner', 'end-termination'],
+  },
+  'BLK-140-H': {
+    code: 'BLK-140-H',
+    name: '140mm Half Block',
+    description: 'Half-length closure (215 × 215 × 140mm).',
+    dimensions: { widthMm: 215, heightMm: 215, depthMm: 140 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  'BLK-215': {
+    code: 'BLK-215',
+    name: '215mm Block (body)',
+    description:
+      'Full-width dense aggregate block, 440 × 215 × 215mm — solid ' +
+      'single-leaf walls and below-DPC work.',
+    dimensions: { widthMm: 440, heightMm: 215, depthMm: 215 },
+    roles: ['body'],
+  },
+  'BLK-215-H': {
+    code: 'BLK-215-H',
+    name: '215mm Half Block',
+    description: 'Half-length closure (215 × 215 × 215mm).',
+    dimensions: { widthMm: 215, heightMm: 215, depthMm: 215 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  'AIR-100': {
+    code: 'AIR-100',
+    name: '100mm Aircrete Block',
+    description:
+      'Aerated (aircrete) block, 440 × 215 × 100mm — inner leaves where ' +
+      'thermal performance drives the spec. Tally-identical to dense ' +
+      '100mm; kept as a separate line so the schedule splits the order.',
+    dimensions: { widthMm: 440, heightMm: 215, depthMm: 100 },
+    roles: ['body'],
+  },
+  'AIR-140': {
+    code: 'AIR-140',
+    name: '140mm Aircrete Block',
+    description: 'Aerated block at 140mm thickness (440 × 215 × 140mm).',
+    dimensions: { widthMm: 440, heightMm: 215, depthMm: 140 },
+    roles: ['body'],
+  },
+  'LIN-140-215': {
+    code: 'LIN-140-215',
+    name: 'Pre-stressed Lintel (140×215)',
+    description:
+      'Pre-stressed concrete lintel for 140mm walls, full course height. ' +
+      'Head heights 200–399mm.',
+    dimensions: { widthMm: 600, heightMm: 215, depthMm: 140 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 200,
+    lintelMaxHeadHeightMm: 400,
+  },
+  'COP-150': {
+    code: 'COP-150',
+    name: 'Once-Weathered Coping',
+    description:
+      'Concrete coping, 600 × 75 × 150mm — caps freestanding and garden ' +
+      'walls.',
+    dimensions: { widthMm: 600, heightMm: 75, depthMm: 150 },
+    roles: ['cap'],
   },
 }
 
@@ -310,6 +500,75 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
     roles: ['end-termination', 'fraction'],
     fraction: 0.5,
+  },
+  '20.01CO': {
+    code: '20.01CO',
+    name: '20 Series Cleanout',
+    description:
+      'Open-bottom cleanout unit for the grouted base course — lets the ' +
+      'inspector verify grout at the footing before fill.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['base-course'],
+  },
+  '15.04': {
+    code: '15.04',
+    name: '15 Series Half-High',
+    description:
+      'Half-height (90mm face) unit for the 140mm series — height makeup ' +
+      'on 15-series walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 140 },
+    roles: ['height-makeup'],
+  },
+  '10.01': {
+    code: '10.01',
+    name: '10 Series Whole Block',
+    description:
+      '90mm-wide partition / veneer block (390 × 190 × 90mm).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['body'],
+  },
+  '10.03': {
+    code: '10.03',
+    name: '10 Series Half Block',
+    description: 'Half-length closure for the 10 series (190 × 190 × 90mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 90 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '25.01': {
+    code: '25.01',
+    name: '25 Series Whole Block',
+    description:
+      '240mm-wide block (390 × 190 × 240mm) — heavy structural and ' +
+      'retaining walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 240 },
+    roles: ['body', 'corner', 'end-termination'],
+  },
+  '25.03': {
+    code: '25.03',
+    name: '25 Series Half Block',
+    description: 'Half-length closure for the 25 series (190 × 190 × 240mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 240 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  'P390': {
+    code: 'P390',
+    name: 'Pier Block 390×390',
+    description:
+      'Square pier / column unit (390 × 190 × 390mm) for gate and fence ' +
+      'piers.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
+    roles: ['pier'],
+  },
+  'CAP40': {
+    code: 'CAP40',
+    name: 'Capping Tile 390×40',
+    description:
+      'Flat capping tile (390 × 40 × 190mm) — closes the cores across the ' +
+      'top of a finished wall.',
+    dimensions: { widthMm: 390, heightMm: 40, depthMm: 190 },
+    roles: ['cap'],
   },
 }
 
@@ -408,6 +667,79 @@ export const CA_CMU_LIBRARY: Record<BlockCode, Block> = {
       'backing walls.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
     roles: ['body'],
+  },
+  'CMU15-H': {
+    code: 'CMU15-H',
+    name: '15cm Half Block',
+    description: 'Half-length closure for 15cm walls (190 × 190 × 140mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  CMU10C: {
+    code: 'CMU10C',
+    name: '10cm Block (body)',
+    description:
+      'Partition unit, 390 × 190 × 90mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['body'],
+  },
+  CMU25: {
+    code: 'CMU25',
+    name: '25cm Block (body)',
+    description:
+      'Heavy structural unit, 390 × 190 × 240mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 240 },
+    roles: ['body'],
+  },
+  'CMU25-H': {
+    code: 'CMU25-H',
+    name: '25cm Half Block',
+    description: 'Half-length closure for 25cm walls (190 × 190 × 240mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 240 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  CMU30: {
+    code: 'CMU30',
+    name: '30cm Block (body)',
+    description:
+      'Foundation / retaining unit, 390 × 190 × 290mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 290 },
+    roles: ['body', 'corner', 'end-termination'],
+  },
+  'CMU30-H': {
+    code: 'CMU30-H',
+    name: '30cm Half Block',
+    description: 'Half-length closure for 30cm walls (190 × 190 × 290mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 290 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  'CMU20-CO': {
+    code: 'CMU20-CO',
+    name: '20cm Open-End A Block',
+    description:
+      'Open-end unit for grouted base / cleanout courses.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['base-course'],
+  },
+  'CMU20-CAP': {
+    code: 'CMU20-CAP',
+    name: '20cm Solid Cap',
+    description:
+      'Solid cap unit (390 × 57 × 190mm) — closes the cores on top of a ' +
+      'finished wall.',
+    dimensions: { widthMm: 390, heightMm: 57, depthMm: 190 },
+    roles: ['cap'],
+  },
+  'CMU-COL40': {
+    code: 'CMU-COL40',
+    name: '40cm Column Block',
+    description:
+      'Pilaster / column unit (390 × 190 × 390mm) for piers.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
+    roles: ['pier'],
   },
 }
 
@@ -580,11 +912,11 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'NZ',
     mortarJointMm: 10,
     description:
-      'NZS-convention series blocks on the 400 × 200 modular grid — 20 ' +
-      'series whole / three-quarter / half / half-high, 20.16 lintel & ' +
-      'bond beam, plus a 15-series partition set. Bricks: 230×76 standard ' +
-      '+ 290 long format. Rename seed codes to your supplier catalogue ' +
-      'from the library page.',
+      'NZS-convention series blocks on the 400 × 200 modular grid — 10 / ' +
+      '15 / 20 / 25 series with halves, half-highs, cleanout, lintel & ' +
+      'bond beam, pier and capping tile. Bricks: 230×76 standard + 290 ' +
+      'long format. Rename seed codes to your supplier catalogue from the ' +
+      'library page.',
     blocks: NZ_BLOCK_LIBRARY,
     bricks: NZ_BRICK_LIBRARY,
   },
@@ -594,10 +926,9 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'US',
     mortarJointMm: 10, // 3/8" nominal
     description:
-      'Standard 8" Concrete Masonry Unit set — body, corner, half, bond ' +
-      'beam, and three lintel sizes covering the typical head height range. ' +
-      'Bricks: modular + queen + utility face brick. Add 6" / 10" / 12" CMUs ' +
-      'from the library page if your projects use them.',
+      'Full CMU range — 4" / 6" / 8" / 10" / 12" widths with corner, half, ' +
+      'half-high, bond beam, open-end A block, solid cap, column block and ' +
+      'three lintel sizes. Bricks: modular + queen + utility face brick.',
     blocks: US_CMU_LIBRARY,
     bricks: US_BRICK_LIBRARY,
   },
@@ -607,10 +938,10 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'CA',
     mortarJointMm: 10,
     description:
-      'CSA A165 metric block set — 20cm body / corner / half / half-high, ' +
-      'bond beam, three lintel depths, and a 15cm partition body. Bricks: ' +
-      'metric modular + Norman + jumbo. Add 25 / 30cm widths from the ' +
-      'library page if your projects use them.',
+      'CSA A165 metric block range — 10 / 15 / 20 / 25 / 30cm widths with ' +
+      'halves, half-high, bond beam, open-end A block, solid cap, column ' +
+      'block and three lintel depths. Bricks: metric modular + Norman + ' +
+      'jumbo.',
     blocks: CA_CMU_LIBRARY,
     bricks: CA_BRICK_LIBRARY,
   },
@@ -620,10 +951,10 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'UK',
     mortarJointMm: 10,
     description:
-      'Dense aggregate 100mm concrete block (440 × 215 × 100mm) with ' +
-      'pre-stressed concrete lintels. Bricks: 215×65 BS standard + 215×73 ' +
-      'imperial. Add 140 / 215mm thick blocks or aerated alternatives ' +
-      'from the library page as needed.',
+      'Dense aggregate blocks in 100 / 140 / 215mm with aircrete ' +
+      'alternatives, coursing bricks for height makeup, copings, and ' +
+      'pre-stressed concrete lintels in 100 + 140mm widths. Bricks: 215×65 ' +
+      'BS standard + 215×73 imperial.',
     blocks: UK_BLOCK_LIBRARY,
     bricks: UK_BRICK_LIBRARY,
   },
