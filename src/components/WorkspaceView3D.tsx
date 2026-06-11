@@ -718,18 +718,37 @@ function segmentsFromWallLayout(
       ? capBlock.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
       : 50 // 40mm tile + 10mm joint fallback
     const capHeightM = capModuleMm / 1000
-    const localCx = wallLenM / 2
-    boxes.push({
-      cx: sx + dirX * localCx,
-      cy: totalHeightM + capHeightM / 2,
-      cz: sz + dirZ * localCx,
-      length: wallLenM,
-      heightM: capHeightM,
-      thickness,
-      yRotation,
-      color: colorOf(capCode),
-      highlight: isHighlightedBlock(capCode, library),
-    })
+    // Corner de-overlap: both walls' cap strips used to span the full
+    // outer-edge length, double-covering the shared corner volume and
+    // z-fighting there. Exactly ONE wall's cap now covers each corner:
+    // the id-sorted lead keeps its full span, the other pulls back by
+    // the partner's thickness. T-junction/free ends are untouched.
+    let capStart = 0
+    let capEnd = wallLenM
+    for (const end of ['start', 'end'] as const) {
+      const junction = end === 'start' ? wall.startJunction : wall.endJunction
+      if (junction.type !== 'corner') continue
+      const partnerId = junction.connectedWallIds?.[0]
+      if (partnerId === undefined || wall.id < partnerId) continue
+      const partnerT =
+        (wallThicknessByWallId[partnerId] ?? thicknessMm) / 1000
+      if (end === 'start') capStart += partnerT
+      else capEnd -= partnerT
+    }
+    if (capEnd - capStart > 0.02) {
+      const localCx = (capStart + capEnd) / 2
+      boxes.push({
+        cx: sx + dirX * localCx,
+        cy: totalHeightM + capHeightM / 2,
+        cz: sz + dirZ * localCx,
+        length: capEnd - capStart,
+        heightM: capHeightM,
+        thickness,
+        yRotation,
+        color: colorOf(capCode),
+        highlight: isHighlightedBlock(capCode, library),
+      })
+    }
   }
 
   return boxes
