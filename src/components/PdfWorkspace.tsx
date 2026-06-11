@@ -1233,12 +1233,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // the user's DefaultsByRole map (e.g. their preferred body / corner
     // block). One-shot read — once the workspace is open, the user owns
     // the makeup. Same getUserSettings() pattern as brickSettings below.
-    return [
-      createDefaultWallMakeup({
-        name: 'Block wall 2400mm',
-        settings: getUserSettings(),
-      }),
-    ]
+    // No name override — falls back to createDefaultWallMakeup's
+    // 'New wall type' default. Generic placeholder reads better
+    // than a presumptuous 'Block wall 2400mm' the user has to undo.
+    return [createDefaultWallMakeup({ settings: getUserSettings() })]
   })
   const [activeMakeupId, setActiveMakeupId] = useState<string>(
     // No makeup → no active id. Empty string is fine here; the wall-type
@@ -9319,8 +9317,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 // generic makeup scoped to this area.
                 const seededBlock = createDefaultWallMakeup({})
                 seededBlock.areaId = id
+                // Brick seed inherits the block default's name
+                // ("New wall type") and matched height, so both
+                // trades land with the same generic placeholder
+                // the user can rename to something meaningful.
                 const seededBrick = createDefaultBrickMakeup({
-                  name: `Brickwork ${seededBlock.heightMm}mm`,
                   heightMm: seededBlock.heightMm,
                 })
                 seededBrick.areaId = id

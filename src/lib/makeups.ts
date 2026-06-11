@@ -222,7 +222,11 @@ export function createDefaultBrickMakeup(opts: {
 } = {}): BrickMakeup {
   return {
     id: uid(),
-    name: opts.name ?? 'Facework',
+    // Default name matches the block side ('New wall type') so the
+    // user picks their own meaningful name regardless of trade. We
+    // used to seed 'Facework' here but a generic placeholder reads
+    // less like an opinion the user has to undo.
+    name: opts.name ?? 'New wall type',
     brickTypeCode: opts.brickTypeCode ?? '',
     heightMm: opts.heightMm ?? 2400,
   }
@@ -230,18 +234,17 @@ export function createDefaultBrickMakeup(opts: {
 
 /**
  * The default set of brick wall types for a new brick project. One
- * neutral seed — "Brickwork 2400mm" — so the project lands with the
+ * neutral seed — "New wall type" — so the project lands with the
  * minimum viable type list. Adding more (Facework vs Rendered, party
  * walls, garden walls, etc.) is one click in the panel, and keeping
  * the seed small avoids the user staring at a starter list they have
  * to delete from before adding what they actually need.
  *
- * Height included in the name so it reads as the wall it represents
- * at a glance, matching the block-mode seed convention.
+ * Name matches the block-mode seed convention ('New wall type') so
+ * the user picks a meaningful label regardless of trade.
  */
 export function createDefaultBrickMakeups(): BrickMakeup[] {
-  const heightMm = 2400
-  return [createDefaultBrickMakeup({ name: `Brickwork ${heightMm}mm`, heightMm })]
+  return [createDefaultBrickMakeup({})]
 }
 
 // ---------- Course series ranges ----------
