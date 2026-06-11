@@ -9624,7 +9624,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             screen resolution at any zoom — no more CSS-stretch blur
             while drawing. Transparent outside drawn shapes, so the
             page (and its hi-res overlay) shows through. */}
-        <div className="absolute inset-0" style={{ lineHeight: 0 }}>
+        <div
+          className="absolute inset-0"
+          style={{
+            lineHeight: 0,
+            // The wrapper itself must never intercept anything — the
+            // Stage inside re-enables pointer events on its own canvas.
+            // Without this, the empty wrapper (layer unmounted: upload
+            // zone, reference view without ruler) blocks every click
+            // on the page beneath it.
+            pointerEvents: 'none',
+          }}
+        >
               {/* Wall drawing layer — at renderedZoom resolution; scales with
                   parent. On reference PDFs the layer ONLY mounts when the user
                   has the ruler active, so they can measure things on the
