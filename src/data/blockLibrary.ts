@@ -1161,12 +1161,23 @@ export function pickLintelBlockIn(
   for (const c of candidates) {
     const remainderMm = Math.max(0, openingHeightMm - c.dimensions.heightMm)
     const dist = computeDistance(remainderMm)
-    if (
+    // Tiebreak: prefer the SMALLEST lintel that decomposes cleanly —
+    // the remaining head fills with ordinary body courses, which is
+    // both the cheaper order and what the opening modal promises
+    // ("smallest lintel-tagged block whose face height covers the
+    // head"). A 600mm head lays one 190mm lintel course + two body
+    // courses, not a 390mm deep lintel. Deep lintels still win
+    // whenever they're the only clean modular fit (e.g. 300mm head
+    // -> 290mm lintel). Among equal heights, prefer the WIDER unit
+    // (the standard full-length lintel over the half/closer piece).
+    const better =
       dist < bestDist ||
-      // Tiebreak: prefer the LARGER lintel (fewer body courses above).
       (dist === bestDist &&
-        (!best || c.dimensions.heightMm > best.dimensions.heightMm))
-    ) {
+        best !== null &&
+        (c.dimensions.heightMm < best.dimensions.heightMm ||
+          (c.dimensions.heightMm === best.dimensions.heightMm &&
+            c.dimensions.widthMm > best.dimensions.widthMm)))
+    if (best === null || better) {
       bestDist = dist
       best = c
     }

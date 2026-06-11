@@ -37,10 +37,16 @@ export function adjustOpeningForRender(
   let adjusted: Opening
   if (o.kind === 'door') {
     adjusted = o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
-  } else if (o.sillHeightMm === 0 || o.noHead) {
-    // sill = 0 respected as floor-to-head; no-head openings keep their
-    // saved sill (re-anchoring would shift it, since their effective
-    // height differs from the typed height).
+  } else if (o.kind !== 'window' || o.sillHeightMm === 0 || o.noHead) {
+    // Auto-anchoring is for BRICK windows only (their modal captures
+    // height but no sill, so the renderer derives one). Everything
+    // else keeps its stored sill exactly:
+    //   - block-mode openings carry NO kind and an EXPLICIT sill — the
+    //     user typed head + sill and the render must honour them
+    //   - sill = 0 is respected as floor-to-head positioning
+    //   - no-head openings keep their saved sill (re-anchoring would
+    //     shift it, since their effective height differs from the
+    //     typed height)
     adjusted = o
   } else {
     const targetSill = Math.max(
@@ -1663,15 +1669,84 @@ export function segmentsForStraightWall(
   }
 
   // ── Phase 5: emit cells ──────────────────────────────────────────
+  // Openings whose sill / head land MID-course (e.g. sill 700 on a
+  // 200mm grid) partially overlap a course in Y. The old rule left
+  // those courses untouched ("mortar fills the straddle"), which
+  // rendered the wall THROUGH the opening's partial band and left an
+  // air gap above lintels. Real masonry cuts blocks to the sill and
+  // packs above the head — so a cell crossed by a partial opening now
+  // emits as CUT sub-bands (above and/or below the void) instead of a
+  // full-height cell. Each sub-band box still carries the cell's code
+  // and course, so the tally counts the cut blocks like any others.
+  const MIN_BAND_M = 0.03
   for (const { course, cells } of grid) {
     for (const cell of cells) {
       if (cell.role === 'REMOVED') continue
-      boxes.push(
-        buildBox(
-          cell.s0, cell.s1, course.y0, course.y1, cell.color, cell.code,
-          course.courseNumber
-        )
+      // Partial-overlap openings crossing this cell's x-range.
+      const partials = wallOpenings.filter(
+        (op) =>
+          op.start < cell.s1 - 0.001 &&
+          op.end > cell.s0 + 0.001 &&
+          // overlaps the course in y...
+          op.head > course.y0 + 0.001 &&
+          op.sill < course.y1 - 0.001 &&
+          // ...but does NOT fully cover it (those were carved in Phase 2)
+          !(op.sill <= course.y0 + 0.001 && op.head >= course.y1 - 0.001)
       )
+      if (partials.length === 0) {
+        boxes.push(
+          buildBox(
+            cell.s0, cell.s1, course.y0, course.y1, cell.color, cell.code,
+            course.courseNumber
+          )
+        )
+        continue
+      }
+      // Split the cell along x at the opening edges; emit full-height
+      // segments outside the opening span and cut sub-bands inside it.
+      const xCuts = [cell.s0, cell.s1]
+      for (const op of partials) {
+        if (op.start > cell.s0 && op.start < cell.s1) xCuts.push(op.start)
+        if (op.end > cell.s0 && op.end < cell.s1) xCuts.push(op.end)
+      }
+      xCuts.sort((a, b) => a - b)
+      for (let i = 0; i < xCuts.length - 1; i++) {
+        const x0 = xCuts[i]
+        const x1 = xCuts[i + 1]
+        if (x1 - x0 < 0.02) continue
+        const inOpening = partials.find(
+          (op) => op.start <= x0 + 0.001 && op.end >= x1 - 0.001
+        )
+        if (!inOpening) {
+          boxes.push(
+            buildBox(
+              x0, x1, course.y0, course.y1, cell.color, cell.code,
+              course.courseNumber
+            )
+          )
+          continue
+        }
+        // Below the void: course bottom up to the sill.
+        const lowTop = Math.min(course.y1, inOpening.sill)
+        if (lowTop - course.y0 >= MIN_BAND_M) {
+          boxes.push(
+            buildBox(
+              x0, x1, course.y0, lowTop, cell.color, cell.code,
+              course.courseNumber
+            )
+          )
+        }
+        // Above the void: head up to the course top.
+        const highBottom = Math.max(course.y0, inOpening.head)
+        if (course.y1 - highBottom >= MIN_BAND_M) {
+          boxes.push(
+            buildBox(
+              x0, x1, highBottom, course.y1, cell.color, cell.code,
+              course.courseNumber
+            )
+          )
+        }
+      }
     }
   }
 
@@ -1688,6 +1763,36 @@ export function segmentsForStraightWall(
         boxes.push(buildBox(cursor, blockEnd, lm.y0, lm.y1, lm.color, lm.code))
       }
       cursor += lm.blockWidthM + gridMortarM
+    }
+    // Pack the remainder of the lintel's TOP course: when the lintel's
+    // top lands mid-course (mid-course opening heads, or a lintel face
+    // that isn't a clean course multiple), the full-course carve in
+    // Phase 4 left an air gap from the lintel top to the next course
+    // boundary. Fill it with cut body blocks on the course grid — the
+    // mason packs this on site, and the tally counts the cut blocks.
+    const topCourse = grid.find(
+      (g) => g.course.y0 < lm.y1 - 0.005 && g.course.y1 > lm.y1 + 0.005
+    )
+    if (topCourse) {
+      const fillY0 = lm.y1 + gridMortarM
+      const fillY1 = topCourse.course.y1
+      if (fillY1 - fillY0 >= 0.03) {
+        const bodyColor = colorOf(topCourse.course.bodyCode)
+        const stepW = topCourse.bodyW + gridMortarM
+        let c = lm.s0
+        while (c < lm.s1) {
+          const cellEnd = Math.min(c + topCourse.bodyW, lm.s1)
+          if (cellEnd - c > 0.02) {
+            boxes.push(
+              buildBox(
+                c, cellEnd, fillY0, fillY1, bodyColor,
+                topCourse.course.bodyCode, topCourse.course.courseNumber
+              )
+            )
+          }
+          c += stepW
+        }
+      }
     }
   }
 

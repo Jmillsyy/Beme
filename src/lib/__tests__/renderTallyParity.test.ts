@@ -23,7 +23,7 @@ import {
   resolveWallCourses,
   adjustOpeningForRender,
 } from '../wallSegments'
-import { BLOCK_LIBRARY } from '../../data/blockLibrary'
+import { BLOCK_LIBRARY, pickLintelBlockIn } from '../../data/blockLibrary'
 
 // ---------- Fixtures ----------
 
@@ -344,5 +344,24 @@ describe('fit-aware corner phasing: outer-face-modular walls lay clean', () => {
     // Corner dedup invariant: exactly one corner block per corner per course.
     const tally = calculateProjectTally(walls, makeupsById)
     expect(tally['20.01']).toBe(4 * 12)
+  })
+})
+
+describe('block opening head handling', () => {
+  it('block openings (no kind) keep their explicit sill', () => {
+    const op: Opening = {
+      id: 'o', wallId: 'w', startAlongWallMm: 1000, widthMm: 800,
+      heightMm: 1400, sillHeightMm: 700,
+    }
+    expect(adjustOpeningForRender(op, 2700)).toBe(op)
+  })
+
+  it('600mm head picks the smallest clean lintel (one course + bodies)', () => {
+    const pick = (head: number) =>
+      pickLintelBlockIn(BLOCK_LIBRARY, head)?.code
+    expect(pick(600)).toBe('20.12') // 190 lintel + 2 body courses
+    expect(pick(300)).toBe('20.25') // 290 lintel is the only clean fit
+    expect(pick(200)).toBe('20.12') // 190 lintel fills it
+    expect(pick(1500)).toBe('20.25') // 290 + 6x200 (doc example)
   })
 })
