@@ -6401,6 +6401,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // container stays mounted across 2D/3D toggles, so one observer
   // covers resizes, sidebar collapses and window changes.
   useEffect(() => {
+    // Re-run when the PDF / workspace mode lands: on a fresh project
+    // open the container div doesn't exist on the FIRST render (the
+    // file loads asynchronously), so a mount-only effect would observe
+    // null and never measure — leaving the wall layer's size gate
+    // closed forever. Same dependency pattern as the pan/wheel
+    // effects, which gate on the same container.
     const el = containerRef.current
     if (!el) return
     const update = () =>
@@ -6413,8 +6419,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [pdfFile, isEmptyWorkspace, viewMode])
 
   // ---------- Zoom (button) ----------
 
