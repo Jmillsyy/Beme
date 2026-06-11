@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import type { ComponentType } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 // 3D view is lazy-loaded so users who never open it pay zero bundle cost
 // (Three.js + r3f + drei add ~150 KB gzipped on top of the main bundle).
@@ -506,6 +507,11 @@ const AREA_PALETTE = [
 ]
 
 export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorkspaceProps = {}) {
+  // Router navigation — used by handleDeleteProject to return the user
+  // to the dashboard once the project is gone, and anywhere else the
+  // workspace wants to leave its own page intentionally. Outside of
+  // those handlers we stay on the same route for in-place edits.
+  const navigate = useNavigate()
   // Mode is local state initialised from the prop. The TradeRail on the
   // left changes it without unmounting the workspace — all existing
   // `mode === 'block'` / `'brick'` branches keep working unchanged.
@@ -2888,11 +2894,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       setCreatedByDisplayName(null)
       setProjectCompletedAt(null)
       setLastSavedAt(null)
-      if (typeof window !== 'undefined') {
-        const url = new URL(window.location.href)
-        url.searchParams.delete('id')
-        window.history.replaceState({}, '', url.toString())
-      }
+      // Defuse the unsaved-changes prompt before navigating away. The
+      // project we were potentially "dirty against" is gone, so blocking
+      // a redirect on its behalf would be nonsense — the user just
+      // approved the destructive action.
+      setHasUnsavedChanges(false)
       if (mode) clearDraft(deletedId, mode)
     } catch (err) {
       console.error('Failed to delete project', err)
@@ -2901,6 +2907,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       })
       return
     }
+    // Return to the dashboard. Done AFTER all the project-state clears
+    // above so the workspace doesn't re-render with half a stale project
+    // visible during the route transition. Sonner toasts persist across
+    // navigation, so the Undo handler below still surfaces on /.
+    navigate('/')
     if (cached) {
       // 8-second sticky toast with Undo. The handler re-saves via
       // saveProjectToStore (which on cloud accounts upserts the row),
