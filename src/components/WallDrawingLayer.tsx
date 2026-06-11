@@ -1170,6 +1170,11 @@ function WallDrawingLayerInner({
     // line), but doesn't reach across dense layouts. Outside this radius we
     // fall through to a 'free' anchor at the raw cursor position.
     const CURVE_ANCHOR_THRESHOLD_PX = 25
+    // END anchors snap at the same tight radius as the straight-wall
+    // tool (SNAP_THRESHOLD_PX). The generous 25px radius is for SIDE
+    // anchors only — peeling a curve off a wall face benefits from
+    // reach, but endpoint snapping from 300mm away (at 1:100) made the
+    // ends grab the cursor across half the drawing.
     const cursorMm = { x: pxToMm(cursorPx.x), y: pxToMm(cursorPx.y) }
 
     let best: {
@@ -1178,8 +1183,14 @@ function WallDrawingLayerInner({
       xMm: number
       yMm: number
     } | null = null
-    const consider = (wallId: string, distPx: number, xMm: number, yMm: number) => {
-      if (distPx > CURVE_ANCHOR_THRESHOLD_PX) return
+    const consider = (
+      wallId: string,
+      distPx: number,
+      xMm: number,
+      yMm: number,
+      thresholdPx = CURVE_ANCHOR_THRESHOLD_PX
+    ) => {
+      if (distPx > thresholdPx) return
       if (!best || distPx < best.distPx) best = { wallId, distPx, xMm, yMm }
     }
 
@@ -1208,9 +1219,9 @@ function WallDrawingLayerInner({
         // boundary hit means the cursor sits past that tip.
         const END_ZONE_MM = 1
         if (arcProj.alongMm <= END_ZONE_MM) {
-          consider(wall.id, distPx, wall.startX, wall.startY)
+          consider(wall.id, distPx, wall.startX, wall.startY, SNAP_THRESHOLD_PX)
         } else if (arcProj.alongMm >= geom.arcLengthMm - END_ZONE_MM) {
-          consider(wall.id, distPx, wall.endX, wall.endY)
+          consider(wall.id, distPx, wall.endX, wall.endY, SNAP_THRESHOLD_PX)
         } else {
           // Side-face anchor on the cursor's side of the arc: offset the
           // centreline projection radially — outward when the cursor is
@@ -1254,11 +1265,11 @@ function WallDrawingLayerInner({
       // centreline endpoint so a curve drawn from here continues
       // straight off the end of the wall.
       if (tUnclamped > 1) {
-        consider(wall.id, distPx, wall.endX, wall.endY)
+        consider(wall.id, distPx, wall.endX, wall.endY, SNAP_THRESHOLD_PX)
         continue
       }
       if (tUnclamped < 0) {
-        consider(wall.id, distPx, wall.startX, wall.startY)
+        consider(wall.id, distPx, wall.startX, wall.startY, SNAP_THRESHOLD_PX)
         continue
       }
       // Side-face anchor: half-thickness off the centreline projection,
