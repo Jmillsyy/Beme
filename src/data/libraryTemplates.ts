@@ -413,16 +413,17 @@ export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
-// ─── NZ — Concrete masonry (Firth hollow masonry catalogue) ────────────────
+// ─── NZ — Concrete masonry (Firth catalogue) ───────────────────────────────
 // New Zealand masonry shares the 390 × 190 face and 10mm joint with AU
-// (400 × 200 modular). Codes and names follow Firth's hollow-masonry
-// catalogue (10 / 15 / 20 / 25 series; H-prefix = half-high): 20.01
-// whole, 20.02 half, 20.19 three-quarter, H20.04 half-high, 20.05 open
-// end, 20.12 lintel, 20.16 open-end bond beam, 20.30 column, 05.17
-// capping. Verified against the Firth Hollow Masonry brochure (2023).
-// Regional availability varies (some units are North Island only).
+// (400 × 200 modular). Codes, names and dimensions follow Firth's
+// "20 Series System" flyer (Feb 2023) and Hollow Masonry brochure —
+// 10 / 15 / 20 / 25 series; H-prefix = half-high. Specialty units
+// (rebates, sills, header) carry the 'legacy' role so they sit in the
+// library for manual selection without the engine auto-picking them.
+// Regional availability varies (several units are North Island only).
 
 export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
+  // ── 20 series (190mm) — Firth 20 Series System flyer (Feb 2023) ──
   '20.01': {
     code: '20.01',
     name: '20.01 Standard Whole',
@@ -452,14 +453,14 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     roles: ['fraction'],
     fraction: 0.75,
   },
-  'H20.04': {
-    code: 'H20.04',
-    name: 'H20.04 Half High',
+  '20.04': {
+    code: '20.04',
+    name: '20.04 Plain End',
     description:
-      'Plain-end half-high, 390 × 90 × 190mm — the height-makeup unit ' +
-      'for wall heights off the 200mm course module.',
-    dimensions: { widthMm: 390, heightMm: 90, depthMm: 190 },
-    roles: ['height-makeup'],
+      'Plain-end whole block, 390 × 190 × 190mm — finished end face for ' +
+      'exposed wall ends and control joints.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['end-termination', 'corner'],
   },
   '20.05': {
     code: '20.05',
@@ -470,27 +471,91 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
     roles: ['base-course'],
   },
+  'H20.04': {
+    code: 'H20.04',
+    name: 'H20.04 Plain End Half High',
+    description:
+      'Half-high, 390 × 90 × 190mm — the height-makeup unit for wall ' +
+      'heights off the 200mm course module.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 190 },
+    roles: ['height-makeup'],
+  },
   '20.12': {
     code: '20.12',
     name: '20.12 Lintel & Half End-Closer',
     description:
-      'Lintel / half end-closer unit, 190 × 190 × 190mm — laid across ' +
-      'opening heads (head heights to ~400mm).',
+      'U-shaped lintel / half end-closer, 190 × 190 × 190mm — laid ' +
+      'across opening heads (head heights to ~400mm).',
     dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
     roles: ['lintel'],
     lintelMinHeadHeightMm: 0,
     lintelMaxHeadHeightMm: 400,
   },
+  '20.11': {
+    code: '20.11',
+    name: '20.11 Rebate Lintel',
+    description:
+      'Rebated lintel unit (190 face with 86 × 25 rebate) for recessed ' +
+      'joinery heads. Specialty — pick per opening when the detail ' +
+      'calls for it.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
+    roles: ['legacy'],
+  },
+  '20.14': {
+    code: '20.14',
+    name: '20.14 Knock-In Bond Beam',
+    description:
+      'Knock-in web bond beam, 390 × 190 × 190mm — reinforced top course ' +
+      'and intermediate bond beams.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['top-course'],
+  },
+  '20.15': {
+    code: '20.15',
+    name: '20.15 Corner Bond Beam',
+    description:
+      'Corner bond beam, 390 × 190 × 190mm — turns the reinforced bond ' +
+      'beam course at corners.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['top-course', 'corner'],
+  },
   '20.16': {
     code: '20.16',
     name: '20.16 Open End Bond Beam',
     description:
-      'Open-end bond beam (depressed web), 390 × 190 × 190mm — the ' +
-      'reinforced top course, intermediate bond beams, and stacked ' +
-      'bond-beam lintels over wide openings (head heights 400mm+).',
+      'Open-end bond beam (depressed web), 390 × 190 × 190mm — bond-beam ' +
+      'courses and stacked bond-beam lintels over wide openings (head ' +
+      'heights 400mm+).',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
     roles: ['top-course', 'lintel'],
     lintelMinHeadHeightMm: 400,
+  },
+  '20.09': {
+    code: '20.09',
+    name: '20.09 Rebate Whole',
+    description:
+      'Rebated whole block (86 × 25 rebate) for recessed joinery ' +
+      'reveals. Specialty.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['legacy'],
+  },
+  '20.08': {
+    code: '20.08',
+    name: '20.08 Sill (projecting)',
+    description:
+      'Projecting splayed sill unit, 250 × 90 × 190mm (flush variant in ' +
+      'Auckland). Specialty — window sills.',
+    dimensions: { widthMm: 250, heightMm: 90, depthMm: 190 },
+    roles: ['legacy'],
+  },
+  '20.45': {
+    code: '20.45',
+    name: '20.45 Header',
+    description:
+      'Header unit, 390 × 190 × 100mm — closes the cavity over openings ' +
+      'in veneer construction. Specialty.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 100 },
+    roles: ['legacy'],
   },
   '20.30': {
     code: '20.30',
@@ -499,6 +564,30 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
       'Standard column block, 390 × 190 × 190mm — tied and freestanding ' +
       'piers.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['pier'],
+  },
+  '20.33': {
+    code: '20.33',
+    name: '20.33 Pier',
+    description:
+      'Square pier unit, 390 × 190 × 390mm (North Island only).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
+    roles: ['pier'],
+  },
+  '20.34': {
+    code: '20.34',
+    name: "20.34 Pilaster 'C' Type",
+    description:
+      "Pilaster 'C' unit, 390 × 190 × 390mm (North Island only).",
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
+    roles: ['pier'],
+  },
+  '20.35': {
+    code: '20.35',
+    name: "20.35 Pilaster 'H' Type",
+    description:
+      "Pilaster 'H' unit, 390 × 190 × 390mm (North Island only).",
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
     roles: ['pier'],
   },
   '05.17': {
@@ -510,6 +599,8 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 40, depthMm: 190 },
     roles: ['cap'],
   },
+
+  // ── 15 series (140mm) ──
   '15.04': {
     code: '15.04',
     name: '15.04 Plain End Standard',
@@ -519,19 +610,69 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
     roles: ['body', 'corner', 'end-termination'],
   },
+  '15.19': {
+    code: '15.19',
+    name: '15.19 Three Quarter',
+    description: '15-series three-quarter, 290 × 190 × 140mm.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 140 },
+    roles: ['fraction'],
+    fraction: 0.75,
+  },
+  '15.05': {
+    code: '15.05',
+    name: '15.05 Open End',
+    description:
+      '15-series open-end unit — grouted base / cleanout courses.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['base-course'],
+  },
   'H15.04': {
     code: 'H15.04',
-    name: 'H15.04 Half High',
+    name: 'H15.04 Plain End Half High',
     description:
-      '15-series plain-end half-high, 390 × 90 × 140mm — height makeup ' +
-      'on 140mm walls.',
+      '15-series half-high, 390 × 90 × 140mm — height makeup on 140mm ' +
+      'walls.',
     dimensions: { widthMm: 390, heightMm: 90, depthMm: 140 },
     roles: ['height-makeup'],
   },
+  '15.12': {
+    code: '15.12',
+    name: '15.12 Lintel & Half End-Closer',
+    description:
+      '15-series lintel / half end-closer, 190 × 190 × 140mm — opening ' +
+      'heads on 140mm walls (to ~400mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 0,
+    lintelMaxHeadHeightMm: 400,
+  },
+  '15.14': {
+    code: '15.14',
+    name: '15.14 Knock-In Bond Beam',
+    description:
+      '15-series knock-in bond beam, 390 × 190 × 140mm — reinforced top ' +
+      'course.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['top-course'],
+  },
+  '15.16': {
+    code: '15.16',
+    name: '15.16 Open End Bond Beam',
+    description:
+      '15-series open-end bond beam (depressed web), 390 × 190 × 140mm — ' +
+      'bond-beam courses and stacked lintels (heads 400mm+).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['top-course', 'lintel'],
+    lintelMinHeadHeightMm: 400,
+  },
+
+  // ── 10 series (90mm) ──
   '10.01': {
     code: '10.01',
     name: '10.01 Standard Whole',
-    description: '10-series whole block, 390 × 190 × 90mm.',
+    description:
+      '10-series whole block, 390 × 190 × 90mm (supplied as two-core in ' +
+      'some areas).',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
     roles: ['body'],
   },
@@ -550,6 +691,26 @@ export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
     roles: ['corner', 'end-termination'],
   },
+  '10.23': {
+    code: '10.23',
+    name: '10.23 Channel Bond Beam',
+    description:
+      '10-series channel bond beam, 390 × 190 × 90mm — reinforced top ' +
+      'course on 90mm walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['top-course'],
+  },
+  'H10.01': {
+    code: 'H10.01',
+    name: 'H10.01 Half High',
+    description:
+      '10-series half-high, 390 × 90 × 90mm — height makeup on 90mm ' +
+      'walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 90 },
+    roles: ['height-makeup'],
+  },
+
+  // ── 25 series (240mm) — Firth hollow masonry brochure ──
   '25.05': {
     code: '25.05',
     name: '25.05 Open / Plain End',
@@ -911,11 +1072,11 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'NZ',
     mortarJointMm: 10,
     description:
-      'Firth hollow-masonry catalogue codes on the 400 × 200 modular ' +
-      'grid — 10 / 15 / 20 / 25 series wholes and halves, H-series ' +
-      'half-highs, 20.05 open end, 20.12 lintel, 20.16 bond beam, 20.30 ' +
-      'column and 05.17 capping. Bricks: 230×76 standard + 290 long ' +
-      'format.',
+      'Firth catalogue codes per the 20 Series System flyer — 10 / 15 / ' +
+      '20 / 25 series wholes, halves and fractions, H-series half-highs, ' +
+      'open ends, lintels and rebate units, knock-in / corner / open-end ' +
+      'bond beams, sills, header, columns and pilasters, 05.17 capping. ' +
+      'Bricks: 230×76 standard + 290 long format.',
     blocks: NZ_BLOCK_LIBRARY,
     bricks: NZ_BRICK_LIBRARY,
   },
