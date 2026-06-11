@@ -5316,16 +5316,24 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const hiResCanvasRef = useRef<HTMLCanvasElement>(null)
   const hiResTaskRef = useRef<PdfRegionTask | null>(null)
   const [viewSettleTick, setViewSettleTick] = useState(0)
-  // Companion overlay for the WALL layer: a true-resolution snapshot of
-  // the visible Konva stage region, layered ABOVE the (CSS-stretched)
-  // live stage. Hidden during any pointer activity so hover / drawing
-  // feedback always comes from the live stage; repainted after a short
-  // idle. The live stage keeps handling all events (the overlay is
-  // pointer-transparent).
+  // ── Viewport stage ──
+  // The Konva wall layer covers the CONTAINER (not the page) and
+  // carries a native scale + position mirroring the page wrapper's CSS
+  // transform — its canvas is always at true screen resolution, so
+  // walls, snap markers and cursor chrome stay sharp at any zoom,
+  // live. Driven imperatively at the same rAF cadence as the wrapper.
   const konvaStageRef = useRef<Konva.Stage | null>(null)
-  const wallsHiResWrapRef = useRef<HTMLDivElement>(null)
-  const wallsHiResCanvasRef = useRef<HTMLCanvasElement>(null)
-  const paintWallsOverlayRef = useRef<(() => void) | null>(null)
+  const applyStageTransform = useCallback(() => {
+    const stage = konvaStageRef.current
+    if (!stage) return
+    const renderedZ = renderedZoomRef.current || 1
+    const vs = zoomRef.current / renderedZ
+    stage.scale({ x: vs, y: vs })
+    stage.position({ x: viewTxRef.current, y: viewTyRef.current })
+    stage.batchDraw()
+  }, [])
+  /** Container CSS size — the stage's canvas dimensions. */
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   /** What the hi-res canvases currently show — used to decide whether a
    *  settle re-run must hide them (page/file switched) or can leave the
    *  still-valid pixels visible until the repaint lands in place. */
@@ -5333,9 +5341,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     file: null,
     page: 0,
   })
-  const handleStageRef = useCallback((stage: Konva.Stage | null) => {
-    konvaStageRef.current = stage
-  }, [])
+  const handleStageRef = useCallback(
+    (stage: Konva.Stage | null) => {
+      konvaStageRef.current = stage
+      // Stage (re)mounted mid-session — sync to the current view at
+      // once so it doesn't flash at identity transform.
+      if (stage) applyStageTransform()
+    },
+    [applyStageTransform]
+  )
   const renderedPageWidthRef = useRef(0)
   const renderedPageHeightRef = useRef<number | null>(null)
   /**
@@ -5735,11 +5749,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = newZoom / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
-      // Hi-res overlays stay visible through the gesture: they live
-      // inside the transformed wrapper, so they scale/translate WITH
-      // the page and remain geometrically aligned — mid-gesture
-      // they're never softer than the base canvas, and the settle
-      // effect repaints them pixel-sharp afterwards.
+      // The PDF hi-res overlay stays visible through the gesture: it
+      // lives inside the transformed wrapper, so it scales/translates
+      // WITH the page and stays geometrically aligned — mid-gesture
+      // it's never softer than the base canvas, and the settle effect
+      // repaints it pixel-sharp afterwards. The viewport stage mirrors
+      // the same transform natively (full vector redraw per frame —
+      // viewport-sized canvas, cheap).
+      applyStageTransform()
 
       // 3) Debounce the React state commit so consumers that depend on
       //    `zoom` (toolbar %, layout effects, render of giant subtrees)
@@ -5839,9 +5856,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = zoomRef.current / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
-      // Overlays pan with the wrapper (they're positioned in page
-      // space) — keep them visible; only the newly exposed viewport
-      // edge shows the soft base until the settle repaint.
+      // The PDF overlay pans with the wrapper (positioned in page
+      // space); the viewport stage mirrors the transform natively.
+      applyStageTransform()
     }
 
     const handleDocMouseUp = (e: MouseEvent) => {
@@ -5965,6 +5982,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     const renderedZ = renderedZoom || 1
     const visualScaleNow = zoom / renderedZ
     pageEl.style.transform = `translate(${viewTxRef.current}px, ${viewTyRef.current}px) scale(${visualScaleNow})`
+    applyStageTransform()
     // Anchor ref is no longer consumed (the wheel handler handles
     // anchoring per-frame), but clear it so old references don't
     // pile up.
@@ -5998,6 +6016,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       viewTxRef.current = tx
       viewTyRef.current = ty
       pageEl.style.transform = `translate(${tx}px, ${ty}px) scale(${visualScaleNow})`
+      applyStageTransform()
       viewInitialisedRef.current = true
     })
     return () => cancelAnimationFrame(raf)
@@ -6289,11 +6308,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (!wrap || !canvas || !container) return
     hiResTaskRef.current?.cancel()
     hiResTaskRef.current = null
-    const wallsWrap = wallsHiResWrapRef.current
-    const hideBoth = () => {
+    const hideOverlay = () => {
       wrap.style.display = 'none'
-      if (wallsWrap) wallsWrap.style.display = 'none'
-      paintWallsOverlayRef.current = null
     }
     // Only hide when the painted content is genuinely invalid: a
     // different page/file than what's on the canvases, or zoom back
@@ -6301,15 +6317,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // they track the wrapper's transform and get repainted in place.
     const key = hiResPaintedKeyRef.current
     if (key.file !== displayedPdfFile || key.page !== currentPage) {
-      hideBoth()
+      hideOverlay()
     }
     if (!displayedPdfFile || isEmptyWorkspace || !aspectRatio) {
-      hideBoth()
+      hideOverlay()
       return
     }
     // Base canvas is rendered AT or ABOVE the live zoom -> already sharp.
     if (zoom <= renderedZoom + 0.01) {
-      hideBoth()
+      hideOverlay()
       return
     }
     const timer = setTimeout(() => {
@@ -6357,47 +6373,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         wrap.style.display = 'block'
       })
 
-      // ── Wall-layer snapshot (same crop, same placement maths) ──
-      // Konva's region export rasterises the live vectors at true
-      // screen resolution; the snapshot sits above the soft stage and
-      // is transparent wherever nothing is drawn, so the sharp PDF
-      // overlay shows through between walls.
-      const paintWalls = () => {
-        const wWrap = wallsHiResWrapRef.current
-        const wCanvas = wallsHiResCanvasRef.current
-        const stage = konvaStageRef.current
-        if (!wWrap || !wCanvas) return
-        if (!stage) {
-          wWrap.style.display = 'none'
-          return
-        }
-        try {
-          const snap = stage.toCanvas({
-            x: cropX / visualScaleNow,
-            y: cropY / visualScaleNow,
-            width: cropW / visualScaleNow,
-            height: cropH / visualScaleNow,
-            pixelRatio: visualScaleNow * dpr,
-          })
-          wCanvas.width = snap.width
-          wCanvas.height = snap.height
-          const wCtx = wCanvas.getContext('2d')
-          if (!wCtx) return
-          wCtx.drawImage(snap, 0, 0)
-          wWrap.style.left = `${cropX / visualScaleNow}px`
-          wWrap.style.top = `${cropY / visualScaleNow}px`
-          wWrap.style.width = `${cropW / visualScaleNow}px`
-          wWrap.style.height = `${cropH / visualScaleNow}px`
-          wWrap.style.display = 'block'
-        } catch {
-          wWrap.style.display = 'none'
-        }
-      }
-      paintWalls()
-      // Pointer-idle repaints reuse this painter (see the mousemove
-      // effect below) so freshly drawn walls sharpen after the cursor
-      // rests, without waiting for a zoom/pan settle.
-      paintWallsOverlayRef.current = paintWalls
     }, 180)
     return () => clearTimeout(timer)
     // viewSettleTick: pan-release signal (transform refs aren't reactive).
@@ -6412,39 +6387,24 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     isEmptyWorkspace,
   ])
 
-  // ── Wall overlay vs live pointer feedback ──
-  // The wall snapshot would otherwise sit ON TOP of hover highlights /
-  // draw previews happening on the live stage beneath it. Any pointer
-  // movement over the workspace hides the snapshot instantly (live
-  // stage shows through, soft but interactive); after a short idle the
-  // painter from the settle effect repaints it — which also picks up
-  // any walls drawn in the meantime.
+
+  // Track the container's CSS size for the viewport stage. The
+  // container stays mounted across 2D/3D toggles, so one observer
+  // covers resizes, sidebar collapses and window changes.
   useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-    let idleTimer: number | null = null
-    const onMove = () => {
-      // Pan drags keep the wall snapshot visible — it tracks the
-      // wrapper's transform and there's no hover feedback to reveal
-      // while the hand is dragging. Hover / draw movement (no pan
-      // press in flight) hides it so the live stage shows through.
-      const panInFlight =
-        isPanningRef.current || panStartRef.current !== null
-      const wWrap = wallsHiResWrapRef.current
-      if (!panInFlight && wWrap && wWrap.style.display !== 'none') {
-        wWrap.style.display = 'none'
-      }
-      if (idleTimer !== null) clearTimeout(idleTimer)
-      idleTimer = window.setTimeout(() => {
-        idleTimer = null
-        paintWallsOverlayRef.current?.()
-      }, 350)
-    }
-    container.addEventListener('mousemove', onMove)
-    return () => {
-      container.removeEventListener('mousemove', onMove)
-      if (idleTimer !== null) clearTimeout(idleTimer)
-    }
+    const el = containerRef.current
+    if (!el) return
+    const update = () =>
+      setContainerSize((prev) => {
+        const w = el.clientWidth
+        const h = el.clientHeight
+        return prev.w === w && prev.h === h ? prev : { w, h }
+      })
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ---------- Zoom (button) ----------
@@ -9564,125 +9524,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               </div>
 
-              {/* Wall drawing layer — at renderedZoom resolution; scales with
-                  parent. On reference PDFs the layer ONLY mounts when the user
-                  has the ruler active, so they can measure things on the
-                  reference (e.g. window sizes on an engineering sheet) while
-                  every other tool stays inert. The walls / openings / piers
-                  passed to the layer are empty in reference mode so nothing
-                  from the primary's geometry overlays the reference. */}
-              {(mode === 'block' || mode === 'brick') &&
-                (!isReferenceView || placingRuler) &&
-                renderedPageHeight !== null &&
-                currentScale && (
-                <WallDrawingLayer
-                  onStageRef={handleStageRef}
-                  // Reference-view passes the frozen EMPTY_WALLS / EMPTY_OPENINGS
-                  // constants instead of a fresh `[]` so the wall layer's memo()
-                  // sees a stable identity (reference views typically stay
-                  // reference views, so memo can short-circuit).
-                  walls={isReferenceView ? (EMPTY_WALLS as unknown as Wall[]) : currentPageWalls}
-                  openings={isReferenceView ? (EMPTY_OPENINGS as unknown as Opening[]) : currentPageOpenings}
-                  wallThicknessByWallId={wallThicknessByWallId}
-                  // Live-preview thickness for the in-progress draw —
-                  // active makeup's body block depth in block mode,
-                  // active brick type's depth in brick mode. Falls
-                  // back to 190 mm if neither resolves.
-                  // Memoised cursor-preview thickness. Brick mode uses
-                  // the active brick type's depth; block mode uses the
-                  // active makeup's max effective wall thickness. Lifted
-                  // out of the JSX (was an IIFE) so it doesn't recompute
-                  // — and the prop ref stays stable across renders.
-                  activeWallThicknessMm={activeWallThicknessMm}
-                  // Pier footprint for on-canvas pier tiles — width and
-                  // depth resolved independently so non-cubic blocks
-                  // (e.g. 20.01 = 390 × 190) render as their real
-                  // long-and-thin shape, not a square. Both lifted to
-                  // useMemo so the layer's memo() short-circuits.
-                  pierFootprintMm={pierFootprintMm}
-                  pierFootprintDepthMm={pierFootprintDepthMm}
-                  visualWidth={renderedPageWidth}
-                  visualHeight={renderedPageHeight}
-                  pxPerMmAtCurrentZoom={currentScale * renderedZoom}
-                  // True during the 300 ms debounce after a wheel event,
-                  // when the canvas is CSS-scaling ahead of the rasterised
-                  // zoom. The wall layer uses this to suppress hover state
-                  // updates that would otherwise stutter the gesture.
-                  //
-                  // IMPORTANT: compare against the QUANTISED target.
-                  // renderedZoom now snaps to discrete RENDER_ZOOM_STOPS,
-                  // so a raw `zoom !== renderedZoom` comparison would stay
-                  // true permanently for any zoom not exactly at a stop —
-                  // which would disable hit-testing on the stage and
-                  // silently break wall selection / delete. The quantised
-                  // form returns false the moment the re-raster debounce
-                  // completes, regardless of where between stops the user
-                  // settled.
-                  isZooming={quantiseRenderZoom(Math.min(zoom, MAX_RENDERED_ZOOM)) !== renderedZoom}
-                  drawingMode={drawingMode}
-                  drawingCurveMode={drawingCurveMode}
-                  placingOpening={placingOpening}
-                  placingControlJoint={placingControlJoint}
-                  placingTiedPier={placingTiedPier}
-                  placingFreestandingPier={placingFreestandingPier}
-                  placingRuler={placingRuler}
-                  rulerAnchorMm={rulerAnchorMm}
-                  // Stable empty-array fallback (EMPTY_MEASUREMENTS) so
-                  // pages without measurements don't bust memo() with a
-                  // fresh `[]` each render.
-                  measurements={currentPageMeasurements}
-                  onRulerClick={handleRulerClick}
-                  selectedMeasurementId={selectedMeasurementId}
-                  onMeasurementSelect={handleMeasurementSelect}
-                  piers={currentPagePiers}
-                  selectedWallId={selectedWallId}
-                  selectedOpeningId={selectedOpeningId}
-                  selectedPierId={selectedPierId}
-                  selectedWallIds={selectedWallIds}
-                  selectedOpeningIds={selectedOpeningIds}
-                  selectedPierIds={selectedPierIds}
-                  wallColorByWallId={wallColorByWallId}
-                  pierColorByPierId={pierColorByPierId}
-                  pierSizeByPierId={pierSizeByPierId}
-                  activeWallColor={activeWallColor}
-                  activeMakeupIdForHighlight={activeMakeupIdForHighlight}
-                  onWallToggleSelect={toggleSelectedWallId}
-                  onOpeningToggleSelect={toggleSelectedOpeningId}
-                  onPierToggleSelect={toggleSelectedPierId}
-                  onWallAdded={handleWallAdded}
-                  onCurvedWallAdded={handleCurvedWallAdded}
-                  onWallSelect={handleWallSelect}
-                  onWallEndpointMoved={handleWallEndpointMoved}
-                  onOpeningPlaced={handleOpeningPlaced}
-                  onOpeningSelect={handleOpeningSelect}
-                  onControlJointPlaced={handleControlJointPlaced}
-                  onTiedPierPlaced={handleTiedPierPlaced}
-                  onFreestandingPierPlaced={handleFreestandingPierPlaced}
-                  onPierSelect={handlePierSelect}
-                  onCancelDraw={handleCancelDraw}
-                />
-              )}
 
-              {/* Wall-layer hi-res snapshot — true-resolution Konva
-                  region export, layered above the (CSS-stretched) live
-                  stage when zoom exceeds the raster cap. Transparent
-                  where nothing is drawn; pointer-transparent so the
-                  live stage beneath keeps all interaction. Hidden on
-                  any pointer movement / gesture, repainted on idle by
-                  the settle effect's painter. */}
-              <div
-                ref={wallsHiResWrapRef}
-                style={{
-                  position: 'absolute',
-                  display: 'none',
-                  pointerEvents: 'none',
-                }}
-              >
-                <canvas
-                  ref={wallsHiResCanvasRef}
-                  style={{ display: 'block', width: '100%', height: '100%' }}
-                />
-              </div>
 
               {/* Calibration overlay — rendered AFTER WallDrawingLayer so it
                   sits on top of the Konva canvas. The Konva Stage has
@@ -9771,6 +9613,119 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </svg>
             </div>
           </div>
+        </div>
+
+        {/* Viewport stage — the Konva wall layer now covers the
+            CONTAINER rather than living inside the CSS-transformed
+            page wrapper. It carries a native Konva scale + position
+            (driven imperatively by the zoom / pan handlers and the
+            settle effects, mirroring the wrapper transform), so wall
+            vectors, snap markers and cursor chrome rasterise at TRUE
+            screen resolution at any zoom — no more CSS-stretch blur
+            while drawing. Transparent outside drawn shapes, so the
+            page (and its hi-res overlay) shows through. */}
+        <div className="absolute inset-0" style={{ lineHeight: 0 }}>
+              {/* Wall drawing layer — at renderedZoom resolution; scales with
+                  parent. On reference PDFs the layer ONLY mounts when the user
+                  has the ruler active, so they can measure things on the
+                  reference (e.g. window sizes on an engineering sheet) while
+                  every other tool stays inert. The walls / openings / piers
+                  passed to the layer are empty in reference mode so nothing
+                  from the primary's geometry overlays the reference. */}
+              {(mode === 'block' || mode === 'brick') &&
+                (!isReferenceView || placingRuler) &&
+                renderedPageHeight !== null &&
+                containerSize.w > 0 &&
+                currentScale && (
+                <WallDrawingLayer
+                  onStageRef={handleStageRef}
+                  stageWidth={containerSize.w}
+                  stageHeight={containerSize.h}
+                  // Reference-view passes the frozen EMPTY_WALLS / EMPTY_OPENINGS
+                  // constants instead of a fresh `[]` so the wall layer's memo()
+                  // sees a stable identity (reference views typically stay
+                  // reference views, so memo can short-circuit).
+                  walls={isReferenceView ? (EMPTY_WALLS as unknown as Wall[]) : currentPageWalls}
+                  openings={isReferenceView ? (EMPTY_OPENINGS as unknown as Opening[]) : currentPageOpenings}
+                  wallThicknessByWallId={wallThicknessByWallId}
+                  // Live-preview thickness for the in-progress draw —
+                  // active makeup's body block depth in block mode,
+                  // active brick type's depth in brick mode. Falls
+                  // back to 190 mm if neither resolves.
+                  // Memoised cursor-preview thickness. Brick mode uses
+                  // the active brick type's depth; block mode uses the
+                  // active makeup's max effective wall thickness. Lifted
+                  // out of the JSX (was an IIFE) so it doesn't recompute
+                  // — and the prop ref stays stable across renders.
+                  activeWallThicknessMm={activeWallThicknessMm}
+                  // Pier footprint for on-canvas pier tiles — width and
+                  // depth resolved independently so non-cubic blocks
+                  // (e.g. 20.01 = 390 × 190) render as their real
+                  // long-and-thin shape, not a square. Both lifted to
+                  // useMemo so the layer's memo() short-circuits.
+                  pierFootprintMm={pierFootprintMm}
+                  pierFootprintDepthMm={pierFootprintDepthMm}
+                  visualWidth={renderedPageWidth}
+                  visualHeight={renderedPageHeight}
+                  pxPerMmAtCurrentZoom={currentScale * renderedZoom}
+                  // True during the 300 ms debounce after a wheel event,
+                  // when the canvas is CSS-scaling ahead of the rasterised
+                  // zoom. The wall layer uses this to suppress hover state
+                  // updates that would otherwise stutter the gesture.
+                  //
+                  // IMPORTANT: compare against the QUANTISED target.
+                  // renderedZoom now snaps to discrete RENDER_ZOOM_STOPS,
+                  // so a raw `zoom !== renderedZoom` comparison would stay
+                  // true permanently for any zoom not exactly at a stop —
+                  // which would disable hit-testing on the stage and
+                  // silently break wall selection / delete. The quantised
+                  // form returns false the moment the re-raster debounce
+                  // completes, regardless of where between stops the user
+                  // settled.
+                  isZooming={quantiseRenderZoom(Math.min(zoom, MAX_RENDERED_ZOOM)) !== renderedZoom}
+                  drawingMode={drawingMode}
+                  drawingCurveMode={drawingCurveMode}
+                  placingOpening={placingOpening}
+                  placingControlJoint={placingControlJoint}
+                  placingTiedPier={placingTiedPier}
+                  placingFreestandingPier={placingFreestandingPier}
+                  placingRuler={placingRuler}
+                  rulerAnchorMm={rulerAnchorMm}
+                  // Stable empty-array fallback (EMPTY_MEASUREMENTS) so
+                  // pages without measurements don't bust memo() with a
+                  // fresh `[]` each render.
+                  measurements={currentPageMeasurements}
+                  onRulerClick={handleRulerClick}
+                  selectedMeasurementId={selectedMeasurementId}
+                  onMeasurementSelect={handleMeasurementSelect}
+                  piers={currentPagePiers}
+                  selectedWallId={selectedWallId}
+                  selectedOpeningId={selectedOpeningId}
+                  selectedPierId={selectedPierId}
+                  selectedWallIds={selectedWallIds}
+                  selectedOpeningIds={selectedOpeningIds}
+                  selectedPierIds={selectedPierIds}
+                  wallColorByWallId={wallColorByWallId}
+                  pierColorByPierId={pierColorByPierId}
+                  pierSizeByPierId={pierSizeByPierId}
+                  activeWallColor={activeWallColor}
+                  activeMakeupIdForHighlight={activeMakeupIdForHighlight}
+                  onWallToggleSelect={toggleSelectedWallId}
+                  onOpeningToggleSelect={toggleSelectedOpeningId}
+                  onPierToggleSelect={toggleSelectedPierId}
+                  onWallAdded={handleWallAdded}
+                  onCurvedWallAdded={handleCurvedWallAdded}
+                  onWallSelect={handleWallSelect}
+                  onWallEndpointMoved={handleWallEndpointMoved}
+                  onOpeningPlaced={handleOpeningPlaced}
+                  onOpeningSelect={handleOpeningSelect}
+                  onControlJointPlaced={handleControlJointPlaced}
+                  onTiedPierPlaced={handleTiedPierPlaced}
+                  onFreestandingPierPlaced={handleFreestandingPierPlaced}
+                  onPierSelect={handlePierSelect}
+                  onCancelDraw={handleCancelDraw}
+                />
+              )}
         </div>
       </div>
 

@@ -15,8 +15,8 @@ import {
   cornerOwnershipFor,
   planWallLayout,
   tallyFromLayout,
-  type BlockTally,
 } from '../blockCalc'
+import type { BlockTally } from '../../types/walls'
 import { getEffectiveWallThicknessMm } from '../makeups'
 import {
   segmentsForStraightWall,

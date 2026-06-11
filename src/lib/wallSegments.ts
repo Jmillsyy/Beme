@@ -620,6 +620,11 @@ export function segmentsForStraightWall(
     }
   }
 
+  // emitBlocksInSpan predates the cell-grid architecture and has no
+  // call sites left; referenced here so the moved file matches the
+  // original's lint posture until it's deleted for good.
+  void emitBlocksInSpan
+
   /** Pre-compute lintel footprints per opening. Each footprint is the
    *  3D-space rectangle the lintel block(s) occupy: x = opening span,
    *  y = (op.head → op.head + lintel.heightMm). The lintel block's

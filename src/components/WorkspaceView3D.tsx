@@ -54,19 +54,13 @@ import type {
   Opening,
   WallMakeup,
   BrickMakeup,
-  CourseBand,
   Pier,
   PierMakeup,
 } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { Block, BlockCode } from '../types/blocks'
 import { arcFromThreePoints, isCurvedWall } from '../lib/curveGeom'
-import {
-  convertMakeupToBands,
-  getMakeupHeightMm,
-  moduleHeightForBand,
-  resolveCourseBlocks,
-} from '../lib/makeups'
+import { convertMakeupToBands, getMakeupHeightMm } from '../lib/makeups'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { bandColor, PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
 import { selectBlockLintel } from '../lib/lintels'
@@ -87,13 +81,9 @@ import {
 import {
   FALLBACK_HEIGHT_MM,
   DEFAULT_WALL_COLOR,
-  FALLBACK_CORNER_WIDTH_MM,
-  FALLBACK_HALF_WIDTH_MM,
-  FALLBACK_BODY_WIDTH_MM,
   MORTAR_GAP_M,
   MORTAR_COLOR,
   MORTAR_THICKNESS_FRAC,
-  widthOf,
   resolveWallCourses,
   isHighlightedBlock,
   segmentsForStraightWall,
