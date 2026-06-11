@@ -1476,8 +1476,19 @@ export function segmentsForStraightWall(
         // pickHeightMakeupBlockIn's preference: exact match first,
         // closest-under otherwise.
         const targetFaceMm = makeupGapMm - MORTAR_MM
+        // Depth-scoped to the wall's series: only height-makeup blocks
+        // matching this wall's depth qualify (same rule as
+        // pickHeightMakeupBlockIn). A 300-series wall without a
+        // matching block gets no gap-fill course rather than a
+        // 200-series block jammed above its lintel.
+        const GAP_FILL_DEPTH_TOLERANCE_MM = 5
         const makeupCandidates = Object.values(library)
-          .filter((b) => b.roles.includes('height-makeup'))
+          .filter(
+            (b) =>
+              b.roles.includes('height-makeup') &&
+              Math.abs(b.dimensions.depthMm - thicknessMm) <=
+                GAP_FILL_DEPTH_TOLERANCE_MM
+          )
           .sort((a, b) => b.dimensions.heightMm - a.dimensions.heightMm)
         const makeup =
           makeupCandidates.find(

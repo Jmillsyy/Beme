@@ -873,7 +873,13 @@ export function pickHeightMakeupBlockIn(
   const pickFrom = (candidates: Block[]): Block | undefined =>
     candidates.find((b) => b.dimensions.heightMm === targetHeightMm) ??
     candidates.find((b) => b.dimensions.heightMm <= targetHeightMm)
-  return pickFrom(depthScoped) ?? pickFrom(all)
+  // STRICT depth scoping: when the caller supplies the wall's body
+  // depth, only a height-makeup block of that same series/depth may be
+  // used. No cross-series fallback — a 300-series wall with no
+  // 300-series height-makeup block in the library gets NO height-makeup
+  // course (callers handle undefined by laying full courses) rather
+  // than a 200-series block stuffed into a 290mm-deep wall.
+  return pickFrom(depthScoped)
 }
 export function pickHeightMakeupBlock(
   targetHeightMm: number,
