@@ -1234,6 +1234,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   /** Brick-mode opening kind — drives the auto-derived sill (door=0,
    *  window=wallH-300-openingH) and sill-trim suppression in 3D. */
   const [brickOpeningKind, setBrickOpeningKind] = useState<'window' | 'door'>('window')
+  /** Brick modal: "No head" — the opening runs to the top of the wall
+   *  (no head course, brickwork above removed from the area). */
+  const [brickOpeningNoHead, setBrickOpeningNoHead] = useState(false)
   /** Block-mode per-opening lintel override. Empty string = auto-pick
    *  (smallest covering lintel-tagged block). Any other value is a
    *  BlockCode that must reference a lintel-tagged entry in the library
@@ -2841,6 +2844,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         if (mode === 'brick') {
           setBrickOpeningHeightMm(opening.heightMm)
           setBrickOpeningKind(opening.kind ?? 'window')
+          setBrickOpeningNoHead(opening.noHead ?? false)
         } else {
           // Block modal asks for HEAD, not opening height. Derive
           // head from the persisted (sill, openingH) + the wall's
@@ -4571,8 +4575,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 // user has now switched modes — we keep block
                 // openings clean of brick-only fields).
                 ...(mode === 'brick'
-                  ? { kind: kindForSave }
-                  : { kind: undefined }),
+                  ? { kind: kindForSave, noHead: brickOpeningNoHead || undefined }
+                  : { kind: undefined, noHead: undefined }),
                 // Lintel override: write when set, explicitly clear
                 // when the user has flipped back to Auto in the
                 // modal. Block mode only.
@@ -4597,6 +4601,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         heightMm: openingHeightForSave,
         sillHeightMm: sillForSave,
         ...(kindForSave ? { kind: kindForSave } : {}),
+        ...(mode === 'brick' && brickOpeningNoHead ? { noHead: true } : {}),
         ...(lintelOverrideForSave
           ? { lintelBlockCodeOverride: lintelOverrideForSave }
           : {}),
@@ -8834,6 +8839,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       ? 'Door: sits on the floor (sill = 0). No sill trim in 3D.'
                       : 'Window: top of the opening sits 300mm below the wall top. Sill is computed from the wall height.'}
                   </p>
+                  <label className="flex items-center gap-2 mt-2 text-xs text-ink-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={brickOpeningNoHead}
+                      onChange={(e) => setBrickOpeningNoHead(e.target.checked)}
+                      className="accent-beme-500"
+                    />
+                    No head — opening runs to the top of the wall
+                  </label>
+                  {brickOpeningNoHead && (
+                    <p className="text-[10px] text-ink-500 mt-1 leading-snug">
+                      No head course is counted, and the brickwork above the
+                      opening is removed from the area.
+                    </p>
+                  )}
                 </section>
 
                 <section>

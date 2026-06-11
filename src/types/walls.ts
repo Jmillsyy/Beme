@@ -518,6 +518,15 @@ export interface Opening {
    */
   kind?: 'window' | 'door'
   /**
+   * Brick mode: when true the opening has NO head — the void runs from
+   * the sill to the TOP of the wall. The brickwork above the typed
+   * opening height is removed from the area, and no head course is
+   * tallied for this opening. The stored heightMm keeps the user's
+   * typed value (so editing stays reversible); consumers compute the
+   * effective height as (wallHeight - sill).
+   */
+  noHead?: boolean
+  /**
    * Head course override — the block code laid in the row of blocks
    * that borders the TOP of the opening. When undefined, the head
    * course is whatever block the wall naturally puts there (= the

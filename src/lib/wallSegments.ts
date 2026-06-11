@@ -34,15 +34,34 @@ export function adjustOpeningForRender(
   o: Opening,
   wallHeightMm: number
 ): Opening {
+  let adjusted: Opening
   if (o.kind === 'door') {
-    return o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
+    adjusted = o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
+  } else if (o.sillHeightMm === 0 || o.noHead) {
+    // sill = 0 respected as floor-to-head; no-head openings keep their
+    // saved sill (re-anchoring would shift it, since their effective
+    // height differs from the typed height).
+    adjusted = o
+  } else {
+    const targetSill = Math.max(
+      0,
+      wallHeightMm - RENDER_HEAD_GAP_FROM_TOP_MM - o.heightMm
+    )
+    adjusted =
+      targetSill === o.sillHeightMm ? o : { ...o, sillHeightMm: targetSill }
   }
-  if (o.sillHeightMm === 0) return o
-  const targetSill = Math.max(
-    0,
-    wallHeightMm - RENDER_HEAD_GAP_FROM_TOP_MM - o.heightMm
-  )
-  return targetSill === o.sillHeightMm ? o : { ...o, sillHeightMm: targetSill }
+  // No-head: the void runs from the sill to the TOP of the wall — the
+  // brickwork (or blockwork) above the typed opening height is gone.
+  if (o.noHead) {
+    const effH = Math.max(
+      adjusted.heightMm,
+      wallHeightMm - adjusted.sillHeightMm
+    )
+    if (effH !== adjusted.heightMm) {
+      adjusted = { ...adjusted, heightMm: effH }
+    }
+  }
+  return adjusted
 }
 
 
