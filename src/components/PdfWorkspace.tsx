@@ -666,10 +666,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // new "saved" reference. Without this the dirty-tracker sees the
     // area + makeup stamping as a user edit and the unsaved-changes
     // prompt fires the moment the user tries to leave a fresh
-    // workspace they haven't actually touched. (The dirty effect
-    // reseeds when this ref is null on its next pass.)
+    // workspace they haven't actually touched. Two rAFs put the
+    // reseed AFTER the next two paint frames, by which time every
+    // downstream migration (sweeps, wedge fix, palette backfill) has
+    // also queued + flushed its own setState. Same shape as the
+    // project-load handler's post-load reseed.
     savedSnapshotRef.current = null
     setHasUnsavedChanges(false)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        savedSnapshotRef.current = null
+        setHasUnsavedChanges(false)
+      })
+    })
   }, [areas.length, isProjectLoading])
   /**
    * Per-page calibration + intrinsic dimensions. Has to be declared up here
@@ -2004,7 +2013,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         console.error('Failed to load project', err)
       })
       .finally(() => {
-        if (!cancelled) setIsProjectLoading(false)
+        if (!cancelled) {
+          setIsProjectLoading(false)
+          // Post-load migrations (orphan-area sweeps, wedge curve
+          // normalisation, AREA_PALETTE backfill, etc.) fire on the
+          // first render with loaded state and queue their own setState
+          // calls. Without a follow-up reseed the dirty effect captures
+          // pre-migration state as the baseline, then flips dirty=true
+          // when the migration's setState flushes — and the user gets
+          // a "Save before leaving?" prompt on a project they haven't
+          // touched. Two rAFs put the reseed AFTER the next two paint
+          // frames, by which time every migration cascade has settled.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (cancelled) return
+              savedSnapshotRef.current = null
+              setHasUnsavedChanges(false)
+            })
+          })
+        }
       })
     return () => {
       cancelled = true
