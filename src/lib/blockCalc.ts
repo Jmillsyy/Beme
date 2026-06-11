@@ -1060,6 +1060,22 @@ export interface CourseSpec {
   bodyBlock: BlockCode
   /** Tile paired with each body block (only set for base course with cleanouts). */
   pairedTile?: BlockCode
+  /**
+   * Set on 'height-71' / 'height-140' courses when the wall type's
+   * `matchExactHeight` is off. Tells the layout + tally to lay this
+   * course like a normal body course (with the makeup's CORNER /
+   * HALF / BODY blocks at their standard positions, cut to the
+   * course's height) instead of the default height-makeup behaviour
+   * of "single block code cut to width across the whole course".
+   *
+   * Net effect: at off, the height-71 / height-140 slot becomes a
+   * normal stretcher row visually + in the tally, just shorter than
+   * the standard 200mm-modular courses. Tally counts the standard
+   * body / half / corner blocks (you order whole blocks and chop
+   * them to height), not the special 20.140 / 20.71 height-makeup
+   * blocks.
+   */
+  useStandardLayout?: boolean
 }
 
 /**
@@ -1218,9 +1234,16 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
         courses.push({ type: 'height-140', bodyBlock: block140.code })
       }
     } else {
-      // Cut body — same course type (height-140 = 150mm modular slot),
-      // body block code so the layout / tally treat it as a cut body.
-      courses.push({ type: 'height-140', bodyBlock: makeup.bodyBlockCode })
+      // useStandardLayout: this slot lays as a normal body course
+      // (corner / half / body at standard positions, all cut to the
+      // course's 140mm height) instead of the single-block-code
+      // height-makeup default. bodyBlock kept as the makeup body
+      // for downstream code that reads it as a default.
+      courses.push({
+        type: 'height-140',
+        bodyBlock: makeup.bodyBlockCode,
+        useStandardLayout: true,
+      })
     }
   }
   if (stack.has71) {
@@ -1234,7 +1257,11 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
         bodyBlock: healCode(b.heightMakeup71BlockCode, 'height-makeup'),
       })
     } else {
-      courses.push({ type: 'height-71', bodyBlock: makeup.bodyBlockCode })
+      courses.push({
+        type: 'height-71',
+        bodyBlock: makeup.bodyBlockCode,
+        useStandardLayout: true,
+      })
     }
   }
 
@@ -1509,12 +1536,20 @@ export function calculateWallTally(
     // the height-makeup block is cut to the size of any end block (20.03) and any fill
     // block, so the course is just a row of height-makeup blocks butted end-to-end. We
     // supply enough of the height-makeup block to cover body + fill + both ends.
-    if (course.type === 'height-71' || course.type === 'height-140') {
+    if (
+      (course.type === 'height-71' || course.type === 'height-140') &&
+      !course.useStandardLayout
+    ) {
       // Height-makeup blocks are cut to length to fill the WHOLE course
       // including any lead-in zone — the lead-in is masonry sitting at the
       // 290 mm-deep footprint, so the height-makeup block for that course
       // extends out over it. Count one extra height-makeup unit per lead-in
       // position to keep the cut-to-length yield right.
+      //
+      // Skipped when course.useStandardLayout is set (matchExactHeight
+      // off): the course falls through to the standard body-course
+      // tally below so it counts the makeup's corner / half / body
+      // blocks individually at their positions.
       const totalBlocks =
         fit.bodyCount + fit.fractions.length + endCount + startLeadInCount + endLeadInCount
       addToTally(tally, course.bodyBlock, totalBlocks)
@@ -2110,7 +2145,10 @@ export function planWallLayout(
     // the wall length, evenly distributing them. Each is the
     // height-makeup block; the role tag stays 'body' since the
     // bricklayer sees one continuous row.
-    if (courseSpec.type === 'height-71' || courseSpec.type === 'height-140') {
+    if (
+      (courseSpec.type === 'height-71' || courseSpec.type === 'height-140') &&
+      !courseSpec.useStandardLayout
+    ) {
       // Height-makeup courses follow the same corner / end / bond
       // protocol as standard body courses. Every block in the course
       // uses the HEIGHT-MAKEUP block code — at corner positions it's
@@ -2119,6 +2157,12 @@ export function planWallLayout(
       // 3D render shows the cut-down height-makeup colour everywhere,
       // reflecting that a real mason cuts the height-makeup block to
       // each position's required width.
+      //
+      // Skipped when courseSpec.useStandardLayout is set
+      // (matchExactHeight off): falls through to the standard body
+      // lay-down which uses the makeup's CORNER / HALF / BODY codes
+      // at their standard positions, with the 3D renderer cutting
+      // each block to this course's height (140 / 90).
       const hmCode = courseSpec.bodyBlock
       const hmBlockDef = BLOCK_LIBRARY[hmCode]
       const hmWidth = hmBlockDef?.dimensions.widthMm ?? 390
@@ -3278,15 +3322,19 @@ export function calculateCornerAdjustment(
     for (let ci = 0; ci < courses.length; ci++) {
       const courseNumber = ci + 1
       const course = courses[ci]
-      if (course.type === 'height-71' || course.type === 'height-140') {
+      if (
+        (course.type === 'height-71' || course.type === 'height-140') &&
+        !course.useStandardLayout
+      ) {
         // Height-makeup courses: the block itself fills the corner column,
         // so dedup against the course's actual blockCode.
         addToTally(adjustment, course.bodyBlock, n - 1)
       } else {
-        // Standard courses: dedup against the corner block resolved for
-        // this row (range overlay-aware). Healed against the live
-        // library so the subtraction targets the same code the wall
-        // tally added.
+        // Standard courses (and useStandardLayout height-makeup rows
+        // which lay out like standard body courses): dedup against the
+        // corner block resolved for this row (range overlay-aware).
+        // Healed against the live library so the subtraction targets
+        // the same code the wall tally added.
         const resolved = resolveCourseBlocks(makeup, courseNumber)
         addToTally(adjustment, healCode(resolved.cornerBlockCode, 'corner'), n - 1)
       }
