@@ -2885,6 +2885,13 @@ function WallDrawingLayerInner({
             4,
             wallThicknessMm * pxPerMmAtCurrentZoom
           )
+          // Kind-based colours: windows keep the original amber; doors
+          // render teal so the two read apart at a glance on the plan
+          // (brick mode tags openings with `kind`; block openings
+          // without one stay amber — unchanged). Selection blue wins.
+          const isDoor = opening.kind === 'door'
+          const openingAccent = isDoor ? '#0D9488' : '#D97706'
+          const openingFill = isDoor ? '#CCFBF1' : '#FEF3C7'
 
           return (
             <Group
@@ -2923,7 +2930,7 @@ function WallDrawingLayerInner({
                   at any zoom). */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
-                stroke={isSelected ? '#1e40af' : '#FEF3C7'}
+                stroke={isSelected ? '#1e40af' : openingFill}
                 strokeWidth={openingStrokePx}
                 hitStrokeWidth={Math.max(openingStrokePx + 6, 14)}
               />
@@ -2932,7 +2939,7 @@ function WallDrawingLayerInner({
                   band, not a fixed 8px strip. */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
-                stroke={isSelected ? '#1e40af' : '#D97706'}
+                stroke={isSelected ? '#1e40af' : openingAccent}
                 strokeWidth={openingStrokePx}
                 dash={[8, 4]}
                 listening={false}
@@ -2964,14 +2971,14 @@ function WallDrawingLayerInner({
                   <>
                     <Line
                       points={[fStartA.x, fStartA.y, fEndA.x, fEndA.y]}
-                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      stroke={isSelected ? '#1e40af' : openingAccent}
                       strokeWidth={2}
                       dash={[8, 4]}
                       listening={false}
                     />
                     <Line
                       points={[fStartB.x, fStartB.y, fEndB.x, fEndB.y]}
-                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      stroke={isSelected ? '#1e40af' : openingAccent}
                       strokeWidth={2}
                       dash={[8, 4]}
                       listening={false}
@@ -2979,8 +2986,8 @@ function WallDrawingLayerInner({
                   </>
                 )
               })()}
-              <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
-              <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
+              <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : openingAccent} stroke="white" strokeWidth={1} listening={false} />
+              <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : openingAccent} stroke="white" strokeWidth={1} listening={false} />
               <MeasurementChip
                 x={midX}
                 y={midY + openingStrokePx / 2 + 6}
