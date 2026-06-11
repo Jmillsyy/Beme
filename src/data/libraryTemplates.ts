@@ -413,162 +413,160 @@ export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
-// ─── NZ — Concrete masonry (NZS 4210 / series convention) ──────────────────
+// ─── NZ — Concrete masonry (Firth hollow masonry catalogue) ────────────────
 // New Zealand masonry shares the 390 × 190 face and 10mm joint with AU
-// (400 × 200 modular) and names blocks by a width-series convention:
-// 10 series = 90mm, 15 series = 140mm, 20 series = 190mm wide. The 20
-// series is seeded as the primary structural set with a 15-series body
-// alongside. Seed codes follow the series convention — rename them to
-// your supplier's exact catalogue codes from the library page.
+// (400 × 200 modular). Codes and names follow Firth's hollow-masonry
+// catalogue (10 / 15 / 20 / 25 series; H-prefix = half-high): 20.01
+// whole, 20.02 half, 20.19 three-quarter, H20.04 half-high, 20.05 open
+// end, 20.12 lintel, 20.16 open-end bond beam, 20.30 column, 05.17
+// capping. Verified against the Firth Hollow Masonry brochure (2023).
+// Regional availability varies (some units are North Island only).
 
 export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   '20.01': {
     code: '20.01',
-    name: '20 Series Whole Block',
+    name: '20.01 Standard Whole',
     description:
-      'Standard 390 × 190 × 190mm whole block — the main body unit, and ' +
-      'the corner / end block in stretcher bond. Also doubles as the pier ' +
-      'and base-course block (NZ practice grout-fills the base course ' +
-      'rather than using a dedicated cleanout unit).',
+      'Firth 20-series standard whole block, 390 × 190 × 190mm — main ' +
+      'body unit and the corner / end block in stretcher bond.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
-    roles: ['body', 'corner', 'end-termination', 'pier', 'base-course'],
+    roles: ['body', 'corner', 'end-termination'],
   },
   '20.02': {
     code: '20.02',
-    name: '20 Series Three-Quarter',
+    name: '20.02 Half',
     description:
-      'Three-quarter length (290mm face) closure block for non-modular ' +
+      'Half block, 190 × 190 × 190mm — alternates with the whole block ' +
+      "at free wall ends on even courses for stretcher bond's offset.",
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '20.19': {
+    code: '20.19',
+    name: '20.19 Three Quarter',
+    description:
+      'Three-quarter block, 290 × 190 × 190mm — closure for non-modular ' +
       'wall lengths.',
     dimensions: { widthMm: 290, heightMm: 190, depthMm: 190 },
     roles: ['fraction'],
     fraction: 0.75,
   },
-  '20.03': {
-    code: '20.03',
-    name: '20 Series Half Block',
+  'H20.04': {
+    code: 'H20.04',
+    name: 'H20.04 Half High',
     description:
-      'Half-length (190mm face) block. Alternates with the whole block at ' +
-      "free wall ends on even courses to hold stretcher bond's half-block " +
-      'offset.',
-    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
-    roles: ['end-termination', 'fraction'],
-    fraction: 0.5,
-  },
-  '20.04': {
-    code: '20.04',
-    name: '20 Series Half-High',
-    description:
-      'Half-height (90mm face) block — the height-makeup unit for wall ' +
-      'heights that land off the 200mm course module.',
+      'Plain-end half-high, 390 × 90 × 190mm — the height-makeup unit ' +
+      'for wall heights off the 200mm course module.',
     dimensions: { widthMm: 390, heightMm: 90, depthMm: 190 },
     roles: ['height-makeup'],
   },
-  '20.16': {
-    code: '20.16',
-    name: '20 Series Lintel / Bond Beam',
+  '20.05': {
+    code: '20.05',
+    name: '20.05 Open End',
     description:
-      'U-shaped lintel & bond-beam block — top course of reinforced walls ' +
-      'and single-course lintels over openings (head heights to ~400mm).',
+      'Open-end unit — grouted base / cleanout courses where the grout ' +
+      'keys through to the footing.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
-    roles: ['top-course', 'lintel'],
+    roles: ['base-course'],
+  },
+  '20.12': {
+    code: '20.12',
+    name: '20.12 Lintel & Half End-Closer',
+    description:
+      'Lintel / half end-closer unit, 190 × 190 × 190mm — laid across ' +
+      'opening heads (head heights to ~400mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
+    roles: ['lintel'],
     lintelMinHeadHeightMm: 0,
     lintelMaxHeadHeightMm: 400,
   },
-  '20.16D': {
-    code: '20.16D',
-    name: '20 Series Deep Lintel',
+  '20.16': {
+    code: '20.16',
+    name: '20.16 Open End Bond Beam',
     description:
-      'Double-height (390mm) lintel arrangement for wide / heavy openings ' +
-      '— covers head heights of 400mm and above.',
-    dimensions: { widthMm: 390, heightMm: 390, depthMm: 190 },
-    roles: ['lintel'],
+      'Open-end bond beam (depressed web), 390 × 190 × 190mm — the ' +
+      'reinforced top course, intermediate bond beams, and stacked ' +
+      'bond-beam lintels over wide openings (head heights 400mm+).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['top-course', 'lintel'],
     lintelMinHeadHeightMm: 400,
   },
-  '15.01': {
-    code: '15.01',
-    name: '15 Series Whole Block',
+  '20.30': {
+    code: '20.30',
+    name: '20.30 Standard Column',
     description:
-      '140mm-wide whole block (390 × 190 × 140mm) for partition and ' +
+      'Standard column block, 390 × 190 × 190mm — tied and freestanding ' +
+      'piers.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['pier'],
+  },
+  '05.17': {
+    code: '05.17',
+    name: '05.17 Capping',
+    description:
+      'Capping tile, 390 × 40 × 190mm — closes the cores across the top ' +
+      'of a finished wall.',
+    dimensions: { widthMm: 390, heightMm: 40, depthMm: 190 },
+    roles: ['cap'],
+  },
+  '15.04': {
+    code: '15.04',
+    name: '15.04 Plain End Standard',
+    description:
+      '15-series whole block, 390 × 190 × 140mm — partition and ' +
       'veneer-backing walls.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
     roles: ['body', 'corner', 'end-termination'],
   },
-  '15.03': {
-    code: '15.03',
-    name: '15 Series Half Block',
-    description: 'Half-length closure for the 15 series (190 × 190 × 140mm).',
-    dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
-    roles: ['end-termination', 'fraction'],
-    fraction: 0.5,
-  },
-  '20.01CO': {
-    code: '20.01CO',
-    name: '20 Series Cleanout',
+  'H15.04': {
+    code: 'H15.04',
+    name: 'H15.04 Half High',
     description:
-      'Open-bottom cleanout unit for the grouted base course — lets the ' +
-      'inspector verify grout at the footing before fill.',
-    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
-    roles: ['base-course'],
-  },
-  '15.04': {
-    code: '15.04',
-    name: '15 Series Half-High',
-    description:
-      'Half-height (90mm face) unit for the 140mm series — height makeup ' +
-      'on 15-series walls.',
+      '15-series plain-end half-high, 390 × 90 × 140mm — height makeup ' +
+      'on 140mm walls.',
     dimensions: { widthMm: 390, heightMm: 90, depthMm: 140 },
     roles: ['height-makeup'],
   },
   '10.01': {
     code: '10.01',
-    name: '10 Series Whole Block',
-    description:
-      '90mm-wide partition / veneer block (390 × 190 × 90mm).',
+    name: '10.01 Standard Whole',
+    description: '10-series whole block, 390 × 190 × 90mm.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
     roles: ['body'],
   },
-  '10.03': {
-    code: '10.03',
-    name: '10 Series Half Block',
-    description: 'Half-length closure for the 10 series (190 × 190 × 90mm).',
+  '10.02': {
+    code: '10.02',
+    name: '10.02 Half',
+    description: '10-series half block, 190 × 190 × 90mm.',
     dimensions: { widthMm: 190, heightMm: 190, depthMm: 90 },
     roles: ['end-termination', 'fraction'],
     fraction: 0.5,
   },
-  '25.01': {
-    code: '25.01',
-    name: '25 Series Whole Block',
+  '10.03': {
+    code: '10.03',
+    name: '10.03 Corner',
+    description: '10-series corner block, 390 × 190 × 90mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['corner', 'end-termination'],
+  },
+  '25.05': {
+    code: '25.05',
+    name: '25.05 Open / Plain End',
     description:
-      '240mm-wide block (390 × 190 × 240mm) — heavy structural and ' +
+      '25-series whole block, 390 × 190 × 240mm — heavy structural and ' +
       'retaining walls.',
     dimensions: { widthMm: 390, heightMm: 190, depthMm: 240 },
     roles: ['body', 'corner', 'end-termination'],
   },
-  '25.03': {
-    code: '25.03',
-    name: '25 Series Half Block',
-    description: 'Half-length closure for the 25 series (190 × 190 × 240mm).',
-    dimensions: { widthMm: 190, heightMm: 190, depthMm: 240 },
-    roles: ['end-termination', 'fraction'],
-    fraction: 0.5,
-  },
-  'P390': {
-    code: 'P390',
-    name: 'Pier Block 390×390',
+  'H25.04': {
+    code: 'H25.04',
+    name: 'H25.04 Half High',
     description:
-      'Square pier / column unit (390 × 190 × 390mm) for gate and fence ' +
-      'piers.',
-    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
-    roles: ['pier'],
-  },
-  'CAP40': {
-    code: 'CAP40',
-    name: 'Capping Tile 390×40',
-    description:
-      'Flat capping tile (390 × 40 × 190mm) — closes the cores across the ' +
-      'top of a finished wall.',
-    dimensions: { widthMm: 390, heightMm: 40, depthMm: 190 },
-    roles: ['cap'],
+      '25-series half-high, 390 × 90 × 240mm — height makeup on 240mm ' +
+      'walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 240 },
+    roles: ['height-makeup'],
   },
 }
 
@@ -912,11 +910,11 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: 'NZ',
     mortarJointMm: 10,
     description:
-      'NZS-convention series blocks on the 400 × 200 modular grid — 10 / ' +
-      '15 / 20 / 25 series with halves, half-highs, cleanout, lintel & ' +
-      'bond beam, pier and capping tile. Bricks: 230×76 standard + 290 ' +
-      'long format. Rename seed codes to your supplier catalogue from the ' +
-      'library page.',
+      'Firth hollow-masonry catalogue codes on the 400 × 200 modular ' +
+      'grid — 10 / 15 / 20 / 25 series wholes and halves, H-series ' +
+      'half-highs, 20.05 open end, 20.12 lintel, 20.16 bond beam, 20.30 ' +
+      'column and 05.17 capping. Bricks: 230×76 standard + 290 long ' +
+      'format.',
     blocks: NZ_BLOCK_LIBRARY,
     bricks: NZ_BRICK_LIBRARY,
   },
