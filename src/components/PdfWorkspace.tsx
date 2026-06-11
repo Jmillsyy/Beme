@@ -603,9 +603,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // it watches areas + isProjectLoading and synthesises an area + its
   // stamped wall types when the workspace is open but the area list
   // is empty.
+  //
+  // StrictMode-safe: a ref guards against the dev-only effect replay
+  // so we don't seed two areas (and double the default wall types).
+  // Without it, the effect runs, schedules state updates, StrictMode
+  // tears it down and re-runs it with the same closure (areas still
+  // [] from the first run's perspective) — both runs would then
+  // generate their own UUID and stamp the seed makeup with the
+  // second run's id while leaving a second seed behind from the first
+  // run. Setting the ref BEFORE doing any work means the replay
+  // short-circuits.
+  const didBootstrapRef = useRef(false)
   useEffect(() => {
     if (isProjectLoading) return
     if (areas.length > 0) return
+    if (didBootstrapRef.current) return
+    didBootstrapRef.current = true
     const newAreaId =
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
