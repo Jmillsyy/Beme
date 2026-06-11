@@ -615,17 +615,34 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setActiveAreaId(newAreaId)
     // Stamp any orphan wall types with the new area so the Wall types
     // panel surfaces them under this area's filter. Same backfill the
-    // project-load handler does for fresh estimates.
-    setMakeups((prev) =>
-      prev.map((m) =>
+    // project-load handler does for fresh estimates. If no orphan
+    // makeup exists to stamp AND the user's library can support a
+    // seed (block library is non-empty), push a fresh default makeup
+    // for the new area so the wall-types panel opens with something
+    // ready to draw with — matches the new-area onCreate path.
+    setMakeups((prev) => {
+      const stamped = prev.map((m) =>
         m.areaId ? m : ({ ...m, areaId: newAreaId } as typeof m),
-      ),
-    )
-    setBrickMakeups((prev) =>
-      prev.map((m) =>
+      )
+      const hasForArea = stamped.some((m) => m.areaId === newAreaId)
+      if (hasForArea) return stamped
+      if (Object.keys(BLOCK_LIBRARY).length === 0) return stamped
+      const seeded = createDefaultWallMakeup({ settings: getUserSettings() })
+      seeded.areaId = newAreaId
+      setActiveMakeupId(seeded.id)
+      return [...stamped, seeded]
+    })
+    setBrickMakeups((prev) => {
+      const stamped = prev.map((m) =>
         m.areaId ? m : ({ ...m, areaId: newAreaId } as typeof m),
-      ),
-    )
+      )
+      const hasForArea = stamped.some((m) => m.areaId === newAreaId)
+      if (hasForArea) return stamped
+      const seeded = createDefaultBrickMakeup({})
+      seeded.areaId = newAreaId
+      setActiveBrickMakeupId(seeded.id)
+      return [...stamped, seeded]
+    })
   }, [areas.length, isProjectLoading])
   /**
    * Per-page calibration + intrinsic dimensions. Has to be declared up here
