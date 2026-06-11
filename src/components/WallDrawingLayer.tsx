@@ -114,6 +114,14 @@ function MeasurementChip({
 }
 
 interface WallDrawingLayerProps {
+  /**
+   * Surfaces the underlying Konva.Stage to the workspace. Used by the
+   * hi-res settle overlay to snapshot the visible stage region at true
+   * screen resolution when zoom exceeds the raster cap (the stage
+   * itself rasterises at renderedZoom and gets CSS-stretched beyond
+   * it). Optional — omitted by callers that predate the overlay.
+   */
+  onStageRef?: (stage: Konva.Stage | null) => void
   walls: Wall[]
   /** Openings on the current page (across all walls). */
   openings: Opening[]
@@ -819,6 +827,7 @@ function bandPxForCurvedWall(
  * Konva overlay for drawing/selecting/editing walls + placing/displaying openings.
  */
 function WallDrawingLayerInner({
+  onStageRef,
   walls,
   openings,
   wallThicknessByWallId,
@@ -2518,6 +2527,7 @@ function WallDrawingLayerInner({
 
   return (
     <Stage
+      ref={(stage: Konva.Stage | null) => onStageRef?.(stage)}
       width={visualWidth}
       height={visualHeight}
       // listening=false during zoom turns off Konva's hit-detection entirely.
