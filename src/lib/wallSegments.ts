@@ -528,12 +528,22 @@ export function segmentsForStraightWall(
     // Clamp to effective wall extent (= wall length minus any control-
     // joint sealant gap), so blocks at a control-joint end render
     // inset by SEALANT_GAP_M.
+    //
+    // COPLANAR_EPS_M: envelope edges used to be perfectly flush, which
+    // made wall A's end faces mathematically coplanar with wall B's
+    // side faces at every corner / T-junction — invisible while the
+    // colours matched, a z-fight shimmer wherever they didn't (jogs,
+    // short returns, mixed makeups). A 0.5mm inset is sub-pixel at any
+    // practical zoom but gives the GPU an unambiguous winner.
+    const COPLANAR_EPS_M = 0.0005
     const clampedS0 = Math.max(effectiveLeftM, Math.min(effectiveRightM, s0))
     const clampedS1 = Math.max(effectiveLeftM, Math.min(effectiveRightM, s1))
-    const leftInset = clampedS0 < effectiveLeftM + 0.001 ? 0 : halfGap
-    const rightInset = clampedS1 > effectiveRightM - 0.001 ? 0 : halfGap
+    const leftInset =
+      clampedS0 < effectiveLeftM + 0.001 ? COPLANAR_EPS_M : halfGap
+    const rightInset =
+      clampedS1 > effectiveRightM - 0.001 ? COPLANAR_EPS_M : halfGap
     const bottomInset = y0 < 0.001 ? 0 : halfGap
-    const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
+    const topInset = y1 > totalHeightM - 0.001 ? COPLANAR_EPS_M : halfGap
     const aS0 = clampedS0 + leftInset
     const aS1 = clampedS1 - rightInset
     const aY0 = y0 + bottomInset
@@ -546,7 +556,8 @@ export function segmentsForStraightWall(
     // when the block has no library entry.
     const perBlockDepthMm = library[code]?.dimensions.depthMm
     const perBlockThickness =
-      perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness
+      (perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness) -
+      COPLANAR_EPS_M * 2
     return {
       cx: sx + dirX * localCx,
       cy: (aY0 + aY1) / 2,

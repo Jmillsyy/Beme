@@ -665,10 +665,16 @@ function segmentsFromWallLayout(
       // touching the wall envelope (true outer edges OR a control-
       // joint sealant boundary) stay flush — at those edges, the
       // existing wall-end gap / sealant gap IS the visible joint.
-      const leftInset = cs0 < effectiveStartM + 0.001 ? 0 : halfGap
-      const rightInset = cs1 > effectiveEndM - 0.001 ? 0 : halfGap
+      // 0.5mm inset on envelope edges so no face is ever exactly
+      // coplanar with a neighbouring wall's geometry (see buildBox in
+      // wallSegments.ts for the rationale).
+      const COPLANAR_EPS_M = 0.0005
+      const leftInset =
+        cs0 < effectiveStartM + 0.001 ? COPLANAR_EPS_M : halfGap
+      const rightInset =
+        cs1 > effectiveEndM - 0.001 ? COPLANAR_EPS_M : halfGap
       const bottomInset = y0 < 0.001 ? 0 : halfGap
-      const topInset = y1 > totalHeightM - 0.001 ? 0 : halfGap
+      const topInset = y1 > totalHeightM - 0.001 ? COPLANAR_EPS_M : halfGap
 
       const aS0 = cs0 + leftInset
       const aS1 = cs1 - rightInset
@@ -683,7 +689,8 @@ function segmentsFromWallLayout(
       // expected 50mm step on each face at the boundary.
       const perBlockDepthMm = library[w.block.code]?.dimensions.depthMm
       const perBlockThickness =
-        perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness
+        (perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness) -
+        COPLANAR_EPS_M * 2
       // Render-only cube fillers occupy the SAME volume as the owning
       // perpendicular wall's corner block. With identical colours that
       // coincidence is invisible, but where the codes differ (jogs,
@@ -741,9 +748,9 @@ function segmentsFromWallLayout(
         cx: sx + dirX * localCx,
         cy: totalHeightM + capHeightM / 2,
         cz: sz + dirZ * localCx,
-        length: capEnd - capStart,
-        heightM: capHeightM,
-        thickness,
+        length: capEnd - capStart - 0.001,
+        heightM: capHeightM - 0.001,
+        thickness: thickness - 0.001,
         yRotation,
         color: colorOf(capCode),
         highlight: isHighlightedBlock(capCode, library),
