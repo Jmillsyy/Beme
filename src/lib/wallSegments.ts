@@ -17,6 +17,33 @@ import {
 } from './makeups'
 import { selectBlockLintel } from './lintels'
 import { outerEdgeEndpoints } from './wallGeom'
+import type { CornerOwnership } from './blockCalc'
+
+/** Head gap (mm) used by the renderer's window auto-anchoring. */
+export const RENDER_HEAD_GAP_FROM_TOP_MM = 300
+
+/**
+ * The renderer's opening-positioning rules, shared with the tally so
+ * blocks are counted exactly where they are drawn:
+ *   - doors sit on the floor (sill forced to 0)
+ *   - sill = 0 is respected as floor-to-head (door-like) positioning
+ *   - windows with a non-zero sill auto-anchor so the head lands
+ *     RENDER_HEAD_GAP_FROM_TOP_MM below the wall top (clamped >= 0)
+ */
+export function adjustOpeningForRender(
+  o: Opening,
+  wallHeightMm: number
+): Opening {
+  if (o.kind === 'door') {
+    return o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
+  }
+  if (o.sillHeightMm === 0) return o
+  const targetSill = Math.max(
+    0,
+    wallHeightMm - RENDER_HEAD_GAP_FROM_TOP_MM - o.heightMm
+  )
+  return targetSill === o.sillHeightMm ? o : { ...o, sillHeightMm: targetSill }
+}
 
 
 export const FALLBACK_HEIGHT_MM = 2400
@@ -300,6 +327,14 @@ export interface WallSegmentBox {
    *  bond beam). Renders with an emissive glow so they stand out from
    *  the body / corner / half blocks that make up the bulk of the wall. */
   highlight: boolean
+  /** Library block code this box represents. Set by the cell-grid
+   *  enumerator (segmentsForStraightWall) so the export tally can count
+   *  the exact boxes the renderer draws. Optional because render-only
+   *  producers (mortar fill, layout-path cap strips) don't carry one. */
+  code?: BlockCode
+  /** 1-based wall course this box belongs to. Block cells only —
+   *  lintel / gap-fill boxes span courses and leave it undefined. */
+  courseNumber?: number
 }
 
 /**
@@ -391,7 +426,17 @@ export function segmentsForStraightWall(
    * partners where the upper courses are narrower than the base.
    * Without this map, falls back to wall-level (max) thickness.
    */
-  wallCoursesById?: Record<string, ResolvedCourse[]>
+  wallCoursesById?: Record<string, ResolvedCourse[]>,
+  /**
+   * Optional corner-ownership function (cornerOwnershipFor from
+   * blockCalc). When provided it replaces the legacy id-comparison
+   * phase so this path agrees with the planWallLayout path about WHICH
+   * wall owns a shared corner on each course — and so the tally
+   * derived from these boxes deduplicates corners identically to the
+   * layout-path tally. Omitted -> legacy id-phase (back-compat for the
+   * curved-wall virtual call, which has free junctions anyway).
+   */
+  cornerOwnership?: CornerOwnership
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -465,7 +510,8 @@ export function segmentsForStraightWall(
     y0: number,
     y1: number,
     color: string,
-    code: BlockCode
+    code: BlockCode,
+    courseNumber?: number
   ): WallSegmentBox => {
     const halfGap = MORTAR_GAP_M / 2
     // Clamp to effective wall extent (= wall length minus any control-
@@ -500,6 +546,8 @@ export function segmentsForStraightWall(
       yRotation,
       color,
       highlight: isHighlightedBlock(code, library),
+      code,
+      courseNumber,
     }
   }
 
@@ -924,10 +972,14 @@ export function segmentsForStraightWall(
     const rightHasCornerJunction = rightPhase !== null
     const ownsLeftThisCourse =
       leftHasCornerJunction &&
-      ownsCornerThisCourse(leftPhase, course.courseNumber)
+      (cornerOwnership
+        ? cornerOwnership({ wallEnd: 'start', courseNumber: course.courseNumber })
+        : ownsCornerThisCourse(leftPhase, course.courseNumber))
     const ownsRightThisCourse =
       rightHasCornerJunction &&
-      ownsCornerThisCourse(rightPhase, course.courseNumber)
+      (cornerOwnership
+        ? cornerOwnership({ wallEnd: 'end', courseNumber: course.courseNumber })
+        : ownsCornerThisCourse(rightPhase, course.courseNumber))
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode
     const rightEndCode = useHalfRight ? course.halfCode : course.cornerCode
@@ -1555,7 +1607,10 @@ export function segmentsForStraightWall(
     for (const cell of cells) {
       if (cell.role === 'REMOVED') continue
       boxes.push(
-        buildBox(cell.s0, cell.s1, course.y0, course.y1, cell.color, cell.code)
+        buildBox(
+          cell.s0, cell.s1, course.y0, course.y1, cell.color, cell.code,
+          course.courseNumber
+        )
       )
     }
   }

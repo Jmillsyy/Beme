@@ -97,6 +97,7 @@ import {
   resolveWallCourses,
   isHighlightedBlock,
   segmentsForStraightWall,
+  adjustOpeningForRender,
   type ResolvedCourse,
   type WallSegmentBox,
 } from '../lib/wallSegments'
@@ -1922,7 +1923,6 @@ function Scene({
     // tally / export still use the raw opening data) we re-anchor each
     // WINDOW so its head sits at wallHeight − 300 mm; doors sit on the
     // floor at sill = 0 regardless.
-    const HEAD_GAP_FROM_TOP_MM = 300
     const wallById_forSill = new Map(walls.map((w) => [w.id, w]))
     const wallHeightMmFor = (wall: Wall): number => {
       if (typeof wall.heightMmOverride === 'number') return wall.heightMmOverride
@@ -1931,28 +1931,13 @@ function Scene({
       }
       return makeupsById[wall.makeupId]?.heightMm ?? FALLBACK_HEIGHT_MM
     }
+    // Sill positioning rules live in adjustOpeningForRender (shared
+    // with the tally engine, so blocks are COUNTED where openings are
+    // DRAWN — render and export stay in lockstep).
     const adjustedOpenings: Opening[] = openings.map((o) => {
       const wall = wallById_forSill.get(o.wallId)
       if (!wall) return o
-      if (o.kind === 'door') {
-        return o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
-      }
-      // Sill = 0 is treated as door-like positioning: respect it as
-      // floor-to-head (user explicitly wants the opening to reach the
-      // ground). Block-mode openings don't carry a kind tag yet, so
-      // without this gate they'd all auto-reposition as windows even
-      // when the user typed sill=0.
-      if (o.sillHeightMm === 0) return o
-      // Windows with a non-zero sill — auto-anchor the head at
-      // wallHeight − HEAD_GAP for industry-standard window positioning.
-      // Clamp sill ≥ 0 so a tall opening on a short wall doesn't go
-      // below floor.
-      const wallHeightMm = wallHeightMmFor(wall)
-      const targetSill = Math.max(
-        0,
-        wallHeightMm - HEAD_GAP_FROM_TOP_MM - o.heightMm
-      )
-      return targetSill === o.sillHeightMm ? o : { ...o, sillHeightMm: targetSill }
+      return adjustOpeningForRender(o, wallHeightMmFor(wall))
     })
 
     const allCodes: string[] = []
@@ -3664,6 +3649,10 @@ function Scene({
               /* disableBlockLintels */ false,
               wallHeightMmByWallId,
               wallCoursesByIdCache,
+              // Same ownership the no-openings layout path uses — keeps
+              // corner alternation consistent across the two paths and
+              // matches the export tally's corner deduplication.
+              cornerOwnershipFor(wall, wallsByIdMap),
             )
           )
         }

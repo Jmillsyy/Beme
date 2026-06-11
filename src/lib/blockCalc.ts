@@ -48,7 +48,6 @@ import type {
   WallMakeup,
 } from '../types/walls'
 import { findCornerPoints } from './junctions'
-import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 import {
   getCourseCount,
@@ -1297,15 +1296,27 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
 // ---------- Wall tally ----------
 
 /**
- * Calculate the block tally for a single wall instance, with optional openings subtracted.
+ * Calculate the block tally for a single wall instance.
  *
- * Each end of the wall is planned independently based on its junction state (free, corner,
- * T-junction, control-joint). Corners in stretcher bond use the corner block on every course;
- * other end types alternate (stretcher) or use the same block on every course (stack).
+ * RENDER-ALIGNED: the tally is derived from the same block enumeration
+ * the 3D renderer draws, so every block visible in the 3D view is a
+ * counted block (paired tiles are the one additive exception — they
+ * ride hidden inside their host blocks and are counted, not rendered).
  *
- * Note: when two walls share a corner, each wall's tally will include a full corner column
- * of end blocks. The project-level `calculateProjectTally` subtracts the duplicate column to
- * give the correct physical count.
+ *   - Straight wall, no openings -> planWallLayout positioned blocks
+ *     (what segmentsFromWallLayout renders), aggregated by code, plus
+ *     the cap-strip formula (the cap renders as a continuous strip).
+ *   - Straight wall WITH openings -> segmentsForStraightWall cell grid
+ *     (the 3D opening renderer), one counted block per emitted box.
+ *   - Curved wall -> calculateCurvedWallTally (formula; the curve
+ *     renderer is wedge-based and not yet enumeration-counted).
+ *
+ * `cornerOwnership` controls shared-corner deduplication, same contract
+ * as before: omitted -> this wall counts its FULL corner columns (the
+ * interpretable per-wall number used by export breakdown tables);
+ * provided (as calculateProjectTally does) -> the wall only counts the
+ * corner blocks it owns per course, so summing wall tallies gives the
+ * correct project total with no project-level corner subtraction.
  */
 export function calculateWallTally(
   wall: Wall,
@@ -1313,287 +1324,48 @@ export function calculateWallTally(
   openings: Opening[] = [],
   thicknessByWallId?: Record<string, number>,
   wallsById?: Record<string, Wall>,
-  cornerOwnership?: CornerOwnership
+  cornerOwnership?: CornerOwnership,
+  /**
+   * Optional full makeup lookup. Lets the openings enumeration resolve
+   * corner-partner walls' course stacks (mixed-series / mixed-height
+   * corners) exactly like the renderer does. Without it, partner cube
+   * depths fall back to wall-level thickness — same fallback the
+   * renderer uses when its caches are absent.
+   */
+  makeupsById?: Record<string, WallMakeup>
 ): BlockTally {
   // Curved walls bypass the straight-wall planning machinery entirely.
   if (isCurvedWall(wall)) {
     return calculateCurvedWallTally(wall, makeup)
   }
-  // For bands-driven walls, makeup.heightMm may be stale — getMakeupHeightMm
-  // sums the actual course pattern. heightMmOverride still takes priority for
-  // legacy (non-bands) walls; bands walls ignore the override because the
-  // pattern itself defines the wall height.
-  const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
-  const stack = calculateCourseStack(heightMm)
-  const plan = planWall(wall, makeup, thicknessByWallId, wallsById)
-  const courses = buildCourses(stack, makeup)
 
-  const tally: BlockTally = {}
-
-  // Pick the right end-of-wall block for THIS course. Honours both the
-  // makeup-level cornerBlock / half-block defaults and any course-series range
-  // override (so a 300-series course gets 30.01 / 30.03 instead of 20.01 /
-  // 20.03 at its ends). Mirrors the parity logic in planEnd: corner ends use
-  // the full block on every course; free / T-junction / control-joint ends
-  // alternate in stretcher and stay full in stack.
-  function resolveEndForCourse(
-    junctionType: JunctionType,
-    courseNumber: number,
-    isOddCourse: boolean
-  ): BlockCode {
-    const blocks = resolveCourseBlocks(makeup, courseNumber)
-    // Mirrors planEnd's default parity: stretcher non-corner ends get
-    // FULL on Course 1 (odd) and HALF on Course 2 (even). Rule 4
-    // inversion is applied at the call site by flipping the `odd`
-    // arg when plan.{start,end}ParityInverted is set for that side.
-    if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
-      return isOddCourse
-        ? healCode(blocks.cornerBlockCode, 'corner')
-        : healCode(blocks.halfBlockCode, 'end-termination')
-    }
-    return healCode(blocks.cornerBlockCode, 'corner')
+  if (openings.length > 0) {
+    return enumeratedStraightWallTally(
+      wall,
+      makeup,
+      openings,
+      thicknessByWallId,
+      wallsById,
+      cornerOwnership,
+      makeupsById
+    )
   }
 
-  // Cached outer-edge length for re-fitting courses whose corner ends carry a
-  // lead-in (e.g. the 30.02 pair on 300-series corners) — those courses
-  // consume extra modular width that the base oddCourseFit / evenCourseFit
-  // doesn't know about, so we recompute a fit per course as needed.
-  const wallLenForRefit = wallLengthMm(wall, thicknessByWallId, wallsById)
-
-  for (let i = 0; i < courses.length; i++) {
-    const course = courses[i]
-    const courseNumber = i + 1
-    const isOddCourse = i % 2 === 0 // courseIndex 0 = course 1 (odd)
-    // Resolve per-course so 300-series courses get 30.01 / 30.03 at their
-    // ends and 200-series courses get 20.01 / 20.03 — even within the same
-    // wall. planWall's block codes are only consulted for short-wall and
-    // single-block-stub fallback modes (which both set startEnd/endEnd to
-    // the makeup defaults uniformly).
-    // Rule 4 (running bond): planWall sets {start,end}ParityInverted
-    // when an asymmetric end pairing produces a cleaner fit than the
-    // sync arrangement. Flipping the `odd` arg on the affected side
-    // keeps the tally in step with the layout — exactly one of the
-    // two flags will be true (never both).
-    const startParityOdd = plan.startParityInverted ? !isOddCourse : isOddCourse
-    const endParityOdd = plan.endParityInverted ? !isOddCourse : isOddCourse
-    const startBlock = plan.noEndBlocks
-      ? (isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock)
-      : resolveEndForCourse(wall.startJunction.type, courseNumber, startParityOdd)
-    const endBlock = plan.noEndBlocks
-      ? (isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock)
-      : resolveEndForCourse(wall.endJunction.type, courseNumber, endParityOdd)
-    // Single-block-stub mode skips the start/end pair entirely (the fit's fractions list
-    // IS the whole course — one block).
-    const endCount = plan.noEndBlocks ? 0 : 2
-
-    // Corner lead-in (e.g. 30.02 × 2 on 300-series corner ends): inserted
-    // between the corner block and the regular body to get back on bond after
-    // the corner block's deeper footprint. Only fires at corner junctions on
-    // courses where the resolved series defines a lead-in — fall-back is 0.
-    // The lead-in is tallied as its own block code and the per-course modular
-    // gets adjusted so the body fit still hits the wall length.
-    let leadInCode: BlockCode | undefined
-    let startLeadInCount = 0
-    let endLeadInCount = 0
-    let leadInModularTotal = 0
-    if (!plan.noEndBlocks) {
-      const resolvedCourse = resolveCourseBlocks(makeup, courseNumber)
-      leadInCode = resolvedCourse.cornerLeadInBlockCode
-      if (leadInCode && resolvedCourse.cornerLeadInCount > 0) {
-        if (wall.startJunction.type === 'corner') {
-          startLeadInCount = resolvedCourse.cornerLeadInCount
-        }
-        if (wall.endJunction.type === 'corner') {
-          endLeadInCount = resolvedCourse.cornerLeadInCount
-        }
-        const block = BLOCK_LIBRARY[leadInCode]
-        const blockModular = block ? block.dimensions.widthMm + MORTAR_MM : 0
-        leadInModularTotal = (startLeadInCount + endLeadInCount) * blockModular
-      }
-    }
-
-    // Per-course corner ownership: at a shared corner only ONE wall
-    // emits a corner block on each course. On a non-owning course this
-    // wall's body grid starts at the cube boundary (perpendicular wall
-    // thickness) rather than past a corner block, so the body region
-    // is larger and fits one more body unit. Without this, courses
-    // where this wall yields the corner would count too few bodies and
-    // the 3D view would visibly under-fill the wall.
-    const startIsCornerJunction =
-      wall.startJunction.type === 'corner' ||
-      wall.startJunction.type === 'control-joint'
-    const endIsCornerJunction =
-      wall.endJunction.type === 'corner' ||
-      wall.endJunction.type === 'control-joint'
-    const ownsStartCorner =
-      !cornerOwnership || !startIsCornerJunction
-        ? true
-        : cornerOwnership({ wallEnd: 'start', courseNumber })
-    const ownsEndCorner =
-      !cornerOwnership || !endIsCornerJunction
-        ? true
-        : cornerOwnership({ wallEnd: 'end', courseNumber })
-    // Single source of truth — same fallback logic as wallThicknessForCube
-    // above and PdfWorkspace's computeWallThicknessByWallId.
-    const wallThicknessForTally =
-      thicknessByWallId?.[wall.id] ?? getEffectiveWallThicknessMm(makeup)
-    const startNeighborIdForTally = startIsCornerJunction
-      ? wall.startJunction.connectedWallIds?.[0]
-      : undefined
-    const endNeighborIdForTally = endIsCornerJunction
-      ? wall.endJunction.connectedWallIds?.[0]
-      : undefined
-    const startCubeDepthForTally =
-      startNeighborIdForTally !== undefined
-        ? (thicknessByWallId?.[startNeighborIdForTally] ?? wallThicknessForTally)
-        : wallThicknessForTally
-    const endCubeDepthForTally =
-      endNeighborIdForTally !== undefined
-        ? (thicknessByWallId?.[endNeighborIdForTally] ?? wallThicknessForTally)
-        : wallThicknessForTally
-
-    const startEndModularBase = isOddCourse
-      ? plan.startEnd.oddModular
-      : plan.startEnd.evenModular
-    const endEndModularBase = isOddCourse
-      ? plan.endEnd.oddModular
-      : plan.endEnd.evenModular
-    const effectiveStartModular =
-      startIsCornerJunction && !ownsStartCorner
-        ? startCubeDepthForTally + MORTAR_MM
-        : startEndModularBase
-    const effectiveEndModular =
-      endIsCornerJunction && !ownsEndCorner
-        ? endCubeDepthForTally + MORTAR_MM
-        : endEndModularBase
-
-    // Deep-block cut block: same formula planWallLayout uses to insert
-    // a small body-coded cut after the corner on OWNING courses when
-    // body depth × 2 > body width (e.g. 300-series). The tally has to
-    // include this in the adjusted-ends total OR the layout emits an
-    // extra body-coded block the tally doesn't count, and the two
-    // diverge. Falls through to 0 on 200-series and uniform 300-on-300
-    // partners (the math gives ≤ 0).
-    const bodyBlockWidthForCut =
-      BLOCK_LIBRARY[course.bodyBlock]?.dimensions.widthMm ?? 0
-    const bodyBlockDepthForCut =
-      BLOCK_LIBRARY[course.bodyBlock]?.dimensions.depthMm ?? 0
-    const halfBodyModularForCut = (bodyBlockWidthForCut + MORTAR_MM) / 2
-    const wantsCutBlockTally = bodyBlockDepthForCut * 2 > bodyBlockWidthForCut
-    const startCornerWForTally = ownsStartCorner ? startEndModularBase - MORTAR_MM : 0
-    const endCornerWForTally = ownsEndCorner ? endEndModularBase - MORTAR_MM : 0
-    const startIsSharedCornerForTally = wall.startJunction.type === 'corner'
-    const endIsSharedCornerForTally = wall.endJunction.type === 'corner'
-    const startCutWidthForTally =
-      wantsCutBlockTally && ownsStartCorner && startIsSharedCornerForTally
-        ? Math.max(
-            0,
-            halfBodyModularForCut - (startCornerWForTally - startCubeDepthForTally) - MORTAR_MM
-          )
-        : 0
-    const endCutWidthForTally =
-      wantsCutBlockTally && ownsEndCorner && endIsSharedCornerForTally
-        ? Math.max(
-            0,
-            halfBodyModularForCut - (endCornerWForTally - endCubeDepthForTally) - MORTAR_MM
-          )
-        : 0
-    const cutBlockModularTotal =
-      (startCutWidthForTally > 1 ? startCutWidthForTally + MORTAR_MM : 0) +
-      (endCutWidthForTally > 1 ? endCutWidthForTally + MORTAR_MM : 0)
-    const cutBlockCount =
-      (startCutWidthForTally > 1 ? 1 : 0) + (endCutWidthForTally > 1 ? 1 : 0)
-
-    // Per-course fit: re-fit whenever effective ends differ from the
-    // odd/even base (ownership shift OR lead-in widening OR cut block).
-    // Otherwise reuse the cached fit. When no cornerOwnership callback
-    // is supplied (legacy callers), this collapses to the prior parity-
-    // only behavior with re-fit only on lead-in courses.
-    const baseFit = isOddCourse ? plan.oddCourseFit : plan.evenCourseFit
-    const needsRefit =
-      leadInModularTotal > 0 ||
-      cutBlockModularTotal > 0 ||
-      effectiveStartModular !== startEndModularBase ||
-      effectiveEndModular !== endEndModularBase
-    // Per-course exact-length scope: the makeup's exactLengthCourses
-    // array selects which course types get fraction / cut-block fitting.
-    // Undefined = all course types (legacy default).
-    const courseUsesFractions =
-      makeup.useFractions &&
-      includesCourseTypeForFractions(
-        makeup.exactLengthCourses,
-        course.type
-      )
-    const fit = needsRefit
-      ? fitCourseLength(
-          wallLenForRefit,
-          effectiveStartModular + effectiveEndModular + leadInModularTotal + cutBlockModularTotal,
-          courseUsesFractions
-        )
-      : baseFit
-
-    // Height-makeup courses (20.71, 20.140) extend across the FULL course length —
-    // the height-makeup block is cut to the size of any end block (20.03) and any fill
-    // block, so the course is just a row of height-makeup blocks butted end-to-end. We
-    // supply enough of the height-makeup block to cover body + fill + both ends.
-    if (
-      (course.type === 'height-71' || course.type === 'height-140') &&
-      !course.useStandardLayout
-    ) {
-      // Height-makeup blocks are cut to length to fill the WHOLE course
-      // including any lead-in zone — the lead-in is masonry sitting at the
-      // 290 mm-deep footprint, so the height-makeup block for that course
-      // extends out over it. Count one extra height-makeup unit per lead-in
-      // position to keep the cut-to-length yield right.
-      //
-      // Skipped when course.useStandardLayout is set (matchExactHeight
-      // off): the course falls through to the standard body-course
-      // tally below so it counts the makeup's corner / half / body
-      // blocks individually at their positions.
-      const totalBlocks =
-        fit.bodyCount + fit.fractions.length + endCount + startLeadInCount + endLeadInCount
-      addToTally(tally, course.bodyBlock, totalBlocks)
-      continue
-    }
-
-    addToTally(tally, course.bodyBlock, fit.bodyCount + cutBlockCount)
-
-    // Paired-tile count uses the BODY block's pairedPer ratio from
-    // the library: 1 means 1:1 (one tile per block — AU default for
-    // 20.45 + 50.45), 2 means 1:2 (one tile per two blocks), etc.
-    // Always rounded up so the bricklayer never runs short.
-    const bodyBlockDef = BLOCK_LIBRARY[course.bodyBlock]
-    const pairedPer = bodyBlockDef?.pairedPer ?? 1
-    if (course.pairedTile && fit.bodyCount > 0) {
-      addToTally(tally, course.pairedTile, Math.ceil(fit.bodyCount / pairedPer))
-    }
-
-    if (leadInCode && (startLeadInCount > 0 || endLeadInCount > 0)) {
-      addToTally(tally, leadInCode, startLeadInCount + endLeadInCount)
-    }
-
-    for (const fracCode of fit.fractions) {
-      addToTally(tally, fracCode)
-    }
-
-    if (!plan.noEndBlocks) {
-      addToTally(tally, startBlock)
-      addToTally(tally, endBlock)
-    }
-  }
-
-  for (const opening of openings) {
-    applyOpeningAdjustments(tally, opening, wall, makeup, courses)
-  }
+  const layout = planWallLayout(
+    wall,
+    makeup,
+    [],
+    thicknessByWallId,
+    wallsById,
+    cornerOwnership
+  )
+  const tally = tallyFromLayout(layout)
 
   // Optional capping tile — sits on top of the wall and runs along
   // its full outer-edge length. Count `ceil(wallLength / capWidth)`
-  // tiles per wall. We DON'T apply opening deductions to the cap row:
-  // openings sit below the cap, the cap continues unbroken across
-  // them (lintel + cap is the typical detail). If the user has cap
-  // length = wall length intent, ceil() handles the partial at the
-  // end. Cap width fallback = 390mm (standard block face width) when
-  // the library can't resolve a dimension.
+  // tiles per wall. The cap renders as a continuous strip (not in the
+  // layout block list), so it stays formula-counted here. Cap width
+  // fallback = 390mm when the library can't resolve a dimension.
   if (makeup.capBlockCode) {
     const capBlock = BLOCK_LIBRARY[makeup.capBlockCode]
     const capWidthMm = capBlock?.dimensions.widthMm ?? 390
@@ -1603,6 +1375,122 @@ export function calculateWallTally(
     }
   }
 
+  return tally
+}
+
+/**
+ * Tally a straight wall WITH openings by enumerating the exact cell
+ * grid the 3D renderer draws (segmentsForStraightWall) and counting one
+ * block per emitted box. Jambs, lintels, gap-fill courses, sill-course
+ * overrides, narrow-pier merges, short-wall cuts — whatever the
+ * renderer decides to draw, the tally counts. The renderer's window
+ * sill auto-anchoring (adjustOpeningForRender) is applied first so
+ * blocks are counted where the openings are DRAWN.
+ *
+ * Additive non-rendered extra: paired tiles (e.g. 50.45 riding on
+ * 20.45 cleanouts) are counted per course as ceil(bodyBlocks /
+ * pairedPer) — the same rule the no-openings layout path uses.
+ *
+ * `cornerOwnership` omitted -> count FULL corner columns (an
+ * own-everything ownership is passed to the enumerator so end blocks
+ * are emitted on every course, matching the per-wall contract of
+ * calculateWallTally). Provided -> render-exact corner dedup.
+ */
+function enumeratedStraightWallTally(
+  wall: Wall,
+  makeup: WallMakeup,
+  openings: Opening[],
+  thicknessByWallId?: Record<string, number>,
+  wallsById?: Record<string, Wall>,
+  cornerOwnership?: CornerOwnership,
+  makeupsById?: Record<string, WallMakeup>
+): BlockTally {
+  const tally: BlockTally = {}
+  const mkById: Record<string, WallMakeup> =
+    makeupsById && makeupsById[wall.makeupId]
+      ? makeupsById
+      : { ...(makeupsById ?? {}), [wall.makeupId]: makeup }
+  const { courses, totalHeightM } = resolveWallCourses(
+    wall,
+    mkById,
+    BLOCK_LIBRARY
+  )
+  if (courses.length === 0) return tally
+
+  const wallHeightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
+  const adjusted = openings
+    .filter((o) => o.wallId === wall.id)
+    .map((o) => adjustOpeningForRender(o, wallHeightMm))
+
+  // Partner caches for mixed-series / mixed-height corners — only
+  // buildable when partner makeups are known. Without them the
+  // enumerator falls back to wall-level partner thickness, exactly as
+  // the renderer does when its caches are absent.
+  let wallHeightMmByWallId: Record<string, number> | undefined
+  let wallCoursesById: Record<string, ResolvedCourse[]> | undefined
+  if (wallsById && makeupsById) {
+    wallHeightMmByWallId = {}
+    wallCoursesById = {}
+    for (const w of Object.values(wallsById)) {
+      const m = makeupsById[w.makeupId]
+      if (!m) continue
+      wallHeightMmByWallId[w.id] = w.heightMmOverride ?? getMakeupHeightMm(m)
+      wallCoursesById[w.id] = resolveWallCourses(
+        w,
+        makeupsById,
+        BLOCK_LIBRARY
+      ).courses
+    }
+  }
+
+  const thicknessMm =
+    thicknessByWallId?.[wall.id] ?? getEffectiveWallThicknessMm(makeup)
+  // No ownership passed -> own everything: end blocks emit on every
+  // course, giving the full-corner-column per-wall count.
+  const ownership: CornerOwnership = cornerOwnership ?? (() => true)
+  const boxes = segmentsForStraightWall(
+    wall,
+    adjusted,
+    thicknessMm,
+    courses,
+    totalHeightM,
+    makeup.bondType === 'stack' ? 'stack' : 'stretcher',
+    new Map(),
+    BLOCK_LIBRARY,
+    thicknessByWallId ?? {},
+    wallsById,
+    /* disableBlockLintels */ false,
+    wallHeightMmByWallId,
+    wallCoursesById,
+    ownership
+  )
+
+  const bodyCodeByCourse = new Map<number, BlockCode>()
+  for (const c of courses) bodyCodeByCourse.set(c.courseNumber, c.bodyCode)
+  const bodyCountByCourse = new Map<number, number>()
+  for (const b of boxes) {
+    if (!b.code) continue
+    addToTally(tally, b.code, 1)
+    if (
+      b.courseNumber !== undefined &&
+      bodyCodeByCourse.get(b.courseNumber) === b.code
+    ) {
+      bodyCountByCourse.set(
+        b.courseNumber,
+        (bodyCountByCourse.get(b.courseNumber) ?? 0) + 1
+      )
+    }
+  }
+  // Paired tiles ride on the back of their host body blocks — counted
+  // (you buy them) but not rendered (they sit inside the cavity).
+  for (const [courseNumber, bodyCount] of bodyCountByCourse) {
+    const bodyCode = bodyCodeByCourse.get(courseNumber)
+    if (!bodyCode || bodyCount <= 0) continue
+    const def = BLOCK_LIBRARY[bodyCode]
+    const tile = def?.pairedWith
+    if (!tile) continue
+    addToTally(tally, tile, Math.ceil(bodyCount / (def?.pairedPer ?? 1)))
+  }
   return tally
 }
 
@@ -2641,222 +2529,15 @@ export function verifyLayoutMatchesTally(
   return { ok: differences.length === 0, differences }
 }
 
-/**
- * Apply an opening's block-tally adjustments per the brief's refined rules.
- *
- * Jambs (sides of opening) — alternate with the wall's course parity in stretcher bond:
- *   Odd course → 20.01 (full), Even course → 20.03 (half). 2 jambs per course.
- *   In stack bond → always 20.01 (no alternation).
- *
- * Body subtraction per opening course (stretcher):
- *   Odd  course: −(2 + ceil(W/400))  body blocks
- *   Even course: −(1 + ceil(W/400))  body blocks  (smaller 20.03 jambs mean fewer net bodies lost)
- *   Stack bond:  −(2 + ceil(W/400))  per course (same modular jambs as bodies)
- *
- * Head area — lintel slab fills (W + 2 × 200mm bearing) horizontally × headHeight vertically:
- *   Lintels are stood UP with 190mm face × variable height (190 / 290 / 390).
- *   Horizontal count = ceil(lintelSpanMm / 200)
- *   Vertical count   = ceil(headHeightMm / lintelVerticalModule)
- *   Total lintels    = horizontal × vertical
- *   Body subtraction per head course = ceil((W + 400) / 400)
- *
- * The per-course bodyBlock is read from the courses array (so an opening that covers the
- * base course subtracts 20.45 + 50.45 instead of 20.48, etc.).
- */
-function applyOpeningAdjustments(
-  tally: BlockTally,
-  opening: Opening,
-  wall: Wall,
-  makeup: WallMakeup,
-  courses: CourseSpec[]
-): void {
-  // Bands-aware: use the actual summed band height instead of the legacy
-  // makeup.heightMm field (which may be stale for coursePattern walls).
-  // Note: sill/head course indexing still assumes 200mm modular per course —
-  // mixed-height bands within an opening span will give approximate head
-  // positioning. Task #95 (per-course heightMm metadata) addresses that.
-  const wallHeightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
-
-  const sillCoursesFloor = Math.floor(opening.sillHeightMm / COURSE_MODULE_MM)
-  const openingCourses = Math.max(0, Math.floor(opening.heightMm / COURSE_MODULE_MM))
-  if (openingCourses === 0) return
-
-  const blocksAcrossOpening = Math.ceil(opening.widthMm / BODY_BLOCK_MODULE_MM)
-  const isStretcher = makeup.bondType === 'stretcher'
-
-  /** Subtract `n` of the actual course's body block (and paired tile if present). */
-  function subtractCourseBody(courseIdx: number, n: number) {
-    const course = courses[courseIdx]
-    if (!course || n <= 0) return
-    const code = course.bodyBlock
-    const cur = tally[code] ?? 0
-    const next = Math.max(0, cur - n)
-    if (next > 0) tally[code] = next
-    else delete tally[code]
-    if (course.pairedTile) {
-      // Subtract paired tiles at the same ratio they were ADDED — using
-      // the BODY block's pairedPer (1 = 1:1, 2 = 1:2, etc.). Without
-      // this, a 1:2 pairing would have its tiles subtracted faster
-      // than they were tallied, leaving negative remainders that the
-      // export would zero out and misreport.
-      const bodyDef = BLOCK_LIBRARY[course.bodyBlock]
-      const pairedPer = bodyDef?.pairedPer ?? 1
-      const tilesToSubtract = Math.ceil(n / pairedPer)
-      const tileCur = tally[course.pairedTile] ?? 0
-      const tileNext = Math.max(0, tileCur - tilesToSubtract)
-      if (tileNext > 0) tally[course.pairedTile] = tileNext
-      else delete tally[course.pairedTile]
-    }
-  }
-
-  // The "full" jamb block follows the per-course resolved corner — 20.01 by
-  // default (or 20.21 with knockout corners) for 200-series courses, 30.01 for
-  // 300-series courses. Half-block jambs (even courses, stretcher) similarly
-  // swap between 20.03 and 30.03 according to the course's range.
-  // ---- Opening area: jambs + body subtraction per course (parity-aware) ----
-  for (let i = 0; i < openingCourses; i++) {
-    const wallCourseNumber = sillCoursesFloor + i + 1 // 1-indexed from wall base
-    const courseIdx = sillCoursesFloor + i
-    const isOddCourse = wallCourseNumber % 2 === 1
-
-    const resolved = resolveCourseBlocks(makeup, wallCourseNumber)
-    let jambCode: BlockCode
-    let bodyToSubtract: number
-
-    if (isStretcher) {
-      jambCode = isOddCourse
-        ? healCode(resolved.cornerBlockCode, 'corner')
-        : healCode(resolved.halfBlockCode, 'end-termination')
-      bodyToSubtract = (isOddCourse ? 2 : 1) + blocksAcrossOpening
-    } else {
-      jambCode = healCode(resolved.cornerBlockCode, 'corner')
-      bodyToSubtract = 2 + blocksAcrossOpening
-    }
-
-    addToTally(tally, jambCode, 2)
-    subtractCourseBody(courseIdx, bodyToSubtract)
-  }
-
-  // ---- Head area: lintel + body subtraction ----
-  const headHeightMm = wallHeightMm - opening.sillHeightMm - opening.heightMm
-  if (headHeightMm <= 0) return
-
-  // Pick a lintel from the user's library by head height (bucket
-  // metadata + fallback to smallest-height-≥-head). Returns null when
-  // no block carries the `lintel` role at all — the user has either
-  // opted out of in-tally lintels (e.g. a structural steel beam
-  // handled outside the schedule) or hasn't tagged a library block
-  // yet. When null we skip BOTH the lintel tally line AND the body
-  // subtraction below: with no lintel in the tally, the head courses
-  // above the opening are full-width body, and the count is correct
-  // as-is.
-  // Collect any height-makeup course modulars that sit in the head
-  // area (above the lintel). These constrain the lintel choice — see
-  // selectBlockLintel for the rule. 200mm body courses are the
-  // default and don't need to be listed.
-  const headStartIdxForExtras = sillCoursesFloor + openingCourses
-  const extraCourseModulesMm: number[] = []
-  for (let i = headStartIdxForExtras; i < courses.length; i++) {
-    const courseType = courses[i].type
-    if (courseType === 'height-71') extraCourseModulesMm.push(100)
-    else if (courseType === 'height-140') extraCourseModulesMm.push(150)
-  }
-  const lintel = selectBlockLintel(
-    headHeightMm,
-    extraCourseModulesMm,
-    opening.lintelBlockCodeOverride
-  )
-  if (!lintel) return
-
-  // Lintel span = opening width + bearing on each side. Bearing is
-  // per-lintel (block.lintelOverhangMm via LintelSpec.overhangMm,
-  // defaults to 200mm). The bearing is where the lintel sits on the
-  // body courses each side; the lintel itself spans the full bearing-
-  // to-bearing distance as one continuous piece (or multiple block
-  // pieces tiled across — same modular count math either way).
-  const lintelSpanMm = opening.widthMm + 2 * lintel.overhangMm
-
-  // Single row of lintels across the head — no vertical stacking. The
-  // user has registered a lintel block whose own dimensions match how
-  // the lintel is laid; the head-height bucket already picked the
-  // right-sized block. Multiplying by `headHeight / verticalModule`
-  // double-counted by stacking copies of a block that's already meant
-  // to be one course of lintels at the chosen size.
-  const lintelCount = Math.ceil(lintelSpanMm / lintel.horizontalModuleMm)
-  addToTally(tally, lintel.code, lintelCount)
-
-  // Body subtraction — only for the head courses the lintel actually
-  // occupies. The lintel's vertical footprint in standard courses is
-  // ceil(lintelVerticalModule / COURSE_MODULE_MM): a 200mm lintel
-  // occupies 1 course, a 400mm lintel occupies 2. Courses ABOVE the
-  // lintel (if any — i.e. when the head area is taller than the
-  // lintel) are full-width body and need no subtraction.
-  const headStartIdx = sillCoursesFloor + openingCourses
-  const lintelCoursesNeeded = Math.ceil(
-    lintel.verticalModuleMm / COURSE_MODULE_MM,
-  )
-  const lintelCoursesAvailable = Math.max(0, courses.length - headStartIdx)
-  const lintelCoursesToUse = Math.min(lintelCoursesNeeded, lintelCoursesAvailable)
-  const bodyPerLintelCourse = Math.ceil(lintelSpanMm / BODY_BLOCK_MODULE_MM)
-
-  for (let i = 0; i < lintelCoursesToUse; i++) {
-    subtractCourseBody(headStartIdx + i, bodyPerLintelCourse)
-  }
-
-  // ---- Gap-fill above the lintel ----
-  //
-  // When the chosen lintel doesn't fully consume the head area
-  // modular-cleanly (typical with a user override — e.g. 200mm lintel
-  // under a 300mm head leaves a 100mm gap), drop in a height-makeup
-  // course above the lintel to bridge the leftover.
-  //
-  // Decomposition: gap = N×200 (whole body courses) + remainder. The
-  // body courses cost nothing here (the head area's body courses are
-  // already counted in the wall-body tally — see the comment above).
-  // The remainder is what a height-makeup course covers.
-  //
-  // Only emits when (a) there's a height-makeup block in the library
-  // whose face fits the remainder modular, and (b) there's an actual
-  // course slot to put it in (the makeup course slot fits within
-  // the wall). Failures fall through silently — the existing 3D
-  // clipping handles the visual case.
-  const gapAboveLintelMm = headHeightMm - lintel.verticalModuleMm
-  if (gapAboveLintelMm > 0) {
-    const bodyCoursesAboveLintel = Math.floor(gapAboveLintelMm / BODY_BLOCK_MODULE_MM)
-    const makeupRemainderMm =
-      gapAboveLintelMm - bodyCoursesAboveLintel * BODY_BLOCK_MODULE_MM
-    // 50mm threshold: smaller residuals are mortar/dimension slop and
-    // don't warrant a course. A 100mm remainder lands a 20.71 (90mm
-    // face + 10mm mortar = 100mm modular); a 150mm remainder lands a
-    // 20.140 (140 + 10 = 150).
-    const MIN_MAKEUP_GAP_MM = 50
-    if (makeupRemainderMm >= MIN_MAKEUP_GAP_MM) {
-      const targetFaceMm = makeupRemainderMm - DEFAULT_MORTAR_JOINT_MM
-      // Scope by body depth — see comment in buildCourses' height-makeup
-      // resolution. Keeps 300-series walls off the 200-series 20.140.
-      const heightMakeupDepthMm =
-        BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
-      const makeupBlock = pickHeightMakeupBlock(targetFaceMm, heightMakeupDepthMm)
-      if (makeupBlock) {
-        const makeupHorizontalModuleMm =
-          makeupBlock.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM
-        const makeupCount = Math.ceil(lintelSpanMm / makeupHorizontalModuleMm)
-        addToTally(tally, makeupBlock.code, makeupCount)
-        // Body subtraction for the makeup course — sits directly
-        // above the lintel + any whole body courses between. Only
-        // applied if the course slot actually exists in the wall.
-        const makeupCourseIdx =
-          headStartIdx + lintelCoursesNeeded + bodyCoursesAboveLintel
-        if (makeupCourseIdx < courses.length) {
-          subtractCourseBody(makeupCourseIdx, bodyPerLintelCourse)
-        }
-      }
-    }
-  }
-}
 
 import { outerEdgeEndpoints, wallLengthMm } from './wallGeom'
 export { outerEdgeEndpoints, wallLengthMm }
+import {
+  segmentsForStraightWall,
+  resolveWallCourses,
+  adjustOpeningForRender,
+  type ResolvedCourse,
+} from './wallSegments'
 
 /**
  * Tally for a curved wall.
@@ -3051,19 +2732,20 @@ export function calculateProjectTally(
     .map((wall) => {
       const makeup = makeupsById[wall.makeupId]
       if (!makeup) return null
-      // Pass cornerOwnership so the per-course body fit varies based on
-      // which wall owns each shared corner this course — matches what
-      // planWallLayout emits to the 3D view. Without this, walls that
-      // share a corner under-count bodies on the courses where the
-      // OTHER wall owns the corner (the body region is 200mm longer on
-      // those courses and fits one extra body).
+      // Pass cornerOwnership (the wallsById-sorted variant — the same
+      // one the 3D renderer uses) so each wall counts ONLY the corner
+      // blocks it owns per course. Summing the per-wall tallies then
+      // gives the physically-correct project total directly, and the
+      // per-course body fit varies with ownership exactly like the
+      // rendered layout.
       return calculateWallTally(
         wall,
         makeup,
         openingsByWallId[wall.id] ?? [],
         thicknessByWallId,
         wallsById,
-        cornerOwnershipFor(wall)
+        cornerOwnershipFor(wall, wallsById),
+        makeupsById
       )
     })
     .filter((t): t is BlockTally => t !== null)
@@ -3126,8 +2808,13 @@ export function calculateProjectTally(
     }
   }
 
-  const adjustment = calculateCornerAdjustment(walls, makeupsById)
-  return subtractTally(subtractTally(summed, adjustment), pierDisplacement)
+  // No corner-adjustment subtraction any more: per-wall tallies above
+  // were computed WITH corner ownership, so each shared corner block is
+  // counted exactly once across the walls that meet there — the same
+  // deduplication the 3D renderer shows. (calculateCornerAdjustment is
+  // kept exported for the legacy full-corner per-wall counts used by
+  // export breakdown tables.)
+  return subtractTally(summed, pierDisplacement)
 }
 
 /**
