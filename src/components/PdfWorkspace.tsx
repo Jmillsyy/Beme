@@ -5326,6 +5326,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const wallsHiResWrapRef = useRef<HTMLDivElement>(null)
   const wallsHiResCanvasRef = useRef<HTMLCanvasElement>(null)
   const paintWallsOverlayRef = useRef<(() => void) | null>(null)
+  /** What the hi-res canvases currently show — used to decide whether a
+   *  settle re-run must hide them (page/file switched) or can leave the
+   *  still-valid pixels visible until the repaint lands in place. */
+  const hiResPaintedKeyRef = useRef<{ file: File | null; page: number }>({
+    file: null,
+    page: 0,
+  })
   const handleStageRef = useCallback((stage: Konva.Stage | null) => {
     konvaStageRef.current = stage
   }, [])
@@ -5728,11 +5735,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = newZoom / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
-      // Hi-res overlays are stale the moment the view moves — hide until
-      // the settle effect repaints them for the new viewport.
-      if (hiResWrapRef.current) hiResWrapRef.current.style.display = 'none'
-      if (wallsHiResWrapRef.current)
-        wallsHiResWrapRef.current.style.display = 'none'
+      // Hi-res overlays stay visible through the gesture: they live
+      // inside the transformed wrapper, so they scale/translate WITH
+      // the page and remain geometrically aligned — mid-gesture
+      // they're never softer than the base canvas, and the settle
+      // effect repaints them pixel-sharp afterwards.
 
       // 3) Debounce the React state commit so consumers that depend on
       //    `zoom` (toolbar %, layout effects, render of giant subtrees)
@@ -5832,11 +5839,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = zoomRef.current / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
-      // Hi-res overlays are position-stale during a pan — hide; the
-      // settle effect repaints on mouseup.
-      if (hiResWrapRef.current) hiResWrapRef.current.style.display = 'none'
-      if (wallsHiResWrapRef.current)
-        wallsHiResWrapRef.current.style.display = 'none'
+      // Overlays pan with the wrapper (they're positioned in page
+      // space) — keep them visible; only the newly exposed viewport
+      // edge shows the soft base until the settle repaint.
     }
 
     const handleDocMouseUp = (e: MouseEvent) => {
@@ -6284,16 +6289,29 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (!wrap || !canvas || !container) return
     hiResTaskRef.current?.cancel()
     hiResTaskRef.current = null
-    // Hide immediately: any dependency change (zoom, page, file)
-    // invalidates the current crop. Gesture frames already hid it, so
-    // this only visibly matters on page/file switches.
-    wrap.style.display = 'none'
     const wallsWrap = wallsHiResWrapRef.current
-    if (wallsWrap) wallsWrap.style.display = 'none'
-    paintWallsOverlayRef.current = null
-    if (!displayedPdfFile || isEmptyWorkspace || !aspectRatio) return
+    const hideBoth = () => {
+      wrap.style.display = 'none'
+      if (wallsWrap) wallsWrap.style.display = 'none'
+      paintWallsOverlayRef.current = null
+    }
+    // Only hide when the painted content is genuinely invalid: a
+    // different page/file than what's on the canvases, or zoom back
+    // inside the cap. Pans and zoom deltas keep the overlays visible —
+    // they track the wrapper's transform and get repainted in place.
+    const key = hiResPaintedKeyRef.current
+    if (key.file !== displayedPdfFile || key.page !== currentPage) {
+      hideBoth()
+    }
+    if (!displayedPdfFile || isEmptyWorkspace || !aspectRatio) {
+      hideBoth()
+      return
+    }
     // Base canvas is rendered AT or ABOVE the live zoom -> already sharp.
-    if (zoom <= renderedZoom + 0.01) return
+    if (zoom <= renderedZoom + 0.01) {
+      hideBoth()
+      return
+    }
     const timer = setTimeout(() => {
       const visualScaleNow = zoom / (renderedZoom || 1)
       const zoomedW = baseWidth * zoom
@@ -6328,6 +6346,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       hiResTaskRef.current = task
       void task.done.then((ok) => {
         if (!ok || hiResTaskRef.current !== task) return
+        hiResPaintedKeyRef.current = {
+          file: displayedPdfFile,
+          page: currentPage,
+        }
         wrap.style.left = `${cropX / visualScaleNow}px`
         wrap.style.top = `${cropY / visualScaleNow}px`
         wrap.style.width = `${cropW / visualScaleNow}px`
@@ -6402,8 +6424,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (!container) return
     let idleTimer: number | null = null
     const onMove = () => {
+      // Pan drags keep the wall snapshot visible — it tracks the
+      // wrapper's transform and there's no hover feedback to reveal
+      // while the hand is dragging. Hover / draw movement (no pan
+      // press in flight) hides it so the live stage shows through.
+      const panInFlight =
+        isPanningRef.current || panStartRef.current !== null
       const wWrap = wallsHiResWrapRef.current
-      if (wWrap && wWrap.style.display !== 'none') {
+      if (!panInFlight && wWrap && wWrap.style.display !== 'none') {
         wWrap.style.display = 'none'
       }
       if (idleTimer !== null) clearTimeout(idleTimer)
