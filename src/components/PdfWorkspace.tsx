@@ -6392,15 +6392,34 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       <div className="max-w-[1600px] mx-auto">
         <div className="fixed inset-0 z-50 bg-ink-900/95 flex items-center justify-center p-4">
           <div className="max-w-lg w-full bg-ink-800 rounded-xl shadow-xl border border-ink-600">
-            <div className="px-6 py-4 border-b border-ink-600">
-              <h2 className="text-lg font-semibold text-ink-50">
-                Start a new {mode} estimate
-              </h2>
-              <p className="text-xs text-ink-400 mt-0.5">
-                Fill in the customer + project info first — this lands in the
-                header of the exported estimate, and saving needs at least a
-                project name.
-              </p>
+            <div className="px-6 py-4 border-b border-ink-600 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-ink-50">
+                  Start a new {mode} estimate
+                </h2>
+                <p className="text-xs text-ink-400 mt-0.5">
+                  Fill in the customer + project info first — this lands in the
+                  header of the exported estimate, and saving needs at least a
+                  project name.
+                </p>
+              </div>
+              {/* Back-out affordance for users who landed here by mistake
+                  (clicked the wrong trade on the dashboard, etc.) —
+                  matches other modal patterns in the app. Defuses the
+                  unsaved-changes flag before navigating so the prompt
+                  doesn't fire on a project that was never persisted. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setHasUnsavedChanges(false)
+                  navigate('/')
+                }}
+                className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2 flex-shrink-0"
+                aria-label="Back to dashboard"
+                title="Back to dashboard"
+              >
+                ×
+              </button>
             </div>
             <div className="px-6 py-4 space-y-3">
               <label className="text-sm block">
