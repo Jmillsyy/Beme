@@ -6530,6 +6530,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             <aside className="w-full mt-3 space-y-3 lg:w-[272px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
                 <WallTypesPanel
+                  // Remount on area switch — see the keyed block-side
+                  // note at the canvas-rail render below.
+                  key={`wt-block-3d-${activeAreaId ?? 'all'}`}
                   // Per-area filter — same as the main render below.
                   makeups={
                     activeAreaId
@@ -6561,6 +6564,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               )}
               {mode === 'brick' && (
                 <BrickTypesPanel
+                  // Remount on area switch — see the keyed note on the
+                  // canvas-rail render below.
+                  key={`wt-brick-3d-${activeAreaId ?? 'all'}`}
                   makeups={
                     activeAreaId
                       ? brickMakeups.filter((m) => m.areaId === activeAreaId)
@@ -9402,6 +9408,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             its own wall types; 'All' shows every makeup across areas. */}
         {mode === 'block' && (
           <WallTypesPanel
+            // Remount on area switch — any internal panel state
+            // (editingId, expanded, etc.) gets thrown away so we never
+            // serve the new area through a stale closure that captured
+            // the previous area's filter result. The keyed-remount also
+            // guarantees the makeups prop is read FRESH against the
+            // active area instead of through React's reconciliation
+            // shortcut that compares against the previous render's prop
+            // reference. 'all' is used for the null sentinel because
+            // React keys are strings.
+            key={`wt-block-${activeAreaId ?? 'all'}`}
             makeups={
               activeAreaId
                 ? makeups.filter((m) => m.areaId === activeAreaId)
@@ -9465,6 +9481,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             block. */}
         {mode === 'brick' && (
           <BrickTypesPanel
+            // Remount on area switch — see the block-side note above.
+            key={`wt-brick-${activeAreaId ?? 'all'}`}
             makeups={
               activeAreaId
                 ? brickMakeups.filter((m) => m.areaId === activeAreaId)
