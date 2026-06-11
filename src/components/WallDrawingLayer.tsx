@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
 import type { Opening, Pier, Wall } from '../types/walls'
@@ -165,6 +165,22 @@ interface WallDrawingLayerProps {
   activeWallColor?: string
   visualWidth: number
   visualHeight: number
+  /**
+   * Optional render-window crop, in stage-content (rendered-page) px.
+   * When set, the Stage canvas covers ONLY this window of the page —
+   * positioned at (cropX, cropY) inside the transformed wrapper and
+   * offset internally so content coordinates are unchanged — and
+   * `pixelRatio` raises the canvas backing density to true screen
+   * resolution. PdfWorkspace drives this above the whole-page raster
+   * cap so walls, previews and snap chrome stay SHARP while drawing at
+   * deep zoom, with viewport-bounded memory. Omitted -> full-page
+   * stage at default density (the original behaviour).
+   */
+  cropX?: number
+  cropY?: number
+  cropW?: number
+  cropH?: number
+  pixelRatio?: number
   /** Visual pixels per mm at the current zoom. */
   pxPerMmAtCurrentZoom: number
   /** Whether drawing-wall mode is active. */
@@ -837,6 +853,11 @@ function WallDrawingLayerInner({
   activeWallColor = '#ED7D31',
   visualWidth,
   visualHeight,
+  cropX = 0,
+  cropY = 0,
+  cropW,
+  cropH,
+  pixelRatio,
   pxPerMmAtCurrentZoom,
   drawingMode,
   drawingCurveMode,
@@ -1878,6 +1899,26 @@ function WallDrawingLayerInner({
     return { point: lengthSnapped, snap: null }
   }
 
+  // ── Render-window canvas density ──
+  // When PdfWorkspace supplies a crop + pixelRatio (deep zoom), raise
+  // every layer's canvas backing density so the live stage rasterises
+  // at true screen resolution. Konva re-applies the canvas size from
+  // (stage size x pixelRatio) inside setPixelRatio, so this is safe to
+  // run after any crop/size commit. Default density (devicePixelRatio)
+  // is restored when the crop is dropped.
+  const stageSelfRef = useRef<Konva.Stage | null>(null)
+  useEffect(() => {
+    const stage = stageSelfRef.current
+    if (!stage) return
+    const ratio =
+      pixelRatio ??
+      (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1)
+    for (const layer of stage.getLayers()) {
+      layer.getCanvas().setPixelRatio(ratio)
+    }
+    stage.batchDraw()
+  }, [pixelRatio, cropX, cropY, cropW, cropH, visualWidth, visualHeight])
+
   // ---------- Stage events ----------
 
   function handleStageClick(e: Konva.KonvaEventObject<MouseEvent>) {
@@ -1889,7 +1930,11 @@ function WallDrawingLayerInner({
     if (e.evt.button !== 0) return
     const stage = e.target.getStage()
     if (!stage) return
-    const raw = stage.getPointerPosition()
+    // Transform-aware pointer: with a render-window crop the stage
+    // carries an x/y offset, so the RELATIVE position is the
+    // rendered-page-space coordinate all the maths below expect.
+    // Identity transform without a crop — same value as before.
+    const raw = stage.getRelativePointerPosition()
     if (!raw) return
 
     if (drawingMode) {
@@ -2144,7 +2189,7 @@ function WallDrawingLayerInner({
   function handleStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
     const stage = e.target.getStage()
     if (!stage) return
-    const raw = stage.getPointerPosition()
+    const raw = stage.getRelativePointerPosition()
     if (!raw) return
 
     if (drawingMode) {
@@ -2527,9 +2572,17 @@ function WallDrawingLayerInner({
 
   return (
     <Stage
-      ref={(stage: Konva.Stage | null) => onStageRef?.(stage)}
-      width={visualWidth}
-      height={visualHeight}
+      ref={(stage: Konva.Stage | null) => {
+        stageSelfRef.current = stage
+        onStageRef?.(stage)
+      }}
+      width={cropW ?? visualWidth}
+      height={cropH ?? visualHeight}
+      // Offset the content by the crop origin so content coordinates
+      // (rendered-page px) are unchanged — the canvas just shows the
+      // [cropX, cropX+cropW] x [cropY, cropY+cropH] window of the page.
+      x={-cropX}
+      y={-cropY}
       // listening=false during zoom turns off Konva's hit-detection entirely.
       // Each pointer-position change otherwise costs O(walls) — Konva runs a
       // hit test against every shape on the layer to figure out which one
@@ -2543,8 +2596,8 @@ function WallDrawingLayerInner({
       listening={!isZooming}
       style={{
         position: 'absolute',
-        top: 0,
-        left: 0,
+        top: cropY,
+        left: cropX,
         pointerEvents: 'auto',
         cursor: containerCursor,
       }}

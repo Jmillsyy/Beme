@@ -48,7 +48,6 @@ function lazyWithReload<T extends ComponentType<any>>(
 const WorkspaceView3D = lazyWithReload(() => import('./WorkspaceView3D'))
 import { PDFDocument } from 'pdf-lib'
 import { Document, Page, pdfjs } from 'react-pdf'
-import type Konva from 'konva'
 import { renderPdfRegion, type PdfRegionTask } from '../lib/pdfViewportRender'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -5316,16 +5315,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const hiResCanvasRef = useRef<HTMLCanvasElement>(null)
   const hiResTaskRef = useRef<PdfRegionTask | null>(null)
   const [viewSettleTick, setViewSettleTick] = useState(0)
-  // Companion overlay for the WALL layer: a true-resolution snapshot of
-  // the visible Konva stage region, layered ABOVE the (CSS-stretched)
-  // live stage. Hidden during any pointer activity so hover / drawing
-  // feedback always comes from the live stage; repainted after a short
-  // idle. The live stage keeps handling all events (the overlay is
-  // pointer-transparent).
-  const konvaStageRef = useRef<Konva.Stage | null>(null)
-  const wallsHiResWrapRef = useRef<HTMLDivElement>(null)
-  const wallsHiResCanvasRef = useRef<HTMLCanvasElement>(null)
-  const paintWallsOverlayRef = useRef<(() => void) | null>(null)
+  // ── Wall-layer render window ──
+  // Above the raster cap the wall stage shrinks to the visible region
+  // (plus margin) and raises its canvas density to true screen
+  // resolution — the LIVE stage, so walls, previews and snap chrome
+  // are sharp while drawing, with viewport-bounded memory. Null below
+  // the cap -> full-page stage at default density (original
+  // behaviour). Committed on settle by the hi-res effect below.
+  const [wallCrop, setWallCrop] = useState<{
+    x: number
+    y: number
+    w: number
+    h: number
+    ratio: number
+  } | null>(null)
   /** What the hi-res canvases currently show — used to decide whether a
    *  settle re-run must hide them (page/file switched) or can leave the
    *  still-valid pixels visible until the repaint lands in place. */
@@ -5333,9 +5336,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     file: null,
     page: 0,
   })
-  const handleStageRef = useCallback((stage: Konva.Stage | null) => {
-    konvaStageRef.current = stage
-  }, [])
+
   const renderedPageWidthRef = useRef(0)
   const renderedPageHeightRef = useRef<number | null>(null)
   /**
@@ -6289,11 +6290,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (!wrap || !canvas || !container) return
     hiResTaskRef.current?.cancel()
     hiResTaskRef.current = null
-    const wallsWrap = wallsHiResWrapRef.current
     const hideBoth = () => {
       wrap.style.display = 'none'
-      if (wallsWrap) wallsWrap.style.display = 'none'
-      paintWallsOverlayRef.current = null
+      setWallCrop((prev) => (prev === null ? prev : null))
     }
     // Only hide when the painted content is genuinely invalid: a
     // different page/file than what's on the canvases, or zoom back
@@ -6357,47 +6356,35 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         wrap.style.display = 'block'
       })
 
-      // ── Wall-layer snapshot (same crop, same placement maths) ──
-      // Konva's region export rasterises the live vectors at true
-      // screen resolution; the snapshot sits above the soft stage and
-      // is transparent wherever nothing is drawn, so the sharp PDF
-      // overlay shows through between walls.
-      const paintWalls = () => {
-        const wWrap = wallsHiResWrapRef.current
-        const wCanvas = wallsHiResCanvasRef.current
-        const stage = konvaStageRef.current
-        if (!wWrap || !wCanvas) return
-        if (!stage) {
-          wWrap.style.display = 'none'
-          return
+      // ── Wall-layer render window (same crop, content-space) ──
+      // Margin keeps walls visible through moderate pans before the
+      // next settle re-crop; canvas pixels stay viewport-bounded
+      // (crop x ratio == screen px x dpr regardless of zoom depth).
+      const MARGIN = 0.35
+      const wx0 = Math.max(0, cropX - cropW * MARGIN) / visualScaleNow
+      const wy0 = Math.max(0, cropY - cropH * MARGIN) / visualScaleNow
+      const wx1 =
+        Math.min(zoomedW, cropX + cropW * (1 + MARGIN)) / visualScaleNow
+      const wy1 =
+        Math.min(zoomedH, cropY + cropH * (1 + MARGIN)) / visualScaleNow
+      const ratio = visualScaleNow * dpr
+      setWallCrop((prev) => {
+        const next = {
+          x: Math.floor(wx0),
+          y: Math.floor(wy0),
+          w: Math.ceil(wx1 - wx0),
+          h: Math.ceil(wy1 - wy0),
+          ratio,
         }
-        try {
-          const snap = stage.toCanvas({
-            x: cropX / visualScaleNow,
-            y: cropY / visualScaleNow,
-            width: cropW / visualScaleNow,
-            height: cropH / visualScaleNow,
-            pixelRatio: visualScaleNow * dpr,
-          })
-          wCanvas.width = snap.width
-          wCanvas.height = snap.height
-          const wCtx = wCanvas.getContext('2d')
-          if (!wCtx) return
-          wCtx.drawImage(snap, 0, 0)
-          wWrap.style.left = `${cropX / visualScaleNow}px`
-          wWrap.style.top = `${cropY / visualScaleNow}px`
-          wWrap.style.width = `${cropW / visualScaleNow}px`
-          wWrap.style.height = `${cropH / visualScaleNow}px`
-          wWrap.style.display = 'block'
-        } catch {
-          wWrap.style.display = 'none'
-        }
-      }
-      paintWalls()
-      // Pointer-idle repaints reuse this painter (see the mousemove
-      // effect below) so freshly drawn walls sharpen after the cursor
-      // rests, without waiting for a zoom/pan settle.
-      paintWallsOverlayRef.current = paintWalls
+        return prev &&
+          prev.x === next.x &&
+          prev.y === next.y &&
+          prev.w === next.w &&
+          prev.h === next.h &&
+          prev.ratio === next.ratio
+          ? prev
+          : next
+      })
     }, 180)
     return () => clearTimeout(timer)
     // viewSettleTick: pan-release signal (transform refs aren't reactive).
@@ -6412,40 +6399,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     isEmptyWorkspace,
   ])
 
-  // ── Wall overlay vs live pointer feedback ──
-  // The wall snapshot would otherwise sit ON TOP of hover highlights /
-  // draw previews happening on the live stage beneath it. Any pointer
-  // movement over the workspace hides the snapshot instantly (live
-  // stage shows through, soft but interactive); after a short idle the
-  // painter from the settle effect repaints it — which also picks up
-  // any walls drawn in the meantime.
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
-    let idleTimer: number | null = null
-    const onMove = () => {
-      // Pan drags keep the wall snapshot visible — it tracks the
-      // wrapper's transform and there's no hover feedback to reveal
-      // while the hand is dragging. Hover / draw movement (no pan
-      // press in flight) hides it so the live stage shows through.
-      const panInFlight =
-        isPanningRef.current || panStartRef.current !== null
-      const wWrap = wallsHiResWrapRef.current
-      if (!panInFlight && wWrap && wWrap.style.display !== 'none') {
-        wWrap.style.display = 'none'
-      }
-      if (idleTimer !== null) clearTimeout(idleTimer)
-      idleTimer = window.setTimeout(() => {
-        idleTimer = null
-        paintWallsOverlayRef.current?.()
-      }, 350)
-    }
-    container.addEventListener('mousemove', onMove)
-    return () => {
-      container.removeEventListener('mousemove', onMove)
-      if (idleTimer !== null) clearTimeout(idleTimer)
-    }
-  }, [])
 
   // ---------- Zoom (button) ----------
 
@@ -9576,7 +9529,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 renderedPageHeight !== null &&
                 currentScale && (
                 <WallDrawingLayer
-                  onStageRef={handleStageRef}
+                  cropX={wallCrop?.x ?? 0}
+                  cropY={wallCrop?.y ?? 0}
+                  cropW={wallCrop?.w}
+                  cropH={wallCrop?.h}
+                  pixelRatio={wallCrop?.ratio}
                   // Reference-view passes the frozen EMPTY_WALLS / EMPTY_OPENINGS
                   // constants instead of a fresh `[]` so the wall layer's memo()
                   // sees a stable identity (reference views typically stay
@@ -9663,26 +9620,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               )}
 
-              {/* Wall-layer hi-res snapshot — true-resolution Konva
-                  region export, layered above the (CSS-stretched) live
-                  stage when zoom exceeds the raster cap. Transparent
-                  where nothing is drawn; pointer-transparent so the
-                  live stage beneath keeps all interaction. Hidden on
-                  any pointer movement / gesture, repainted on idle by
-                  the settle effect's painter. */}
-              <div
-                ref={wallsHiResWrapRef}
-                style={{
-                  position: 'absolute',
-                  display: 'none',
-                  pointerEvents: 'none',
-                }}
-              >
-                <canvas
-                  ref={wallsHiResCanvasRef}
-                  style={{ display: 'block', width: '100%', height: '100%' }}
-                />
-              </div>
 
               {/* Calibration overlay — rendered AFTER WallDrawingLayer so it
                   sits on top of the Konva canvas. The Konva Stage has
