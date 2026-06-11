@@ -1842,6 +1842,24 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         if (proj.makeups && proj.makeups.length > 0) {
           setMakeups(proj.makeups.map(migrateMakeup))
           if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
+        } else if (migrationAreaId) {
+          // FRESH PROJECT — proj.makeups was missing so the loader didn't
+          // touch the makeups state, leaving the initial-state seeded
+          // default wall type in place. Stamp that seeded makeup with
+          // the bootstrapped area's id so it actually shows up in the
+          // area-filtered Wall types panel. Without this, opening a
+          // new estimate landed the user in an empty panel — the
+          // wall type was THERE, just orphaned to no area.
+          setMakeups((prev) =>
+            prev.map((m) =>
+              m.areaId ? m : ({ ...m, areaId: migrationAreaId } as typeof m),
+            ),
+          )
+          setBrickMakeups((prev) =>
+            prev.map((m) =>
+              m.areaId ? m : ({ ...m, areaId: migrationAreaId } as typeof m),
+            ),
+          )
         }
         if (proj.brickSettings) setBrickSettings(proj.brickSettings)
         if (proj.exportInclusions) {
