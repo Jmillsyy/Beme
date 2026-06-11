@@ -6388,6 +6388,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   ])
 
 
+  // Belt-and-braces: re-sync the stage transform on every commit that
+  // could have (re)mounted or resized the stage — initial project load
+  // can mount the wall layer AFTER the centre-on-load effect has
+  // already run, in which case nothing else would push the current
+  // view transform onto the fresh stage until the next gesture.
+  useEffect(() => {
+    applyStageTransform()
+  })
+
   // Track the container's CSS size for the viewport stage. The
   // container stays mounted across 2D/3D toggles, so one observer
   // covers resizes, sidebar collapses and window changes.
