@@ -1680,15 +1680,29 @@ export async function buildBrickEstimateHtml(
                 <div class="view3d-legend-title">Legend</div>
                 <ul class="view3d-legend-list">
                   ${snap.legend
-                    .map(
-                      (item) => `
+                    .map((item) => {
+                      // Wall-type rows carry a `wt:<makeupId>` code that's
+                      // a UUID — useless to show alongside the name. Hide
+                      // the code column on those rows, and re-resolve the
+                      // label off the LIVE brick makeups list so a renamed
+                      // wall type updates in the export without re-capture.
+                      // Snapshots captured before the in-app legend refactor
+                      // stored the UUID as the label too; this re-resolve
+                      // is the only thing that fixes those legacy entries.
+                      const isWallTypeRow = item.code.startsWith('wt:')
+                      const liveLabel = isWallTypeRow
+                        ? (makeups ?? []).find(
+                            (m) => m.id === item.code.slice(3),
+                          )?.name ?? 'Wall type'
+                        : item.label
+                      return `
                     <li class="view3d-legend-row">
                       <span class="view3d-legend-swatch" style="background:${item.color};"></span>
-                      <span class="view3d-legend-label">${escapeHtml(item.label)}</span>
-                      <span class="view3d-legend-code">${escapeHtml(item.code)}</span>
+                      <span class="view3d-legend-label">${escapeHtml(liveLabel)}</span>
+                      ${isWallTypeRow ? '' : `<span class="view3d-legend-code">${escapeHtml(item.code)}</span>`}
                     </li>
                   `
-                    )
+                    })
                     .join('')}
                 </ul>
               </aside>

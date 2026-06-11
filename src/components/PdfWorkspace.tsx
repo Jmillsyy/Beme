@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import type { ComponentType } from 'react'
+import { flushSync } from 'react-dom'
+import { useNavigate } from 'react-router-dom'
 
 // 3D view is lazy-loaded so users who never open it pay zero bundle cost
 // (Three.js + r3f + drei add ~150 KB gzipped on top of the main bundle).
@@ -506,6 +508,11 @@ const AREA_PALETTE = [
 ]
 
 export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorkspaceProps = {}) {
+  // Router navigation — used by handleDeleteProject to return the user
+  // to the dashboard once the project is gone, and anywhere else the
+  // workspace wants to leave its own page intentionally. Outside of
+  // those handlers we stay on the same route for in-place edits.
+  const navigate = useNavigate()
   // Mode is local state initialised from the prop. The TradeRail on the
   // left changes it without unmounting the workspace — all existing
   // `mode === 'block'` / `'brick'` branches keep working unchanged.
@@ -537,6 +544,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // walls drawn while an area is active get its id stamped on them.
   const [areas, setAreas] = useState<ProjectArea[]>([])
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null)
+  // Remember the wall type the user had selected last time they were in
+  // each area, keyed by trade. Restored on area switch so jumping back
+  // into an area lands on the wall type you were drawing with — not
+  // whatever was active when you left. Per-session only (never persisted)
+  // because wall types live on the project anyway; this is just a UX
+  // shortcut to skip "what was I using here?" hunting.
+  const lastWallTypeByAreaRef = useRef<
+    Record<string, { block?: string; brick?: string }>
+  >({})
   // Backfill colorHex for any areas that loaded without one (older
   // projects predate auto-colouring). Done once per area-list change
   // and only when there's something to fill, so we don't trigger
@@ -552,6 +568,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       )
     )
   }, [areas])
+  // Defensive area bootstrap moved below — isProjectLoading isn't
+  // declared yet at this point in the component body. Search for
+  // 'Defensive area bootstrap' below for the actual implementation.
   // Workspace view mode — '2d' is the Konva canvas (editing surface); '3d'
   // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
   // state, never persisted. Toggle button in the unified toolbar flips it.
@@ -582,6 +601,86 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * loading-state instead of upload-zone.
    */
   const [isProjectLoading, setIsProjectLoading] = useState(!!projectId)
+  // Defensive area bootstrap — guarantees the workspace ALWAYS has at
+  // least one area once project loading has settled. The project-load
+  // handler already creates a default area when the saved project
+  // doesn't carry any, but flows like "Start with an empty workspace"
+  // (no project loaded) and edge cases where the saved project has
+  // areas:[] explicitly didn't pick that up. This effect catches both:
+  // it watches areas + isProjectLoading and synthesises an area + its
+  // stamped wall types when the workspace is open but the area list
+  // is empty.
+  //
+  // StrictMode-safe: a ref guards against the dev-only effect replay
+  // so we don't seed two areas (and double the default wall types).
+  // Without it, the effect runs, schedules state updates, StrictMode
+  // tears it down and re-runs it with the same closure (areas still
+  // [] from the first run's perspective) — both runs would then
+  // generate their own UUID and stamp the seed makeup with the
+  // second run's id while leaving a second seed behind from the first
+  // run. Setting the ref BEFORE doing any work means the replay
+  // short-circuits.
+  const didBootstrapRef = useRef(false)
+  useEffect(() => {
+    if (isProjectLoading) return
+    if (areas.length > 0) return
+    if (didBootstrapRef.current) return
+    didBootstrapRef.current = true
+    const newAreaId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `area-${Date.now()}`
+    const colorHex = AREA_PALETTE[0]
+    setAreas([{ id: newAreaId, name: 'New Area', colorHex }])
+    setActiveAreaId(newAreaId)
+    // Stamp any orphan wall types with the new area so the Wall types
+    // panel surfaces them under this area's filter. Same backfill the
+    // project-load handler does for fresh estimates. If no orphan
+    // makeup exists to stamp AND the user's library can support a
+    // seed (block library is non-empty), push a fresh default makeup
+    // for the new area so the wall-types panel opens with something
+    // ready to draw with — matches the new-area onCreate path.
+    setMakeups((prev) => {
+      const stamped = prev.map((m) =>
+        m.areaId ? m : ({ ...m, areaId: newAreaId } as typeof m),
+      )
+      const hasForArea = stamped.some((m) => m.areaId === newAreaId)
+      if (hasForArea) return stamped
+      if (Object.keys(BLOCK_LIBRARY).length === 0) return stamped
+      const seeded = createDefaultWallMakeup({ settings: getUserSettings() })
+      seeded.areaId = newAreaId
+      setActiveMakeupId(seeded.id)
+      return [...stamped, seeded]
+    })
+    setBrickMakeups((prev) => {
+      const stamped = prev.map((m) =>
+        m.areaId ? m : ({ ...m, areaId: newAreaId } as typeof m),
+      )
+      const hasForArea = stamped.some((m) => m.areaId === newAreaId)
+      if (hasForArea) return stamped
+      const seeded = createDefaultBrickMakeup({})
+      seeded.areaId = newAreaId
+      setActiveBrickMakeupId(seeded.id)
+      return [...stamped, seeded]
+    })
+    // Drop the dirty baseline so the post-bootstrap state becomes the
+    // new "saved" reference. Without this the dirty-tracker sees the
+    // area + makeup stamping as a user edit and the unsaved-changes
+    // prompt fires the moment the user tries to leave a fresh
+    // workspace they haven't actually touched. Two rAFs put the
+    // reseed AFTER the next two paint frames, by which time every
+    // downstream migration (sweeps, wedge fix, palette backfill) has
+    // also queued + flushed its own setState. Same shape as the
+    // project-load handler's post-load reseed.
+    savedSnapshotRef.current = null
+    setHasUnsavedChanges(false)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        savedSnapshotRef.current = null
+        setHasUnsavedChanges(false)
+      })
+    })
+  }, [areas.length, isProjectLoading])
   /**
    * Per-page calibration + intrinsic dimensions. Has to be declared up here
    * with the rest of the workspace state so the dirty-tracker effect below
@@ -1171,12 +1270,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // the user's DefaultsByRole map (e.g. their preferred body / corner
     // block). One-shot read — once the workspace is open, the user owns
     // the makeup. Same getUserSettings() pattern as brickSettings below.
-    return [
-      createDefaultWallMakeup({
-        name: 'Block wall 2400mm',
-        settings: getUserSettings(),
-      }),
-    ]
+    // No name override — falls back to createDefaultWallMakeup's
+    // 'New wall type' default. Generic placeholder reads better
+    // than a presumptuous 'Block wall 2400mm' the user has to undo.
+    return [createDefaultWallMakeup({ settings: getUserSettings() })]
   })
   const [activeMakeupId, setActiveMakeupId] = useState<string>(
     // No makeup → no active id. Empty string is fine here; the wall-type
@@ -1686,7 +1783,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const wallsNeedAreaMigration = Object.values(
           proj.wallsByPage ?? {},
         ).some((walls) => walls.some((w) => isOrphanAreaId(w.areaId)))
+        // Always bootstrap a default area if the project has none —
+        // even a brand-new empty project should land on a real area
+        // rather than the read-only "All areas" view, so the user can
+        // start drawing straight away. The migration branch also picks
+        // this up to catch orphan makeups / walls on legacy projects.
         const needsAreaForMigration =
+          hydratedAreas.length === 0 ||
           (proj.makeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
           (proj.brickMakeups ?? []).some((m) => isOrphanAreaId(m.areaId)) ||
           wallsNeedAreaMigration
@@ -1814,14 +1917,37 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setActivePierMakeupId(resolvedActive)
         setCurrentPage(proj.currentPage || 1)
         // Hydrate project Areas (including any synthesised Default area
-        // from the migration block above). activeAreaId stays as its
-        // default (null → "All" tab) on load — landing in a specific
-        // area on every reopen would be surprising. User picks the
-        // area to focus on after the project loads.
-        if (hydratedAreas.length > 0) setAreas(hydratedAreas)
+        // from the migration block above). If the project carries at
+        // least one area, default activeAreaId to the FIRST one — landing
+        // on a real area is more guided than dropping the user into the
+        // read-only "All areas" view, where they can't draw anything
+        // until they pick somewhere. Fresh projects with no walls drawn
+        // yet then start on the right side of the area-picker workflow.
+        if (hydratedAreas.length > 0) {
+          setAreas(hydratedAreas)
+          setActiveAreaId(hydratedAreas[0].id)
+        }
         if (proj.makeups && proj.makeups.length > 0) {
           setMakeups(proj.makeups.map(migrateMakeup))
           if (proj.activeMakeupId) setActiveMakeupId(proj.activeMakeupId)
+        } else if (migrationAreaId) {
+          // FRESH PROJECT — proj.makeups was missing so the loader didn't
+          // touch the makeups state, leaving the initial-state seeded
+          // default wall type in place. Stamp that seeded makeup with
+          // the bootstrapped area's id so it actually shows up in the
+          // area-filtered Wall types panel. Without this, opening a
+          // new estimate landed the user in an empty panel — the
+          // wall type was THERE, just orphaned to no area.
+          setMakeups((prev) =>
+            prev.map((m) =>
+              m.areaId ? m : ({ ...m, areaId: migrationAreaId } as typeof m),
+            ),
+          )
+          setBrickMakeups((prev) =>
+            prev.map((m) =>
+              m.areaId ? m : ({ ...m, areaId: migrationAreaId } as typeof m),
+            ),
+          )
         }
         if (proj.brickSettings) setBrickSettings(proj.brickSettings)
         if (proj.exportInclusions) {
@@ -1888,7 +2014,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         console.error('Failed to load project', err)
       })
       .finally(() => {
-        if (!cancelled) setIsProjectLoading(false)
+        if (!cancelled) {
+          setIsProjectLoading(false)
+          // Post-load migrations (orphan-area sweeps, wedge curve
+          // normalisation, AREA_PALETTE backfill, etc.) fire on the
+          // first render with loaded state and queue their own setState
+          // calls. Without a follow-up reseed the dirty effect captures
+          // pre-migration state as the baseline, then flips dirty=true
+          // when the migration's setState flushes — and the user gets
+          // a "Save before leaving?" prompt on a project they haven't
+          // touched. Two rAFs put the reseed AFTER the next two paint
+          // frames, by which time every migration cascade has settled.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (cancelled) return
+              savedSnapshotRef.current = null
+              setHasUnsavedChanges(false)
+            })
+          })
+        }
       })
     return () => {
       cancelled = true
@@ -2059,37 +2203,62 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   /**
-   * Snapshot of the key state references at the last load/save. We compare by
-   * reference because every state setter we use returns a fresh object/array
-   * via `(prev) => ...`, so any real edit changes a reference. Storing the
-   * snapshot in a ref keeps the comparison effect from looping.
+   * Snapshot of the key state at the last load/save — stored as a
+   * JSON FINGERPRINT (string) rather than the object references.
+   *
+   * Why the change from reference equality: PDF rendering + reference
+   * doc hydration both run async AFTER the project-load batch, and
+   * each one calls a state setter with a new reference (functional
+   * updates spread/map, etc.). Reference-equality dirty tracking
+   * flagged the project as dirty on every such async update, even
+   * though the user hadn't touched anything — which is why you saw
+   * "Save changes before leaving?" on a project you only opened.
+   *
+   * The fingerprint avoids that: same DATA → same string → not dirty,
+   * regardless of reference churn. File objects are reduced to
+   * { name, size, lastModified } since File can't be JSON-stringified
+   * meaningfully. Plain JSON state (walls, makeups, settings) goes
+   * straight into the stringify.
+   *
+   * Storing in a ref keeps the comparison effect from looping.
    */
-  const savedSnapshotRef = useRef<{
-    walls: typeof wallsByPage
-    openings: typeof openingsByPage
-    piers: typeof piersByPage
-    makeups: typeof makeups
-    pierMakeups: typeof pierMakeups
-    details: typeof projectDetails
-    brick: typeof brickSettings
-    brickMakeups: typeof brickMakeups
-    supplyItemSelections: typeof supplyItemSelections
-    supplyItemRateOverrides: typeof supplyItemRateOverrides
-    // Plan attachments + workspace mode have to live in the snapshot too
-    // — uploading a PDF, switching into the empty-workspace mode, or
-    // attaching a reference PDF all materially change what the project
-    // looks like at next load, so they should flip `hasUnsavedChanges`
-    // and unblock the Save button just like drawing a wall does.
-    pdfFile: typeof pdfFile
-    pagesData: typeof pagesData
-    referencePdfFiles: typeof referencePdfFiles
-    referencePdfPaths: typeof referencePdfPaths
-    referencePdfIds: typeof referencePdfIds
-    referencePdfSelectedPages: typeof referencePdfSelectedPages
-    referencePdfPagesDataById: typeof referencePdfPagesDataById
-    referencePdfMeasurementsByPageById: typeof referencePdfMeasurementsByPageById
-    isEmptyWorkspace: typeof isEmptyWorkspace
-  } | null>(null)
+  const savedSnapshotRef = useRef<string | null>(null)
+  // Snapshot fingerprint builder — keep file objects (which JSON.stringify
+  // would render as `{}`) keyed by their stable metadata so renaming or
+  // re-uploading the same file counts as a real change.
+  //
+  // PDF-render state (pagesData, referencePdfPagesDataById) is intentionally
+  // NOT in the fingerprint: those fields get mutated by the PDF
+  // rendering pipeline AFTER project load (page width/height get read
+  // off the PDF metadata and written back even if they already matched
+  // the saved values, plus floating-point drift can creep in). Tracking
+  // them flagged every newly-opened project as "dirty" within seconds
+  // of opening. Calibration handlers + PDF apply handlers explicitly
+  // mark dirty via setHasUnsavedChanges(true) so genuine user changes
+  // still gate the Save changes button.
+  const buildSnapshotFingerprint = (): string => {
+    const fileFp = (f: File | null | undefined) =>
+      f ? { name: f.name, size: f.size, lastModified: f.lastModified } : null
+    return JSON.stringify({
+      walls: wallsByPage,
+      openings: openingsByPage,
+      piers: piersByPage,
+      makeups,
+      pierMakeups,
+      details: projectDetails,
+      brick: brickSettings,
+      brickMakeups,
+      supplyItemSelections,
+      supplyItemRateOverrides,
+      pdfFile: fileFp(pdfFile),
+      referencePdfFiles: referencePdfFiles.map(fileFp),
+      referencePdfPaths,
+      referencePdfIds,
+      referencePdfSelectedPages,
+      referencePdfMeasurementsByPageById,
+      isEmptyWorkspace,
+    })
+  }
 
   /**
    * In-flight save guard. Both handleSaveProject and handleToggleProjectStatus
@@ -2110,55 +2279,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const inFlightProjectIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    const current = {
-      walls: wallsByPage,
-      openings: openingsByPage,
-      piers: piersByPage,
-      makeups,
-      pierMakeups,
-      details: projectDetails,
-      brick: brickSettings,
-      brickMakeups,
-      supplyItemSelections,
-      supplyItemRateOverrides,
-      pdfFile,
-      pagesData,
-      referencePdfFiles,
-      referencePdfPaths,
-      referencePdfIds,
-      referencePdfSelectedPages,
-      referencePdfPagesDataById,
-      referencePdfMeasurementsByPageById,
-      isEmptyWorkspace,
-    }
+    // Don't compute dirty while the project is mid-load — the load
+    // batches several setState calls, and the snapshot can't be a
+    // reliable baseline until every async hydration step (PDF render,
+    // reference-doc dim measurement, etc.) has settled. The load
+    // handler nulls the snapshot when it finishes; first run with a
+    // null snapshot seeds it from current state.
+    if (isProjectLoading) return
+    const current = buildSnapshotFingerprint()
     if (!savedSnapshotRef.current) {
-      // First render — seed the snapshot so the very first effect run doesn't
-      // mark the project dirty before anyone's touched it.
+      // Seed the snapshot so the first effect run doesn't mark the
+      // project dirty before anyone's touched it.
       savedSnapshotRef.current = current
       return
     }
-    const snap = savedSnapshotRef.current
-    const dirty =
-      current.walls !== snap.walls ||
-      current.openings !== snap.openings ||
-      current.piers !== snap.piers ||
-      current.makeups !== snap.makeups ||
-      current.pierMakeups !== snap.pierMakeups ||
-      current.details !== snap.details ||
-      current.brick !== snap.brick ||
-      current.brickMakeups !== snap.brickMakeups ||
-      current.supplyItemSelections !== snap.supplyItemSelections ||
-      current.supplyItemRateOverrides !== snap.supplyItemRateOverrides ||
-      current.pdfFile !== snap.pdfFile ||
-      current.pagesData !== snap.pagesData ||
-      current.referencePdfFiles !== snap.referencePdfFiles ||
-      current.referencePdfPaths !== snap.referencePdfPaths ||
-      current.referencePdfIds !== snap.referencePdfIds ||
-      current.referencePdfSelectedPages !== snap.referencePdfSelectedPages ||
-      current.referencePdfPagesDataById !== snap.referencePdfPagesDataById ||
-      current.referencePdfMeasurementsByPageById !==
-        snap.referencePdfMeasurementsByPageById ||
-      current.isEmptyWorkspace !== snap.isEmptyWorkspace
+    const dirty = current !== savedSnapshotRef.current
     if (dirty !== hasUnsavedChanges) setHasUnsavedChanges(dirty)
   }, [
     wallsByPage,
@@ -2172,15 +2307,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     supplyItemSelections,
     supplyItemRateOverrides,
     pdfFile,
-    pagesData,
+    // pagesData / referencePdfPagesDataById intentionally NOT in deps —
+    // they're populated by the PDF render pipeline on every load and
+    // would re-flag the project dirty within seconds of opening.
+    // Calibration + PDF apply handlers mark dirty explicitly instead.
     referencePdfFiles,
     referencePdfPaths,
     referencePdfIds,
     referencePdfSelectedPages,
-    referencePdfPagesDataById,
     referencePdfMeasurementsByPageById,
     isEmptyWorkspace,
     hasUnsavedChanges,
+    isProjectLoading,
   ])
 
   // Reasons save might be blocked, evaluated each render. A PDF is NO LONGER required —
@@ -2399,27 +2537,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       }
       setLastSavedAt(now)
       // Refresh the dirty-state baseline so the Save changes button greys
-      // out until the user actually edits something next. Keep this shape
-      // in sync with the dirty-tracker useEffect above — fields missing
-      // here would always read as different from `current` and the project
-      // would stay perpetually 'dirty' after save.
-      savedSnapshotRef.current = {
-        walls: wallsByPage,
-        openings: openingsByPage,
-        piers: piersByPage,
-        makeups,
-        pierMakeups,
-        details: projectDetails,
-        brick: brickSettings,
-        brickMakeups,
-        supplyItemSelections,
-        supplyItemRateOverrides,
-        pdfFile,
-        pagesData,
-        referencePdfFiles,
-        referencePdfPaths,
-        isEmptyWorkspace,
-      }
+      // out until the user actually edits something next. Uses the same
+      // fingerprint helper as the dirty-tracker effect so save + load
+      // baselines can't drift apart.
+      savedSnapshotRef.current = buildSnapshotFingerprint()
       setHasUnsavedChanges(false)
       // Save persisted to the cloud — discard the local draft so a
       // future restore prompt doesn't offer to re-apply data that's
@@ -2809,11 +2930,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       setCreatedByDisplayName(null)
       setProjectCompletedAt(null)
       setLastSavedAt(null)
-      if (typeof window !== 'undefined') {
-        const url = new URL(window.location.href)
-        url.searchParams.delete('id')
-        window.history.replaceState({}, '', url.toString())
-      }
+      // Defuse the unsaved-changes prompt before navigating away. The
+      // project we were potentially "dirty against" is gone, so blocking
+      // a redirect on its behalf would be nonsense — the user just
+      // approved the destructive action. Null the snapshot ref + use
+      // flushSync so the dirty=false commit lands in the closure
+      // useBlocker reads BEFORE navigate fires below.
+      savedSnapshotRef.current = null
+      flushSync(() => setHasUnsavedChanges(false))
       if (mode) clearDraft(deletedId, mode)
     } catch (err) {
       console.error('Failed to delete project', err)
@@ -2822,6 +2946,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       })
       return
     }
+    // Return to the dashboard. Done AFTER all the project-state clears
+    // above so the workspace doesn't re-render with half a stale project
+    // visible during the route transition. Sonner toasts persist across
+    // navigation, so the Undo handler below still surfaces on /.
+    navigate('/')
     if (cached) {
       // 8-second sticky toast with Undo. The handler re-saves via
       // saveProjectToStore (which on cloud accounts upserts the row),
@@ -3087,6 +3216,48 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       return changed ? next : prev
     })
   }, [wallsByPage, areas])
+
+  // ── Sweep orphan WALL TYPES (makeups) into the first area ──────────
+  //
+  // Same idea as the wall-areaId sweep above but for wall TYPES.
+  // "Orphan" means either:
+  //   1. No areaId at all (`undefined` / `''`) — never got stamped.
+  //   2. areaId points to an area that no longer exists — happens
+  //      when the user deletes an area (we intentionally don't
+  //      cascade-delete the area's makeups, so they end up pointing
+  //      at a vanished id).
+  // Either way the makeup is invisible inside every specific area's
+  // panel and only surfaces under "All areas", which is the bug the
+  // user reported as "I create a new area and a phantom wall type
+  // appears that isn't in any area."
+  //
+  // Repaired makeups land on the FIRST area's id (matches the load-
+  // time migration), so the phantom resurfaces under area #1 instead
+  // of vanishing entirely. Cheap: early-return when nothing's orphan.
+  useEffect(() => {
+    if (areas.length === 0) return
+    const firstAreaId = areas[0].id
+    const validAreaIds = new Set(areas.map((a) => a.id))
+    const isOrphan = (id: string | undefined) =>
+      !id || !validAreaIds.has(id)
+    const hasOrphanBlock = makeups.some((m) => isOrphan(m.areaId))
+    const hasOrphanBrick = brickMakeups.some((m) => isOrphan(m.areaId))
+    if (!hasOrphanBlock && !hasOrphanBrick) return
+    if (hasOrphanBlock) {
+      setMakeups((prev) =>
+        prev.map((m) =>
+          isOrphan(m.areaId) ? { ...m, areaId: firstAreaId } : m,
+        ),
+      )
+    }
+    if (hasOrphanBrick) {
+      setBrickMakeups((prev) =>
+        prev.map((m) =>
+          isOrphan(m.areaId) ? { ...m, areaId: firstAreaId } : m,
+        ),
+      )
+    }
+  }, [makeups, brickMakeups, areas])
 
   // Migrate legacy wedge curve makeups in-place. Old wedge curves were
   // created with the default 20.45 cleanout + 50.45 tile base course
@@ -4129,6 +4300,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    */
   function handleActivateMakeup(id: string) {
     setActiveMakeupId(id)
+    // Remember this pick for the active area so jumping back here
+    // later restores it. Per-trade so block + brick selections
+    // don't trample each other.
+    if (activeAreaId) {
+      const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+      lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, block: id }
+    }
     // Flip the kind tracker so the shared toolbar's Draw wall button
     // returns to wall-draw mode after the user previously had a pier
     // type active.
@@ -4259,6 +4437,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    */
   function handleActivateBrickMakeup(id: string) {
     setActiveBrickMakeupId(id)
+    // Same per-area memory as handleActivateMakeup — see comment there.
+    if (activeAreaId) {
+      const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+      lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, brick: id }
+    }
     setShowActiveMakeupHighlight(true)
   }
 
@@ -5784,6 +5967,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setZoom(1)
     setRenderedZoom(1)
     cancelCalibration()
+    // PDF + pagesData aren't both in the dirty fingerprint anymore
+    // (pagesData drifts on every PDF render). Mark dirty explicitly
+    // here so the Save button lights up after a fresh upload.
+    setHasUnsavedChanges(true)
   }
 
   const acceptFile = async (file: File | undefined | null) => {
@@ -6059,6 +6246,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       },
     }))
     cancelCalibration()
+    // Calibration mutates pagesData (no longer in the dirty fingerprint
+    // because the PDF render writes to it on every load). Mark dirty
+    // explicitly so Save lights up after the user re-calibrates.
+    setHasUnsavedChanges(true)
     // Calibration is the most-consequential silent state change in the
     // app — wrong calibration silently breaks every length downstream.
     // Toast confirms the ratio that landed so the user can sanity-check
@@ -6087,6 +6278,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       },
     }))
     cancelCalibration()
+    // See applyScale — pagesData isn't in the dirty fingerprint, so
+    // calibration has to mark dirty itself.
+    setHasUnsavedChanges(true)
     toast.success(`Scale set to 1:${Math.round(ratio)}`, {
       description: `Page ${currentPage} — picked from common ratios.`,
     })
@@ -6237,15 +6431,43 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       <div className="max-w-[1600px] mx-auto">
         <div className="fixed inset-0 z-50 bg-ink-900/95 flex items-center justify-center p-4">
           <div className="max-w-lg w-full bg-ink-800 rounded-xl shadow-xl border border-ink-600">
-            <div className="px-6 py-4 border-b border-ink-600">
-              <h2 className="text-lg font-semibold text-ink-50">
-                Start a new {mode} estimate
-              </h2>
-              <p className="text-xs text-ink-400 mt-0.5">
-                Fill in the customer + project info first — this lands in the
-                header of the exported estimate, and saving needs at least a
-                project name.
-              </p>
+            <div className="px-6 py-4 border-b border-ink-600 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-ink-50">
+                  Start a new {mode} estimate
+                </h2>
+                <p className="text-xs text-ink-400 mt-0.5">
+                  Fill in the customer + project info first — this lands in the
+                  header of the exported estimate, and saving needs at least a
+                  project name.
+                </p>
+              </div>
+              {/* Back-out affordance for users who landed here by mistake
+                  (clicked the wrong trade on the dashboard, etc.) —
+                  matches other modal patterns in the app. Two things
+                  have to happen BEFORE navigate runs:
+                    1. Null the snapshot ref synchronously so the dirty
+                       effect re-seeds instead of re-deriving dirty=true
+                       from the stale baseline.
+                    2. flushSync the hasUnsavedChanges=false update so
+                       useBlocker reads it from the latest render's
+                       closure rather than the previous render's (still
+                       dirty=true) closure.
+                  Without both, the unsaved-changes prompt fires on a
+                  project the user has never persisted. */}
+              <button
+                type="button"
+                onClick={() => {
+                  savedSnapshotRef.current = null
+                  flushSync(() => setHasUnsavedChanges(false))
+                  navigate('/')
+                }}
+                className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2 flex-shrink-0"
+                aria-label="Back to dashboard"
+                title="Back to dashboard"
+              >
+                ×
+              </button>
             </div>
             <div className="px-6 py-4 space-y-3">
               <label className="text-sm block">
@@ -6506,10 +6728,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </div>
             </div>
 
-            {/* ── Right rail: same as workspace mode ── */}
+            {/* ── Right rail ──
+                Used to mirror the workspace right rail on the upload-zone
+                page, but the panel surfaces (Area / Wall types / Supply
+                items) are noise before the user picks a PDF — they can't
+                even draw to use those configs. Wrapped in `false` so the
+                JSX stays in source (easy to flip back if we want to
+                preview them again) while the rendered page stays focused
+                on the upload affordance.
+
+                Note the upload-zone hides the right rail entirely; the
+                workspace-mode render (below the upload-zone return)
+                still renders this rail with all panels. */}
+            {false && (
             <aside className="w-full mt-3 space-y-3 lg:w-[272px] lg:flex-shrink-0 lg:mt-0 lg:min-h-0 lg:overflow-y-auto">
               {mode === 'block' && (
                 <WallTypesPanel
+                  // Remount on area switch — see the keyed block-side
+                  // note at the canvas-rail render below.
+                  key={`wt-block-3d-${activeAreaId ?? 'all'}`}
                   // Per-area filter — same as the main render below.
                   makeups={
                     activeAreaId
@@ -6541,6 +6778,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               )}
               {mode === 'brick' && (
                 <BrickTypesPanel
+                  // Remount on area switch — see the keyed note on the
+                  // canvas-rail render below.
+                  key={`wt-brick-3d-${activeAreaId ?? 'all'}`}
                   makeups={
                     activeAreaId
                       ? brickMakeups.filter((m) => m.areaId === activeAreaId)
@@ -6570,6 +6810,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               )}
             </aside>
+            )}
           </div>
         </div>
       </div>
@@ -9106,8 +9347,64 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             <AreaTabs
               areas={areas}
               activeAreaId={activeAreaId}
+              wallCountByAreaId={(() => {
+                // Count walls per area for the ACTIVE trade — block view
+                // counts block walls, brick view counts brick walls.
+                // Walks every page so areas that span multiple pages get
+                // their full count, not just whatever's on the current
+                // page.
+                const counts: Record<string, number> = {}
+                for (const walls of Object.values(wallsByPage)) {
+                  for (const w of walls) {
+                    if (!w.areaId) continue
+                    const tradeMatch =
+                      mode === 'brick'
+                        ? w.trade === 'brick'
+                        : w.trade !== 'brick'
+                    if (!tradeMatch) continue
+                    counts[w.areaId] = (counts[w.areaId] ?? 0) + 1
+                  }
+                }
+                return counts
+              })()}
               onSelect={(areaId) => {
+                // Remember the wall type for the area we're leaving so
+                // the restore-on-return path below has something to
+                // pick up. Only when leaving a real area (the "All"
+                // view doesn't carry a per-area selection).
+                if (activeAreaId) {
+                  const prev =
+                    lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+                  lastWallTypeByAreaRef.current[activeAreaId] = {
+                    ...prev,
+                    block: activeMakeupId,
+                    brick: activeBrickMakeupId ?? undefined,
+                  }
+                }
                 setActiveAreaId(areaId)
+                // Restore the last wall type the user had selected in
+                // the new area, per trade. Falls back to the first
+                // wall type scoped to this area, then to leaving the
+                // current selection alone — never lands on a wall
+                // type from a different area unless nothing else is
+                // available.
+                if (areaId !== null) {
+                  const remembered = lastWallTypeByAreaRef.current[areaId]
+                  const blockPick =
+                    (remembered?.block &&
+                      makeups.find(
+                        (m) => m.id === remembered.block && m.areaId === areaId,
+                      )?.id) ??
+                    makeups.find((m) => m.areaId === areaId)?.id
+                  if (blockPick) setActiveMakeupId(blockPick)
+                  const brickPick =
+                    (remembered?.brick &&
+                      brickMakeups.find(
+                        (m) => m.id === remembered.brick && m.areaId === areaId,
+                      )?.id) ??
+                    brickMakeups.find((m) => m.areaId === areaId)?.id
+                  if (brickPick) setActiveBrickMakeupId(brickPick)
+                }
                 // When picking a real area (not "All"), jump to the
                 // PDF page that has the most walls of the active trade
                 // in that area. Without this, switching area in 3D
@@ -9153,8 +9450,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 // generic makeup scoped to this area.
                 const seededBlock = createDefaultWallMakeup({})
                 seededBlock.areaId = id
+                // Brick seed inherits the block default's name
+                // ("New wall type") and matched height, so both
+                // trades land with the same generic placeholder
+                // the user can rename to something meaningful.
                 const seededBrick = createDefaultBrickMakeup({
-                  name: `Brickwork ${seededBlock.heightMm}mm`,
                   heightMm: seededBlock.heightMm,
                 })
                 seededBrick.areaId = id
@@ -9237,21 +9537,90 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   prev.map((a) => (a.id === areaId ? { ...a, name: newName } : a))
                 )
               }}
+              onReorder={(orderedIds) => {
+                // Persist the new sort order onto the canonical areas
+                // list. Rebuild from the provided id sequence so any
+                // areas the child didn't include (shouldn't happen, but
+                // defensive) get appended at the end in their original
+                // order. The order lives on `areas` and is saved with
+                // the project, so this carries across sessions.
+                setAreas((prev) => {
+                  const byId = new Map(prev.map((a) => [a.id, a]))
+                  const reordered: ProjectArea[] = []
+                  for (const id of orderedIds) {
+                    const a = byId.get(id)
+                    if (a) {
+                      reordered.push(a)
+                      byId.delete(id)
+                    }
+                  }
+                  // Append any stragglers in original order.
+                  for (const a of prev) {
+                    if (byId.has(a.id)) reordered.push(a)
+                  }
+                  return reordered
+                })
+              }}
               onDelete={(areaId) => {
                 const removed = areas.find((a) => a.id === areaId)
-                setAreas((prev) => prev.filter((a) => a.id !== areaId))
-                // If the deleted area was active, fall back to All so the
-                // user doesn't land on a now-empty filter that hides
-                // everything. The deleted area's walls keep their old
-                // areaId — they become "orphaned" but still visible in
-                // All. Could prune them too but that's destructive on a
-                // simple delete click; user can re-create an area and
-                // bulk-assign in v2.
-                if (activeAreaId === areaId) setActiveAreaId(null)
+                const remaining = areas.filter((a) => a.id !== areaId)
+                setAreas(remaining)
+                // Drop the deleted area's wall-type memory so a re-created
+                // area at the same id (shouldn't happen — uuid — but defensive)
+                // doesn't inherit stale picks.
+                delete lastWallTypeByAreaRef.current[areaId]
+                // If the deleted area was active, land on the next
+                // remaining area rather than the "All" view. Avoids
+                // dumping the user into a read-only view they didn't
+                // ask for. Falls back to "All" only when nothing's
+                // left to switch to.
+                if (activeAreaId === areaId) {
+                  setActiveAreaId(remaining[0]?.id ?? null)
+                }
+                // Reassign the deleted area's WALLS + WALL TYPES to the
+                // first remaining area. Used to leave the old areaId
+                // intact and rely on "All areas" to surface them, but
+                // that left phantom wall types invisible inside any
+                // specific area's filter (the id pointed nowhere) —
+                // user kept reporting "an orphan wall type appears
+                // when I create new areas". Reassigning on delete
+                // keeps everything visible somewhere real. The orphan-
+                // sweep effect above is the catch-all for any state
+                // that still slips through (loaded from older saves,
+                // etc.); this just stops the bug at its source.
+                const fallbackAreaId = remaining[0]?.id
+                if (fallbackAreaId) {
+                  setMakeups((prev) =>
+                    prev.map((m) =>
+                      m.areaId === areaId
+                        ? { ...m, areaId: fallbackAreaId }
+                        : m,
+                    ),
+                  )
+                  setBrickMakeups((prev) =>
+                    prev.map((m) =>
+                      m.areaId === areaId
+                        ? { ...m, areaId: fallbackAreaId }
+                        : m,
+                    ),
+                  )
+                  setWallsByPage((prev) => {
+                    const next: typeof prev = {}
+                    for (const [pageStr, walls] of Object.entries(prev)) {
+                      next[Number(pageStr)] = walls.map((w) =>
+                        w.areaId === areaId
+                          ? { ...w, areaId: fallbackAreaId }
+                          : w,
+                      )
+                    }
+                    return next
+                  })
+                }
                 if (removed) {
                   toast.success(`Area "${removed.name}" removed`, {
-                    description:
-                      'Walls in it are visible under All until you reassign them.',
+                    description: fallbackAreaId
+                      ? `Walls and wall types moved to "${remaining[0]?.name ?? 'the next area'}".`
+                      : 'Walls in it are visible under All until you reassign them.',
                   })
                 }
               }}
@@ -9292,6 +9661,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             its own wall types; 'All' shows every makeup across areas. */}
         {mode === 'block' && (
           <WallTypesPanel
+            // Remount on area switch — any internal panel state
+            // (editingId, expanded, etc.) gets thrown away so we never
+            // serve the new area through a stale closure that captured
+            // the previous area's filter result. The keyed-remount also
+            // guarantees the makeups prop is read FRESH against the
+            // active area instead of through React's reconciliation
+            // shortcut that compares against the previous render's prop
+            // reference. 'all' is used for the null sentinel because
+            // React keys are strings.
+            key={`wt-block-${activeAreaId ?? 'all'}`}
             makeups={
               activeAreaId
                 ? makeups.filter((m) => m.areaId === activeAreaId)
@@ -9355,6 +9734,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             block. */}
         {mode === 'brick' && (
           <BrickTypesPanel
+            // Remount on area switch — see the block-side note above.
+            key={`wt-brick-${activeAreaId ?? 'all'}`}
             makeups={
               activeAreaId
                 ? brickMakeups.filter((m) => m.areaId === activeAreaId)

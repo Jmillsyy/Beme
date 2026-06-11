@@ -112,12 +112,19 @@ export default function BlockTallyPanel({
             </span>
           </div>
 
-          <table className="w-full text-sm">
+          {/* table-fixed forces the column widths below to be respected
+              instead of letting a long block name (e.g. "300-series
+              Cleanout Block") balloon the middle column and shove the
+              Count off the right edge — which is what was happening on
+              the narrow 272px right rail. The Block column now truncates
+              with ellipsis while Code + Count stay pinned at their
+              configured widths. */}
+          <table className="w-full text-sm table-fixed">
             <thead className="text-[11px] uppercase tracking-wider text-ink-400 bg-ink-700/40">
               <tr>
-                <th className="text-left px-2.5 py-1.5 w-16 font-semibold">Code</th>
+                <th className="text-left px-2.5 py-1.5 w-14 font-semibold">Code</th>
                 <th className="text-left px-2 py-1.5 font-semibold">Block</th>
-                <th className="text-right px-2.5 py-1.5 w-14 font-semibold">Count</th>
+                <th className="text-right px-2.5 py-1.5 w-12 font-semibold">Count</th>
               </tr>
             </thead>
             <tbody>
@@ -125,8 +132,17 @@ export default function BlockTallyPanel({
                 const block = BLOCK_LIBRARY[code]
                 return (
                   <tr key={code} className="border-t border-ink-700/60">
-                    <td className="px-2.5 py-1.5 font-mono text-beme-300 text-xs font-medium">{code}</td>
-                    <td className="px-2 py-1.5 text-ink-200 text-xs truncate">{block?.name ?? code}</td>
+                    <td className="px-2.5 py-1.5 font-mono text-beme-300 text-xs font-medium">
+                      {code}
+                    </td>
+                    {/* truncate has to live on a block-level inner element —
+                        TD with truncate doesn't apply text-overflow under
+                        table-fixed; the inner div is the overflow container. */}
+                    <td className="px-2 py-1.5 text-ink-200 text-xs">
+                      <div className="truncate" title={block?.name ?? code}>
+                        {block?.name ?? code}
+                      </div>
+                    </td>
                     <td className="px-2.5 py-1.5 text-right font-mono font-semibold tabular-nums text-ink-50 text-xs">
                       {count.toLocaleString()}
                     </td>

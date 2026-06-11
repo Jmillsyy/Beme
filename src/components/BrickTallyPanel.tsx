@@ -169,7 +169,13 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
                   </div>
                 </div>
                 <div>
-                  <div className="text-ink-400 text-[11px]">Head Lineal m</div>
+                  {/* Labels shortened to single words so they fit on one
+                      line in the narrow right rail — "Head Lineal m" was
+                      wrapping to two rows on the standard 272px panel
+                      width which left the values floating mid-card. The
+                      value already carries the unit suffix so the eyebrow
+                      doesn't need to spell it out. */}
+                  <div className="text-ink-400 text-[11px]">Head</div>
                   <div className="text-ink-100 font-medium text-sm mt-0.5">
                     <AnimatedNumber
                       value={headLinealM}
@@ -179,7 +185,7 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
                   </div>
                 </div>
                 <div>
-                  <div className="text-ink-400 text-[11px]">Sill Lineal m</div>
+                  <div className="text-ink-400 text-[11px]">Sill</div>
                   <div className="text-ink-100 font-medium text-sm mt-0.5">
                     <AnimatedNumber
                       value={sillLinealM}

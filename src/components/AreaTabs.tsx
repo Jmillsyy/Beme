@@ -28,14 +28,21 @@ import { confirm } from '../lib/confirm'
 export default function AreaTabs({
   areas,
   activeAreaId,
+  wallCountByAreaId,
   onSelect,
   onCreate,
   onRename,
   onDelete,
+  onReorder,
 }: {
   areas: ProjectArea[]
   /** null = the "All" view. */
   activeAreaId: string | null
+  /** Wall counts per area for the active trade. Used as a "12 walls"
+   *  subtitle on each row so the user can tell at a glance which areas
+   *  have content. Optional — when omitted, rows render without the
+   *  count. */
+  wallCountByAreaId?: Record<string, number>
   onSelect: (areaId: string | null) => void
   /** Called with the new area's display name + a flag indicating whether
    *  to clone the walls from the current view into the new area.
@@ -47,6 +54,10 @@ export default function AreaTabs({
   onRename: (areaId: string, newName: string) => void
   /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
+  /** Called with the new ordered list of area ids when the user drops
+   *  a dragged row. Optional — when omitted, drag-and-drop is disabled
+   *  and the rows render without the drag handle. */
+  onReorder?: (orderedIds: string[]) => void
 }) {
   // expanded = panel body visible; editingId = Edit area modal pre-filled
   // with that area's name. Defaults to EXPANDED so the user sees the area
@@ -56,13 +67,43 @@ export default function AreaTabs({
   // rename via the existing ✎ affordance if they want a custom label.
   const [expanded, setExpanded] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
-  // creating = small modal asking whether to start fresh or clone the
-  // existing walls into the new area. Holds the resolved default name
-  // so it can be passed back to onCreate when the user picks.
-  const [creating, setCreating] = useState<{ name: string } | null>(null)
+  // "+ New area" used to open a small AreaCreateChoiceModal asking
+  // start-fresh vs copy-existing; the user found this an unnecessary
+  // gate. New areas now create immediately with copyWalls=false (fresh
+  // wall type, empty walls). The modal component is still defined
+  // below but no longer rendered — left in place in case we want to
+  // bring back a "duplicate this area" affordance later.
+  // Drag-to-reorder state. `dragId` is the area currently being dragged;
+  // `dropTargetId` is the row the cursor is hovering over (used to
+  // show the insertion indicator). Both clear on dragend / drop. The
+  // native HTML5 drag API needs both pieces because dragover fires
+  // continuously and we want the indicator only when over a *different*
+  // row.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const editingArea = editingId
     ? areas.find((a) => a.id === editingId) ?? null
     : null
+
+  // Commit a reorder — moves `dragId` to land just BEFORE `targetId`
+  // in the area list. Targets that come after the source naturally
+  // splice into the slot the source vacates, so the visible "above /
+  // below the target row" decision is handled implicitly by the source
+  // position relative to the target.
+  const reorder = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId || !onReorder) return
+    const ids = areas.map((a) => a.id)
+    const from = ids.indexOf(sourceId)
+    const to = ids.indexOf(targetId)
+    if (from < 0 || to < 0) return
+    ids.splice(from, 1)
+    // After splicing out the source, the target index shifts down by
+    // one when the source was earlier in the list — recompute against
+    // the new array.
+    const newTo = ids.indexOf(targetId)
+    ids.splice(newTo, 0, sourceId)
+    onReorder(ids)
+  }
 
   // handleCreate retired with the create modal — "+ New area" now
   // calls onCreate(nextDefaultAreaName()) directly. Rename / edit
@@ -193,39 +234,82 @@ export default function AreaTabs({
               <div className="border-t border-ink-700 my-1" />
             </>
           )}
-          {areas.map((area) => (
-            <AreaMenuRow
-              key={area.id}
-              label={area.name}
-              colorHex={area.colorHex}
-              active={activeAreaId === area.id}
-              onSelect={() => onSelect(area.id)}
-              onRename={() => setEditingId(area.id)}
-              onDelete={
-                onDelete
-                  ? async () => {
-                      const ok = await confirm({
-                        title: `Delete area "${area.name}"?`,
-                        message:
-                          'Walls in this area become unassigned but stay ' +
-                          'visible in the All tab. The area itself is removed.',
-                        confirmLabel: 'Delete area',
-                        variant: 'destructive',
-                      })
-                      if (ok) onDelete(area.id)
-                    }
-                  : undefined
-              }
-            />
-          ))}
+          {areas.map((area) => {
+            const wallCount = wallCountByAreaId?.[area.id]
+            const subLabel =
+              typeof wallCount === 'number'
+                ? `${wallCount} wall${wallCount === 1 ? '' : 's'}`
+                : undefined
+            // Drag affordance is only wired when onReorder is provided
+            // AND there's more than one area to reorder (single-area
+            // case the drag handle is a no-op).
+            const draggable = !!onReorder && areas.length > 1
+            return (
+              <AreaMenuRow
+                key={area.id}
+                label={area.name}
+                subLabel={subLabel}
+                colorHex={area.colorHex}
+                active={activeAreaId === area.id}
+                draggable={draggable}
+                isDragging={dragId === area.id}
+                isDropTarget={dropTargetId === area.id && dragId !== area.id}
+                onDragStart={() => setDragId(area.id)}
+                onDragEnter={() => {
+                  if (!dragId || dragId === area.id) return
+                  setDropTargetId(area.id)
+                }}
+                onDragLeave={() => {
+                  // Only clear when leaving the row entirely — dragenter
+                  // on the next row will set it again, so the
+                  // brief-clear-then-reset doesn't flicker the indicator.
+                  setDropTargetId((cur) => (cur === area.id ? null : cur))
+                }}
+                onDragEnd={() => {
+                  setDragId(null)
+                  setDropTargetId(null)
+                }}
+                onDrop={() => {
+                  if (dragId) reorder(dragId, area.id)
+                  setDragId(null)
+                  setDropTargetId(null)
+                }}
+                onSelect={() => onSelect(area.id)}
+                onRename={() => setEditingId(area.id)}
+                onDelete={
+                  onDelete
+                    ? async () => {
+                        // Include the wall count in the confirmation so
+                        // the user knows what they're orphaning when they
+                        // delete an area with walls in it. Loud message
+                        // when there's content, quiet one when there
+                        // isn't.
+                        const countMessage =
+                          typeof wallCount === 'number' && wallCount > 0
+                            ? `${wallCount} wall${wallCount === 1 ? '' : 's'} in this area will become unassigned (still visible in All until you reassign or delete them).`
+                            : 'Walls in this area become unassigned but stay visible in the All tab. The area itself is removed.'
+                        const ok = await confirm({
+                          title: `Delete area "${area.name}"?`,
+                          message: countMessage,
+                          confirmLabel: 'Delete area',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDelete(area.id)
+                      }
+                    : undefined
+                }
+              />
+            )
+          })}
           <div className="border-t border-ink-700 my-1" />
-          {/* One-click create: skips the modal and creates an area
-              with the next auto-numbered "New Area N" name. Rename
-              via the row's ✎ button if a custom label is wanted —
-              the rename modal is still present below. */}
+          {/* One-click create: skips the modal entirely (no
+              start-fresh / copy-existing prompt) and creates an area
+              with the next auto-numbered "New Area N" name and a
+              fresh wall type. Rename via the row's ✎ button if a
+              custom label is wanted. */}
           <button
             type="button"
-            onClick={() => setCreating({ name: nextDefaultAreaName() })}
+            onClick={() => onCreate(nextDefaultAreaName(), false)}
             className="w-full text-left px-2 py-1 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded transition-colors"
           >
             + New area
@@ -242,17 +326,6 @@ export default function AreaTabs({
           onCancel={() => setEditingId(null)}
         />
       )}
-      {creating && (
-        <AreaCreateChoiceModal
-          name={creating.name}
-          onChoose={(copyWalls) => {
-            const pending = creating
-            setCreating(null)
-            onCreate(pending.name, copyWalls)
-          }}
-          onCancel={() => setCreating(null)}
-        />
-      )}
     </div>
   )
 }
@@ -261,15 +334,40 @@ export default function AreaTabs({
 
 function AreaMenuRow({
   label,
+  subLabel,
   colorHex,
   active,
+  draggable,
+  isDragging,
+  isDropTarget,
+  onDragStart,
+  onDragEnter,
+  onDragLeave,
+  onDragEnd,
+  onDrop,
   onSelect,
   onRename,
   onDelete,
 }: {
   label: string
+  /** Optional secondary line — used for wall counts. Renders muted to
+   *  the right of the label so the area name stays primary. */
+  subLabel?: string
   colorHex?: string
   active: boolean
+  /** When true, render a grab handle and respond to drag events. */
+  draggable?: boolean
+  /** True while THIS row is the row being dragged — dimmed so the user
+   *  knows what they're moving. */
+  isDragging?: boolean
+  /** True when the dragged row is hovering THIS row — shows the
+   *  insertion indicator bar above. */
+  isDropTarget?: boolean
+  onDragStart?: () => void
+  onDragEnter?: () => void
+  onDragLeave?: () => void
+  onDragEnd?: () => void
+  onDrop?: () => void
   onSelect: () => void
   onRename?: () => void
   onDelete?: () => void
@@ -280,11 +378,62 @@ function AreaMenuRow({
         active
           ? 'bg-beme-500/15 text-beme-300 ring-1 ring-beme-500/30'
           : 'text-ink-100 hover:bg-ink-700'
+      } ${isDragging ? 'opacity-40' : ''} ${
+        isDropTarget ? 'ring-1 ring-beme-400/60' : ''
       }`}
       onClick={onSelect}
       role="option"
       aria-selected={active}
+      draggable={draggable}
+      onDragStart={(e) => {
+        if (!draggable) return
+        // Set drag data + effect so the cursor shows the "move"
+        // affordance and other listeners can read which row is being
+        // dragged if they care.
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', label)
+        onDragStart?.()
+      }}
+      onDragEnter={(e) => {
+        if (!draggable) return
+        e.preventDefault()
+        onDragEnter?.()
+      }}
+      onDragOver={(e) => {
+        // dragover must be prevented for drop to fire. Defaults to "no
+        // drop allowed" otherwise, which is the bug 90% of native-drag
+        // tutorials open with.
+        if (!draggable) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+      }}
+      onDragLeave={() => {
+        if (!draggable) return
+        onDragLeave?.()
+      }}
+      onDragEnd={() => {
+        if (!draggable) return
+        onDragEnd?.()
+      }}
+      onDrop={(e) => {
+        if (!draggable) return
+        e.preventDefault()
+        onDrop?.()
+      }}
     >
+      {draggable && (
+        // Six-dot grip glyph. Pointer-events-none so the row's onClick
+        // still fires when the user clicks on the handle area instead
+        // of starting a drag; the row's `draggable` attribute owns the
+        // drag-initiation behaviour at the surface level.
+        <span
+          className="text-ink-500 group-hover:text-ink-300 text-[10px] leading-none cursor-grab select-none pointer-events-none flex-shrink-0"
+          aria-hidden
+          title="Drag to reorder"
+        >
+          ⋮⋮
+        </span>
+      )}
       {colorHex ? (
         <span
           className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
@@ -295,6 +444,15 @@ function AreaMenuRow({
         <span className="inline-block w-1.5 h-1.5 flex-shrink-0" />
       )}
       <span className="flex-1 truncate">{label}</span>
+      {subLabel && (
+        <span
+          className={`text-[10px] tabular-nums flex-shrink-0 ${
+            active ? 'text-beme-300/70' : 'text-ink-400'
+          }`}
+        >
+          {subLabel}
+        </span>
+      )}
       {onRename && (
         <button
           type="button"
@@ -323,100 +481,6 @@ function AreaMenuRow({
           ×
         </button>
       )}
-    </div>
-  )
-}
-
-// ---------- Internal: AreaCreateChoiceModal ----------
-
-/**
- * Two-option dialog shown when the user adds a new area. Picks
- * whether the new area should:
- *   - Start fresh (empty — current behaviour, the canvas clears
- *     down to just the new area's walls which is zero).
- *   - Copy current walls — clones every wall currently visible in
- *     the active view (active-area or All) into the new area as a
- *     starting point. Geometry only; new ids, new makeup. Useful
- *     when a building plan repeats per-floor (Ground Floor → First
- *     Floor with the same layout).
- *
- * Mirrors the existing AreaNameModal shell so the area-creation
- * flows feel uniform. Esc / backdrop click cancels.
- */
-function AreaCreateChoiceModal({
-  name,
-  onChoose,
-  onCancel,
-}: {
-  name: string
-  onChoose: (copyWalls: boolean) => void
-  onCancel: () => void
-}) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onCancel()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onCancel])
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={onCancel}
-      role="dialog"
-      aria-modal="true"
-      aria-label="New area"
-    >
-      <div
-        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink-100">New area</h2>
-            <p className="text-[11px] text-ink-500 mt-0.5 truncate">
-              Creating <span className="text-ink-300">{name}</span>
-            </p>
-          </div>
-          <button
-            onClick={onCancel}
-            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </header>
-
-        <div className="p-5 space-y-3">
-          <button
-            type="button"
-            onClick={() => onChoose(false)}
-            className="w-full text-left rounded-lg border border-ink-600 hover:border-beme-500 bg-ink-900/40 hover:bg-ink-700/40 transition-colors px-4 py-3"
-          >
-            <div className="text-sm font-semibold text-ink-50">Start fresh</div>
-            <div className="text-xs text-ink-400 mt-1 leading-relaxed">
-              Empty canvas. Draw walls from scratch — none of your existing
-              walls are copied over.
-            </div>
-          </button>
-          <button
-            type="button"
-            onClick={() => onChoose(true)}
-            className="w-full text-left rounded-lg border border-ink-600 hover:border-beme-500 bg-ink-900/40 hover:bg-ink-700/40 transition-colors px-4 py-3"
-          >
-            <div className="text-sm font-semibold text-ink-50">Copy existing walls</div>
-            <div className="text-xs text-ink-400 mt-1 leading-relaxed">
-              Clone every wall currently on screen into this new area. Same
-              geometry, fresh wall types. Useful when the layout repeats
-              (e.g. ground floor → first floor).
-            </div>
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

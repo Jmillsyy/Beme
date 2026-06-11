@@ -222,7 +222,11 @@ export function createDefaultBrickMakeup(opts: {
 } = {}): BrickMakeup {
   return {
     id: uid(),
-    name: opts.name ?? 'Facework',
+    // Default name matches the block side ('New wall type') so the
+    // user picks their own meaningful name regardless of trade. We
+    // used to seed 'Facework' here but a generic placeholder reads
+    // less like an opinion the user has to undo.
+    name: opts.name ?? 'New wall type',
     brickTypeCode: opts.brickTypeCode ?? '',
     heightMm: opts.heightMm ?? 2400,
   }
@@ -230,18 +234,17 @@ export function createDefaultBrickMakeup(opts: {
 
 /**
  * The default set of brick wall types for a new brick project. One
- * neutral seed — "Brickwork 2400mm" — so the project lands with the
+ * neutral seed — "New wall type" — so the project lands with the
  * minimum viable type list. Adding more (Facework vs Rendered, party
  * walls, garden walls, etc.) is one click in the panel, and keeping
  * the seed small avoids the user staring at a starter list they have
  * to delete from before adding what they actually need.
  *
- * Height included in the name so it reads as the wall it represents
- * at a glance, matching the block-mode seed convention.
+ * Name matches the block-mode seed convention ('New wall type') so
+ * the user picks a meaningful label regardless of trade.
  */
 export function createDefaultBrickMakeups(): BrickMakeup[] {
-  const heightMm = 2400
-  return [createDefaultBrickMakeup({ name: `Brickwork ${heightMm}mm`, heightMm })]
+  return [createDefaultBrickMakeup({})]
 }
 
 // ---------- Course series ranges ----------
@@ -804,10 +807,33 @@ export function convertMakeupToBands(
   // height-makeup band isn't available, skip the corresponding course
   // entirely rather than emit a code that doesn't exist in the library.
   // skipHeightMakeup short-circuits these picks entirely.
+  // Body block's depth — used to scope the height-makeup pick so the
+  // 200-series 20.140 doesn't get picked on a 300-series wall (and
+  // vice versa). Optional / undefined-default so libraries that only
+  // carry one depth of height-makeup blocks still get a result.
+  const bodyDepthMm = BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+  // matchExactHeight=false swaps the dedicated height-makeup block for
+  // a cut-down body block in the 71 / 140 slot. We mirror that here so
+  // convertMakeupToBands surfaces the actual code that gets rendered
+  // (body block) instead of the height-makeup code that would have
+  // been used under the legacy default. Without this, the legend +
+  // 3D renderer pull the ghost height-makeup code via this band list
+  // even though buildCourses emits a body-block course at calc time.
+  // Defaults to true so callers that don't know about the flag (and
+  // legacy makeups with `undefined`) keep the existing behaviour.
+  const matchExactHeight = makeup.matchExactHeight ?? true
   const heightMakeup150 =
-    !skipHeightMakeup && has140 ? pickHeightMakeupBlock(HEIGHT_140) : undefined
+    !skipHeightMakeup && has140
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(HEIGHT_140, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: HEIGHT_140 } }
+      : undefined
   const heightMakeup100 =
-    !skipHeightMakeup && has71 ? pickHeightMakeupBlock(HEIGHT_71) : undefined
+    !skipHeightMakeup && has71
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(HEIGHT_71, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: HEIGHT_71 } }
+      : undefined
   const effectiveHas140 = has140 && !!heightMakeup150
   const effectiveHas71 = has71 && !!heightMakeup100
   // In preview-only mode, if there's leftover height after the std-count
