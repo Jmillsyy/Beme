@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import type { ComponentType } from 'react'
+import { flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 
 // 3D view is lazy-loaded so users who never open it pay zero bundle cost
@@ -2932,8 +2933,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // Defuse the unsaved-changes prompt before navigating away. The
       // project we were potentially "dirty against" is gone, so blocking
       // a redirect on its behalf would be nonsense — the user just
-      // approved the destructive action.
-      setHasUnsavedChanges(false)
+      // approved the destructive action. Null the snapshot ref + use
+      // flushSync so the dirty=false commit lands in the closure
+      // useBlocker reads BEFORE navigate fires below.
+      savedSnapshotRef.current = null
+      flushSync(() => setHasUnsavedChanges(false))
       if (mode) clearDraft(deletedId, mode)
     } catch (err) {
       console.error('Failed to delete project', err)
@@ -6440,13 +6444,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </div>
               {/* Back-out affordance for users who landed here by mistake
                   (clicked the wrong trade on the dashboard, etc.) —
-                  matches other modal patterns in the app. Defuses the
-                  unsaved-changes flag before navigating so the prompt
-                  doesn't fire on a project that was never persisted. */}
+                  matches other modal patterns in the app. Two things
+                  have to happen BEFORE navigate runs:
+                    1. Null the snapshot ref synchronously so the dirty
+                       effect re-seeds instead of re-deriving dirty=true
+                       from the stale baseline.
+                    2. flushSync the hasUnsavedChanges=false update so
+                       useBlocker reads it from the latest render's
+                       closure rather than the previous render's (still
+                       dirty=true) closure.
+                  Without both, the unsaved-changes prompt fires on a
+                  project the user has never persisted. */}
               <button
                 type="button"
                 onClick={() => {
-                  setHasUnsavedChanges(false)
+                  savedSnapshotRef.current = null
+                  flushSync(() => setHasUnsavedChanges(false))
                   navigate('/')
                 }}
                 className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2 flex-shrink-0"
