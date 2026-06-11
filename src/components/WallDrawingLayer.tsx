@@ -319,16 +319,20 @@ interface WallDrawingLayerProps {
 /** Pixel radius for snapping to an existing wall's endpoint (corner candidate).
  *  Used as the PERPENDICULAR-to-wall tolerance during the corner-snap check —
  *  the along-wall direction is handled separately with a larger radius (see
- *  `snapRadiusPx` below) so a click at the visible end face still hits. 8 px
- *  is the comfortable aim margin: close-but-distinct parallel endpoints stay
- *  separable but the user doesn't need pixel-precise targeting. Shift bypasses
- *  snap entirely. */
-const SNAP_THRESHOLD_PX = 8
+ *  `snapRadiusPx` below) so a click at the visible end face still hits.
+ *
+ *  Was 8px which felt overly grabby at small scales (1:100, 1:200) — a wall
+ *  that's a few pixels long on screen could claim the cursor from way out.
+ *  5px is a tighter aim margin that still tolerates normal mouse jitter on
+ *  any half-decent screen, and Shift bypasses snap entirely if a user
+ *  needs to land RIGHT next to an existing endpoint without it grabbing. */
+const SNAP_THRESHOLD_PX = 5
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
  *  click precision against a visible wall — the user targets the wall on screen. Tightened
- *  so two adjacent walls don't both claim the cursor on a single click. */
-const WALL_PROJECTION_THRESHOLD_PX = 8
+ *  in step with SNAP_THRESHOLD_PX so two adjacent walls don't both claim the cursor on
+ *  a single click — especially at small scales where the wall stack is dense. */
+const WALL_PROJECTION_THRESHOLD_PX = 5
 /**
  * Real-world distance at which a cursor near an existing wall's *face* will snap onto it
  * to form a T-junction. Expressed in mm so the snap feels the same at every zoom level
