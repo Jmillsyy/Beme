@@ -22,7 +22,13 @@ import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BLOCK_LIBRARY } from './blockLibrary'
 
 /** Discriminator key — stored on the user / org to pick a template. */
-export type LibraryTemplateKey = 'au-seq' | 'us-cmu' | 'uk-block' | 'blank'
+export type LibraryTemplateKey =
+  | 'au-seq'
+  | 'nz-block'
+  | 'us-cmu'
+  | 'ca-cmu'
+  | 'uk-block'
+  | 'blank'
 
 export interface LibraryTemplate {
   key: LibraryTemplateKey
@@ -217,6 +223,194 @@ export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
+// ─── NZ — Concrete masonry (NZS 4210 / series convention) ──────────────────
+// New Zealand masonry shares the 390 × 190 face and 10mm joint with AU
+// (400 × 200 modular) and names blocks by a width-series convention:
+// 10 series = 90mm, 15 series = 140mm, 20 series = 190mm wide. The 20
+// series is seeded as the primary structural set with a 15-series body
+// alongside. Seed codes follow the series convention — rename them to
+// your supplier's exact catalogue codes from the library page.
+
+export const NZ_BLOCK_LIBRARY: Record<BlockCode, Block> = {
+  '20.01': {
+    code: '20.01',
+    name: '20 Series Whole Block',
+    description:
+      'Standard 390 × 190 × 190mm whole block — the main body unit, and ' +
+      'the corner / end block in stretcher bond. Also doubles as the pier ' +
+      'and base-course block (NZ practice grout-fills the base course ' +
+      'rather than using a dedicated cleanout unit).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['body', 'corner', 'end-termination', 'pier', 'base-course'],
+  },
+  '20.02': {
+    code: '20.02',
+    name: '20 Series Three-Quarter',
+    description:
+      'Three-quarter length (290mm face) closure block for non-modular ' +
+      'wall lengths.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 190 },
+    roles: ['fraction'],
+    fraction: 0.75,
+  },
+  '20.03': {
+    code: '20.03',
+    name: '20 Series Half Block',
+    description:
+      'Half-length (190mm face) block. Alternates with the whole block at ' +
+      "free wall ends on even courses to hold stretcher bond's half-block " +
+      'offset.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '20.04': {
+    code: '20.04',
+    name: '20 Series Half-High',
+    description:
+      'Half-height (90mm face) block — the height-makeup unit for wall ' +
+      'heights that land off the 200mm course module.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 190 },
+    roles: ['height-makeup'],
+  },
+  '20.16': {
+    code: '20.16',
+    name: '20 Series Lintel / Bond Beam',
+    description:
+      'U-shaped lintel & bond-beam block — top course of reinforced walls ' +
+      'and single-course lintels over openings (head heights to ~400mm).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['top-course', 'lintel'],
+    lintelMinHeadHeightMm: 0,
+    lintelMaxHeadHeightMm: 400,
+  },
+  '20.16D': {
+    code: '20.16D',
+    name: '20 Series Deep Lintel',
+    description:
+      'Double-height (390mm) lintel arrangement for wide / heavy openings ' +
+      '— covers head heights of 400mm and above.',
+    dimensions: { widthMm: 390, heightMm: 390, depthMm: 190 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 400,
+  },
+  '15.01': {
+    code: '15.01',
+    name: '15 Series Whole Block',
+    description:
+      '140mm-wide whole block (390 × 190 × 140mm) for partition and ' +
+      'veneer-backing walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['body', 'corner', 'end-termination'],
+  },
+  '15.03': {
+    code: '15.03',
+    name: '15 Series Half Block',
+    description: 'Half-length closure for the 15 series (190 × 190 × 140mm).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+}
+
+// ─── Canada — CSA A165 metric CMU ──────────────────────────────────────────
+// Canadian concrete block is metric CMU: 390 × 190 face with 10mm
+// joints (390 + 10 = 400 modular — the "20cm block"). Widths run
+// 90 / 140 / 190 / 240 / 290 for the 10 / 15 / 20 / 25 / 30cm series.
+// The 20cm series is seeded as the primary structural set; add other
+// widths from the library page.
+
+export const CA_CMU_LIBRARY: Record<BlockCode, Block> = {
+  CMU20: {
+    code: 'CMU20',
+    name: '20cm Block (body)',
+    description:
+      'Standard CSA A165 stretcher unit, 390 × 190 × 190mm. Main body ' +
+      'block; also doubles as the pier and base-course block (base course ' +
+      'is grout-filled on the footing).',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['body', 'pier', 'base-course'],
+  },
+  'CMU20-C': {
+    code: 'CMU20-C',
+    name: '20cm Corner Block',
+    description:
+      'Flat-ended corner / end unit. Turns corners and finishes free wall ' +
+      'ends on odd courses.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['corner', 'end-termination'],
+  },
+  'CMU20-H': {
+    code: 'CMU20-H',
+    name: '20cm Half Block',
+    description:
+      'Half-length (190mm face) block — alternates with the corner unit ' +
+      'at wall ends on even courses for stretcher bond.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 190 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  'CMU20-HH': {
+    code: 'CMU20-HH',
+    name: '20cm Half-High',
+    description:
+      'Half-height (90mm face) unit — the height-makeup block for wall ' +
+      'heights off the 200mm course module.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 190 },
+    roles: ['height-makeup'],
+  },
+  'CMU20-BB': {
+    code: 'CMU20-BB',
+    name: '20cm Bond Beam',
+    description:
+      'Knock-out / U-shaped bond beam block for the reinforced top course ' +
+      'and intermediate bond beams.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['top-course'],
+  },
+  'CMU20-L10': {
+    code: 'CMU20-L10',
+    name: '10cm Lintel',
+    description:
+      'Half-height lintel unit (390 × 90 × 190mm) for head heights below ' +
+      '~200mm.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 190 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 0,
+    lintelMaxHeadHeightMm: 200,
+  },
+  'CMU20-L20': {
+    code: 'CMU20-L20',
+    name: '20cm Lintel',
+    description:
+      'Full-course U-channel lintel (390 × 190 × 190mm) for head heights ' +
+      '200–399mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 190 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 200,
+    lintelMaxHeadHeightMm: 400,
+  },
+  'CMU20-L40': {
+    code: 'CMU20-L40',
+    name: '40cm Deep Lintel',
+    description:
+      'Double-height lintel (390 × 390 × 190mm) for wide / heavy openings ' +
+      '— head heights 400mm and above.',
+    dimensions: { widthMm: 390, heightMm: 390, depthMm: 190 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 400,
+  },
+  CMU15: {
+    code: 'CMU15',
+    name: '15cm Block (body)',
+    description:
+      '140mm-wide stretcher (390 × 190 × 140mm) for partitions and ' +
+      'backing walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['body'],
+  },
+}
+
 // ─── Brick library presets ─────────────────────────────────────────────────
 // Region-specific because face sizes vary materially across markets. Users
 // add their own custom bricks via the BrickLibraryPanel after seeding.
@@ -307,6 +501,61 @@ export const UK_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
   },
 }
 
+/** NZ face brick set — shares the AU 230 × 76 format at 70mm bed depth. */
+export const NZ_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
+  standard: {
+    code: 'standard',
+    name: 'Standard 230×76',
+    description:
+      'Standard NZ clay face brick, 230 × 76 × 70mm (veneer bed depth). ' +
+      '~48 bricks/m² on a 10mm joint.',
+    widthMm: 230,
+    heightMm: 76,
+    depthMm: 70,
+  },
+  longbrick: {
+    code: 'longbrick',
+    name: 'Long format 290×76',
+    description:
+      'Longer-format face brick (290 × 76 × 70mm). ~39 bricks/m².',
+    widthMm: 290,
+    heightMm: 76,
+    depthMm: 70,
+  },
+}
+
+/** Canadian face brick set — CSA metric sizes. */
+export const CA_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
+  'metric-modular': {
+    code: 'metric-modular',
+    name: 'Metric Modular 190×57',
+    description:
+      'CSA metric modular brick, 190 × 57 × 90mm — the 200 × 67 modular ' +
+      'grid. ~75 bricks/m².',
+    widthMm: 190,
+    heightMm: 57,
+    depthMm: 90,
+  },
+  'metric-norman': {
+    code: 'metric-norman',
+    name: 'Metric Norman 290×57',
+    description:
+      'Long-format metric Norman, 290 × 57 × 90mm. ~50 bricks/m².',
+    widthMm: 290,
+    heightMm: 57,
+    depthMm: 90,
+  },
+  jumbo: {
+    code: 'jumbo',
+    name: 'Metric Jumbo 290×90',
+    description:
+      'Oversize unit, 290 × 90 × 90mm — fast coverage. ~33 bricks/m².',
+    widthMm: 290,
+    heightMm: 90,
+    depthMm: 90,
+  },
+}
+
 // ─── Template registry ─────────────────────────────────────────────────────
 // All templates exported as an ordered array so the region picker can
 // iterate them in the order they should appear in the UI.
@@ -326,6 +575,20 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     bricks: AU_BRICK_LIBRARY,
   },
   {
+    key: 'nz-block',
+    displayName: 'New Zealand (concrete masonry)',
+    region: 'NZ',
+    mortarJointMm: 10,
+    description:
+      'NZS-convention series blocks on the 400 × 200 modular grid — 20 ' +
+      'series whole / three-quarter / half / half-high, 20.16 lintel & ' +
+      'bond beam, plus a 15-series partition set. Bricks: 230×76 standard ' +
+      '+ 290 long format. Rename seed codes to your supplier catalogue ' +
+      'from the library page.',
+    blocks: NZ_BLOCK_LIBRARY,
+    bricks: NZ_BRICK_LIBRARY,
+  },
+  {
     key: 'us-cmu',
     displayName: 'United States (CMU + modular)',
     region: 'US',
@@ -337,6 +600,19 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
       'from the library page if your projects use them.',
     blocks: US_CMU_LIBRARY,
     bricks: US_BRICK_LIBRARY,
+  },
+  {
+    key: 'ca-cmu',
+    displayName: 'Canada (metric CMU)',
+    region: 'CA',
+    mortarJointMm: 10,
+    description:
+      'CSA A165 metric block set — 20cm body / corner / half / half-high, ' +
+      'bond beam, three lintel depths, and a 15cm partition body. Bricks: ' +
+      'metric modular + Norman + jumbo. Add 25 / 30cm widths from the ' +
+      'library page if your projects use them.',
+    blocks: CA_CMU_LIBRARY,
+    bricks: CA_BRICK_LIBRARY,
   },
   {
     key: 'uk-block',

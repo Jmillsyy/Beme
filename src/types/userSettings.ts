@@ -61,7 +61,13 @@ export interface UserPreferences {
    * AU-SEQ seed library that's been live since v1. Set to one of the
    * keys from LIBRARY_TEMPLATES in src/data/libraryTemplates.ts.
    */
-  libraryTemplateKey?: 'au-seq' | 'us-cmu' | 'uk-block' | 'blank'
+  libraryTemplateKey?:
+    | 'au-seq'
+    | 'nz-block'
+    | 'us-cmu'
+    | 'ca-cmu'
+    | 'uk-block'
+    | 'blank'
 
   // Currency + regional features were retired. Beme estimates quantities,
   // not prices, so a currency selector was misleading. Regional feature
