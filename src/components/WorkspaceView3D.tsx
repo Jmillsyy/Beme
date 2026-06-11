@@ -3546,7 +3546,11 @@ function Scene({
           // sort, so a corner-to-corner wall takes priority over its
           // corner+free neighbours at both ends and gets a symmetric
           // Course 1 (owns both corners or neither, never one).
-          const ownership = cornerOwnershipFor(wall, wallsByIdMap)
+          const ownership = cornerOwnershipFor(
+            wall,
+            wallsByIdMap,
+            wallThicknessByWallId
+          )
           // Lead-in auto-detection disabled — the per-course cut block
           // emission (planWallLayout's startCutWidthMm / endCutWidthMm)
           // now handles getting the body grid back on bond after a
@@ -3652,7 +3656,8 @@ function Scene({
               // Same ownership the no-openings layout path uses — keeps
               // corner alternation consistent across the two paths and
               // matches the export tally's corner deduplication.
-              cornerOwnershipFor(wall, wallsByIdMap),
+              cornerOwnershipFor(wall, wallsByIdMap, wallThicknessByWallId),
+              DEFAULT_MORTAR_JOINT_MM / 1000,
             )
           )
         }

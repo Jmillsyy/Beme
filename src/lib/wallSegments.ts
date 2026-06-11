@@ -436,7 +436,18 @@ export function segmentsForStraightWall(
    * layout-path tally. Omitted -> legacy id-phase (back-compat for the
    * curved-wall virtual call, which has free junctions anyway).
    */
-  cornerOwnership?: CornerOwnership
+  cornerOwnership?: CornerOwnership,
+  /**
+   * Mortar pitch (metres) for the body-cell grid. 0 (default) tiles
+   * cells edge-to-edge at face width — the original behaviour, kept
+   * for the brick path whose corner maths assume contiguous tiling.
+   * Block walls pass DEFAULT_MORTAR_JOINT_MM/1000 so the grid steps at
+   * the true modular pitch (face + joint = 400) and stays in lockstep
+   * with planWallLayout / the tally maths. Without it the grid drifts
+   * 10mm per block and accumulates phantom sliver cells at the far end
+   * of carved courses.
+   */
+  gridMortarM = 0
 ): WallSegmentBox[] {
   // Negate BOTH X and Y in the plan → 3D mapping. The Y negation was
   // there from day 1 ("plan down" = "3D back"); the X negation mirrors
@@ -1167,7 +1178,7 @@ export function segmentsForStraightWall(
       const bodyDepthM = thicknessMm / 1000
       const mortarM = DEFAULT_MORTAR_JOINT_MM / 1000
       const halfBodyModularM = (bodyW + mortarM) / 2
-      let c = leftEndWidth
+      let c = leftEndWidth + gridMortarM
       if (leftHasCornerJunction && ownsLeftThisCourse) {
         const cutW =
           halfBodyModularM - (cornerWidth - leftCornerCubeDepth) - mortarM
@@ -1179,7 +1190,7 @@ export function segmentsForStraightWall(
             s0: c,
             s1: c + cutW,
           })
-          c += cutW
+          c += cutW + gridMortarM
         }
       }
       const rightCutW =
@@ -1188,7 +1199,10 @@ export function segmentsForStraightWall(
           : 0
       const stampRightCut = rightCutW > 0.005
       const bodyEnd =
-        length - rightEndWidth - (stampRightCut ? rightCutW : 0)
+        length -
+        rightEndWidth -
+        gridMortarM -
+        (stampRightCut ? rightCutW + gridMortarM : 0)
       while (c < bodyEnd) {
         const cellEnd = Math.min(c + bodyW, bodyEnd)
         if (cellEnd - c > 0.02) {
@@ -1200,15 +1214,15 @@ export function segmentsForStraightWall(
             s1: cellEnd,
           })
         }
-        c += bodyW
+        c += bodyW + gridMortarM
       }
       if (stampRightCut) {
         cells.push({
           role: 'BODY',
           code: course.bodyCode,
           color: bodyColor,
-          s0: bodyEnd,
-          s1: bodyEnd + rightCutW,
+          s0: bodyEnd + gridMortarM,
+          s1: bodyEnd + gridMortarM + rightCutW,
         })
       }
       if (renderRightEnd) {
@@ -1545,7 +1559,7 @@ export function segmentsForStraightWall(
       if (
         cur.role === 'BODY' &&
         next.role === 'BODY' &&
-        Math.abs(cur.s1 - next.s0) < 0.001 &&
+        Math.abs(cur.s1 - next.s0) < gridMortarM + 0.001 &&
         cur.s1 - cur.s0 < bodyW * 0.9 &&
         next.s1 - next.s0 < bodyW * 0.9
       ) {
@@ -1627,7 +1641,7 @@ export function segmentsForStraightWall(
       if (blockEnd - cursor > 0.02) {
         boxes.push(buildBox(cursor, blockEnd, lm.y0, lm.y1, lm.color, lm.code))
       }
-      cursor += lm.blockWidthM
+      cursor += lm.blockWidthM + gridMortarM
     }
   }
 

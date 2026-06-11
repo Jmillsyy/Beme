@@ -114,7 +114,10 @@ function renderedBoxTally(
     wall, adjusted, thicknessByWallId[wall.id], courses, totalHeightM,
     'stretcher', new Map(), BLOCK_LIBRARY, thicknessByWallId, wallsById,
     false, undefined, undefined,
-    withOwnership ? cornerOwnershipFor(wall, wallsById) : () => true
+    withOwnership
+      ? cornerOwnershipFor(wall, wallsById, thicknessByWallId)
+      : () => true,
+    0.01
   )
   const tally: BlockTally = {}
   for (const b of boxes) {
@@ -122,10 +125,6 @@ function renderedBoxTally(
     tally[b.code] = (tally[b.code] ?? 0) + 1
   }
   return tally
-}
-
-function total(t: BlockTally): number {
-  return Object.values(t).reduce((s, n) => s + (n ?? 0), 0)
 }
 
 const PAIRED_CODES = new Set(
@@ -232,12 +231,15 @@ describe('project totals: corners deduplicated like the render', () => {
     }
   })
 
-  it('blocks with a window are fewer than without', () => {
+  it('a window removes body blocks (lintels/jambs are additive)', () => {
     const walls = boxWalls()
     const op = window_('wA', 1400, 1800, 1200, 900)
     const withOp = calculateProjectTally(walls, makeupsById, [op])
     const noOp = calculateProjectTally(walls, makeupsById)
-    expect(total(withOp)).toBeLessThan(total(noOp))
+    // Body blocks must drop where the window carves...
+    expect(withOp['20.48'] ?? 0).toBeLessThan(noOp['20.48'] ?? 0)
+    // ...and the base course (below the sill) must be untouched.
+    expect(withOp['20.45'] ?? 0).toBe(noOp['20.45'] ?? 0)
   })
 })
 
@@ -266,5 +268,81 @@ describe('Rule 4: free-standing walls pick the cleaner end scheme', () => {
     // Exact fit: blocks + mortar joints span the wall precisely.
     const last = c1[c1.length - 1]
     expect(last.s0Mm + last.widthMm).toBe(3000)
+  })
+})
+
+describe('fit-aware corner phasing: outer-face-modular walls lay clean', () => {
+  const j = (ids: string[]) => ({ type: 'corner' as const, connectedWallIds: ids })
+
+  /** Course blocks of a wall under project ownership, sorted. */
+  function courseBlocks(wall: Wall, walls: Wall[], courseIdx: number) {
+    const wallsById = wallsByIdMap(walls)
+    const thicknessByWallId = thicknessMap(walls)
+    const layout = planWallLayout(
+      wall, MAKEUP, [], thicknessByWallId, wallsById,
+      cornerOwnershipFor(wall, wallsById, thicknessByWallId)
+    )
+    return layout.blocks
+      .filter((b) => b.courseIdx === courseIdx && b.role !== 'paired-tile')
+      .sort((a, b) => a.s0Mm - b.s0Mm)
+  }
+
+  it('U-shape front wall at 4800 outer: two full corners one course, two cubes the next', () => {
+    // Side centrelines at x=95 / x=4705; front endpoints on them ->
+    // outer = 4610 + 95 + 95 = 4800 (the plan dimension).
+    const walls: Wall[] = [
+      { id: 'front', makeupId: MAKEUP.id, startX: 95, startY: 0, endX: 4705, endY: 0,
+        startJunction: j(['sideL']), endJunction: j(['sideR']) },
+      { id: 'sideL', makeupId: MAKEUP.id, startX: 95, startY: 0, endX: 95, endY: 4800,
+        startJunction: j(['front']), endJunction: { type: 'free' } },
+      { id: 'sideR', makeupId: MAKEUP.id, startX: 4705, startY: 0, endX: 4705, endY: 4800,
+        startJunction: j(['front']), endJunction: { type: 'free' } },
+    ]
+    for (let c = 0; c < 4; c++) {
+      const blocks = courseBlocks(walls[0], walls, c)
+      const first = blocks[0]
+      const last = blocks[blocks.length - 1]
+      const owning = !first.renderOnly
+      // Both ends agree on every course: corner+corner or cube+cube.
+      expect(!last.renderOnly).toBe(owning)
+      if (owning) {
+        expect(first.code).toBe('20.01')
+        expect(last.code).toBe('20.01')
+      }
+      // Phasing alternates course to course.
+      if (c > 0) {
+        const prev = courseBlocks(walls[0], walls, c - 1)
+        expect(!prev[0].renderOnly).toBe(!owning)
+      }
+      // Zero cuts: nothing narrower than a half block anywhere.
+      for (const b of blocks) {
+        expect(b.widthMm).toBeGreaterThanOrEqual(190)
+      }
+    }
+  })
+
+  it('full box of 4800-outer walls: clean fits everywhere, corners still dedup to one per course', () => {
+    // Centreline square at 4610 -> every wall outer = 4800.
+    const L = 4610
+    const walls: Wall[] = [
+      { id: 'wA', makeupId: MAKEUP.id, startX: 0, startY: 0, endX: L, endY: 0, startJunction: j(['wD']), endJunction: j(['wB']) },
+      { id: 'wB', makeupId: MAKEUP.id, startX: L, startY: 0, endX: L, endY: L, startJunction: j(['wA']), endJunction: j(['wC']) },
+      { id: 'wC', makeupId: MAKEUP.id, startX: L, startY: L, endX: 0, endY: L, startJunction: j(['wB']), endJunction: j(['wD']) },
+      { id: 'wD', makeupId: MAKEUP.id, startX: 0, startY: L, endX: 0, endY: 0, startJunction: j(['wC']), endJunction: j(['wA']) },
+    ]
+    // No cut blocks on any wall, any course.
+    for (const wall of walls) {
+      for (let c = 0; c < 12; c++) {
+        for (const b of courseBlocks(wall, walls, c)) {
+          expect({ wall: wall.id, c, w: b.widthMm }).toEqual(
+            { wall: wall.id, c, w: expect.any(Number) }
+          )
+          expect(b.widthMm).toBeGreaterThanOrEqual(190)
+        }
+      }
+    }
+    // Corner dedup invariant: exactly one corner block per corner per course.
+    const tally = calculateProjectTally(walls, makeupsById)
+    expect(tally['20.01']).toBe(4 * 12)
   })
 })

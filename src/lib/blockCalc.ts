@@ -892,7 +892,7 @@ export function planWall(
   // below. Same for callers that don't pass wallsById (so we can't
   // compute ownership).
   const internalOwnership = wallsById
-    ? cornerOwnershipFor(wall, wallsById)
+    ? cornerOwnershipFor(wall, wallsById, thicknessByWallId)
     : null
   let wallC1OwnsItsCorner: boolean | null = null
   if (
@@ -1458,7 +1458,8 @@ function enumeratedStraightWallTally(
     /* disableBlockLintels */ false,
     wallHeightMmByWallId,
     wallCoursesById,
-    ownership
+    ownership,
+    MORTAR_MM / 1000
   )
 
   const bodyCodeByCourse = new Map<number, BlockCode>()
@@ -1612,6 +1613,155 @@ export type CornerOwnership = (args: {
  * the higher-id wall. That's the natural stretcher-bond alternation
  * a real corner block produces when 200×200×400 blocks stack at 90°.
  */
+// ── Fit-aware corner phasing ──────────────────────────────────────
+//
+// "4800 should mean outer face": a wall whose OUTER length is modular
+// (e.g. 4800 = corner + 10 bodies + corner) lays clean only when it
+// owns BOTH its corners on the same course ([corner][bodies][corner]
+// on course 1, [cube][bodies+1][cube] on course 2 — the perpendicular
+// walls' corners running through). A wall whose outer length is
+// centreline-modular (outer ≡ 190 mod 400, e.g. 4990) lays clean only
+// with OPPOSITE phasing (own one corner per course). Neither phasing
+// is universally right — so we classify each corner+corner wall by
+// which phasing actually fits its outer length, and 2-colour the
+// corner graph so every wall gets its preferred phasing where the
+// constraints are satisfiable (conflicts fall back deterministically;
+// somebody gets a cut, same as a real set-out).
+//
+// The phase value at a corner feeds the ownership formula
+// `(courseNumber - 1 + phase) % n === myIdx`, so a wall's "owns both
+// corners on the same course" constraint is an equality between
+// (phase === myIdx) at its two corners — myIdx can differ per corner,
+// hence the XOR with (myIdxA !== myIdxB) below.
+
+const cornerPhaseCache = new WeakMap<
+  Record<string, Wall>,
+  Map<string, 0 | 1>
+>()
+
+function solveCornerPhases(
+  wallsById: Record<string, Wall>,
+  thicknessByWallId: Record<string, number>
+): Map<string, 0 | 1> {
+  const cached = cornerPhaseCache.get(wallsById)
+  if (cached) return cached
+
+  const cornerCountOf = (id: string): number => {
+    const w = wallsById[id]
+    if (!w) return 0
+    return (
+      (w.startJunction.type === 'corner' ? 1 : 0) +
+      (w.endJunction.type === 'corner' ? 1 : 0)
+    )
+  }
+  /** Same priority sort partySortedAt uses — both must agree. */
+  const sortedParty = (a: string, b: string): string[] => {
+    const all = [a, b]
+    all.sort((x, y) => {
+      const cx = cornerCountOf(x)
+      const cy = cornerCountOf(y)
+      if (cx !== cy) return cy - cx
+      return x < y ? -1 : x > y ? 1 : 0
+    })
+    return all
+  }
+  const cornerInfoAt = (
+    w: Wall,
+    end: 'start' | 'end'
+  ): { key: string; myIdx: number; otherId: string } | null => {
+    const j = end === 'start' ? w.startJunction : w.endJunction
+    if (j.type !== 'corner') return null
+    const others = j.connectedWallIds ?? []
+    if (others.length !== 1) return null // 3+ wall corners keep round-robin
+    const otherId = others[0]
+    if (!wallsById[otherId]) return null
+    const party = sortedParty(w.id, otherId)
+    return {
+      key: [w.id, otherId].sort().join('|'),
+      myIdx: party.indexOf(w.id),
+      otherId,
+    }
+  }
+
+  interface Edge {
+    a: string
+    b: string
+    rel: 'same' | 'opposite'
+  }
+  const edges: Edge[] = []
+  const cornerKeys = new Set<string>()
+  const wallList = Object.values(wallsById)
+    .filter((w) => !isCurvedWall(w))
+    .sort((x, y) => (x.id < y.id ? -1 : 1))
+
+  for (const w of wallList) {
+    const infoS = cornerInfoAt(w, 'start')
+    const infoE = cornerInfoAt(w, 'end')
+    if (infoS) cornerKeys.add(infoS.key)
+    if (infoE) cornerKeys.add(infoE.key)
+    if (!infoS || !infoE || infoS.key === infoE.key) continue
+
+    const outer = wallLengthMm(w, thicknessByWallId, wallsById)
+    const wallT = thicknessByWallId[w.id] ?? 190
+    const cubeS = (thicknessByWallId[infoS.otherId] ?? wallT) + MORTAR_MM
+    const cubeE = (thicknessByWallId[infoE.otherId] ?? wallT) + MORTAR_MM
+    const gapFor = (endsTotal: number): number =>
+      Math.abs(outer - fitCourseLength(outer, endsTotal, false).actualLengthMm)
+    // Aligned phasing: one parity lays full+full, the other cube+cube.
+    const gapAligned = Math.max(
+      gapFor(FULL_END_MODULE_MM * 2),
+      gapFor(cubeS + cubeE)
+    )
+    // Opposite phasing: every course lays full+cube (one each way).
+    const gapOpposite = Math.max(
+      gapFor(FULL_END_MODULE_MM + cubeE),
+      gapFor(cubeS + FULL_END_MODULE_MM)
+    )
+    if (Math.abs(gapAligned - gapOpposite) < 0.5) continue // tie -> no constraint
+    const wantsOwnershipEqual = gapAligned < gapOpposite
+    // ownership(c1) at a corner = (phase === myIdx); equality of
+    // ownership across the wall's two corners translates to phase
+    // equality XOR (myIdx differs between the corners).
+    const idxDiffers = infoS.myIdx !== infoE.myIdx
+    const rel: 'same' | 'opposite' =
+      wantsOwnershipEqual !== idxDiffers ? 'same' : 'opposite'
+    edges.push({ a: infoS.key, b: infoE.key, rel })
+  }
+
+  const adj = new Map<string, Array<{ to: string; rel: 'same' | 'opposite' }>>()
+  for (const e of edges) {
+    if (!adj.has(e.a)) adj.set(e.a, [])
+    if (!adj.has(e.b)) adj.set(e.b, [])
+    adj.get(e.a)!.push({ to: e.b, rel: e.rel })
+    adj.get(e.b)!.push({ to: e.a, rel: e.rel })
+  }
+  const phases = new Map<string, 0 | 1>()
+  for (const k of [...cornerKeys].sort()) {
+    if (phases.has(k)) continue
+    phases.set(k, 0)
+    const queue = [k]
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      const p = phases.get(cur)!
+      const neighbours = (adj.get(cur) ?? [])
+        .slice()
+        .sort((x, y) => (x.to < y.to ? -1 : 1))
+      for (const { to, rel } of neighbours) {
+        const want: 0 | 1 = rel === 'same' ? p : ((1 - p) as 0 | 1)
+        if (!phases.has(to)) {
+          phases.set(to, want)
+          queue.push(to)
+        }
+        // Conflict (odd cycle of constraints): first assignment wins —
+        // deterministic for every wall because corners are processed
+        // in sorted order from every caller.
+      }
+    }
+  }
+  cornerPhaseCache.set(wallsById, phases)
+  return phases
+}
+
 export function cornerOwnershipFor(
   wall: Wall,
   /**
@@ -1634,7 +1784,16 @@ export function cornerOwnershipFor(
    * and phase=0 at every corner (the original behaviour) so callers
    * without the lookup still get a deterministic ownership function.
    */
-  wallsById?: Record<string, Wall>
+  wallsById?: Record<string, Wall>,
+  /**
+   * Optional per-wall thickness map. When provided together with
+   * wallsById, corner phases come from the fit-aware solver
+   * (solveCornerPhases): walls whose OUTER length is modular own both
+   * corners on the same course; centreline-modular walls keep the
+   * opposite phasing. Without it, the legacy lead-based phasing
+   * applies.
+   */
+  thicknessByWallId?: Record<string, number>
 ): CornerOwnership {
   const cornerCountFor = (id: string): number => {
     const w = wallsById?.[id]
@@ -1666,6 +1825,10 @@ export function cornerOwnershipFor(
   }
   const startInfo = partySortedAt(wall.startJunction)
   const endInfo = partySortedAt(wall.endJunction)
+  const solvedPhases =
+    wallsById && thicknessByWallId
+      ? solveCornerPhases(wallsById, thicknessByWallId)
+      : null
 
   // Phase at a corner: 0 = lead owns Course 1, 1 = lead owns Course 2.
   // For corner-to-corner leads we shift phase=1 at the lead's END
@@ -1675,6 +1838,12 @@ export function cornerOwnershipFor(
   // priority sort and look at the same lead.startJunction /
   // lead.endJunction membership — keeping deduplication consistent.
   const phaseAt = (info: { all: string[] }): number => {
+    // Fit-aware phase, when the solver has one for this corner.
+    if (solvedPhases && info.all.length === 2) {
+      const key = [...info.all].sort().join('|')
+      const solved = solvedPhases.get(key)
+      if (solved !== undefined) return solved
+    }
     if (!wallsById) return 0
     const leadId = info.all[0]
     const lead = wallsById[leadId]
@@ -2740,7 +2909,7 @@ export function calculateProjectTally(
         openingsByWallId[wall.id] ?? [],
         thicknessByWallId,
         wallsById,
-        cornerOwnershipFor(wall, wallsById),
+        cornerOwnershipFor(wall, wallsById, thicknessByWallId),
         makeupsById
       )
     })
