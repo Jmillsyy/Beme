@@ -33,6 +33,7 @@ export default function AreaTabs({
   onCreate,
   onRename,
   onDelete,
+  onReorder,
 }: {
   areas: ProjectArea[]
   /** null = the "All" view. */
@@ -53,6 +54,10 @@ export default function AreaTabs({
   onRename: (areaId: string, newName: string) => void
   /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
+  /** Called with the new ordered list of area ids when the user drops
+   *  a dragged row. Optional — when omitted, drag-and-drop is disabled
+   *  and the rows render without the drag handle. */
+  onReorder?: (orderedIds: string[]) => void
 }) {
   // expanded = panel body visible; editingId = Edit area modal pre-filled
   // with that area's name. Defaults to EXPANDED so the user sees the area
@@ -66,9 +71,37 @@ export default function AreaTabs({
   // existing walls into the new area. Holds the resolved default name
   // so it can be passed back to onCreate when the user picks.
   const [creating, setCreating] = useState<{ name: string } | null>(null)
+  // Drag-to-reorder state. `dragId` is the area currently being dragged;
+  // `dropTargetId` is the row the cursor is hovering over (used to
+  // show the insertion indicator). Both clear on dragend / drop. The
+  // native HTML5 drag API needs both pieces because dragover fires
+  // continuously and we want the indicator only when over a *different*
+  // row.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const editingArea = editingId
     ? areas.find((a) => a.id === editingId) ?? null
     : null
+
+  // Commit a reorder — moves `dragId` to land just BEFORE `targetId`
+  // in the area list. Targets that come after the source naturally
+  // splice into the slot the source vacates, so the visible "above /
+  // below the target row" decision is handled implicitly by the source
+  // position relative to the target.
+  const reorder = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId || !onReorder) return
+    const ids = areas.map((a) => a.id)
+    const from = ids.indexOf(sourceId)
+    const to = ids.indexOf(targetId)
+    if (from < 0 || to < 0) return
+    ids.splice(from, 1)
+    // After splicing out the source, the target index shifts down by
+    // one when the source was earlier in the list — recompute against
+    // the new array.
+    const newTo = ids.indexOf(targetId)
+    ids.splice(newTo, 0, sourceId)
+    onReorder(ids)
+  }
 
   // handleCreate retired with the create modal — "+ New area" now
   // calls onCreate(nextDefaultAreaName()) directly. Rename / edit
@@ -205,6 +238,10 @@ export default function AreaTabs({
               typeof wallCount === 'number'
                 ? `${wallCount} wall${wallCount === 1 ? '' : 's'}`
                 : undefined
+            // Drag affordance is only wired when onReorder is provided
+            // AND there's more than one area to reorder (single-area
+            // case the drag handle is a no-op).
+            const draggable = !!onReorder && areas.length > 1
             return (
               <AreaMenuRow
                 key={area.id}
@@ -212,6 +249,29 @@ export default function AreaTabs({
                 subLabel={subLabel}
                 colorHex={area.colorHex}
                 active={activeAreaId === area.id}
+                draggable={draggable}
+                isDragging={dragId === area.id}
+                isDropTarget={dropTargetId === area.id && dragId !== area.id}
+                onDragStart={() => setDragId(area.id)}
+                onDragEnter={() => {
+                  if (!dragId || dragId === area.id) return
+                  setDropTargetId(area.id)
+                }}
+                onDragLeave={() => {
+                  // Only clear when leaving the row entirely — dragenter
+                  // on the next row will set it again, so the
+                  // brief-clear-then-reset doesn't flicker the indicator.
+                  setDropTargetId((cur) => (cur === area.id ? null : cur))
+                }}
+                onDragEnd={() => {
+                  setDragId(null)
+                  setDropTargetId(null)
+                }}
+                onDrop={() => {
+                  if (dragId) reorder(dragId, area.id)
+                  setDragId(null)
+                  setDropTargetId(null)
+                }}
                 onSelect={() => onSelect(area.id)}
                 onRename={() => setEditingId(area.id)}
                 onDelete={
@@ -285,6 +345,14 @@ function AreaMenuRow({
   subLabel,
   colorHex,
   active,
+  draggable,
+  isDragging,
+  isDropTarget,
+  onDragStart,
+  onDragEnter,
+  onDragLeave,
+  onDragEnd,
+  onDrop,
   onSelect,
   onRename,
   onDelete,
@@ -295,6 +363,19 @@ function AreaMenuRow({
   subLabel?: string
   colorHex?: string
   active: boolean
+  /** When true, render a grab handle and respond to drag events. */
+  draggable?: boolean
+  /** True while THIS row is the row being dragged — dimmed so the user
+   *  knows what they're moving. */
+  isDragging?: boolean
+  /** True when the dragged row is hovering THIS row — shows the
+   *  insertion indicator bar above. */
+  isDropTarget?: boolean
+  onDragStart?: () => void
+  onDragEnter?: () => void
+  onDragLeave?: () => void
+  onDragEnd?: () => void
+  onDrop?: () => void
   onSelect: () => void
   onRename?: () => void
   onDelete?: () => void
@@ -305,11 +386,62 @@ function AreaMenuRow({
         active
           ? 'bg-beme-500/15 text-beme-300 ring-1 ring-beme-500/30'
           : 'text-ink-100 hover:bg-ink-700'
+      } ${isDragging ? 'opacity-40' : ''} ${
+        isDropTarget ? 'ring-1 ring-beme-400/60' : ''
       }`}
       onClick={onSelect}
       role="option"
       aria-selected={active}
+      draggable={draggable}
+      onDragStart={(e) => {
+        if (!draggable) return
+        // Set drag data + effect so the cursor shows the "move"
+        // affordance and other listeners can read which row is being
+        // dragged if they care.
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', label)
+        onDragStart?.()
+      }}
+      onDragEnter={(e) => {
+        if (!draggable) return
+        e.preventDefault()
+        onDragEnter?.()
+      }}
+      onDragOver={(e) => {
+        // dragover must be prevented for drop to fire. Defaults to "no
+        // drop allowed" otherwise, which is the bug 90% of native-drag
+        // tutorials open with.
+        if (!draggable) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+      }}
+      onDragLeave={() => {
+        if (!draggable) return
+        onDragLeave?.()
+      }}
+      onDragEnd={() => {
+        if (!draggable) return
+        onDragEnd?.()
+      }}
+      onDrop={(e) => {
+        if (!draggable) return
+        e.preventDefault()
+        onDrop?.()
+      }}
     >
+      {draggable && (
+        // Six-dot grip glyph. Pointer-events-none so the row's onClick
+        // still fires when the user clicks on the handle area instead
+        // of starting a drag; the row's `draggable` attribute owns the
+        // drag-initiation behaviour at the surface level.
+        <span
+          className="text-ink-500 group-hover:text-ink-300 text-[10px] leading-none cursor-grab select-none pointer-events-none flex-shrink-0"
+          aria-hidden
+          title="Drag to reorder"
+        >
+          ⋮⋮
+        </span>
+      )}
       {colorHex ? (
         <span
           className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"

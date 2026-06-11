@@ -9313,6 +9313,30 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   prev.map((a) => (a.id === areaId ? { ...a, name: newName } : a))
                 )
               }}
+              onReorder={(orderedIds) => {
+                // Persist the new sort order onto the canonical areas
+                // list. Rebuild from the provided id sequence so any
+                // areas the child didn't include (shouldn't happen, but
+                // defensive) get appended at the end in their original
+                // order. The order lives on `areas` and is saved with
+                // the project, so this carries across sessions.
+                setAreas((prev) => {
+                  const byId = new Map(prev.map((a) => [a.id, a]))
+                  const reordered: ProjectArea[] = []
+                  for (const id of orderedIds) {
+                    const a = byId.get(id)
+                    if (a) {
+                      reordered.push(a)
+                      byId.delete(id)
+                    }
+                  }
+                  // Append any stragglers in original order.
+                  for (const a of prev) {
+                    if (byId.has(a.id)) reordered.push(a)
+                  }
+                  return reordered
+                })
+              }}
               onDelete={(areaId) => {
                 const removed = areas.find((a) => a.id === areaId)
                 const remaining = areas.filter((a) => a.id !== areaId)
