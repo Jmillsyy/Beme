@@ -3157,33 +3157,41 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // ── Sweep orphan WALL TYPES (makeups) into the first area ──────────
   //
   // Same idea as the wall-areaId sweep above but for wall TYPES.
-  // Anything in `makeups` / `brickMakeups` without an `areaId` is
-  // invisible inside any specific area's panel and only surfaces in
-  // the "All areas" view — confusing because the user creates a new
-  // area and then sees a phantom type they didn't make. Repaired
-  // makeups land on the FIRST area's id (matches the load-time
-  // migration), and the active makeup id is preserved.
+  // "Orphan" means either:
+  //   1. No areaId at all (`undefined` / `''`) — never got stamped.
+  //   2. areaId points to an area that no longer exists — happens
+  //      when the user deletes an area (we intentionally don't
+  //      cascade-delete the area's makeups, so they end up pointing
+  //      at a vanished id).
+  // Either way the makeup is invisible inside every specific area's
+  // panel and only surfaces under "All areas", which is the bug the
+  // user reported as "I create a new area and a phantom wall type
+  // appears that isn't in any area."
   //
-  // Most paths already stamp areaId at creation (handleAddMakeup /
-  // handleAddBrickMakeup / new-area onCreate / project-load
-  // migrateMakeup). This is the safety net for state that snuck
-  // through any older flow, or saves loaded from before the area
-  // model. Cheap: the early-return when nothing is orphan means it
-  // costs one scan per dependency change.
+  // Repaired makeups land on the FIRST area's id (matches the load-
+  // time migration), so the phantom resurfaces under area #1 instead
+  // of vanishing entirely. Cheap: early-return when nothing's orphan.
   useEffect(() => {
     if (areas.length === 0) return
     const firstAreaId = areas[0].id
-    const hasOrphanBlock = makeups.some((m) => !m.areaId)
-    const hasOrphanBrick = brickMakeups.some((m) => !m.areaId)
+    const validAreaIds = new Set(areas.map((a) => a.id))
+    const isOrphan = (id: string | undefined) =>
+      !id || !validAreaIds.has(id)
+    const hasOrphanBlock = makeups.some((m) => isOrphan(m.areaId))
+    const hasOrphanBrick = brickMakeups.some((m) => isOrphan(m.areaId))
     if (!hasOrphanBlock && !hasOrphanBrick) return
     if (hasOrphanBlock) {
       setMakeups((prev) =>
-        prev.map((m) => (m.areaId ? m : { ...m, areaId: firstAreaId })),
+        prev.map((m) =>
+          isOrphan(m.areaId) ? { ...m, areaId: firstAreaId } : m,
+        ),
       )
     }
     if (hasOrphanBrick) {
       setBrickMakeups((prev) =>
-        prev.map((m) => (m.areaId ? m : { ...m, areaId: firstAreaId })),
+        prev.map((m) =>
+          isOrphan(m.areaId) ? { ...m, areaId: firstAreaId } : m,
+        ),
       )
     }
   }, [makeups, brickMakeups, areas])
@@ -9478,15 +9486,50 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 if (activeAreaId === areaId) {
                   setActiveAreaId(remaining[0]?.id ?? null)
                 }
-                // The deleted area's walls keep their old areaId — they
-                // become "orphaned" but still visible in All. Could
-                // prune them too but that's destructive on a simple
-                // delete click; user can re-create an area and
-                // bulk-assign in v2.
+                // Reassign the deleted area's WALLS + WALL TYPES to the
+                // first remaining area. Used to leave the old areaId
+                // intact and rely on "All areas" to surface them, but
+                // that left phantom wall types invisible inside any
+                // specific area's filter (the id pointed nowhere) —
+                // user kept reporting "an orphan wall type appears
+                // when I create new areas". Reassigning on delete
+                // keeps everything visible somewhere real. The orphan-
+                // sweep effect above is the catch-all for any state
+                // that still slips through (loaded from older saves,
+                // etc.); this just stops the bug at its source.
+                const fallbackAreaId = remaining[0]?.id
+                if (fallbackAreaId) {
+                  setMakeups((prev) =>
+                    prev.map((m) =>
+                      m.areaId === areaId
+                        ? { ...m, areaId: fallbackAreaId }
+                        : m,
+                    ),
+                  )
+                  setBrickMakeups((prev) =>
+                    prev.map((m) =>
+                      m.areaId === areaId
+                        ? { ...m, areaId: fallbackAreaId }
+                        : m,
+                    ),
+                  )
+                  setWallsByPage((prev) => {
+                    const next: typeof prev = {}
+                    for (const [pageStr, walls] of Object.entries(prev)) {
+                      next[Number(pageStr)] = walls.map((w) =>
+                        w.areaId === areaId
+                          ? { ...w, areaId: fallbackAreaId }
+                          : w,
+                      )
+                    }
+                    return next
+                  })
+                }
                 if (removed) {
                   toast.success(`Area "${removed.name}" removed`, {
-                    description:
-                      'Walls in it are visible under All until you reassign them.',
+                    description: fallbackAreaId
+                      ? `Walls and wall types moved to "${remaining[0]?.name ?? 'the next area'}".`
+                      : 'Walls in it are visible under All until you reassign them.',
                   })
                 }
               }}
