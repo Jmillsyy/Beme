@@ -561,6 +561,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       )
     )
   }, [areas])
+  // Defensive area bootstrap moved below — isProjectLoading isn't
+  // declared yet at this point in the component body. Search for
+  // 'Defensive area bootstrap' below for the actual implementation.
+  // Workspace view mode — '2d' is the Konva canvas (editing surface); '3d'
+  // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
+  // state, never persisted. Toggle button in the unified toolbar flips it.
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
+  const { user: currentUser } = useAuth()
+  // Resolve the author's user id to a friendly display name. For org-scoped
+  // projects we ask the org-members RPC (which returns full names + emails
+  // for everyone in the org). For personal projects, if the author is the
+  // signed-in user we use their own display name; otherwise we surface
+  // "you" / nothing and let the ProjectBar handle the empty case.
+  const [pdfFile, setPdfFile] = useState<File | null>(null)
+  const [numPages, setNumPages] = useState<number>(0)
+  const [currentPage, setCurrentPage] = useState<number>(1)
+  const [isDragging, setIsDragging] = useState(false)
+  /**
+   * True when the project was started without uploading a PDF — we're drawing
+   * on a blank canvas at a fixed ratio. Persisted on the SavedProject so
+   * reloads land back in this mode instead of bouncing back to the upload zone.
+   */
+  const [isEmptyWorkspace, setIsEmptyWorkspace] = useState(false)
+  /**
+   * True while getProject(projectId) is in flight. Used to suppress
+   * the "Drop your building plan PDF here" upload zone during the
+   * loading window — without it the user would briefly see the
+   * upload zone on a project that actually has walls + PDF, before
+   * the load resolves and the canvas swaps in. Defaults to true
+   * when there's a projectId so the FIRST render after mount is
+   * loading-state instead of upload-zone.
+   */
+  const [isProjectLoading, setIsProjectLoading] = useState(!!projectId)
   // Defensive area bootstrap — guarantees the workspace ALWAYS has at
   // least one area once project loading has settled. The project-load
   // handler already creates a default area when the saved project
@@ -594,36 +627,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       ),
     )
   }, [areas.length, isProjectLoading])
-  // Workspace view mode — '2d' is the Konva canvas (editing surface); '3d'
-  // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
-  // state, never persisted. Toggle button in the unified toolbar flips it.
-  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
-  const { user: currentUser } = useAuth()
-  // Resolve the author's user id to a friendly display name. For org-scoped
-  // projects we ask the org-members RPC (which returns full names + emails
-  // for everyone in the org). For personal projects, if the author is the
-  // signed-in user we use their own display name; otherwise we surface
-  // "you" / nothing and let the ProjectBar handle the empty case.
-  const [pdfFile, setPdfFile] = useState<File | null>(null)
-  const [numPages, setNumPages] = useState<number>(0)
-  const [currentPage, setCurrentPage] = useState<number>(1)
-  const [isDragging, setIsDragging] = useState(false)
-  /**
-   * True when the project was started without uploading a PDF — we're drawing
-   * on a blank canvas at a fixed ratio. Persisted on the SavedProject so
-   * reloads land back in this mode instead of bouncing back to the upload zone.
-   */
-  const [isEmptyWorkspace, setIsEmptyWorkspace] = useState(false)
-  /**
-   * True while getProject(projectId) is in flight. Used to suppress
-   * the "Drop your building plan PDF here" upload zone during the
-   * loading window — without it the user would briefly see the
-   * upload zone on a project that actually has walls + PDF, before
-   * the load resolves and the canvas swaps in. Defaults to true
-   * when there's a projectId so the FIRST render after mount is
-   * loading-state instead of upload-zone.
-   */
-  const [isProjectLoading, setIsProjectLoading] = useState(!!projectId)
   /**
    * Per-page calibration + intrinsic dimensions. Has to be declared up here
    * with the rest of the workspace state so the dirty-tracker effect below
