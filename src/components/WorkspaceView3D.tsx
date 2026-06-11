@@ -63,6 +63,7 @@ import type { Block, BlockCode } from '../types/blocks'
 import { arcFromThreePoints, isCurvedWall } from '../lib/curveGeom'
 import {
   convertMakeupToBands,
+  getMakeupHeightMm,
   moduleHeightForBand,
   resolveCourseBlocks,
 } from '../lib/makeups'
@@ -79,6 +80,8 @@ import {
   verifyLayoutMatchesTally,
   cornerOwnershipFor,
   outerEdgeEndpoints,
+  buildCourses,
+  calculateCourseStack,
   type WallLayout,
 } from '../lib/blockCalc'
 
@@ -3583,18 +3586,43 @@ function Scene({
         // planWall throws on degenerate geometry (zero-length walls).
         // Skip silently — those walls won't render fractions anyway.
       }
-      // Height-makeup codes — surfaced from the makeup directly so
-      // 20.71 / 20.140 always land in the legend, even when the wall's
-      // height happens to be a clean modular multiple in some courses
-      // and an off-modular fit in others. Without this the height-
-      // makeup rows render but no legend entry exists for them.
-      if (makeup.heightMakeup71BlockCode) {
-        allCodes.push(makeup.heightMakeup71BlockCode)
+      // Height-makeup codes — derive by RUNNING buildCourses for this
+      // wall and pulling the actual code off each height-71 / height-140
+      // course it produces. Same call path the tally + 3D layout uses,
+      // so the legend always shows the code that's actually rendered
+      // instead of the raw makeup field. Critical when:
+      //   - pickHeightMakeupBlock is depth-scoped (30.140 picked over
+      //     20.140 on a 300-series wall, even when the makeup's saved
+      //     field still says 20.140)
+      //   - matchExactHeight is off (the height-71 / height-140 slot
+      //     emits a cut body block instead of a height-makeup block,
+      //     so the legend should reflect the body code not the
+      //     never-used height-makeup code)
+      try {
+        const wallHeightMm =
+          wall.heightMmOverride ?? getMakeupHeightMm(makeup)
+        const stack = calculateCourseStack(wallHeightMm)
+        const courses = buildCourses(stack, makeup)
+        for (const c of courses) {
+          if (c.type === 'height-71' || c.type === 'height-140') {
+            allCodes.push(c.bodyBlock)
+          }
+        }
+      } catch {
+        // calculateCourseStack / buildCourses throw on degenerate
+        // input; fall through to the legacy field reads below so the
+        // legend at least has SOMETHING.
+        if (makeup.heightMakeup71BlockCode) {
+          allCodes.push(makeup.heightMakeup71BlockCode)
+        }
+        if (makeup.heightMakeup140BlockCode) {
+          allCodes.push(makeup.heightMakeup140BlockCode)
+        }
       }
-      if (makeup.heightMakeup140BlockCode) {
-        allCodes.push(makeup.heightMakeup140BlockCode)
-      }
-      // Also surface any per-range height-makeup overrides.
+      // Per-range height-makeup overrides stay on the legacy read —
+      // buildCourses doesn't expose them on a CourseSpec, and any range
+      // that fires writes its code into resolveCourseBlocks at calc
+      // time anyway.
       for (const range of makeup.courseSeriesRanges ?? []) {
         if (range.heightMakeup71BlockCode) {
           allCodes.push(range.heightMakeup71BlockCode)
