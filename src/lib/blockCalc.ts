@@ -1702,6 +1702,11 @@ function solveCornerPhases(
     if (!infoS || !infoE || infoS.key === infoE.key) continue
 
     const outer = wallLengthMm(w, thicknessByWallId, wallsById)
+    // Jog stubs and other walls too short for two proper end blocks
+    // can't lay clean under ANY phasing — their degenerate fits would
+    // push arbitrary constraints onto their neighbours' corners. Let
+    // them adapt to whatever the long walls decide instead.
+    if (outer < FULL_END_MODULE_MM * 2) continue
     const wallT = thicknessByWallId[w.id] ?? 190
     const cubeS = (thicknessByWallId[infoS.otherId] ?? wallT) + MORTAR_MM
     const cubeE = (thicknessByWallId[infoE.otherId] ?? wallT) + MORTAR_MM

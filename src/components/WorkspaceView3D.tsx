@@ -684,13 +684,20 @@ function segmentsFromWallLayout(
       const perBlockDepthMm = library[w.block.code]?.dimensions.depthMm
       const perBlockThickness =
         perBlockDepthMm !== undefined ? perBlockDepthMm / 1000 : thickness
+      // Render-only cube fillers occupy the SAME volume as the owning
+      // perpendicular wall's corner block. With identical colours that
+      // coincidence is invisible, but where the codes differ (jogs,
+      // mixed makeups) the coplanar faces z-fight as a shimmer. Recess
+      // the filler a touch so the owner's block always wins cleanly.
+      const RENDER_ONLY_RECESS_M = 0.003
+      const recess = w.block.renderOnly === true ? RENDER_ONLY_RECESS_M : 0
       boxes.push({
         cx: sx + dirX * localCx,
-        cy: (aY0 + aY1) / 2,
+        cy: (aY0 + aY1) / 2 - (recess > 0 && aY1 > totalHeightM - 0.001 ? recess / 2 : 0),
         cz: sz + dirZ * localCx,
-        length: aS1 - aS0,
-        heightM: aY1 - aY0,
-        thickness: perBlockThickness,
+        length: Math.max(0.01, aS1 - aS0 - recess * 2),
+        heightM: Math.max(0.01, aY1 - aY0 - (aY1 > totalHeightM - 0.001 ? recess : 0)),
+        thickness: Math.max(0.01, perBlockThickness - recess * 2),
         yRotation,
         color: colorOf(w.block.code),
         highlight: isHighlightedBlock(w.block.code, library),
