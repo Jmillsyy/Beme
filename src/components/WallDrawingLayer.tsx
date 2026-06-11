@@ -163,18 +163,8 @@ interface WallDrawingLayerProps {
    * not supplied — same colour committed walls use as their default.
    */
   activeWallColor?: string
-  /** Page extent in stage-content px (rendered-page space). Crosshair
-   *  guides and page-sized chrome use these — NOT the canvas size. */
   visualWidth: number
   visualHeight: number
-  /** Stage canvas size in CSS px — the workspace viewport. The stage
-   *  no longer matches the page: it covers the visible container and a
-   *  native Konva transform (scale = zoom/renderedZoom, position =
-   *  view tx/ty — driven imperatively by PdfWorkspace) maps the
-   *  rendered-page content space onto it. Vectors therefore rasterise
-   *  at true screen resolution at ANY zoom. */
-  stageWidth: number
-  stageHeight: number
   /** Visual pixels per mm at the current zoom. */
   pxPerMmAtCurrentZoom: number
   /** Whether drawing-wall mode is active. */
@@ -847,8 +837,6 @@ function WallDrawingLayerInner({
   activeWallColor = '#ED7D31',
   visualWidth,
   visualHeight,
-  stageWidth,
-  stageHeight,
   pxPerMmAtCurrentZoom,
   drawingMode,
   drawingCurveMode,
@@ -1901,10 +1889,7 @@ function WallDrawingLayerInner({
     if (e.evt.button !== 0) return
     const stage = e.target.getStage()
     if (!stage) return
-    // Transform-aware pointer: the stage carries a native scale +
-    // position now, so the relative position IS the rendered-page-space
-    // coordinate all the maths below expect.
-    const raw = stage.getRelativePointerPosition()
+    const raw = stage.getPointerPosition()
     if (!raw) return
 
     if (drawingMode) {
@@ -2159,7 +2144,7 @@ function WallDrawingLayerInner({
   function handleStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
     const stage = e.target.getStage()
     if (!stage) return
-    const raw = stage.getRelativePointerPosition()
+    const raw = stage.getPointerPosition()
     if (!raw) return
 
     if (drawingMode) {
@@ -2543,8 +2528,8 @@ function WallDrawingLayerInner({
   return (
     <Stage
       ref={(stage: Konva.Stage | null) => onStageRef?.(stage)}
-      width={stageWidth}
-      height={stageHeight}
+      width={visualWidth}
+      height={visualHeight}
       // listening=false during zoom turns off Konva's hit-detection entirely.
       // Each pointer-position change otherwise costs O(walls) — Konva runs a
       // hit test against every shape on the layer to figure out which one
