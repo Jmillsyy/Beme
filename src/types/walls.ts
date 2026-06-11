@@ -265,6 +265,27 @@ export interface WallMakeup {
   useFractions: boolean
 
   /**
+   * "Match exact height" — controls whether the leftover height between
+   * the requested wall height and the nearest whole 200mm course count
+   * gets filled with a dedicated height-makeup block (20.71 / 20.140 /
+   * etc.) or with a cut-down standard body block.
+   *
+   *   - true  → use the library's height-makeup block at the required
+   *             height (existing AU bricklaying practice — 20.71 and
+   *             20.140 stocked specifically for this slot). Same
+   *             behaviour the system had before this flag existed, so
+   *             old saved projects with `undefined` default to true.
+   *   - false → use the body block cut on-site to the required height.
+   *             Tally counts a full body block per cut (since the
+   *             estimator orders a full block and chops it). Useful
+   *             where the height-makeup blocks aren't stocked or the
+   *             estimator prefers cuts over special-order blocks.
+   *
+   * Undefined falls back to `true` so legacy projects render unchanged.
+   */
+  matchExactHeight?: boolean
+
+  /**
    * Which course types the "match exact length" rule applies to when
    * `useFractions` is true. Each entry switches on fraction / cut-block
    * fitting for that course type; absent entries fall back to whole-

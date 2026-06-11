@@ -817,6 +817,14 @@ function WallTypeEditorModal({
   const [useFractions, setUseFractions] = useState(
     existing?.useFractions ?? settingsMatchExact
   )
+  // matchExactHeight defaults to true so legacy wall types (with
+  // `undefined` on the field) keep emitting dedicated height-makeup
+  // blocks. New wall types start with it on too — matches the AU
+  // bricklaying default. US / UK estimators can flip it off per
+  // wall type to switch to cut-body behaviour.
+  const [matchExactHeight, setMatchExactHeight] = useState(
+    existing?.matchExactHeight ?? true,
+  )
   const exactLengthCourses = existing?.exactLengthCourses ?? settingsExactLengthCourses
 
   // Defaults for new wall types come from the LIVE library via the role
@@ -913,6 +921,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      matchExactHeight,
       exactLengthCourses,
       courseOverrides,
     }
@@ -1045,6 +1054,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      matchExactHeight,
       exactLengthCourses,
     }
     return convertMakeupToBands(draft, undefined, { skipHeightMakeup: true }).bands
@@ -1060,6 +1070,7 @@ function WallTypeEditorModal({
     cornerBlockCode,
     halfBlockCode,
     useFractions,
+    matchExactHeight,
     isCurveMakeup,
     wedgeRequired,
     wedgeBodyBlockCode,
@@ -1089,6 +1100,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      matchExactHeight,
       exactLengthCourses,
       courseOverrides,
       courseSeriesRanges: seriesRanges,
@@ -1105,6 +1117,7 @@ function WallTypeEditorModal({
     cornerBlockCode,
     halfBlockCode,
     useFractions,
+    matchExactHeight,
     courseOverrides,
     seriesRanges,
     coursePattern,
@@ -1276,6 +1289,7 @@ function WallTypeEditorModal({
       cornerBlockCode,
       halfBlockCode,
       useFractions,
+      matchExactHeight,
       exactLengthCourses,
       courseOverrides: courseOverrides.length > 0 ? courseOverrides : undefined,
       courseSeriesRanges: cleanedRanges.length > 0 ? cleanedRanges : undefined,
@@ -1455,6 +1469,8 @@ function WallTypeEditorModal({
                 setBondType={setBondType}
                 useFractions={useFractions}
                 setUseFractions={setUseFractions}
+                matchExactHeight={matchExactHeight}
+                setMatchExactHeight={setMatchExactHeight}
                 hasCoursePattern={hasCoursePattern}
                 patternTotalHeight={patternTotalHeight}
                 wedgeDisablesCourseMix={wedgeDisablesCourseMix}
@@ -1610,6 +1626,8 @@ interface BasicsTabProps {
   setBondType: (v: BondType) => void
   useFractions: boolean
   setUseFractions: (v: boolean) => void
+  matchExactHeight: boolean
+  setMatchExactHeight: (v: boolean) => void
   hasCoursePattern: boolean
   patternTotalHeight: number
   wedgeDisablesCourseMix: boolean
@@ -1628,6 +1646,8 @@ function BasicsTab({
   setBondType,
   useFractions,
   setUseFractions,
+  matchExactHeight,
+  setMatchExactHeight,
   hasCoursePattern,
   patternTotalHeight,
   wedgeDisablesCourseMix,
@@ -1733,6 +1753,26 @@ function BasicsTab({
                 Settings → Wall defaults
               </Link>
               .
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 cursor-pointer mt-3">
+          <input
+            type="checkbox"
+            checked={matchExactHeight}
+            onChange={(e) => setMatchExactHeight(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className="leading-snug">
+            <span>Match exact wall height</span>
+            <span className="block text-[11px] text-ink-400 mt-0.5">
+              When on, the leftover between the requested height and the
+              nearest 200mm course count is filled with a dedicated
+              height-makeup block from your library (e.g. AU 20.71 /
+              20.140). When off, the calc emits a cut body block at the
+              required height instead — same body code as the rest of
+              the wall, tallied as a full block (you'd order a full one
+              and chop it).
             </span>
           </span>
         </label>

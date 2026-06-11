@@ -1197,26 +1197,45 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
   // exists in the library.
   const heightMakeupDepthMm =
     BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+  // "Match exact height" toggle — undefined (legacy) defaults to true so
+  // existing wall types keep emitting 20.140 / 20.71 as the dedicated
+  // height-makeup blocks. When explicitly false, the height-makeup slot
+  // emits a CUT body block instead: same course type (height-140 /
+  // height-71) but with `bodyBlock` set to the makeup's body code. The
+  // 3D renderer already cuts the bodyBlock to the course's required
+  // height, and the tally counts a full body block per cut (you'd
+  // order a full block and chop it on site).
+  const matchExactHeight = makeup.matchExactHeight ?? true
   if (stack.has140) {
     // Pick the 140 mm height-makeup block by role — falls back to the SEQ
     // 20.140 in AU libraries (which is role-tagged), and a US / UK user can
     // tag their equivalent (e.g. a 4" tall CMU) to make this work.
     const courseNumber = courses.length + 1
     void courseNumber
-    const block140 = pickHeightMakeupBlock(140, heightMakeupDepthMm)
-    if (block140) {
-      courses.push({ type: 'height-140', bodyBlock: block140.code })
+    if (matchExactHeight) {
+      const block140 = pickHeightMakeupBlock(140, heightMakeupDepthMm)
+      if (block140) {
+        courses.push({ type: 'height-140', bodyBlock: block140.code })
+      }
+    } else {
+      // Cut body — same course type (height-140 = 150mm modular slot),
+      // body block code so the layout / tally treat it as a cut body.
+      courses.push({ type: 'height-140', bodyBlock: makeup.bodyBlockCode })
     }
   }
   if (stack.has71) {
     const courseNumber = courses.length + 1
     const b = blocksForCourse(courseNumber)
-    // Heal — falls back to height-makeup tagged block if the saved
-    // code isn't in the library, else to a body block.
-    courses.push({
-      type: 'height-71',
-      bodyBlock: healCode(b.heightMakeup71BlockCode, 'height-makeup'),
-    })
+    if (matchExactHeight) {
+      // Heal — falls back to height-makeup tagged block if the saved
+      // code isn't in the library, else to a body block.
+      courses.push({
+        type: 'height-71',
+        bodyBlock: healCode(b.heightMakeup71BlockCode, 'height-makeup'),
+      })
+    } else {
+      courses.push({ type: 'height-71', bodyBlock: makeup.bodyBlockCode })
+    }
   }
 
   // ---- Top course ----
