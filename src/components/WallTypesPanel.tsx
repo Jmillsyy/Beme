@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useUserSettings } from '../lib/userSettings'
+import { useUserSettings, updateUserSettings } from '../lib/userSettings'
 import { toast } from '../lib/toast'
 import { confirm } from '../lib/confirm'
 import type {
@@ -349,6 +349,42 @@ export default function WallTypesPanel({
                     className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
                   >
                     Duplicate
+                  </span>
+                  {/* Set default — snapshots this wall type's composition
+                      into the user's estimating defaults + role defaults,
+                      so every NEW wall type (in any project) seeds from
+                      it: height, bond, exact-length/-height behaviour and
+                      all block codes. Configure-by-example: set up one
+                      wall type the way you like, click once, done. */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      updateUserSettings({
+                        defaults: {
+                          defaultWallHeightMm: m.heightMm,
+                          defaultBondType: m.bondType,
+                          defaultMatchExactLength: m.useFractions,
+                          defaultExactLengthCourses: m.exactLengthCourses,
+                          defaultMatchExactHeight: m.matchExactHeight ?? true,
+                        },
+                        defaultsByRole: {
+                          body: m.bodyBlockCode,
+                          corner: m.cornerBlockCode,
+                          half: m.halfBlockCode,
+                          base: m.baseCourseBlockCode,
+                          top: m.topCourseBlockCode,
+                          cap: m.capBlockCode ?? '',
+                        },
+                      })
+                      toast.success(
+                        `"${m.name}" is now the default for new wall types`
+                      )
+                    }}
+                    className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
+                  >
+                    Set default
                   </span>
                   {canDelete && (
                     <span
@@ -812,8 +848,14 @@ function WallTypeEditorModal({
     userSettings.defaults.defaultExactLengthCourses
 
   const [name, setName] = useState(existing?.name ?? 'New wall type')
-  const [bondType, setBondType] = useState<BondType>(existing?.bondType ?? 'stretcher')
-  const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
+  const [bondType, setBondType] = useState<BondType>(
+    existing?.bondType ??
+      (userSettings.defaults.defaultBondType as BondType) ??
+      'stretcher'
+  )
+  const [heightMm, setHeightMm] = useState<number>(
+    existing?.heightMm ?? userSettings.defaults.defaultWallHeightMm ?? 2400
+  )
   const [useFractions, setUseFractions] = useState(
     existing?.useFractions ?? settingsMatchExact
   )
@@ -823,7 +865,9 @@ function WallTypeEditorModal({
   // bricklaying default. US / UK estimators can flip it off per
   // wall type to switch to cut-body behaviour.
   const [matchExactHeight, setMatchExactHeight] = useState(
-    existing?.matchExactHeight ?? true,
+    existing?.matchExactHeight ??
+      userSettings.defaults.defaultMatchExactHeight ??
+      true,
   )
   const exactLengthCourses = existing?.exactLengthCourses ?? settingsExactLengthCourses
 
@@ -837,28 +881,34 @@ function WallTypeEditorModal({
   // or base-course block STILL gets a real code from the live library
   // (the body block) instead of an AU code that doesn't exist there.
   // The AU literals are last-resort only.
-  const bodyFallback = pickBodyDefault()?.code ?? '20.48'
+  // Passing userSettings activates defaultsByRole resolution — the
+  // codes captured by "Set default" on a wall type card win over the
+  // library's role tags, so new wall types seed from the user's chosen
+  // exemplar rather than whatever the library tagged first.
+  const roleOpts = { settings: userSettings }
+  const bodyFallback = pickBodyDefault(roleOpts)?.code ?? '20.48'
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
-    existing?.baseCourseBlockCode ?? pickBaseCourse()?.code ?? bodyFallback
+    existing?.baseCourseBlockCode ?? pickBaseCourse(roleOpts)?.code ?? bodyFallback
   )
   const [bodyBlockCode, setBodyBlockCode] = useState<BlockCode>(
     existing?.bodyBlockCode ?? bodyFallback
   )
   const [topCourseBlockCode, setTopCourseBlockCode] = useState<BlockCode>(
-    existing?.topCourseBlockCode ?? pickTopCourse()?.code ?? bodyFallback
+    existing?.topCourseBlockCode ?? pickTopCourse(roleOpts)?.code ?? bodyFallback
   )
   const [cornerBlockCode, setCornerBlockCode] = useState<BlockCode>(
-    existing?.cornerBlockCode ?? pickCornerBlock()?.code ?? bodyFallback
+    existing?.cornerBlockCode ?? pickCornerBlock(roleOpts)?.code ?? bodyFallback
   )
   const [halfBlockCode, setHalfBlockCode] = useState<BlockCode>(
-    existing?.halfBlockCode ?? pickHalfBlock()?.code ?? bodyFallback
+    existing?.halfBlockCode ?? pickHalfBlock(roleOpts)?.code ?? bodyFallback
   )
   // Capping tile — defaults to UNSET (empty string in the picker, no
   // cap on the wall). The user explicitly picks a cap-tagged block to
   // add one. Storage on the makeup is `capBlockCode?: BlockCode`, so
   // we serialise undefined when the picker is empty.
   const [capBlockCode, setCapBlockCode] = useState<BlockCode | ''>(
-    existing?.capBlockCode ?? ''
+    existing?.capBlockCode ??
+      ((userSettings.defaultsByRole?.cap as BlockCode | undefined) || '')
   )
 
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(

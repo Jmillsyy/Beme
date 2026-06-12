@@ -118,6 +118,14 @@ export interface EstimatingDefaults {
    * that course type. Undefined = all course types (default).
    */
   defaultExactLengthCourses?: Array<'base' | 'body' | 'height-makeup' | 'top'>
+
+  /**
+   * Whether new wall makeups default to "match exact wall height"
+   * (dedicated height-makeup blocks vs cut body blocks). Set by the
+   * "Set default" action on a wall type card. Undefined -> true (the
+   * AU bricklaying default, same as before).
+   */
+  defaultMatchExactHeight?: boolean
 }
 
 /**
@@ -270,6 +278,8 @@ export interface DefaultsByRole {
   heightMakeup90?: string
   heightMakeup140?: string
   cornerLeadIn?: string
+  /** Capping tile seeded onto new wall types ('' / undefined = no cap). */
+  cap?: string
 }
 
 export interface UserSettings {
