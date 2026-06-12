@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
+import { WallTypeTemplatesSection } from '../components/WallTypesPanel'
 import BrickLibraryPanel from '../components/BrickLibraryPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import LibraryTemplateControls from '../components/LibraryTemplateControls'
@@ -243,6 +244,15 @@ export default function MaterialLibraryPage() {
             </TabSection>
           )}
 
+          {activeTabId === 'wall-types' && (
+            <TabSection
+              title="Wall types"
+              description="Your named wall type templates — full compositions (height, bond, blocks, course pattern) reusable across every project. Build them here, or save one from any project's wall type card. The new-wall-type modal offers these as starting points."
+            >
+              <WallTypeTemplatesSection readOnly={readOnly} />
+            </TabSection>
+          )}
+
           {activeTabId === 'supply-items' && (
             <TabSection
               title="Supply items"
@@ -277,6 +287,7 @@ export default function MaterialLibraryPage() {
 const LIBRARY_TABS = [
   { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Trade' },
   { id: 'bricks' as const, label: 'Bricks', kindLabel: 'Trade' },
+  { id: 'wall-types' as const, label: 'Wall types', kindLabel: 'Block' },
   { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Cross-trade' },
 ]
 type LibraryTabId = (typeof LIBRARY_TABS)[number]['id']

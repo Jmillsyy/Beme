@@ -69,6 +69,11 @@ export function updateUserSettings(partial: DeepPartial<UserSettings>): void {
       partial.supplyItems !== undefined
         ? (partial.supplyItems as UserSettings['supplyItems'])
         : _settings.supplyItems,
+    // Wall type templates — same wholesale-replace convention.
+    wallTypeTemplates:
+      partial.wallTypeTemplates !== undefined
+        ? (partial.wallTypeTemplates as UserSettings['wallTypeTemplates'])
+        : _settings.wallTypeTemplates,
   }
   notifyChange()
   void persistSettings(_settings)
@@ -178,6 +183,7 @@ export async function initUserSettings(): Promise<void> {
         saved.supplyItems && saved.supplyItems.length > 0
           ? saved.supplyItems
           : createDefaultSupplyItems(),
+      wallTypeTemplates: saved.wallTypeTemplates ?? [],
     }
     notifyChange()
   }

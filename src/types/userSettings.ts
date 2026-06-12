@@ -7,6 +7,8 @@
  * exported estimates.
  */
 
+import type { WallMakeup } from './walls'
+
 export type Units = 'metric' | 'imperial'
 export type DateFormat = 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD'
 export type Theme = 'dark' | 'light'
@@ -299,6 +301,13 @@ export interface UserSettings {
    * per-project in the brick/block settings panel.
    */
   supplyItems?: SupplyItem[]
+  /**
+   * Your library — named wall type templates, reusable across projects.
+   * Saved from a project's wall type card ("Save to library") or managed
+   * on the Material Library page. The new-wall-type modal offers these
+   * as starting points. Replaced wholesale on update, like supplyItems.
+   */
+  wallTypeTemplates?: WallMakeup[]
 }
 
 /**
@@ -345,6 +354,7 @@ export function createDefaultUserSettings(): UserSettings {
       // 'height-makeup', 'top'])
     },
     supplyItems: createDefaultSupplyItems(),
+    wallTypeTemplates: [],
   }
 }
 

@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useUserSettings, updateUserSettings } from '../lib/userSettings'
+import {
+  useUserSettings,
+  updateUserSettings,
+  getUserSettings,
+} from '../lib/userSettings'
 import { toast } from '../lib/toast'
 import { confirm } from '../lib/confirm'
 import type {
@@ -385,6 +389,29 @@ export default function WallTypesPanel({
                     className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
                   >
                     Set default
+                  </span>
+                  {/* Save to library — snapshots this wall type into the
+                      user's named template collection (Material Library →
+                      Wall types). New wall types in ANY project can then
+                      start from it via the modal's template picker. */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const existingTemplates =
+                        getUserSettings().wallTypeTemplates ?? []
+                      updateUserSettings({
+                        wallTypeTemplates: [
+                          ...existingTemplates,
+                          { ...m, id: generateMakeupId() },
+                        ],
+                      })
+                      toast.success(`"${m.name}" saved to your library`)
+                    }}
+                    className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
+                  >
+                    Save to library
                   </span>
                   {canDelete && (
                     <span
@@ -804,7 +831,7 @@ interface WallTypeEditorModalProps {
  *   - Course Pattern: bands editor + live visual stack preview
  *   - Advanced     : per-course overrides + course-series ranges
  */
-function WallTypeEditorModal({
+export function WallTypeEditorModal({
   existing,
   onSwitchToPier,
   curvedAvailable,
@@ -1030,6 +1057,27 @@ function WallTypeEditorModal({
   }
   function removeOverride(index: number) {
     setCourseOverrides((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  // Named wall type templates from Your Library (Material Library page).
+  const libraryTemplates = userSettings.wallTypeTemplates ?? []
+  /** Fill every modal field from a library template. The template's id
+   *  is NOT carried over — saving creates a fresh project wall type. */
+  function applyLibraryTemplate(t: WallMakeup) {
+    setName(t.name)
+    setBondType(t.bondType)
+    setHeightMm(t.heightMm)
+    setUseFractions(t.useFractions)
+    setMatchExactHeight(t.matchExactHeight ?? true)
+    setBaseCourseBlockCode(t.baseCourseBlockCode)
+    setBodyBlockCode(t.bodyBlockCode)
+    setTopCourseBlockCode(t.topCourseBlockCode)
+    setCornerBlockCode(t.cornerBlockCode)
+    setHalfBlockCode(t.halfBlockCode ?? '20.03')
+    setCapBlockCode(t.capBlockCode ?? '')
+    setCourseOverrides(t.courseOverrides ?? [])
+    setCoursePattern(t.coursePattern ?? [])
+    setSeriesRanges(t.courseSeriesRanges ?? [])
   }
 
   const [seriesRanges, setSeriesRanges] = useState<CourseSeriesRange[]>(
@@ -1448,6 +1496,34 @@ function WallTypeEditorModal({
                 : `${Math.round(heightMm / 200)} courses · ${heightMm} mm`}
             </p>
           </div>
+          {/* Your library — start a NEW wall type from one of the named
+              templates saved on the Material Library page (or via "Save
+              to library" on any project wall type card). Applying a
+              template fills every field; the user can still tweak
+              anything before saving. Hidden when editing an existing
+              wall type or when no templates exist yet. */}
+          {!existing && libraryTemplates.length > 0 && (
+            <label className="flex items-center gap-2 text-xs text-ink-300 mr-3">
+              <span className="whitespace-nowrap">Start from</span>
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  const t = libraryTemplates.find(
+                    (x) => x.id === e.target.value
+                  )
+                  if (t) applyLibraryTemplate(t)
+                }}
+                className="px-2 py-1.5 border border-ink-600 rounded-lg text-xs bg-ink-900 focus:outline-none focus:border-beme-400 max-w-[220px]"
+              >
+                <option value="">Your library…</option>
+                {libraryTemplates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} · {t.heightMm}mm
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             onClick={onCancel}
             className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
@@ -3411,6 +3487,123 @@ function PierTypeEditorModal({
           </button>
         </footer>
       </div>
+    </div>
+  )
+}
+
+
+/**
+ * "Your library" wall types — the Material Library page's Wall types
+ * tab. Named WallMakeup templates saved across projects: create and
+ * edit them here with the same full editor projects use, or capture
+ * one from any project via "Save to library" on a wall type card. The
+ * new-wall-type modal offers these as starting points everywhere.
+ */
+export function WallTypeTemplatesSection({
+  readOnly = false,
+}: {
+  readOnly?: boolean
+}) {
+  const { settings } = useUserSettings()
+  const templates = settings.wallTypeTemplates ?? []
+  const [editing, setEditing] = useState<WallMakeup | null>(null)
+  const [adding, setAdding] = useState(false)
+
+  function saveTemplates(next: WallMakeup[]) {
+    updateUserSettings({ wallTypeTemplates: next })
+  }
+
+  return (
+    <div>
+      {templates.length === 0 ? (
+        <p className="text-xs text-ink-400">
+          No wall types saved yet. Build one here with “+ New wall
+          type”, or open any project and click “Save to library” on a
+          wall type you’ve already set up.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {templates.map((t) => (
+            <div
+              key={t.id}
+              className="flex items-center gap-2 py-1.5 px-2 rounded-md border border-ink-600/40 hover:border-ink-600 hover:bg-ink-700/40"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-ink-100 truncate">{t.name}</div>
+                <div className="text-[11px] text-ink-400 font-mono">
+                  {t.bondType} · {t.heightMm}mm · body {t.bodyBlockCode}
+                  {t.capBlockCode ? ` · cap ${t.capBlockCode}` : ''}
+                </div>
+              </div>
+              {!readOnly && (
+                <div className="flex items-center gap-3 shrink-0">
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setEditing(t)}
+                    className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
+                  >
+                    Edit
+                  </span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Remove "${t.name}" from your library?`,
+                        message:
+                          'Wall types already created from it in projects are unaffected.',
+                        confirmLabel: 'Remove',
+                        variant: 'destructive',
+                      })
+                      if (ok) saveTemplates(templates.filter((x) => x.id !== t.id))
+                    }}
+                    className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                  >
+                    Remove
+                  </span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!readOnly && (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          className="mt-3 px-3 py-1.5 rounded-lg border border-ink-600 text-xs text-ink-200 hover:bg-ink-700 transition-colors"
+        >
+          + New wall type
+        </button>
+      )}
+
+      {(editing || adding) && (
+        <WallTypeEditorModal
+          existing={editing}
+          onSave={(makeup) => {
+            if (editing) {
+              saveTemplates(
+                templates.map((x) =>
+                  x.id === editing.id ? { ...makeup, id: editing.id } : x
+                )
+              )
+            } else {
+              saveTemplates([
+                ...templates,
+                { ...makeup, id: generateMakeupId() },
+              ])
+            }
+            setEditing(null)
+            setAdding(false)
+          }}
+          onCancel={() => {
+            setEditing(null)
+            setAdding(false)
+          }}
+        />
+      )}
     </div>
   )
 }
