@@ -171,6 +171,9 @@ export default function WallTypesPanel({
   const visibleMakeups = blockLibraryEmpty ? [] : makeups
   const visiblePierMakeups = blockLibraryEmpty ? [] : pierMakeups
   /** null = no form; 'new' = adding; otherwise = editing makeup with this id */
+  const [showAddChooser, setShowAddChooser] = useState(false)
+  /** Library template picked via "Customise first…" — seeds the blank editor. */
+  const [addSeed, setAddSeed] = useState<WallMakeup | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   /** When the pier editor swaps over to the wall modal via the Curved
    *  kind option, this carries the intent — the wall modal opens with
@@ -237,7 +240,14 @@ export default function WallTypesPanel({
             <button
               onClick={() => {
                 if (blockLibraryEmpty) return
-                setEditingId('new')
+                // With library templates available, + Add opens the
+                // chooser first (one-click add of a saved wall type, or
+                // customise / start blank). No templates -> straight to
+                // the blank editor, exactly as before.
+                const hasTemplates =
+                  (getUserSettings().wallTypeTemplates ?? []).length > 0
+                if (hasTemplates) setShowAddChooser(true)
+                else setEditingId('new')
               }}
               disabled={blockLibraryEmpty}
               className="text-xs px-2 py-1 rounded bg-beme-500 text-black font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex-shrink-0"
@@ -353,42 +363,6 @@ export default function WallTypesPanel({
                     className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
                   >
                     Duplicate
-                  </span>
-                  {/* Set default — snapshots this wall type's composition
-                      into the user's estimating defaults + role defaults,
-                      so every NEW wall type (in any project) seeds from
-                      it: height, bond, exact-length/-height behaviour and
-                      all block codes. Configure-by-example: set up one
-                      wall type the way you like, click once, done. */}
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      updateUserSettings({
-                        defaults: {
-                          defaultWallHeightMm: m.heightMm,
-                          defaultBondType: m.bondType,
-                          defaultMatchExactLength: m.useFractions,
-                          defaultExactLengthCourses: m.exactLengthCourses,
-                          defaultMatchExactHeight: m.matchExactHeight ?? true,
-                        },
-                        defaultsByRole: {
-                          body: m.bodyBlockCode,
-                          corner: m.cornerBlockCode,
-                          half: m.halfBlockCode,
-                          base: m.baseCourseBlockCode,
-                          top: m.topCourseBlockCode,
-                          cap: m.capBlockCode ?? '',
-                        },
-                      })
-                      toast.success(
-                        `"${m.name}" is now the default for new wall types`
-                      )
-                    }}
-                    className="text-xs text-ink-300 hover:text-ink-100 hover:underline cursor-pointer"
-                  >
-                    Set default
                   </span>
                   {/* Save to library — snapshots this wall type into the
                       user's named template collection (Material Library →
@@ -600,6 +574,96 @@ export default function WallTypesPanel({
         </div>
       )}
 
+      {/* Add chooser — shown when the user has library wall types. One
+          click adds a saved template to the project; "Customise first"
+          opens the editor pre-filled; "Start blank" opens it empty. */}
+      {showAddChooser && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setShowAddChooser(false)}
+        >
+          <div
+            className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-xl p-5"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-label="Add wall type"
+          >
+            <div className="flex items-start justify-between mb-1">
+              <h2 className="text-base font-semibold text-ink-100">
+                Add wall type
+              </h2>
+              <button
+                onClick={() => setShowAddChooser(false)}
+                className="text-ink-400 hover:text-ink-100 text-lg leading-none"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <p className="text-[11px] text-ink-500 mb-4">
+              One click adds it to this project — tweak it afterwards if
+              needed.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[50vh] overflow-y-auto pr-1">
+              {(getUserSettings().wallTypeTemplates ?? []).map((t) => (
+                <div
+                  key={t.id}
+                  className="border border-ink-600 rounded-xl p-3 hover:border-beme-400/60 transition-colors"
+                >
+                  <div className="flex gap-2.5 items-center">
+                    <WallTypeStackPreview makeup={t} width={22} />
+                    <div className="min-w-0">
+                      <div className="text-sm text-ink-100 truncate">
+                        {t.name}
+                      </div>
+                      <div className="text-[11px] text-ink-400 font-mono">
+                        {wallTypeSpec(t)} · {t.bodyBlockCode}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-3 mt-2.5">
+                    <button
+                      onClick={() => {
+                        onAddMakeup({ ...t, id: generateMakeupId() })
+                        setShowAddChooser(false)
+                        toast.success(`Wall type "${t.name}" added`)
+                      }}
+                      className="text-[11px] font-medium text-beme-400 hover:text-beme-300 hover:underline"
+                    >
+                      Add to project
+                    </button>
+                    <button
+                      onClick={() => {
+                        setAddSeed(t)
+                        setShowAddChooser(false)
+                        setEditingId('new')
+                      }}
+                      className="text-[11px] text-ink-400 hover:text-ink-200 hover:underline"
+                    >
+                      Customise first…
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                setAddSeed(null)
+                setShowAddChooser(false)
+                setEditingId('new')
+              }}
+              className="mt-3 w-full border border-dashed border-ink-600 rounded-xl px-3 py-2.5 text-xs text-ink-400 hover:text-ink-200 hover:border-ink-500 transition-colors text-left flex items-center justify-between"
+            >
+              <span>+ Start blank — open the full editor</span>
+              <span aria-hidden="true">→</span>
+            </button>
+            <p className="text-[10px] text-ink-500 mt-3">
+              Manage your library in Material library → Wall types
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Wall-type editor modal. When creating new the kind picker at the
           top lets the user swap into the pier editor via onSwitchToPier
           (handled below — closes this modal, opens the pier modal with
@@ -627,9 +691,11 @@ export default function WallTypesPanel({
             editingId === 'new' && Boolean(onToggleCurvedWall)
           }
           initialKind={editingSeedKind}
+          seed={editingId === 'new' ? addSeed : null}
           onCancel={() => {
             setEditingId(null)
             setEditingSeedKind('wall')
+            setAddSeed(null)
           }}
           onSave={(m) => {
             const isNew = editingId === 'new'
@@ -637,6 +703,7 @@ export default function WallTypesPanel({
             else onUpdateMakeup(m)
             setEditingId(null)
             setEditingSeedKind('wall')
+            setAddSeed(null)
             // Confirmation toast — the modal vanishes, the new type
             // appears in the wall-types panel, but the panel might be
             // long enough that the new entry is below the fold. Toast
@@ -810,6 +877,12 @@ interface WallTypeEditorModalProps {
    *  selected (e.g. when the pier modal hands control back via its
    *  own Curved option). Defaults to 'wall'. */
   initialKind?: 'wall' | 'curved'
+  /**
+   * Library template to pre-fill a NEW wall type from ("Customise
+   * first…" in the add chooser). Unlike `existing`, the modal still
+   * behaves as CREATE — saving produces a fresh project wall type.
+   */
+  seed?: WallMakeup | null
   onSave: (makeup: WallMakeup, opts?: { kind?: 'wall' | 'curved' }) => void
   onCancel: () => void
 }
@@ -836,9 +909,14 @@ export function WallTypeEditorModal({
   onSwitchToPier,
   curvedAvailable,
   initialKind,
+  seed = null,
   onSave,
   onCancel,
 }: WallTypeEditorModalProps) {
+  // Field seeding: edits load the existing wall type; creates load the
+  // chooser's template when one was picked. `existing` alone still
+  // decides edit-vs-create semantics everywhere below.
+  const init = existing ?? seed
   // Wall vs curved kind for THIS configure pass. Curved is just an
   // intent flag now — the builder shows the same tabs / fields as a
   // straight wall, and the calc engine adapts the chosen blocks to
@@ -874,17 +952,17 @@ export function WallTypeEditorModal({
   const settingsExactLengthCourses =
     userSettings.defaults.defaultExactLengthCourses
 
-  const [name, setName] = useState(existing?.name ?? 'New wall type')
+  const [name, setName] = useState(init?.name ?? 'New wall type')
   const [bondType, setBondType] = useState<BondType>(
-    existing?.bondType ??
+    init?.bondType ??
       (userSettings.defaults.defaultBondType as BondType) ??
       'stretcher'
   )
   const [heightMm, setHeightMm] = useState<number>(
-    existing?.heightMm ?? userSettings.defaults.defaultWallHeightMm ?? 2400
+    init?.heightMm ?? userSettings.defaults.defaultWallHeightMm ?? 2400
   )
   const [useFractions, setUseFractions] = useState(
-    existing?.useFractions ?? settingsMatchExact
+    init?.useFractions ?? settingsMatchExact
   )
   // matchExactHeight defaults to true so legacy wall types (with
   // `undefined` on the field) keep emitting dedicated height-makeup
@@ -892,11 +970,11 @@ export function WallTypeEditorModal({
   // bricklaying default. US / UK estimators can flip it off per
   // wall type to switch to cut-body behaviour.
   const [matchExactHeight, setMatchExactHeight] = useState(
-    existing?.matchExactHeight ??
+    init?.matchExactHeight ??
       userSettings.defaults.defaultMatchExactHeight ??
       true,
   )
-  const exactLengthCourses = existing?.exactLengthCourses ?? settingsExactLengthCourses
+  const exactLengthCourses = init?.exactLengthCourses ?? settingsExactLengthCourses
 
   // Defaults for new wall types come from the LIVE library via the role
   // pickers — so a US user creating their first wall type lands on
@@ -915,36 +993,36 @@ export function WallTypeEditorModal({
   const roleOpts = { settings: userSettings }
   const bodyFallback = pickBodyDefault(roleOpts)?.code ?? '20.48'
   const [baseCourseBlockCode, setBaseCourseBlockCode] = useState<BlockCode>(
-    existing?.baseCourseBlockCode ?? pickBaseCourse(roleOpts)?.code ?? bodyFallback
+    init?.baseCourseBlockCode ?? pickBaseCourse(roleOpts)?.code ?? bodyFallback
   )
   const [bodyBlockCode, setBodyBlockCode] = useState<BlockCode>(
-    existing?.bodyBlockCode ?? bodyFallback
+    init?.bodyBlockCode ?? bodyFallback
   )
   const [topCourseBlockCode, setTopCourseBlockCode] = useState<BlockCode>(
-    existing?.topCourseBlockCode ?? pickTopCourse(roleOpts)?.code ?? bodyFallback
+    init?.topCourseBlockCode ?? pickTopCourse(roleOpts)?.code ?? bodyFallback
   )
   const [cornerBlockCode, setCornerBlockCode] = useState<BlockCode>(
-    existing?.cornerBlockCode ?? pickCornerBlock(roleOpts)?.code ?? bodyFallback
+    init?.cornerBlockCode ?? pickCornerBlock(roleOpts)?.code ?? bodyFallback
   )
   const [halfBlockCode, setHalfBlockCode] = useState<BlockCode>(
-    existing?.halfBlockCode ?? pickHalfBlock(roleOpts)?.code ?? bodyFallback
+    init?.halfBlockCode ?? pickHalfBlock(roleOpts)?.code ?? bodyFallback
   )
   // Capping tile — defaults to UNSET (empty string in the picker, no
   // cap on the wall). The user explicitly picks a cap-tagged block to
   // add one. Storage on the makeup is `capBlockCode?: BlockCode`, so
   // we serialise undefined when the picker is empty.
   const [capBlockCode, setCapBlockCode] = useState<BlockCode | ''>(
-    existing?.capBlockCode ??
+    init?.capBlockCode ??
       ((userSettings.defaultsByRole?.cap as BlockCode | undefined) || '')
   )
 
   const [courseOverrides, setCourseOverrides] = useState<CourseOverride[]>(
-    existing?.courseOverrides ?? []
+    init?.courseOverrides ?? []
   )
 
   // ---- Course pattern (bands) state ----
   const [coursePattern, setCoursePattern] = useState<CourseBand[]>(
-    existing?.coursePattern ?? []
+    init?.coursePattern ?? []
   )
   const hasCoursePattern = coursePattern.length > 0
   const patternTotalHeight = useMemo(
@@ -1059,29 +1137,8 @@ export function WallTypeEditorModal({
     setCourseOverrides((prev) => prev.filter((_, i) => i !== index))
   }
 
-  // Named wall type templates from Your Library (Material Library page).
-  const libraryTemplates = userSettings.wallTypeTemplates ?? []
-  /** Fill every modal field from a library template. The template's id
-   *  is NOT carried over — saving creates a fresh project wall type. */
-  function applyLibraryTemplate(t: WallMakeup) {
-    setName(t.name)
-    setBondType(t.bondType)
-    setHeightMm(t.heightMm)
-    setUseFractions(t.useFractions)
-    setMatchExactHeight(t.matchExactHeight ?? true)
-    setBaseCourseBlockCode(t.baseCourseBlockCode)
-    setBodyBlockCode(t.bodyBlockCode)
-    setTopCourseBlockCode(t.topCourseBlockCode)
-    setCornerBlockCode(t.cornerBlockCode)
-    setHalfBlockCode(t.halfBlockCode ?? '20.03')
-    setCapBlockCode(t.capBlockCode ?? '')
-    setCourseOverrides(t.courseOverrides ?? [])
-    setCoursePattern(t.coursePattern ?? [])
-    setSeriesRanges(t.courseSeriesRanges ?? [])
-  }
-
   const [seriesRanges, setSeriesRanges] = useState<CourseSeriesRange[]>(
-    existing?.courseSeriesRanges ?? []
+    init?.courseSeriesRanges ?? []
   )
 
   function addSeriesRange() {
@@ -1496,34 +1553,6 @@ export function WallTypeEditorModal({
                 : `${Math.round(heightMm / 200)} courses · ${heightMm} mm`}
             </p>
           </div>
-          {/* Your library — start a NEW wall type from one of the named
-              templates saved on the Material Library page (or via "Save
-              to library" on any project wall type card). Applying a
-              template fills every field; the user can still tweak
-              anything before saving. Hidden when editing an existing
-              wall type or when no templates exist yet. */}
-          {!existing && libraryTemplates.length > 0 && (
-            <label className="flex items-center gap-2 text-xs text-ink-300 mr-3">
-              <span className="whitespace-nowrap">Start from</span>
-              <select
-                defaultValue=""
-                onChange={(e) => {
-                  const t = libraryTemplates.find(
-                    (x) => x.id === e.target.value
-                  )
-                  if (t) applyLibraryTemplate(t)
-                }}
-                className="px-2 py-1.5 border border-ink-600 rounded-lg text-xs bg-ink-900 focus:outline-none focus:border-beme-400 max-w-[220px]"
-              >
-                <option value="">Your library…</option>
-                {libraryTemplates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} · {t.heightMm}mm
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
           <button
             onClick={onCancel}
             className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
@@ -3493,6 +3522,61 @@ function PierTypeEditorModal({
 
 
 /**
+ * Mini course-stack preview — a column of colour stripes matching the
+ * wall type's composition (base course at the bottom, body courses,
+ * top course, optional cap). Colours come from bandColor so they match
+ * the same hues the 3D view and pattern editor give those codes.
+ */
+function WallTypeStackPreview({
+  makeup,
+  width = 34,
+}: {
+  makeup: WallMakeup
+  width?: number
+}) {
+  const stripes: Array<{ code: string; h: number }> = []
+  if (makeup.capBlockCode) stripes.push({ code: makeup.capBlockCode, h: 3 })
+  stripes.push({ code: makeup.topCourseBlockCode, h: 7 })
+  stripes.push({ code: makeup.bodyBlockCode, h: 7 })
+  stripes.push({ code: makeup.bodyBlockCode, h: 7 })
+  stripes.push({ code: makeup.bodyBlockCode, h: 7 })
+  stripes.push({ code: makeup.baseCourseBlockCode, h: 7 })
+  return (
+    <div
+      className="flex flex-col gap-px shrink-0"
+      style={{ width }}
+      aria-hidden="true"
+    >
+      {stripes.map((st, i) => (
+        <div
+          key={i}
+          className="rounded-[1px]"
+          style={{ height: st.h, backgroundColor: bandColor(st.code, 'vibrant') }}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** One-line spec summary for a wall type card. */
+function wallTypeSpec(m: WallMakeup): string {
+  return `${m.heightMm} mm · ${m.bondType}`
+}
+
+/** The distinct block codes a wall type uses (for the code chips). */
+function wallTypeCodes(m: WallMakeup): string[] {
+  const codes = [
+    m.bodyBlockCode,
+    m.cornerBlockCode,
+    m.halfBlockCode,
+    m.baseCourseBlockCode,
+    m.topCourseBlockCode,
+    m.capBlockCode,
+  ].filter((c): c is string => !!c)
+  return [...new Set(codes)]
+}
+
+/**
  * "Your library" wall types — the Material Library page's Wall types
  * tab. Named WallMakeup templates saved across projects: create and
  * edit them here with the same full editor projects use, or capture
@@ -3522,28 +3606,66 @@ export function WallTypeTemplatesSection({
           wall type you’ve already set up.
         </p>
       ) : (
-        <div className="space-y-1.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {templates.map((t) => (
             <div
               key={t.id}
-              className="flex items-center gap-2 py-1.5 px-2 rounded-md border border-ink-600/40 hover:border-ink-600 hover:bg-ink-700/40"
+              className="bg-ink-900/40 border border-ink-600/60 rounded-xl p-3 hover:border-ink-500 transition-colors"
             >
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-ink-100 truncate">{t.name}</div>
-                <div className="text-[11px] text-ink-400 font-mono">
-                  {t.bondType} · {t.heightMm}mm · body {t.bodyBlockCode}
-                  {t.capBlockCode ? ` · cap ${t.capBlockCode}` : ''}
+              <div className="flex gap-2.5">
+                <WallTypeStackPreview makeup={t} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-ink-100 truncate">
+                    {t.name}
+                  </div>
+                  <div className="text-[11px] text-ink-400 mt-0.5">
+                    {wallTypeSpec(t)}
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {wallTypeCodes(t)
+                      .slice(0, 3)
+                      .map((code) => (
+                        <span
+                          key={code}
+                          className="text-[10px] font-mono bg-ink-700/60 text-ink-300 px-1.5 py-0.5 rounded"
+                        >
+                          {code}
+                        </span>
+                      ))}
+                    {wallTypeCodes(t).length > 3 && (
+                      <span className="text-[10px] font-mono text-ink-500 px-1 py-0.5">
+                        +{wallTypeCodes(t).length - 3}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               {!readOnly && (
-                <div className="flex items-center gap-3 shrink-0">
+                <div className="flex items-center gap-3 mt-2.5 pt-2 border-t border-ink-600/40">
                   <span
                     role="button"
                     tabIndex={0}
                     onClick={() => setEditing(t)}
-                    className="text-xs text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
+                    className="text-[11px] text-beme-400 hover:text-beme-300 hover:underline cursor-pointer"
                   >
                     Edit
+                  </span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      saveTemplates([
+                        ...templates,
+                        {
+                          ...t,
+                          id: generateMakeupId(),
+                          name: `${t.name} (copy)`,
+                        },
+                      ])
+                    }
+                    className="text-[11px] text-ink-400 hover:text-ink-200 hover:underline cursor-pointer"
+                  >
+                    Duplicate
                   </span>
                   <span
                     role="button"
@@ -3556,9 +3678,10 @@ export function WallTypeTemplatesSection({
                         confirmLabel: 'Remove',
                         variant: 'destructive',
                       })
-                      if (ok) saveTemplates(templates.filter((x) => x.id !== t.id))
+                      if (ok)
+                        saveTemplates(templates.filter((x) => x.id !== t.id))
                     }}
-                    className="text-xs text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                    className="text-[11px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer ml-auto"
                   >
                     Remove
                   </span>
@@ -3566,10 +3689,19 @@ export function WallTypeTemplatesSection({
               )}
             </div>
           ))}
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="border border-dashed border-ink-600 rounded-xl p-3 min-h-[104px] flex items-center justify-center text-xs text-ink-400 hover:text-ink-200 hover:border-ink-500 transition-colors"
+            >
+              + New wall type
+            </button>
+          )}
         </div>
       )}
 
-      {!readOnly && (
+      {!readOnly && templates.length === 0 && (
         <button
           type="button"
           onClick={() => setAdding(true)}
