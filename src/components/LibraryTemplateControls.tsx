@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { setBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
-import { setBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { getLibraryTemplate } from '../data/libraryTemplates'
 import { confirm } from '../lib/confirm'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
@@ -32,13 +31,11 @@ export default function LibraryTemplateControls({
 }: LibraryTemplateControlsProps) {
   const { settings } = useUserSettings()
   const { library: blockLib } = useBlockLibrary()
-  const { library: brickLib } = useBrickLibrary()
   const [showPicker, setShowPicker] = useState(false)
 
   const currentKey = settings.preferences.libraryTemplateKey
   const currentTemplate = currentKey ? getLibraryTemplate(currentKey) : undefined
   const blockCount = Object.keys(blockLib).length
-  const brickCount = Object.keys(brickLib).length
   const supplyCount = settings.supplyItems?.length ?? 0
 
   async function handleResetAll() {
@@ -46,8 +43,7 @@ export default function LibraryTemplateControls({
       title: 'Reset entire library?',
       message:
         `Wipes everything in one go: ${blockCount} block` +
-        `${blockCount === 1 ? '' : 's'}, ${brickCount} brick` +
-        `${brickCount === 1 ? '' : 's'}, ${supplyCount} supply item` +
+        `${blockCount === 1 ? '' : 's'}, ${supplyCount} supply item` +
         `${supplyCount === 1 ? '' : 's'}, and the active template ` +
         "assignment. You'll be able to pick a new template or rebuild " +
         'manually. This action syncs to the cloud — there is no undo.',
@@ -56,7 +52,6 @@ export default function LibraryTemplateControls({
     })
     if (!ok) return
     setBlockLibrary({})
-    setBrickLibrary({})
     updateUserSettings({
       preferences: { libraryTemplateKey: undefined },
       supplyItems: [],
@@ -76,11 +71,10 @@ export default function LibraryTemplateControls({
                 {currentTemplate.displayName}{' '}
                 <span className="text-ink-500 font-mono font-normal">
                   · {blockCount} block{blockCount === 1 ? '' : 's'},{' '}
-                  {brickCount} brick{brickCount === 1 ? '' : 's'},{' '}
                   {supplyCount} suppl{supplyCount === 1 ? 'y' : 'ies'}
                 </span>
               </>
-            ) : blockCount === 0 && brickCount === 0 ? (
+            ) : blockCount === 0 ? (
               <span className="text-ink-400">
                 Empty — pick a regional preset to get started
               </span>
@@ -89,7 +83,6 @@ export default function LibraryTemplateControls({
                 Custom library{' '}
                 <span className="text-ink-500 font-mono font-normal">
                   · {blockCount} block{blockCount === 1 ? '' : 's'},{' '}
-                  {brickCount} brick{brickCount === 1 ? '' : 's'},{' '}
                   {supplyCount} suppl{supplyCount === 1 ? 'y' : 'ies'}
                 </span>
               </span>
@@ -104,7 +97,7 @@ export default function LibraryTemplateControls({
             >
               {currentTemplate ? 'Switch template' : 'Pick a regional preset'}
             </button>
-            {(blockCount > 0 || brickCount > 0 || supplyCount > 0) && (
+            {(blockCount > 0 || supplyCount > 0) && (
               <button
                 onClick={handleResetAll}
                 className="text-sm px-4 py-2 rounded-lg border border-rose-500/50 text-rose-300 hover:bg-rose-500/10 transition-colors"

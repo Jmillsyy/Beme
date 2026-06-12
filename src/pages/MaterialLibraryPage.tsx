@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
 import { WallTypeTemplatesSection } from '../components/WallTypesPanel'
-import BrickLibraryPanel from '../components/BrickLibraryPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import LibraryTemplateControls from '../components/LibraryTemplateControls'
 import LibrarySectionControls from '../components/LibrarySectionControls'
@@ -147,9 +146,15 @@ export default function MaterialLibraryPage() {
           )}
         </div>
 
-        {/* Trade selector — sits immediately under the page header so
-            the active scope (Blocks / Bricks / Supply items) is the
-            first thing the user sees. Card style: each trade is a
+        {/* Section selector — sits immediately under the page header so
+            the active scope (Blocks / Wall types / Supply items) is the
+            first thing the user sees. Each card carries its CATEGORY as
+            the small overline (Catalogue / Your builds / Rates &
+            extras) so the page reads as grouped sections — block
+            catalogue data, your reusable builds, and cross-trade rates
+            — rather than a flat everything-at-once list. Bricks no
+            longer have a library: brick walls count one standard brick
+            and the look is uniform. Card style: each trade is a
             full-width clickable card with title + kindLabel, active
             card lights up with the brand border + background tint
             and a left accent stripe. Reads as "pick a section" rather
@@ -214,7 +219,7 @@ export default function MaterialLibraryPage() {
             selected trade" rather than a separate competing control.
             Hidden on the Supply items tab (templates don't seed
             supply items). */}
-        {activeTabId !== 'supply-items' && (
+        {activeTabId === 'blocks' && (
           <div className="mt-4">
             <LibraryTemplateControls readOnly={readOnly} />
           </div>
@@ -231,16 +236,6 @@ export default function MaterialLibraryPage() {
               <LibrarySectionControls kind="block" readOnly={readOnly} />
               <LibraryHealthBanner />
               <BlockLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
-            </TabSection>
-          )}
-
-          {activeTabId === 'bricks' && (
-            <TabSection
-              title="Bricks"
-              description="Brick types you supply. Dimensions, mortar joint, and the auto-calculated bricks-per-square-metre rate."
-            >
-              <LibrarySectionControls kind="brick" readOnly={readOnly} />
-              <BrickLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
             </TabSection>
           )}
 
@@ -285,10 +280,9 @@ export default function MaterialLibraryPage() {
  * a cross-trade tab" inspectable in one place.
  */
 const LIBRARY_TABS = [
-  { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Trade' },
-  { id: 'bricks' as const, label: 'Bricks', kindLabel: 'Trade' },
-  { id: 'wall-types' as const, label: 'Wall types', kindLabel: 'Block' },
-  { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Cross-trade' },
+  { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Catalogue' },
+  { id: 'wall-types' as const, label: 'Wall types', kindLabel: 'Your builds' },
+  { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Rates & extras' },
 ]
 type LibraryTabId = (typeof LIBRARY_TABS)[number]['id']
 

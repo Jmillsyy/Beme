@@ -5,12 +5,10 @@ import {
   type LibraryTemplateKey,
 } from '../data/libraryTemplates'
 import { getBlockLibrary, setBlockLibrary } from '../data/blockLibrary'
-import { BRICK_LIBRARY, setBrickLibrary } from '../data/brickLibrary'
 import { updateUserSettings, getUserSettings } from '../lib/userSettings'
 import { confirm } from '../lib/confirm'
 import { listProjectsFull, saveProject } from '../lib/projectStorage'
 import {
-  remapBrickMakeupsForLibrary,
   remapMakeupsForLibrary,
   remapPierMakeupsForLibrary,
 } from '../lib/makeups'
@@ -74,8 +72,6 @@ export default function RegionPicker({
     if (!template) return
     const currentBlocks = getBlockLibrary()
     const currentBlockCodes = Object.keys(currentBlocks)
-    const currentBricks = BRICK_LIBRARY
-    const currentBrickCodes = Object.keys(currentBricks)
 
     // If the user already has items in their library, switching is
     // destructive — confirm before wiping. Items in the OLD library
@@ -83,27 +79,17 @@ export default function RegionPicker({
     // new template come back fresh. The whole library is overwritten
     // wholesale (no merge) so the user always ends up with exactly
     // the new template's content + nothing else.
-    const isAlreadyClean =
-      currentBlockCodes.length === 0 && currentBrickCodes.length === 0
+    const isAlreadyClean = currentBlockCodes.length === 0
     const isSameTemplate = settings.preferences.libraryTemplateKey === key
 
     if (!isAlreadyClean && !isSameTemplate) {
-      const lossParts = [
-        currentBlockCodes.length > 0
-          ? `${currentBlockCodes.length} block${currentBlockCodes.length === 1 ? '' : 's'}`
-          : '',
-        currentBrickCodes.length > 0
-          ? `${currentBrickCodes.length} brick${currentBrickCodes.length === 1 ? '' : 's'}`
-          : '',
-      ]
-        .filter(Boolean)
-        .join(' + ')
+      const lossParts = `${currentBlockCodes.length} block${currentBlockCodes.length === 1 ? '' : 's'}`
       const ok = await confirm({
         title: `Switch to ${template.displayName}?`,
         message:
           `This replaces your current library — your ${lossParts} will be ` +
           'deleted and the new template loaded fresh. Any custom blocks ' +
-          'or bricks you added will be lost. Cancel if you want to keep them.',
+          'you added will be lost. Cancel if you want to keep them.',
         confirmLabel: 'Switch template',
         variant: 'destructive',
       })
@@ -115,7 +101,6 @@ export default function RegionPicker({
     // migration can find a sensible replacement in the new library.
     const oldLibrary = { ...currentBlocks }
     setBlockLibrary({ ...template.blocks })
-    setBrickLibrary({ ...template.bricks })
     updateUserSettings({
       preferences: { libraryTemplateKey: key },
     })
@@ -132,7 +117,6 @@ export default function RegionPicker({
     void (async () => {
       try {
         const newLibrary = { ...template.blocks }
-        const newBrickLibrary = { ...template.bricks }
         const settingsOpts = { settings: getUserSettings() }
         // Migration needs the full project payload (makeups,
         // pierMakeups, brickMakeups) for every project — the slim
@@ -157,12 +141,6 @@ export default function RegionPicker({
                 settingsOpts
               )
             : undefined
-          const nextBrickMakeups = project.brickMakeups
-            ? remapBrickMakeupsForLibrary(
-                project.brickMakeups,
-                newBrickLibrary
-              )
-            : undefined
           // Only re-save when something actually changed — skip
           // projects whose makeups don't reference any old-library
           // codes (cheap to compute the migrated copies but avoids
@@ -174,16 +152,11 @@ export default function RegionPicker({
             nextPierMakeups &&
             JSON.stringify(nextPierMakeups) !==
               JSON.stringify(project.pierMakeups)
-          const brickChanged =
-            nextBrickMakeups &&
-            JSON.stringify(nextBrickMakeups) !==
-              JSON.stringify(project.brickMakeups)
-          if (makeupsChanged || piersChanged || brickChanged) {
+          if (makeupsChanged || piersChanged) {
             await saveProject({
               ...project,
               makeups: nextMakeups ?? project.makeups,
               pierMakeups: nextPierMakeups ?? project.pierMakeups,
-              brickMakeups: nextBrickMakeups ?? project.brickMakeups,
             })
           }
         }

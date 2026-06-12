@@ -348,13 +348,17 @@ function BrickTypeEditorModal({
 
   const [name, setName] = useState(existing?.name ?? 'New brick type')
   const [heightMm, setHeightMm] = useState<number>(existing?.heightMm ?? 2400)
-  const [brickTypeCode, setBrickTypeCode] = useState<string>(existing?.brickTypeCode ?? '')
+  // One standard brick everywhere — the curated brick library is gone.
+  // Existing brick wall types keep whatever code they were saved with
+  // (their counts don't change); new ones are explicitly 'standard'.
+  const brickTypeCode = existing?.brickTypeCode ?? 'standard'
   // Optional course composition — start empty so a basic single-brick
   // wall type is still a single decision. Adding a band turns the wall
   // into a stack: course N to course M uses brick X, etc.
-  const [courseRanges, setCourseRanges] = useState<BrickCourseRange[]>(
-    existing?.courseRanges ?? []
-  )
+  // Course composition is no longer editable (one brick size). Legacy
+  // walls that already carry ranges keep them across edits/saves so
+  // their tallies stay stable.
+  const courseRanges: BrickCourseRange[] = existing?.courseRanges ?? []
   // Optional sill / head brick types for openings on this wall type.
   // Empty string = "use project default brick" (no separate line item
   // in the tally — the opening trim is absorbed in the body brick
@@ -377,7 +381,7 @@ function BrickTypeEditorModal({
   // the two editors feel uniform. Basics = name + height + main brick.
   // Course pattern = bands of different bricks across courses. Openings
   // = sill / head bricks + orientation.
-  type TabKey = 'basics' | 'composition' | 'openings'
+  type TabKey = 'basics' | 'openings'
   const [activeTab, setActiveTab] = useState<TabKey>('basics')
 
   // Wall shape — Straight (default) or Curved. Existing brick types
@@ -536,11 +540,6 @@ function BrickTypeEditorModal({
               [
                 { key: 'basics', label: 'Basics' },
                 {
-                  key: 'composition',
-                  label: 'Course pattern',
-                  badge: courseRanges.length > 0 ? `${courseRanges.length}` : undefined,
-                },
-                {
                   key: 'openings',
                   label: 'Opening visuals',
                   badge:
@@ -604,138 +603,6 @@ function BrickTypeEditorModal({
                 className="w-full"
               />
             </label>
-            <label className="text-sm block">
-              <span className="block text-ink-300 mb-1">
-                {courseRanges.length === 0 ? 'Main brick' : 'Default brick'}
-              </span>
-              <select
-                value={brickTypeCode}
-                onChange={(e) => setBrickTypeCode(e.target.value)}
-                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-              >
-                <option value="">Use project default</option>
-                {brickTypes.map((t) => (
-                  <option key={t.code} value={t.code}>
-                    {t.name} ({t.heightMm}mm tall)
-                  </option>
-                ))}
-              </select>
-              <span className="text-[11px] text-ink-400 mt-1 block">
-                {courseRanges.length === 0
-                  ? 'The brick used for the whole wall.'
-                  : 'Fallback brick — used for any course not covered by a band on the Course pattern tab.'}
-              </span>
-            </label>
-          </section>
-            </>
-          )}
-
-          {activeTab === 'composition' && (
-            <>
-          {/* ─── Course composition ───
-              Optional. Each entry: from course X, use brick Y. Last
-              entry runs to the top of the wall. Single-brick walls
-              leave this empty and the wall is one layer of "Main
-              brick" above. Section header always renders so the user
-              sees the feature exists; the band list only renders
-              when there's at least one band. */}
-          <section>
-            <div className="flex items-center justify-between mb-2">
-              <div>
-                <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Course composition
-                  <span className="ml-2 text-ink-500 normal-case tracking-normal font-normal">
-                    · optional
-                  </span>
-                </h4>
-                <div className="text-[11px] text-ink-400 mt-1.5 leading-snug">
-                  Stack different bricks on different courses (e.g. course
-                  1 = single-height, course 2+ = double-height). Leave
-                  empty for a single-brick wall.
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  // New band defaults to "5 courses above the last
-                  // band's threshold" so the user has a sensible
-                  // starting point. The first band defaults to
-                  // "below course 5" (= courses 1-4).
-                  const lastBelow = courseRanges.length > 0
-                    ? Math.max(...courseRanges.map((r) => r.fromCourse))
-                    : 0
-                  setCourseRanges([
-                    ...courseRanges,
-                    {
-                      fromCourse: lastBelow + 5,
-                      brickTypeCode: brickTypeCode || brickTypes[0]?.code || '',
-                    },
-                  ])
-                }}
-                className="text-xs px-2 py-1 rounded border border-ink-600 text-beme-300 hover:border-beme-500/60 hover:bg-ink-700 transition-colors flex-shrink-0"
-              >
-                + Add band
-              </button>
-            </div>
-
-            {courseRanges.length > 0 && (
-              <div className="flex flex-col gap-2">
-                {courseRanges.map((range, i) => (
-                  <div
-                    key={i}
-                    className="flex items-center gap-2 p-2 border border-ink-700 rounded-lg bg-ink-900/40"
-                  >
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <span className="text-ink-400">Below course</span>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={range.fromCourse}
-                        onChange={(e) => {
-                          const next = [...courseRanges]
-                          next[i] = {
-                            ...range,
-                            fromCourse: Math.max(1, parseInt(e.target.value || '1', 10) || 1),
-                          }
-                          setCourseRanges(next)
-                        }}
-                        className="w-14 px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 tabular-nums"
-                      />
-                    </div>
-                    <select
-                      value={range.brickTypeCode}
-                      onChange={(e) => {
-                        const next = [...courseRanges]
-                        next[i] = { ...range, brickTypeCode: e.target.value }
-                        setCourseRanges(next)
-                      }}
-                      className="flex-1 min-w-0 px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                    >
-                      <option value="">Pick a brick…</option>
-                      {brickTypes.map((t) => (
-                        <option key={t.code} value={t.code}>
-                          {t.name} ({t.heightMm}mm)
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={() =>
-                        setCourseRanges(courseRanges.filter((_, idx) => idx !== i))
-                      }
-                      className="text-xs text-rose-400 hover:text-rose-300 px-1.5"
-                      aria-label="Remove band"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-                <div className="text-[11px] text-ink-500 italic">
-                  Each band's brick applies to courses BELOW the
-                  number shown. Courses above the highest band use
-                  the default brick from the Basics tab.
-                </div>
-              </div>
-            )}
           </section>
             </>
           )}

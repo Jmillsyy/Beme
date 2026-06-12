@@ -18,7 +18,6 @@
  */
 
 import type { Block, BlockCode } from '../types/blocks'
-import type { BrickCode, BrickType } from '../types/bricks'
 import { DEFAULT_BLOCK_LIBRARY } from './blockLibrary'
 
 /** Discriminator key — stored on the user / org to pick a template. */
@@ -49,13 +48,6 @@ export interface LibraryTemplate {
    * current BLOCK_LIBRARY shape.
    */
   blocks: Record<BlockCode, Block>
-  /**
-   * The seed brick library — regional standard face brick(s). Same
-   * shape as BRICK_LIBRARY so users can drop in a template and get a
-   * working brick catalogue immediately. Region-specific because
-   * face sizes vary materially (AU 230×76, US ~203×57, UK 215×65).
-   */
-  bricks: Record<BrickCode, BrickType>
 }
 
 // ─── US — CMU (Concrete Masonry Unit) ──────────────────────────────────────
@@ -902,151 +894,6 @@ export const CA_CMU_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
-// ─── Brick library presets ─────────────────────────────────────────────────
-// Region-specific because face sizes vary materially across markets. Users
-// add their own custom bricks via the BrickLibraryPanel after seeding.
-
-/** Standard AU brick set (matches the legacy seed library). */
-export const AU_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
-  standard: {
-    code: 'standard',
-    name: 'Standard 230×76',
-    description: 'The default Australian face brick. ~48 bricks/m².',
-    widthMm: 230,
-    heightMm: 76,
-    depthMm: 110,
-  },
-  maxi: {
-    code: 'maxi',
-    name: 'Maxi 290×90',
-    description: 'Larger format — wider and slightly taller. ~33 bricks/m².',
-    widthMm: 290,
-    heightMm: 90,
-    depthMm: 110,
-  },
-  'double-height': {
-    code: 'double-height',
-    name: 'Double-height 230×162',
-    description: 'Twice the height of a standard. ~24 bricks/m².',
-    widthMm: 230,
-    heightMm: 162,
-    depthMm: 110,
-  },
-}
-
-/** US modular face brick set. ~7 bricks/sq ft (~75/m²). */
-export const US_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
-  modular: {
-    code: 'modular',
-    name: 'Modular 7-5/8" × 2-1/4"',
-    description:
-      'Standard US modular brick. 7-5/8" × 2-1/4" × 3-5/8" (~194 × 57 × 92mm). ' +
-      'Roughly 6.86 bricks per sq ft (≈ 74 / m²).',
-    widthMm: 194,
-    heightMm: 57,
-    depthMm: 92,
-  },
-  queen: {
-    code: 'queen',
-    name: 'Queen size 7-5/8" × 2-3/4"',
-    description:
-      'Queen brick — slightly taller face. 7-5/8" × 2-3/4" × 2-3/4" (~194 × 70 × 70mm). ' +
-      '~5.76 bricks per sq ft (≈ 62 / m²).',
-    widthMm: 194,
-    heightMm: 70,
-    depthMm: 70,
-  },
-  utility: {
-    code: 'utility',
-    name: 'Utility 11-5/8" × 3-5/8"',
-    description:
-      'Utility brick — large oversize for fast coverage. 11-5/8" × 3-5/8" × 3-5/8" ' +
-      '(~295 × 92 × 92mm). ~3 bricks per sq ft (≈ 32 / m²).',
-    widthMm: 295,
-    heightMm: 92,
-    depthMm: 92,
-  },
-}
-
-/** UK standard face brick + popular alternatives. */
-export const UK_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
-  standard: {
-    code: 'standard',
-    name: 'UK Standard 215×65',
-    description:
-      'BS EN 771 standard UK clay brick. 215 × 65 × 102.5mm with 10mm mortar ' +
-      'joint gives the 225 × 75mm modular grid. ~60 bricks per m².',
-    widthMm: 215,
-    heightMm: 65,
-    depthMm: 102.5,
-  },
-  imperial: {
-    code: 'imperial',
-    name: 'Imperial 215×73',
-    description:
-      'Older Imperial-equivalent brick used in conservation projects. 215 × 73 × ' +
-      '102.5mm — works on a 225 × 83mm coursing grid.',
-    widthMm: 215,
-    heightMm: 73,
-    depthMm: 102.5,
-  },
-}
-
-/** NZ face brick set — shares the AU 230 × 76 format at 70mm bed depth. */
-export const NZ_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
-  standard: {
-    code: 'standard',
-    name: 'Standard 230×76',
-    description:
-      'Standard NZ clay face brick, 230 × 76 × 70mm (veneer bed depth). ' +
-      '~48 bricks/m² on a 10mm joint.',
-    widthMm: 230,
-    heightMm: 76,
-    depthMm: 70,
-  },
-  longbrick: {
-    code: 'longbrick',
-    name: 'Long format 290×76',
-    description:
-      'Longer-format face brick (290 × 76 × 70mm). ~39 bricks/m².',
-    widthMm: 290,
-    heightMm: 76,
-    depthMm: 70,
-  },
-}
-
-/** Canadian face brick set — CSA metric sizes. */
-export const CA_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
-  'metric-modular': {
-    code: 'metric-modular',
-    name: 'Metric Modular 190×57',
-    description:
-      'CSA metric modular brick, 190 × 57 × 90mm — the 200 × 67 modular ' +
-      'grid. ~75 bricks/m².',
-    widthMm: 190,
-    heightMm: 57,
-    depthMm: 90,
-  },
-  'metric-norman': {
-    code: 'metric-norman',
-    name: 'Metric Norman 290×57',
-    description:
-      'Long-format metric Norman, 290 × 57 × 90mm. ~50 bricks/m².',
-    widthMm: 290,
-    heightMm: 57,
-    depthMm: 90,
-  },
-  jumbo: {
-    code: 'jumbo',
-    name: 'Metric Jumbo 290×90',
-    description:
-      'Oversize unit, 290 × 90 × 90mm — fast coverage. ~33 bricks/m².',
-    widthMm: 290,
-    heightMm: 90,
-    depthMm: 90,
-  },
-}
-
 // ─── Template registry ─────────────────────────────────────────────────────
 // All templates exported as an ordered array so the region picker can
 // iterate them in the order they should appear in the UI.
@@ -1061,10 +908,8 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
       'South-east QLD masonry set across the 100 / 150 / 200 / 300 / 400 ' +
       'series — H blocks, corners, halves and fractions, height makeup, ' +
       'lintels, knockout bond beams, cleanouts, caps and piers, per the ' +
-      'National Masonry SEQ catalogue. Bricks: 230×76 standard + maxi + ' +
-      'double-height.',
+      'National Masonry SEQ catalogue.',
     blocks: DEFAULT_BLOCK_LIBRARY,
-    bricks: AU_BRICK_LIBRARY,
   },
   {
     key: 'nz-block',
@@ -1075,10 +920,8 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
       'Firth catalogue codes per the 20 Series System flyer — 10 / 15 / ' +
       '20 / 25 series wholes, halves and fractions, H-series half-highs, ' +
       'open ends, lintels and rebate units, knock-in / corner / open-end ' +
-      'bond beams, sills, header, columns and pilasters, 05.17 capping. ' +
-      'Bricks: 230×76 standard + 290 long format.',
+      'bond beams, sills, header, columns and pilasters, 05.17 capping.',
     blocks: NZ_BLOCK_LIBRARY,
-    bricks: NZ_BRICK_LIBRARY,
   },
   {
     key: 'us-cmu',
@@ -1088,9 +931,8 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     description:
       'Full CMU range — 4" / 6" / 8" / 10" / 12" widths with corner, half, ' +
       'half-high, bond beam, open-end A block, solid cap, column block and ' +
-      'three lintel sizes. Bricks: modular + queen + utility face brick.',
+      'three lintel sizes.',
     blocks: US_CMU_LIBRARY,
-    bricks: US_BRICK_LIBRARY,
   },
   {
     key: 'ca-cmu',
@@ -1100,10 +942,8 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     description:
       'CSA A165 metric block range — 10 / 15 / 20 / 25 / 30cm widths with ' +
       'halves, half-high, bond beam, open-end A block, solid cap, column ' +
-      'block and three lintel depths. Bricks: metric modular + Norman + ' +
-      'jumbo.',
+      'block and three lintel depths.',
     blocks: CA_CMU_LIBRARY,
-    bricks: CA_BRICK_LIBRARY,
   },
   {
     key: 'uk-block',
@@ -1113,10 +953,8 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     description:
       'Dense aggregate blocks in 100 / 140 / 215mm with aircrete ' +
       'alternatives, coursing bricks for height makeup, copings, and ' +
-      'pre-stressed concrete lintels in 100 + 140mm widths. Bricks: 215×65 ' +
-      'BS standard + 215×73 imperial.',
+      'pre-stressed concrete lintels in 100 + 140mm widths.',
     blocks: UK_BLOCK_LIBRARY,
-    bricks: UK_BRICK_LIBRARY,
   },
   {
     key: 'blank',
@@ -1124,11 +962,10 @@ export const LIBRARY_TEMPLATES: LibraryTemplate[] = [
     region: '—',
     mortarJointMm: 10,
     description:
-      "No seed blocks or bricks — you'll add everything from scratch via " +
+      "No seed blocks — you'll add everything from scratch via " +
       'the material library page. Pick this only if none of the regional ' +
       "templates is close to your supplier's product range.",
     blocks: {},
-    bricks: {},
   },
 ]
 
