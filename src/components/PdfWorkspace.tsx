@@ -4336,15 +4336,106 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setShowActiveMakeupHighlight(true)
   }
 
-  // Brick wall-type CRUD handlers (handleAddBrickMakeup,
-  // handleUpdateBrickMakeup, handleDeleteBrickMakeup,
-  // handleActivateBrickMakeup) were removed when the BrickTypesPanel
-  // came out. Brick estimates no longer expose the wall-type concept —
-  // one default brick makeup per area is auto-managed by the workspace
-  // bootstrap, and the project-level brick height in BrickSettings is
-  // the only knob the user touches. See BrickWallSettingsPanel for the
-  // surfaced controls. The internal brickMakeups state is still
-  // hydrated from saved projects so legacy data loads unchanged.
+  // ---------- Brick makeup CRUD ----------
+  //
+  // Brick wall types are simplified — just name + height + straight /
+  // curved. No brick-type picker, no course composition, no sill / head
+  // brick codes, no orientation choices. The handlers below mirror the
+  // block-side shape but skip every field that the simplified model
+  // doesn't carry.
+
+  function handleAddBrickMakeup(makeup: BrickMakeup) {
+    // Same area-resolution chain as handleAddMakeup — see comment there
+    // for the reasoning. Auto-creates a 'New Area' if the project has
+    // none so a brick wall type can never end up orphaned.
+    let stamped: BrickMakeup
+    if (makeup.areaId) {
+      stamped = makeup
+    } else if (activeAreaId) {
+      stamped = { ...makeup, areaId: activeAreaId }
+    } else if (areas.length > 0) {
+      stamped = { ...makeup, areaId: areas[0].id }
+    } else {
+      const newAreaId =
+        typeof crypto !== 'undefined' &&
+        typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      setAreas((prev) => [...prev, { id: newAreaId, name: 'New Area' }])
+      setActiveAreaId(newAreaId)
+      stamped = { ...makeup, areaId: newAreaId }
+    }
+    setBrickMakeups((prev) => [...prev, stamped])
+    setActiveBrickMakeupId(stamped.id)
+  }
+
+  function handleUpdateBrickMakeup(updated: BrickMakeup) {
+    // Clear any per-wall heightMmOverride when the wall type's height
+    // changes so the height edit actually moves the existing walls —
+    // there's no per-wall height UI on brick today, so every
+    // heightMmOverride is a stale draw-time stamp.
+    const prevMakeup = brickMakeups.find((m) => m.id === updated.id)
+    setBrickMakeups((prev) =>
+      prev.map((m) => (m.id === updated.id ? updated : m)),
+    )
+    const heightChanged =
+      prevMakeup &&
+      typeof prevMakeup.heightMm === 'number' &&
+      typeof updated.heightMm === 'number' &&
+      prevMakeup.heightMm !== updated.heightMm
+    if (heightChanged) {
+      setWallsByPage((pages) => {
+        const next: Record<number, Wall[]> = {}
+        let changed = false
+        for (const [pageStr, pageWalls] of Object.entries(pages)) {
+          const pageNum = Number(pageStr)
+          next[pageNum] = pageWalls.map((w) => {
+            if (
+              w.makeupId === updated.id &&
+              w.heightMmOverride !== undefined
+            ) {
+              changed = true
+              const { heightMmOverride: _drop, ...rest } = w
+              void _drop
+              return { ...rest, heightMmOverride: undefined } as Wall
+            }
+            return w
+          })
+        }
+        return changed ? next : pages
+      })
+    }
+  }
+
+  function handleDeleteBrickMakeup(id: string) {
+    setBrickMakeups((prev) => {
+      const remaining = prev.filter((m) => m.id !== id)
+      if (remaining.length === 0) return prev
+      if (activeBrickMakeupId === id) setActiveBrickMakeupId(remaining[0].id)
+      return remaining
+    })
+    // Drop every wall referencing this type — same as block.
+    setWallsByPage((prev) => {
+      const next: Record<number, Wall[]> = {}
+      let changed = false
+      for (const [pageStr, walls] of Object.entries(prev)) {
+        const kept = walls.filter((w) => w.makeupId !== id)
+        if (kept.length !== walls.length) changed = true
+        next[Number(pageStr)] = kept
+      }
+      return changed ? next : prev
+    })
+  }
+
+  function handleActivateBrickMakeup(id: string) {
+    setActiveBrickMakeupId(id)
+    // Per-area memory mirrors the block side.
+    if (activeAreaId) {
+      const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
+      lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, brick: id }
+    }
+    setShowActiveMakeupHighlight(true)
+  }
 
   function handleReassignWallMakeup(wallId: string, makeupId: string) {
     setWallsByPage((prev) => {
@@ -7012,32 +7103,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               )}
               {mode === 'brick' && (
                 <BrickWallSettingsPanel
-                  defaultWallHeightMm={brickSettings.defaultWallHeightMm}
-                  onChangeDefaultHeight={(mm) => {
-                    // Project-level default + push the same height onto
-                    // every internal brick makeup so new walls drawn
-                    // straight after the change land at the new height
-                    // (the drawing path reads makeup.heightMm). Existing
-                    // walls keep their per-wall heightMmOverride.
-                    setBrickSettings({
-                      ...brickSettings,
-                      defaultWallHeightMm: mm,
-                    })
-                    setBrickMakeups((prev) =>
-                      prev.map((m) => ({ ...m, heightMm: mm })),
-                    )
-                  }}
-                  onStartCurvedWall={() => {
-                    setDrawingCurveMode(true)
-                    setDrawingMode(false)
-                    setPlacingOpening(false)
-                    setPlacingControlJoint(false)
-                    setPlacingTiedPier(false)
-                    setPlacingFreestandingPier(false)
-                    setSelectedWallId(null)
-                    setSelectedOpeningId(null)
-                    setSelectedPierId(null)
-                  }}
+                  // Same per-area filter as block — see the canvas-rail
+                  // mount note below for the rationale.
+                  key={`wt-brick-3d-${activeAreaId ?? 'all'}`}
+                  makeups={
+                    activeAreaId
+                      ? brickMakeups.filter((m) => m.areaId === activeAreaId)
+                      : brickMakeups
+                  }
+                  paletteMakeups={brickMakeups}
+                  activeMakeupId={activeBrickMakeupId}
+                  wallCountsByMakeupId={wallCountsByMakeupId}
+                  onSetActive={handleActivateBrickMakeup}
+                  onAddMakeup={handleAddBrickMakeup}
+                  onUpdateMakeup={handleUpdateBrickMakeup}
+                  onDeleteMakeup={handleDeleteBrickMakeup}
                 />
               )}
             </aside>
@@ -10036,33 +10116,29 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-        {/* Brick walls (brick mode). The "brick wall types" concept
-            and its panel are gone — brick estimates are single-spec:
-            one default height, generic terracotta render. The panel
-            below just surfaces the project-level default height + a
-            curved-wall draw trigger. Internally, the workspace still
-            seeds one default BrickMakeup per area so the draw + tally
-            pipeline keeps working unchanged. */}
+        {/* Brick wall types (brick mode). Simplified shape — each
+            type is just name + height + straight/curved. No brick-
+            type / course / sill / head fields, no palette colour
+            picker. Per-area scoping kept; brick walls render flat
+            warm terracotta in 3D and tally as area + lineal m only. */}
         {mode === 'brick' && (
           <BrickWallSettingsPanel
-            defaultWallHeightMm={brickSettings.defaultWallHeightMm}
-            onChangeDefaultHeight={(mm) =>
-              setBrickSettings({
-                ...brickSettings,
-                defaultWallHeightMm: mm,
-              })
+            // Remount on area switch — see the block-side note above
+            // for why the keyed remount matters (kills stale closures
+            // captured by the panel's internal state).
+            key={`wt-brick-${activeAreaId ?? 'all'}`}
+            makeups={
+              activeAreaId
+                ? brickMakeups.filter((m) => m.areaId === activeAreaId)
+                : brickMakeups
             }
-            onStartCurvedWall={() => {
-              setDrawingCurveMode(true)
-              setDrawingMode(false)
-              setPlacingOpening(false)
-              setPlacingControlJoint(false)
-              setPlacingTiedPier(false)
-              setPlacingFreestandingPier(false)
-              setSelectedWallId(null)
-              setSelectedOpeningId(null)
-              setSelectedPierId(null)
-            }}
+            paletteMakeups={brickMakeups}
+            activeMakeupId={activeBrickMakeupId}
+            wallCountsByMakeupId={wallCountsByMakeupId}
+            onSetActive={handleActivateBrickMakeup}
+            onAddMakeup={handleAddBrickMakeup}
+            onUpdateMakeup={handleUpdateBrickMakeup}
+            onDeleteMakeup={handleDeleteBrickMakeup}
           />
         )}
 
