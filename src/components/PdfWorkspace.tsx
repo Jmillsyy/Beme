@@ -58,7 +58,7 @@ import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
-import BrickTypesPanel from './BrickTypesPanel'
+import BrickWallSettingsPanel from './BrickWallSettingsPanel'
 import TradeRail from './TradeRail'
 import MaterialLibraryGate from './MaterialLibraryGate'
 import LibraryGuidance from './LibraryGuidance'
@@ -4336,119 +4336,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setShowActiveMakeupHighlight(true)
   }
 
-  // ---------- Brick makeup CRUD ----------
-
-  function handleAddBrickMakeup(makeup: BrickMakeup) {
-    // Same area-resolution chain as handleAddMakeup — see comment
-    // there for the reasoning. Auto-creates a 'New Area' if the
-    // project has none, so a brick wall type can never end up
-    // orphaned (areaId undefined).
-    let stamped: BrickMakeup
-    if (makeup.areaId) {
-      stamped = makeup
-    } else if (activeAreaId) {
-      stamped = { ...makeup, areaId: activeAreaId }
-    } else if (areas.length > 0) {
-      stamped = { ...makeup, areaId: areas[0].id }
-    } else {
-      const newAreaId =
-        typeof crypto !== 'undefined' &&
-        typeof crypto.randomUUID === 'function'
-          ? crypto.randomUUID()
-          : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      setAreas((prev) => [...prev, { id: newAreaId, name: 'New Area' }])
-      setActiveAreaId(newAreaId)
-      stamped = { ...makeup, areaId: newAreaId }
-    }
-    setBrickMakeups((prev) => [...prev, stamped])
-    setActiveBrickMakeupId(stamped.id)
-  }
-
-  function handleUpdateBrickMakeup(updated: BrickMakeup) {
-    // Capture prev BEFORE applying the update so we can detect a height
-    // change and propagate it. Two reasons we need this propagation:
-    //
-    //  1. Legacy projects (and any walls drawn before the draw-time
-    //     stamp was removed) carry heightMmOverride set to whatever
-    //     the makeup height was at draw time. That override wins
-    //     forever in the calc precedence chain, so the user editing
-    //     the wall type's height does nothing for those walls without
-    //     this sweep.
-    //  2. There's no per-wall height-override UI for brick walls right
-    //     now — every heightMmOverride on a brick wall today is a
-    //     stale draw-time stamp, never user-explicit. Safe to clear
-    //     unconditionally when the wall type's height changes. If a
-    //     per-wall override surface ever lands, this sweep needs a
-    //     "user-set" flag to avoid clobbering deliberate overrides.
-    const prevMakeup = brickMakeups.find((m) => m.id === updated.id)
-    setBrickMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
-
-    const heightChanged =
-      prevMakeup &&
-      typeof prevMakeup.heightMm === 'number' &&
-      typeof updated.heightMm === 'number' &&
-      prevMakeup.heightMm !== updated.heightMm
-
-    if (heightChanged) {
-      setWallsByPage((pages) => {
-        const next: Record<number, Wall[]> = {}
-        let changed = false
-        for (const [pageStr, pageWalls] of Object.entries(pages)) {
-          const pageNum = Number(pageStr)
-          next[pageNum] = pageWalls.map((w) => {
-            if (
-              w.makeupId === updated.id &&
-              w.heightMmOverride !== undefined
-            ) {
-              changed = true
-              const { heightMmOverride: _drop, ...rest } = w
-              void _drop
-              return { ...rest, heightMmOverride: undefined } as Wall
-            }
-            return w
-          })
-        }
-        return changed ? next : pages
-      })
-    }
-  }
-
-  function handleDeleteBrickMakeup(id: string) {
-    setBrickMakeups((prev) => {
-      const remaining = prev.filter((m) => m.id !== id)
-      if (remaining.length === 0) return prev
-      if (activeBrickMakeupId === id) setActiveBrickMakeupId(remaining[0].id)
-      return remaining
-    })
-    // Same as the block path — drop every wall referencing this
-    // brick wall type. The panel's confirm dialog explicitly names
-    // the count so the user knows what they're agreeing to.
-    setWallsByPage((prev) => {
-      const next: Record<number, Wall[]> = {}
-      let changed = false
-      for (const [pageStr, walls] of Object.entries(prev)) {
-        const kept = walls.filter((w) => w.makeupId !== id)
-        if (kept.length !== walls.length) changed = true
-        next[Number(pageStr)] = kept
-      }
-      return changed ? next : prev
-    })
-  }
-
-  /**
-   * Same "click a brick wall type to select all walls of that type" affordance
-   * as block. Sets active for newly-drawn walls AND lights up matching walls
-   * on the current page so the user sees the mapping at a glance.
-   */
-  function handleActivateBrickMakeup(id: string) {
-    setActiveBrickMakeupId(id)
-    // Same per-area memory as handleActivateMakeup — see comment there.
-    if (activeAreaId) {
-      const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
-      lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, brick: id }
-    }
-    setShowActiveMakeupHighlight(true)
-  }
+  // Brick wall-type CRUD handlers (handleAddBrickMakeup,
+  // handleUpdateBrickMakeup, handleDeleteBrickMakeup,
+  // handleActivateBrickMakeup) were removed when the BrickTypesPanel
+  // came out. Brick estimates no longer expose the wall-type concept —
+  // one default brick makeup per area is auto-managed by the workspace
+  // bootstrap, and the project-level brick height in BrickSettings is
+  // the only knob the user touches. See BrickWallSettingsPanel for the
+  // surfaced controls. The internal brickMakeups state is still
+  // hydrated from saved projects so legacy data loads unchanged.
 
   function handleReassignWallMakeup(wallId: string, makeupId: string) {
     setWallsByPage((prev) => {
@@ -7115,26 +7011,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               )}
               {mode === 'brick' && (
-                <BrickTypesPanel
-                  // Remount on area switch — see the keyed note on the
-                  // canvas-rail render below.
-                  key={`wt-brick-3d-${activeAreaId ?? 'all'}`}
-                  makeups={
-                    activeAreaId
-                      ? brickMakeups.filter((m) => m.areaId === activeAreaId)
-                      : brickMakeups
-                  }
-                  // Always pass the FULL brick makeups list as the
-                  // palette source so swatch colours stay stable
-                  // across area filters.
-                  paletteMakeups={brickMakeups}
-                  activeMakeupId={activeBrickMakeupId}
-                  wallCountsByMakeupId={wallCountsByMakeupId}
-                  onSetActive={handleActivateBrickMakeup}
-                  onAddMakeup={handleAddBrickMakeup}
-                  onUpdateMakeup={handleUpdateBrickMakeup}
-                  onDeleteMakeup={handleDeleteBrickMakeup}
-                  onToggleCurvedWall={() => {
+                <BrickWallSettingsPanel
+                  defaultWallHeightMm={brickSettings.defaultWallHeightMm}
+                  onChangeDefaultHeight={(mm) => {
+                    // Project-level default + push the same height onto
+                    // every internal brick makeup so new walls drawn
+                    // straight after the change land at the new height
+                    // (the drawing path reads makeup.heightMm). Existing
+                    // walls keep their per-wall heightMmOverride.
+                    setBrickSettings({
+                      ...brickSettings,
+                      defaultWallHeightMm: mm,
+                    })
+                    setBrickMakeups((prev) =>
+                      prev.map((m) => ({ ...m, heightMm: mm })),
+                    )
+                  }}
+                  onStartCurvedWall={() => {
                     setDrawingCurveMode(true)
                     setDrawingMode(false)
                     setPlacingOpening(false)
@@ -10143,33 +10036,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-        {/* Brick wall types (brick mode). Brick library is edited
-            from the Material library page; we don't show it in the
-            workspace right-rail any more. Same per-area filtering as
-            block. */}
+        {/* Brick walls (brick mode). The "brick wall types" concept
+            and its panel are gone — brick estimates are single-spec:
+            one default height, generic terracotta render. The panel
+            below just surfaces the project-level default height + a
+            curved-wall draw trigger. Internally, the workspace still
+            seeds one default BrickMakeup per area so the draw + tally
+            pipeline keeps working unchanged. */}
         {mode === 'brick' && (
-          <BrickTypesPanel
-            // Remount on area switch — see the block-side note above.
-            key={`wt-brick-${activeAreaId ?? 'all'}`}
-            makeups={
-              activeAreaId
-                ? brickMakeups.filter((m) => m.areaId === activeAreaId)
-                : brickMakeups
+          <BrickWallSettingsPanel
+            defaultWallHeightMm={brickSettings.defaultWallHeightMm}
+            onChangeDefaultHeight={(mm) =>
+              setBrickSettings({
+                ...brickSettings,
+                defaultWallHeightMm: mm,
+              })
             }
-            // Always pass the FULL brick makeups list as the palette
-            // source so swatch colours stay stable across area filters.
-            paletteMakeups={brickMakeups}
-            activeMakeupId={activeBrickMakeupId}
-            wallCountsByMakeupId={wallCountsByMakeupId}
-            onSetActive={handleActivateBrickMakeup}
-            onAddMakeup={handleAddBrickMakeup}
-            onUpdateMakeup={handleUpdateBrickMakeup}
-            onDeleteMakeup={handleDeleteBrickMakeup}
-            // Wire curve-draw activator so the brick wall-type modal
-            // exposes the Wall shape (Straight / Curved) picker. The
-            // saved brick type's `kind` flag drives whether subsequent
-            // Draw clicks route to curve-draw mode.
-            onToggleCurvedWall={() => {
+            onStartCurvedWall={() => {
               setDrawingCurveMode(true)
               setDrawingMode(false)
               setPlacingOpening(false)
