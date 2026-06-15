@@ -28,6 +28,11 @@ re-run any of them.
   projects whose `owner_user_id` drifted from the original creator
   because of the pre-fix save bug. Reads `data->>'createdByUserId'`
   and writes it back to `owner_user_id` when the two differ.
+- `2026_06_user_wall_type_templates.sql` — adds `user_wall_type_templates`:
+  per-USER (not org) wall type templates as JSONB payloads, RLS locked to
+  `auth.uid()`, `updated_at` trigger. Required for cross-device sync of
+  the "Your Library" wall types; consumer is
+  `src/lib/userWallTypeTemplates.ts`.
 - `2026_06_open_project_update_to_org_members.sql` — replaces the
   restrictive UPDATE policy (owner / admin / collaborator only) with
   an open one: any active member of the project's org can save. Now

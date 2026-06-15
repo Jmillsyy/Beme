@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import {
-  useUserSettings,
-  updateUserSettings,
-  getUserSettings,
-} from '../lib/userSettings'
+import { useUserSettings } from '../lib/userSettings'
 import { toast } from '../lib/toast'
+import {
+  useUserWallTypeTemplates,
+  getUserWallTypeTemplates,
+  saveUserWallTypeTemplate,
+  deleteUserWallTypeTemplate,
+} from '../lib/userWallTypeTemplates'
 import { confirm } from '../lib/confirm'
 import type {
   Pier,
@@ -27,7 +29,7 @@ import {
   pickTopCourse,
   useBlockLibrary,
 } from '../data/blockLibrary'
-import { masonryTypeColor, wallTypeColor } from '../lib/wallTypeColors'
+import { masonryTypeColor } from '../lib/wallTypeColors'
 import {
   CURVED_WALL_WEDGE_RADIUS_MM,
   CURVED_WALL_MIN_FEASIBLE_RADIUS_MM,
@@ -165,6 +167,10 @@ export default function WallTypesPanel({
   const { library: blockLibrary, version: blockLibraryVersion } = useBlockLibrary()
   void blockLibraryVersion
   const blockLibraryEmpty = Object.keys(blockLibrary).length === 0
+  // Saved wall type templates — synced per-user via Supabase when signed
+  // in, local IndexedDB fallback otherwise. Subscribed so the add-chooser
+  // re-renders when the cloud fetch lands.
+  const { templates: libraryTemplates } = useUserWallTypeTemplates()
   // Effective lists shown in the panel. We don't mutate `makeups` /
   // `pierMakeups` so the parent's data stays intact; we just don't
   // render rows for them while the library is empty.
@@ -244,8 +250,7 @@ export default function WallTypesPanel({
                 // chooser first (one-click add of a saved wall type, or
                 // customise / start blank). No templates -> straight to
                 // the blank editor, exactly as before.
-                const hasTemplates =
-                  (getUserSettings().wallTypeTemplates ?? []).length > 0
+                const hasTemplates = getUserWallTypeTemplates().length > 0
                 if (hasTemplates) setShowAddChooser(true)
                 else setEditingId('new')
               }}
@@ -373,13 +378,12 @@ export default function WallTypesPanel({
                     tabIndex={0}
                     onClick={(e) => {
                       e.stopPropagation()
-                      const existingTemplates =
-                        getUserSettings().wallTypeTemplates ?? []
-                      updateUserSettings({
-                        wallTypeTemplates: [
-                          ...existingTemplates,
-                          { ...m, id: generateMakeupId() },
-                        ],
+                      // Synced per-user when signed in (follows your login
+                      // across devices); falls back to this browser's
+                      // local store offline.
+                      void saveUserWallTypeTemplate({
+                        ...m,
+                        id: generateMakeupId(),
                       })
                       toast.success(`"${m.name}" saved to your library`)
                     }}
@@ -605,7 +609,7 @@ export default function WallTypesPanel({
               needed.
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[50vh] overflow-y-auto pr-1">
-              {(getUserSettings().wallTypeTemplates ?? []).map((t) => (
+              {libraryTemplates.map((t) => (
                 <div
                   key={t.id}
                   className="border border-ink-600 rounded-xl p-3 hover:border-beme-400/60 transition-colors"
@@ -3588,14 +3592,11 @@ export function WallTypeTemplatesSection({
 }: {
   readOnly?: boolean
 }) {
-  const { settings } = useUserSettings()
-  const templates = settings.wallTypeTemplates ?? []
+  // Synced per-user via Supabase when signed in (templates follow your
+  // login across devices); local IndexedDB fallback when offline.
+  const { templates } = useUserWallTypeTemplates()
   const [editing, setEditing] = useState<WallMakeup | null>(null)
   const [adding, setAdding] = useState(false)
-
-  function saveTemplates(next: WallMakeup[]) {
-    updateUserSettings({ wallTypeTemplates: next })
-  }
 
   return (
     <div>
@@ -3654,14 +3655,11 @@ export function WallTypeTemplatesSection({
                     role="button"
                     tabIndex={0}
                     onClick={() =>
-                      saveTemplates([
-                        ...templates,
-                        {
-                          ...t,
-                          id: generateMakeupId(),
-                          name: `${t.name} (copy)`,
-                        },
-                      ])
+                      void saveUserWallTypeTemplate({
+                        ...t,
+                        id: generateMakeupId(),
+                        name: `${t.name} (copy)`,
+                      })
                     }
                     className="text-[11px] text-ink-400 hover:text-ink-200 hover:underline cursor-pointer"
                   >
@@ -3678,8 +3676,7 @@ export function WallTypeTemplatesSection({
                         confirmLabel: 'Remove',
                         variant: 'destructive',
                       })
-                      if (ok)
-                        saveTemplates(templates.filter((x) => x.id !== t.id))
+                      if (ok) void deleteUserWallTypeTemplate(t.id)
                     }}
                     className="text-[11px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer ml-auto"
                   >
@@ -3715,18 +3712,13 @@ export function WallTypeTemplatesSection({
         <WallTypeEditorModal
           existing={editing}
           onSave={(makeup) => {
-            if (editing) {
-              saveTemplates(
-                templates.map((x) =>
-                  x.id === editing.id ? { ...makeup, id: editing.id } : x
-                )
-              )
-            } else {
-              saveTemplates([
-                ...templates,
-                { ...makeup, id: generateMakeupId() },
-              ])
-            }
+            // Upsert by id — editing keeps the template's identity,
+            // adding mints a fresh one.
+            void saveUserWallTypeTemplate(
+              editing
+                ? { ...makeup, id: editing.id }
+                : { ...makeup, id: generateMakeupId() }
+            )
             setEditing(null)
             setAdding(false)
           }}
