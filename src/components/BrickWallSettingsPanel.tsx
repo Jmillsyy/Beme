@@ -60,13 +60,23 @@ export default function BrickWallSettingsPanel({
   const [expanded, setExpanded] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
 
+  // Defensive: route every list read through these so a parent that
+  // hands us undefined during a mid-load render doesn't crash the
+  // workspace. Bug we hit during the wall-types rollout: brickMakeups
+  // briefly read as undefined on the very first paint after project
+  // load, taking the whole canvas down with a "Cannot read properties
+  // of undefined (reading 'find')" error.
+  const safeMakeups = makeups ?? []
+  const safePalette = paletteMakeups ?? safeMakeups
+  const safeCounts = wallCountsByMakeupId ?? {}
+
   const activeMakeup = useMemo(
-    () => makeups.find((m) => m.id === activeMakeupId),
-    [makeups, activeMakeupId],
+    () => safeMakeups.find((m) => m.id === activeMakeupId),
+    [safeMakeups, activeMakeupId],
   )
   const editingMakeup =
     editingId && editingId !== 'new'
-      ? makeups.find((m) => m.id === editingId) ?? null
+      ? safeMakeups.find((m) => m.id === editingId) ?? null
       : null
 
   return (
@@ -86,7 +96,7 @@ export default function BrickWallSettingsPanel({
             {!expanded && activeMakeup ? (
               <>· {activeMakeup.name}</>
             ) : (
-              <>· {makeups.length}</>
+              <>· {safeMakeups.length}</>
             )}
           </span>
         </button>
@@ -102,10 +112,10 @@ export default function BrickWallSettingsPanel({
 
       {expanded && (
         <div className="flex flex-col gap-1.5 pb-0.5">
-          {makeups.map((m) => {
+          {safeMakeups.map((m) => {
             const isActive = m.id === activeMakeupId
-            const wallCount = wallCountsByMakeupId[m.id] ?? 0
-            const canDelete = makeups.length > 1
+            const wallCount = safeCounts[m.id] ?? 0
+            const canDelete = safeMakeups.length > 1
             return (
               <button
                 key={m.id}
@@ -125,7 +135,7 @@ export default function BrickWallSettingsPanel({
                   <span
                     className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider font-semibold flex-shrink-0 text-white ring-1 ring-black/30 leading-tight"
                     style={{
-                      backgroundColor: wallTypeColor(m.id, paletteMakeups),
+                      backgroundColor: wallTypeColor(m.id, safePalette),
                     }}
                     title="Plan colour for this wall type"
                   >
@@ -209,7 +219,7 @@ export default function BrickWallSettingsPanel({
               </button>
             )
           })}
-          {makeups.length === 0 && (
+          {safeMakeups.length === 0 && (
             <p className="text-xs text-ink-400 italic px-1 py-2">
               No brick wall types yet — click <strong>+ Add</strong> to make
               one.
