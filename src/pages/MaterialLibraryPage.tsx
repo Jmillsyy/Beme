@@ -327,6 +327,16 @@ const UNIT_OPTIONS: Array<{ value: SupplyItemUnit; label: string; hint: string }
   { value: 'per-m2', label: 'Per m² of wall', hint: 'Rate × total brickwork or blockwork area.' },
   { value: 'per-m-lineal', label: 'Per lineal m', hint: 'Rate × total wall run.' },
   { value: 'per-opening', label: 'Per opening', hint: 'Rate × number of openings.' },
+  {
+    value: 'per-opening-head',
+    label: 'Per opening head',
+    hint: 'Rate × number of opening heads. Counts every opening (doors + windows). Optional width range narrows it.',
+  },
+  {
+    value: 'per-opening-sill',
+    label: 'Per opening sill',
+    hint: 'Rate × number of window sills. Doors are excluded automatically — no sill on a doorway.',
+  },
 ]
 
 function unitLabelOf(unit: SupplyItemUnit): string {
@@ -660,10 +670,14 @@ function SupplyItemForm({
     const appliesTo: ('block' | 'brick')[] = []
     if (appliesToBlock) appliesTo.push('block')
     if (appliesToBrick) appliesTo.push('brick')
-    // Only persist opening-width range for per-opening supplies — the
-    // fields are hidden for other units, and storing them would just
-    // confuse the next editor open.
-    const isPerOpening = unit === 'per-opening'
+    // Only persist opening-width range for per-opening / per-opening-
+    // head / per-opening-sill supplies — the fields are hidden for
+    // other units, and storing them would just confuse the next
+    // editor open.
+    const isPerOpening =
+      unit === 'per-opening' ||
+      unit === 'per-opening-head' ||
+      unit === 'per-opening-sill'
     onSave({
       id: existing?.id ?? generateId(),
       name: name.trim(),
@@ -806,12 +820,16 @@ function SupplyItemForm({
           </p>
         </label>
 
-        {/* Opening-width range — only shown for per-opening supplies.
-            Used for lintels / sills / heads where the item depends on
-            the opening's width (e.g. Galintel 100×100 for 1200–1800mm
-            openings, steel angle for >1800mm). Leave both blank to
-            apply to every opening (ties, sealants, flashings, etc.). */}
-        {unit === 'per-opening' && (
+        {/* Opening-width range — shown for per-opening / per-opening-
+            head / per-opening-sill supplies. Used for lintels / sills /
+            heads where the item depends on the opening's width (e.g.
+            Galintel 100×100 for 1200–1800mm openings, steel angle for
+            >1800mm). Leave both blank to apply to every in-scope
+            opening (every opening for per-opening + per-opening-head;
+            every window for per-opening-sill). */}
+        {(unit === 'per-opening' ||
+          unit === 'per-opening-head' ||
+          unit === 'per-opening-sill') && (
           <div className="md:col-span-2 p-3 rounded-lg border border-ink-700 bg-ink-900/40">
             <div className="text-xs font-semibold text-ink-300 mb-1">
               Opening width range (optional)

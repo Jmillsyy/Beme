@@ -140,6 +140,16 @@ export interface EstimatingDefaults {
  * - `per-m2`: rate × total brickwork / blockwork area.
  * - `per-m-lineal`: rate × total wall run length.
  * - `per-opening`: rate × number of openings on the plan.
+ * - `per-opening-head`: rate × number of opening HEADS. Every opening
+ *   has a head, so this equals the opening count unless a width range
+ *   filter narrows it. Lets the user price head-specific consumables
+ *   (lintel bedding compound, head-trim mastic, etc.) separately from
+ *   the opening itself.
+ * - `per-opening-sill`: rate × number of opening SILLS. Doors don't
+ *   have sills, so this counts WINDOW openings only (kind !== 'door').
+ *   Same width-range filter applies. Lets the user price sill-specific
+ *   consumables (sill bedding, sill flashing per window) without
+ *   double-counting doors.
  */
 export type SupplyItemUnit =
   | 'each'
@@ -148,6 +158,8 @@ export type SupplyItemUnit =
   | 'per-m2'
   | 'per-m-lineal'
   | 'per-opening'
+  | 'per-opening-head'
+  | 'per-opening-sill'
 
 /**
  * A user-defined supply item that gets added to estimate totals based on a
@@ -187,17 +199,19 @@ export interface SupplyItem {
    */
   category?: string
   /**
-   * For `unit: 'per-opening'` supplies ONLY — restrict the count to
-   * openings whose WIDTH falls within this range (mm). Lets the user
-   * configure lintels / sills / heads as supply items that auto-pick
-   * based on opening width:
+   * For `unit: 'per-opening'`, `'per-opening-head'`, and
+   * `'per-opening-sill'` supplies — restrict the count to openings
+   * whose WIDTH falls within this range (mm). Lets the user configure
+   * lintels / sills / heads as supply items that auto-pick based on
+   * opening width:
    *
    *   - "Galintel 100×100" → openingWidthMinMm 1200, openingWidthMaxMm 1800
    *   - "Steel angle L 3.5×3.5" → openingWidthMinMm 1800, openingWidthMaxMm 3000
    *
    * Either bound undefined means "open" on that side. Both undefined
-   * means the supply applies to EVERY opening (which is the
-   * pre-existing per-opening behaviour, kept for back-compat).
+   * means the supply applies to EVERY in-scope opening (every opening
+   * for `per-opening` and `per-opening-head`; every window for
+   * `per-opening-sill`).
    */
   openingWidthMinMm?: number
   openingWidthMaxMm?: number

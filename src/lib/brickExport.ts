@@ -1099,6 +1099,32 @@ export async function buildBrickEstimateHtml(
         noteRate = `${rate} per opening${rangeLabel}`
         break
       }
+      case 'per-opening-head':
+      case 'per-opening-sill': {
+        // Same width-range filter as per-opening plus an opening-kind
+        // filter: heads count every opening (doors + windows), sills
+        // count windows only (doors have no sill). Mirrors the block
+        // export so a supply item priced as head / sill counts the
+        // same way regardless of trade.
+        const min = item.openingWidthMinMm
+        const max = item.openingWidthMaxMm
+        const isSill = item.unit === 'per-opening-sill'
+        const inScope = openings.filter((o) => {
+          if (isSill && o.kind === 'door') return false
+          if (min !== undefined && o.widthMm < min) return false
+          if (max !== undefined && o.widthMm > max) return false
+          return true
+        }).length
+        qty = rate * inScope
+        const rangeLabel =
+          min !== undefined || max !== undefined
+            ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
+            : ''
+        noteRate = `${rate} per opening ${
+          isSill ? 'sill (windows)' : 'head'
+        }${rangeLabel}`
+        break
+      }
       case 'per-block':
         // Brick estimate — block-relative rates don't apply.
         continue

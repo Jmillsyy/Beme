@@ -1026,6 +1026,13 @@ function ExportEstimateModal({
       blockCount,
       openingCount: blockOpenings.length,
       openingWidthsMm: blockOpenings.map((o) => o.widthMm),
+      // Parallel kind list so per-opening-sill (windows only) and
+      // per-opening-head (everything) read from the same metrics
+      // object as per-opening — same shape as PdfWorkspace's
+      // supplyMetrics. 'window' is the default for older openings.
+      openingKinds: blockOpenings.map((o) =>
+        o.kind === 'door' ? ('door' as const) : ('window' as const),
+      ),
     }
   }, [blockWalls, blockMakeups, blockOpenings, blockBaseTally])
 
@@ -1037,6 +1044,7 @@ function ExportEstimateModal({
         brickCount: 0,
         openingCount: 0,
         openingWidthsMm: [] as number[],
+        openingKinds: [] as Array<'window' | 'door'>,
       }
     }
     const tally = calculateBrickTally(
@@ -1051,6 +1059,10 @@ function ExportEstimateModal({
       brickCount: tally.brickCount,
       openingCount: brickOpenings.length,
       openingWidthsMm: brickOpenings.map((o) => o.widthMm),
+      // Parallel kind list — see blockMetrics comment.
+      openingKinds: brickOpenings.map((o) =>
+        o.kind === 'door' ? ('door' as const) : ('window' as const),
+      ),
     }
   }, [brickWalls, brickOpenings, brickSettings, brickMakeups])
 
@@ -1112,6 +1124,29 @@ function ExportEstimateModal({
               (min === undefined || w >= min) &&
               (max === undefined || w <= max)
           ).length
+        }
+        raw = rate * scope
+        break
+      }
+      case 'per-opening-head':
+      case 'per-opening-sill': {
+        // Same shape as per-opening with an extra kind filter:
+        // heads count every opening, sills count windows only
+        // (doors have no sill). Width-range filter applies the
+        // same way.
+        const min = item.openingWidthMinMm
+        const max = item.openingWidthMaxMm
+        const widths = metrics.openingWidthsMm
+        const kinds = metrics.openingKinds
+        const isSill = item.unit === 'per-opening-sill'
+        let scope = 0
+        for (let i = 0; i < widths.length; i++) {
+          const w = widths[i]
+          const k = kinds[i] ?? 'window'
+          if (isSill && k === 'door') continue
+          if (min !== undefined && w < min) continue
+          if (max !== undefined && w > max) continue
+          scope++
         }
         raw = rate * scope
         break

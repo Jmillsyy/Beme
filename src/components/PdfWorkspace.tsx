@@ -3404,6 +3404,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         // Individual opening widths so width-ranged supply items
         // (Galintels et al.) count only the openings they cover.
         openingWidthsMm: allOpenings.map((o) => o.widthMm),
+        // Parallel kinds so per-opening-sill supplies can skip doors
+        // (windows-only count). Defaults to 'window' to match the
+        // rest of the app — older openings saved before opening.kind
+        // existed are treated as windows.
+        openingKinds: allOpenings.map((o) =>
+          o.kind === 'door' ? ('door' as const) : ('window' as const),
+        ),
       }
     }
     // Block mode (or any unknown — fall back to block math which yields 0s).
@@ -3435,6 +3442,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       blockCount,
       openingCount: allOpenings.length,
       openingWidthsMm: allOpenings.map((o) => o.widthMm),
+      // Same parallel kind list as the brick branch — drives
+      // per-opening-sill (windows only) and lets the per-opening-head
+      // unit share the same plumbing.
+      openingKinds: allOpenings.map((o) =>
+        o.kind === 'door' ? ('door' as const) : ('window' as const),
+      ),
     }
     // blockLibraryVersion is a tally-engine dependency (calculateProjectTally
     // reaches into the live BLOCK_LIBRARY); listing it here re-runs the memo

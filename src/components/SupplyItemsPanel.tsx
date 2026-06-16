@@ -32,6 +32,11 @@ interface ProjectMetrics {
    *  may pass [] when widths aren't available (the range filter
    *  will fall back to counting all openings). */
   openingWidthsMm: number[]
+  /** Per-opening kind so the per-opening-sill unit can exclude doors.
+   *  Length matches openingWidthsMm. Each entry is 'door' or 'window'
+   *  (the calc treats undefined as 'window' to match the rest of the
+   *  app's defaults). */
+  openingKinds: Array<'window' | 'door'>
 }
 
 interface SupplyItemsPanelProps {
@@ -53,6 +58,8 @@ const UNIT_SUFFIX: Record<SupplyItemUnit, string> = {
   'per-m2': 'per m²',
   'per-m-lineal': 'per lineal m',
   'per-opening': 'per opening',
+  'per-opening-head': 'per opening head',
+  'per-opening-sill': 'per opening sill',
 }
 
 /**
@@ -105,6 +112,33 @@ function quantityFor(item: SupplyItem, rate: number, m: ProjectMetrics): number 
           (max === undefined || w <= max)
       ).length
       return rate * matching
+    }
+    case 'per-opening-head':
+    case 'per-opening-sill': {
+      // Same width-range filter as per-opening, plus an extra kind
+      // filter: heads count EVERY opening (doors + windows), sills
+      // count windows only (doors don't have sills). Items without
+      // a bound apply to every in-scope opening / window.
+      const min = item.openingWidthMinMm
+      const max = item.openingWidthMaxMm
+      const isSill = item.unit === 'per-opening-sill'
+      // Defensive: if openingKinds wasn't passed, assume every
+      // opening is a window so the caller doesn't silently zero
+      // out a sill rate when the metrics dropped the kinds list.
+      const kinds =
+        m.openingKinds.length === m.openingWidthsMm.length
+          ? m.openingKinds
+          : m.openingWidthsMm.map(() => 'window' as const)
+      let count = 0
+      for (let i = 0; i < m.openingWidthsMm.length; i++) {
+        const w = m.openingWidthsMm[i]
+        const k = kinds[i] ?? 'window'
+        if (isSill && k === 'door') continue
+        if (min !== undefined && w < min) continue
+        if (max !== undefined && w > max) continue
+        count++
+      }
+      return rate * count
     }
   }
 }
