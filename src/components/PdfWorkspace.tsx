@@ -53,6 +53,8 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import SupplyItemsPanel from './SupplyItemsPanel'
+import OpeningSupplyOverridePicker from './OpeningSupplyOverridePicker'
+import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import AreaTabs from './AreaTabs'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
@@ -1228,6 +1230,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    *  the sill is just a free dimension the user sets manually.
    *  Default 0 = door-style opening reaching the floor. */
   const [blockOpeningSillMm, setBlockOpeningSillMm] = useState(0)
+  /** Per-opening supply-item overrides being edited in the pending
+   *  opening modal. Hydrated from the opening when editing an
+   *  existing one, reset to undefined for a fresh placement. Passed
+   *  through to the saved Opening on commit. undefined = no
+   *  overrides set (everything on auto). */
+  const [pendingOpeningSupplyOverrides, setPendingOpeningSupplyOverrides] =
+    useState<Opening['supplyOverrides']>(undefined)
   /** Brick-mode opening height — user types it directly, sill is
    *  derived from kind via deriveSillMm at save time. */
   const [brickOpeningHeightMm, setBrickOpeningHeightMm] = useState(2100)
@@ -2839,6 +2848,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           widthMm: opening.widthMm,
           editingId: opening.id,
         })
+        // Hydrate the supply-override pickers from the opening's
+        // current settings so the modal opens on whatever the user
+        // last picked (auto / specific item / none per scope).
+        setPendingOpeningSupplyOverrides(opening.supplyOverrides)
         // Seed the modal state from the opening's persisted values
         // so the user sees the actual numbers when the modal opens.
         if (mode === 'brick') {
@@ -4466,6 +4479,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   const handleOpeningPlaced = useCallback((wallId: string, startAlongWallMm: number, widthMm: number) => {
     setPendingOpening({ wallId, startAlongWallMm, widthMm })
+    // Fresh placement — reset overrides so a previous edit doesn't
+    // bleed into a brand-new opening on a different wall.
+    setPendingOpeningSupplyOverrides(undefined)
     // New openings default to auto-pick — reset any override carried
     // over from the last edit session so the modal doesn't open
     // pre-pinned to a previously edited block.
@@ -4587,6 +4603,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ...(mode === 'block'
                   ? { lintelBlockCodeOverride: lintelOverrideForSave }
                   : {}),
+                // Supply-item overrides — write whatever the picker
+                // committed (or undefined to clear the field entirely
+                // when the user reset every scope to Auto).
+                supplyOverrides: pendingOpeningSupplyOverrides,
               }
             : o
         )
@@ -4608,6 +4628,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         ...(mode === 'brick' && brickOpeningNoHead ? { noHead: true } : {}),
         ...(lintelOverrideForSave
           ? { lintelBlockCodeOverride: lintelOverrideForSave }
+          : {}),
+        ...(pendingOpeningSupplyOverrides
+          ? { supplyOverrides: pendingOpeningSupplyOverrides }
           : {}),
       }
       setOpeningsByPage((prev) => ({
@@ -5282,6 +5305,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // getUserSettings() to grab the freshest value without binding the
   // callback identity to the hook.
   const { settings: userSettings } = useUserSettings()
+  // Resolved supply items — org-scoped when the user is in an org,
+  // otherwise the local user-settings list. Same precedence the
+  // SupplyItemsPanel uses; we read it here so the opening modal's
+  // override picker can show every applicable item.
+  const { items: orgSupplyItemsResolved } = useOrgSupplyItems()
+  const allSupplyItems = orgSupplyItemsResolved.length
+    ? orgSupplyItemsResolved
+    : userSettings.supplyItems ?? []
 
   // Click-to-calibrate state
   const [calibrating, setCalibrating] = useState(false)
@@ -8696,6 +8727,29 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   )
                 })()}
 
+                {/* Per-opening supply overrides — pick which library
+                    items charge for this opening, per scope. Auto
+                    follows the project default; specific items
+                    override; None skips. */}
+                <section className="rounded-lg border border-ink-700 bg-ink-900/40 overflow-hidden">
+                  <div className="px-3.5 py-2 border-b border-ink-700 bg-ink-900/60">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-ink-400">
+                      Supply items for this opening
+                    </div>
+                  </div>
+                  <div className="p-3">
+                    <OpeningSupplyOverridePicker
+                      opening={{
+                        widthMm: pendingOpening.widthMm,
+                        kind: undefined, // block-mode openings have no kind — treat as window (sill applies)
+                        supplyOverrides: pendingOpeningSupplyOverrides,
+                      }}
+                      libraryItems={allSupplyItems}
+                      onChange={setPendingOpeningSupplyOverrides}
+                    />
+                  </div>
+                </section>
+
                 {/* Validation states */}
                 {tooTall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
@@ -8905,6 +8959,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       to place a lintel-only marker.
                     </span>
                   </label>
+                </section>
+
+                {/* Per-opening supply overrides — mirror of the block
+                    modal section, kind-aware (sill picker hides for
+                    doors). */}
+                <section className="rounded-lg border border-ink-700 bg-ink-900/40 overflow-hidden">
+                  <div className="px-3.5 py-2 border-b border-ink-700 bg-ink-900/60">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-ink-400">
+                      Supply items for this opening
+                    </div>
+                  </div>
+                  <div className="p-3">
+                    <OpeningSupplyOverridePicker
+                      opening={{
+                        widthMm: pendingOpening.widthMm,
+                        kind: brickOpeningKind,
+                        supplyOverrides: pendingOpeningSupplyOverrides,
+                      }}
+                      libraryItems={allSupplyItems}
+                      onChange={setPendingOpeningSupplyOverrides}
+                    />
+                  </div>
                 </section>
 
                 {tooSmall && (
