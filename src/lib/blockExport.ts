@@ -29,6 +29,7 @@ import type {
 import {
   calculateProjectTally,
   calculateWallTally,
+  cornerOwnershipFor,
   curveZoneForRadius,
   wallLengthMm,
 } from './blockCalc'
@@ -1590,15 +1591,33 @@ export async function buildBlockEstimateHtml(
     wallsById[w.id] = w
   }
 
-  // Per-makeup breakdown: re-run calculateWallTally for walls of each makeup
-  // (without corner dedup so the table is interpretable). Corner dedup only matters
-  // at the project total, which we already have above.
+  // Per-makeup breakdown: re-run calculateWallTally for walls of each
+  // makeup, passing `cornerOwnershipFor(w)` so each wall only counts
+  // the corner blocks it OWNS at shared junctions. Matches the
+  // dedup'd numbers calculateProjectTally produces for the Grand
+  // Total page, so the per-wall-type subtotals add up to the order
+  // quantity instead of overshooting it by the shared-corner column.
+  //
+  // Bug history: this used to run without `cornerOwnership`, so every
+  // wall at a shared corner counted its full end-block column.
+  // Customers saw "sum of breakdown rows > grand total" and rightly
+  // didn't trust the schedule. cornerOwnershipFor(w) without the
+  // wallsById argument matches calculateProjectTally's call shape
+  // exactly (alphabetical phase=0 fallback), so the two paths now
+  // agree by construction.
   const perMakeup = makeups.map((m) => {
     const wallsOfMakeup = walls.filter((w) => w.makeupId === m.id)
     const merged: BlockTally = {}
     for (const w of wallsOfMakeup) {
       const openingsForWall = openings.filter((o) => o.wallId === w.id)
-      const wallTally = calculateWallTally(w, m, openingsForWall, thicknessByWallId, wallsById)
+      const wallTally = calculateWallTally(
+        w,
+        m,
+        openingsForWall,
+        thicknessByWallId,
+        wallsById,
+        cornerOwnershipFor(w),
+      )
       for (const [code, count] of Object.entries(wallTally) as Array<[BlockCode, number]>) {
         if (!count) continue
         merged[code] = (merged[code] ?? 0) + count
