@@ -2380,16 +2380,13 @@ export async function buildBlockEstimateHtml(
     display: inline-block;
     width: 10px;
     height: 10px;
-    background: #FF7A2D;
+    border: 2px solid #FF7A2D;
     border-radius: 2px;
-    position: relative;
-  }
-  .beme-credit .beme-mark::after {
-    content: '';
-    position: absolute;
-    inset: 2px;
-    background: #111111;
-    border-radius: 1px;
+    box-sizing: border-box;
+    /* True transparent hole through the middle — matches the BemeMark
+       component in the app, so the PDF credit mark reads the same as
+       the in-product brand mark instead of trying to fake a dark
+       inset on a white page. */
   }
   .beme-credit strong {
     color: #1F2937;
