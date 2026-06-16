@@ -13,6 +13,7 @@ import type {
 } from '../types/walls'
 import type { SupplyItem } from '../types/userSettings'
 import { roundSupplyQuantity } from '../types/userSettings'
+import { countOpeningsForSupplyItem } from '../lib/openingSupplyResolver'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { PageInfo } from '../lib/blockExport'
 import { exportBlockEstimate } from '../lib/blockExport'
@@ -1033,6 +1034,7 @@ function ExportEstimateModal({
       openingKinds: blockOpenings.map((o) =>
         o.kind === 'door' ? ('door' as const) : ('window' as const),
       ),
+      openingSupplyOverrides: blockOpenings.map((o) => o.supplyOverrides),
     }
   }, [blockWalls, blockMakeups, blockOpenings, blockBaseTally])
 
@@ -1045,6 +1047,9 @@ function ExportEstimateModal({
         openingCount: 0,
         openingWidthsMm: [] as number[],
         openingKinds: [] as Array<'window' | 'door'>,
+        openingSupplyOverrides: [] as Array<
+          { opening?: string | 'none'; head?: string | 'none'; sill?: string | 'none' } | undefined
+        >,
       }
     }
     const tally = calculateBrickTally(
@@ -1063,6 +1068,7 @@ function ExportEstimateModal({
       openingKinds: brickOpenings.map((o) =>
         o.kind === 'door' ? ('door' as const) : ('window' as const),
       ),
+      openingSupplyOverrides: brickOpenings.map((o) => o.supplyOverrides),
     }
   }, [brickWalls, brickOpenings, brickSettings, brickMakeups])
 
@@ -1106,49 +1112,20 @@ function ExportEstimateModal({
       case 'per-m-lineal':
         raw = rate * metrics.lengthM
         break
-      case 'per-opening': {
-        const min = item.openingWidthMinMm
-        const max = item.openingWidthMaxMm
-        const widths = metrics.openingWidthsMm
-        let scope: number
-        if (min === undefined && max === undefined) {
-          scope = metrics.openingCount
-        } else if (widths.length === 0) {
-          // Caller didn't pass widths — fall back to total count
-          // rather than silently zeroing the row (matches both
-          // exporters' fallback).
-          scope = metrics.openingCount
-        } else {
-          scope = widths.filter(
-            (w) =>
-              (min === undefined || w >= min) &&
-              (max === undefined || w <= max)
-          ).length
-        }
-        raw = rate * scope
-        break
-      }
+      case 'per-opening':
       case 'per-opening-head':
       case 'per-opening-sill': {
-        // Same shape as per-opening with an extra kind filter:
-        // heads count every opening, sills count windows only
-        // (doors have no sill). Width-range filter applies the
-        // same way.
-        const min = item.openingWidthMinMm
-        const max = item.openingWidthMaxMm
+        // Shared resolver — keeps the modal preview locked to the
+        // workspace tally + the printed PDF.
         const widths = metrics.openingWidthsMm
         const kinds = metrics.openingKinds
-        const isSill = item.unit === 'per-opening-sill'
-        let scope = 0
-        for (let i = 0; i < widths.length; i++) {
-          const w = widths[i]
-          const k = kinds[i] ?? 'window'
-          if (isSill && k === 'door') continue
-          if (min !== undefined && w < min) continue
-          if (max !== undefined && w > max) continue
-          scope++
-        }
-        raw = rate * scope
+        const overrides = metrics.openingSupplyOverrides
+        const openings = widths.map((w, i) => ({
+          widthMm: w,
+          kind: kinds[i] ?? ('window' as const),
+          supplyOverrides: overrides[i],
+        }))
+        raw = rate * countOpeningsForSupplyItem(item, openings, supplyItems)
         break
       }
     }

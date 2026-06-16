@@ -5,6 +5,8 @@ import { formatSupplyQuantity } from '../types/userSettings'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import { useOrganisations } from '../lib/organisations'
+import { countOpeningsForSupplyItem } from '../lib/openingSupplyResolver'
+import type { Opening } from '../types/walls'
 
 /**
  * Per-mode brick/block tally inputs that drive the supply-item rate maths.
@@ -37,6 +39,12 @@ interface ProjectMetrics {
    *  (the calc treats undefined as 'window' to match the rest of the
    *  app's defaults). */
   openingKinds: Array<'window' | 'door'>
+  /** Per-opening supply-item override maps so the resolver can honour
+   *  explicit per-opening picks. Length matches openingWidthsMm.
+   *  Each entry is the Opening.supplyOverrides value (or undefined
+   *  for openings with no overrides set). Same parallel-array shape
+   *  as openingWidthsMm / openingKinds. */
+  openingSupplyOverrides: Array<Opening['supplyOverrides']>
 }
 
 interface SupplyItemsPanelProps {
@@ -77,8 +85,18 @@ function effectiveRate(item: SupplyItem, overrides: Record<string, number>): num
  * Compute the per-item quantity for the given project metrics + rate. Same
  * rules brick/block exports use; returns 0 (and the caller treats it as a
  * "nothing to add" row) for unit/mode mismatches.
+ *
+ * Per-opening / per-opening-head / per-opening-sill units route through
+ * the shared `openingSupplyResolver` so the override + default + legacy
+ * fallback chain reads identically from the panel, the workspace
+ * tally, the export preview and the printed PDF.
  */
-function quantityFor(item: SupplyItem, rate: number, m: ProjectMetrics): number {
+function quantityFor(
+  item: SupplyItem,
+  rate: number,
+  m: ProjectMetrics,
+  libraryItems: SupplyItem[],
+): number {
   switch (item.unit) {
     case 'each':
       return rate
@@ -90,54 +108,19 @@ function quantityFor(item: SupplyItem, rate: number, m: ProjectMetrics): number 
       return rate * m.areaSqM
     case 'per-m-lineal':
       return rate * m.lengthM
-    case 'per-opening': {
-      // Width-range-aware: an item with openingWidthMinMm /
-      // openingWidthMaxMm only counts openings whose width falls
-      // within its range. Items with NEITHER bound (the legacy /
-      // ties-and-flashings case) keep applying to every opening.
-      const min = item.openingWidthMinMm
-      const max = item.openingWidthMaxMm
-      if (min === undefined && max === undefined) {
-        return rate * m.openingCount
-      }
-      // No widths provided → fall back to the unfiltered count so a
-      // caller that didn't pass widths doesn't silently zero out the
-      // item.
-      if (m.openingWidthsMm.length === 0) {
-        return rate * m.openingCount
-      }
-      const matching = m.openingWidthsMm.filter(
-        (w) =>
-          (min === undefined || w >= min) &&
-          (max === undefined || w <= max)
-      ).length
-      return rate * matching
-    }
+    case 'per-opening':
     case 'per-opening-head':
     case 'per-opening-sill': {
-      // Same width-range filter as per-opening, plus an extra kind
-      // filter: heads count EVERY opening (doors + windows), sills
-      // count windows only (doors don't have sills). Items without
-      // a bound apply to every in-scope opening / window.
-      const min = item.openingWidthMinMm
-      const max = item.openingWidthMaxMm
-      const isSill = item.unit === 'per-opening-sill'
-      // Defensive: if openingKinds wasn't passed, assume every
-      // opening is a window so the caller doesn't silently zero
-      // out a sill rate when the metrics dropped the kinds list.
-      const kinds =
-        m.openingKinds.length === m.openingWidthsMm.length
-          ? m.openingKinds
-          : m.openingWidthsMm.map(() => 'window' as const)
-      let count = 0
-      for (let i = 0; i < m.openingWidthsMm.length; i++) {
-        const w = m.openingWidthsMm[i]
-        const k = kinds[i] ?? 'window'
-        if (isSill && k === 'door') continue
-        if (min !== undefined && w < min) continue
-        if (max !== undefined && w > max) continue
-        count++
-      }
+      // Build the openings list the resolver expects. Defensive on
+      // parallel-array length mismatches — fall back to undefined /
+      // 'window' so a caller that dropped the parallel kinds /
+      // overrides list doesn't silently zero out the item.
+      const openings = m.openingWidthsMm.map((w, i) => ({
+        widthMm: w,
+        kind: m.openingKinds[i] ?? ('window' as const),
+        supplyOverrides: m.openingSupplyOverrides[i],
+      }))
+      const count = countOpeningsForSupplyItem(item, openings, libraryItems)
       return rate * count
     }
   }
@@ -196,7 +179,7 @@ function SupplyItemsPanelImpl({
         // wall area / block count.
         .filter((i) => {
           const r = effectiveRate(i, rateOverrides)
-          return quantityFor(i, r, metrics) > 0
+          return quantityFor(i, r, metrics, items) > 0
         }),
     [items, metrics, rateOverrides]
   )
@@ -307,7 +290,7 @@ function SupplyItemsPanelImpl({
                           // the auto-calc; per-export quantity overrides
                           // live in the Export estimate modal.
                           const rate = effectiveRate(item, rateOverrides)
-                          const qty = quantityFor(item, rate, metrics)
+                          const qty = quantityFor(item, rate, metrics, items)
                           // formatSupplyQuantity handles both the ceil
                           // rounding AND the toFixed formatting at the
                           // item's chosen precision so "0 decimals"

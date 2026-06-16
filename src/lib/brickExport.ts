@@ -24,6 +24,7 @@ import { rasterisePdfPage } from './pdfRaster'
 import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
 import { getCurrentOrgId } from './organisations'
+import { countOpeningsForSupplyItem } from './openingSupplyResolver'
 import {
   formatSupplyQuantity,
   roundSupplyQuantity,
@@ -1072,57 +1073,26 @@ export async function buildBrickEstimateHtml(
         qty = rate * brickRun_m
         noteRate = `${rate} per lineal metre`
         break
-      case 'per-opening': {
-        // If the supply item carries an opening-width range (used for
-        // lintels / sills / heads), only count openings whose width
-        // falls within that range. No range = applies to every opening
-        // (the pre-existing behaviour for ties / flashings / etc.).
-        //
-        // Both bounds INCLUSIVE — matches the block-lintel bucket
-        // convention. A "Galintel 100×100" with range 1200–1800
-        // covers both a 1200mm and a 1800mm opening.
-        const min = item.openingWidthMinMm
-        const max = item.openingWidthMaxMm
-        const inScope =
-          min === undefined && max === undefined
-            ? openings.length
-            : openings.filter(
-                (o) =>
-                  (min === undefined || o.widthMm >= min) &&
-                  (max === undefined || o.widthMm <= max)
-              ).length
-        qty = rate * inScope
-        const rangeLabel =
-          min !== undefined || max !== undefined
-            ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
-            : ''
-        noteRate = `${rate} per opening${rangeLabel}`
-        break
-      }
+      case 'per-opening':
       case 'per-opening-head':
       case 'per-opening-sill': {
-        // Same width-range filter as per-opening plus an opening-kind
-        // filter: heads count every opening (doors + windows), sills
-        // count windows only (doors have no sill). Mirrors the block
-        // export so a supply item priced as head / sill counts the
-        // same way regardless of trade.
+        // Shared resolver — respects per-opening overrides + project
+        // defaults + width-range / kind filter. Mirrors block export.
+        const inScope = countOpeningsForSupplyItem(item, openings, supplyItems)
+        qty = rate * inScope
         const min = item.openingWidthMinMm
         const max = item.openingWidthMaxMm
-        const isSill = item.unit === 'per-opening-sill'
-        const inScope = openings.filter((o) => {
-          if (isSill && o.kind === 'door') return false
-          if (min !== undefined && o.widthMm < min) return false
-          if (max !== undefined && o.widthMm > max) return false
-          return true
-        }).length
-        qty = rate * inScope
         const rangeLabel =
           min !== undefined || max !== undefined
             ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
             : ''
-        noteRate = `${rate} per opening ${
-          isSill ? 'sill (windows)' : 'head'
-        }${rangeLabel}`
+        const scopeLabel =
+          item.unit === 'per-opening-sill'
+            ? 'opening sill (windows)'
+            : item.unit === 'per-opening-head'
+              ? 'opening head'
+              : 'opening'
+        noteRate = `${rate} per ${scopeLabel}${rangeLabel}`
         break
       }
       case 'per-block':

@@ -3411,6 +3411,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         openingKinds: allOpenings.map((o) =>
           o.kind === 'door' ? ('door' as const) : ('window' as const),
         ),
+        // Parallel per-opening supply-override maps so the resolver
+        // can honour explicit per-opening picks (Opening.supplyOverrides).
+        openingSupplyOverrides: allOpenings.map((o) => o.supplyOverrides),
       }
     }
     // Block mode (or any unknown — fall back to block math which yields 0s).
@@ -3448,6 +3451,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       openingKinds: allOpenings.map((o) =>
         o.kind === 'door' ? ('door' as const) : ('window' as const),
       ),
+      openingSupplyOverrides: allOpenings.map((o) => o.supplyOverrides),
     }
     // blockLibraryVersion is a tally-engine dependency (calculateProjectTally
     // reaches into the live BLOCK_LIBRARY); listing it here re-runs the memo

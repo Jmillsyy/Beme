@@ -570,6 +570,29 @@ export interface Opening {
    * the calc falls back to auto-pick.
    */
   lintelBlockCodeOverride?: BlockCode
+  /**
+   * Per-opening supply item overrides — one optional value per scope
+   * (the three opening-scoped units: per-opening, per-opening-head,
+   * per-opening-sill). When set, the tally for that scope on this
+   * opening counts THIS supply item only (rate × 1), ignoring the
+   * project default and the width-range match.
+   *
+   * Values:
+   *   - A SupplyItem.id → only that item counts for this scope on
+   *     this opening (rate × 1).
+   *   - 'none' → skip this scope entirely on this opening (e.g. a
+   *     custom-fabricated lintel that isn't priced through the
+   *     supply schedule).
+   *   - undefined → auto. Falls through to the project default for
+   *     the scope, or to count-all-matching if no default set.
+   *
+   * The 'sill' scope is auto-skipped for doors regardless of override.
+   */
+  supplyOverrides?: {
+    opening?: string | 'none'
+    head?: string | 'none'
+    sill?: string | 'none'
+  }
 }
 
 /**

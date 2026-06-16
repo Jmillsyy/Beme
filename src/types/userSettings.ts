@@ -228,6 +228,26 @@ export interface SupplyItem {
    * the original whole-unit behaviour.
    */
   decimalPlaces?: number
+  /**
+   * Marks this item as the user's PROJECT DEFAULT for its scope. Only
+   * meaningful for the per-opening / per-opening-head / per-opening-sill
+   * units — where multiple library items can match the same opening
+   * (e.g. two galintels both ranged 1200–1800 mm).
+   *
+   * Resolution per opening + scope at tally time:
+   *   1. If the opening carries an explicit override for this scope,
+   *      that wins (override = supply item id, 'none' = skip).
+   *   2. Else if ANY matching library item has `isProjectDefault`
+   *      set, only the default(s) count for this opening. Non-default
+   *      matches are suppressed.
+   *   3. Else (no default, no override) every matching item counts —
+   *      the legacy behaviour, kept so existing libraries don't shift
+   *      until the user opts in by marking a default.
+   *
+   * Library-wide setting (not per project) so the same default reads
+   * consistently across every estimate that uses the library.
+   */
+  isProjectDefault?: boolean
 }
 
 /** Clamp a SupplyItem's decimalPlaces to a sane range (0–3) and default

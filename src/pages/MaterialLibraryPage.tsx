@@ -657,6 +657,15 @@ function SupplyItemForm({
   const [decimalPlaces, setDecimalPlaces] = useState<number>(
     existing?.decimalPlaces ?? 0
   )
+  // Project-default flag — only meaningful for the three opening-
+  // scoped units. When set, the resolver counts ONLY this item
+  // (and any other defaults) for matching openings, suppressing
+  // non-default matches. Lets the user shape an opening's price
+  // around a specific lintel / sill / head product without ticking
+  // off every other item that happens to fit the same width range.
+  const [isProjectDefault, setIsProjectDefault] = useState<boolean>(
+    existing?.isProjectDefault ?? false,
+  )
 
   const canSave =
     name.trim().length > 0 && rate > 0 && (appliesToBlock || appliesToBrick)
@@ -699,6 +708,10 @@ function SupplyItemForm({
       // (no field) and "0 decimals" cases on the same shape so
       // existing serialised libraries don't gain a trailing 0.
       ...(decimalPlaces > 0 ? { decimalPlaces } : {}),
+      // Only persist isProjectDefault for opening-scoped units (the
+      // only places the resolver consults it) and only when ON, so
+      // older libraries stay shape-identical until a default is set.
+      ...(isPerOpening && isProjectDefault ? { isProjectDefault: true } : {}),
     })
   }
 
@@ -875,6 +888,36 @@ function SupplyItemForm({
                 />
               </label>
             </div>
+
+            {/* Project-default toggle — applies to opening-scoped units
+                only (shown inside the same card as the width range
+                because the two settings are closely related: a default
+                only matters when multiple library items could match
+                the same opening). When ON, the resolver counts this
+                item — and any other defaults — for matching openings
+                and suppresses non-default matches. Doesn't change the
+                rate or the unit; only changes which items "win" when
+                more than one fits. */}
+            <label className="mt-3 flex items-start gap-2 cursor-pointer text-xs">
+              <input
+                type="checkbox"
+                checked={isProjectDefault}
+                onChange={(e) => setIsProjectDefault(e.target.checked)}
+                className="w-4 h-4 mt-0.5 accent-beme-500 flex-shrink-0"
+              />
+              <span>
+                <span className="block text-ink-200 font-semibold">
+                  Project default for this scope
+                </span>
+                <span className="block text-ink-500 mt-0.5 leading-snug">
+                  When two or more library items match the same opening
+                  (e.g. two lintels both cover 1200–1800 mm), only the
+                  defaults are counted. Non-default matches are
+                  suppressed. Leave unticked for items that always
+                  count alongside others.
+                </span>
+              </span>
+            </label>
           </div>
         )}
 
