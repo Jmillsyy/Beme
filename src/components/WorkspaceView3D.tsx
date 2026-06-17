@@ -3357,12 +3357,18 @@ function Scene({
               halfThick,
               color: capColor,
               wallBodyHeightM: yBody,
-              // Modular brick + mortar — drives the texture's tile
-              // size in world units so the pattern's mortar joints
-              // align to actual brick centres.
+              // Texture tile size in world units. The U cycle is
+              // ONE brick wide (the texture shows one brick across
+              // its full width). The V cycle is TWO courses tall
+              // because the texture stores TWO stagger-bonded
+              // courses per V-cycle so RepeatWrapping naturally
+              // gives stretcher bond. Without the ×2, the two
+              // courses of pattern would compress into a single
+              // course of geometry — the cap bricks would render
+              // half as tall as the body bricks.
               brickModularWidthM: (brickWidthMm + BRICK_MORTAR_MM) / 1000,
               courseModularHeightM:
-                (brickHeightMm + BRICK_MORTAR_MM) / 1000,
+                2 * (brickHeightMm + BRICK_MORTAR_MM) / 1000,
             })
           }
         }
