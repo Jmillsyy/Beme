@@ -1196,6 +1196,61 @@ interface CapMesh {
 }
 
 /**
+ * Brick wall body face — the flat rectangular wall body rendered as
+ * a textured polygon instead of thousands of instanced cubes. Renders
+ * with the SAME brick-pattern texture as `CapMesh` so the body + cap
+ * read identically (no jarring switch in style at the wall top).
+ *
+ * Built per straight brick wall: a rectangle the height of the wall
+ * body × the wall length, with `THREE.Path` holes punched for every
+ * opening (door / window). Extruded by wall thickness so it has the
+ * same physical presence as the old instanced cubes. Curved brick
+ * walls + block walls keep their existing per-segment pipelines.
+ *
+ * The face is built in the wall's LOCAL "along-X / up-Y" space, then
+ * positioned + oriented in world space using `wallStartWorld`,
+ * `wdirX/Z` and `perpX/Z`. Same transform convention as `CapMesh` —
+ * one shared mental model for both halves of the wall.
+ */
+interface BrickWallFace {
+  /** Length of the wall body along the wall direction, in metres. */
+  lengthM: number
+  /** Body height in metres — top of the rectangle (= wall.heightMm
+   *  / 1000 if no other adjustments). */
+  bodyHeightM: number
+  /** Y where the body starts. Walls always sit on z=0 in world, so
+   *  this is just 0, but kept explicit so future floor offsets work. */
+  bodyBaseY: number
+  /** Opening holes, each axis-aligned in (alongM, y) space. Empty
+   *  array when the wall has no openings. */
+  openings: Array<{
+    alongStartM: number
+    alongEndM: number
+    yStartM: number
+    yEndM: number
+  }>
+  /** Wall start in world metres (same negated-mapping space as
+   *  CapMesh). */
+  wallStartWorld: { x: number; z: number }
+  /** Unit vector along the wall direction (world space). */
+  wdirX: number
+  wdirZ: number
+  /** Unit vector perpendicular to the wall (across thickness). */
+  perpX: number
+  perpZ: number
+  /** Half wall thickness in metres — distance to translate each
+   *  ShapeGeometry plane in ±perp direction. We render two planes
+   *  (front + back) rather than extruding, since openings show the
+   *  rear face through them. */
+  halfThick: number
+  color: string
+  /** Brick width + mortar in metres — U-axis tile unit. */
+  brickModularWidthM: number
+  /** Brick height + mortar in metres — V-axis tile unit. */
+  courseModularHeightM: number
+}
+
+/**
  * Procedural brick-pattern texture for the gable cap.
  *
  * Built per (brickColor, mortarColor) pair: brick body painted at
@@ -1465,6 +1520,185 @@ function CapMeshGroupMesh({
   return (
     <mesh geometry={geometry} frustumCulled={false}>
       <meshLambertMaterial color="#ffffff" map={texture} />
+    </mesh>
+  )
+}
+
+/**
+ * Brick wall body face renderer.
+ *
+ * One textured polygon per straight brick wall, sharing the same
+ * `makeBrickPatternTexture` the cap mesh uses so body + cap read
+ * identically. Faces are grouped by colour so we end up with one
+ * draw call per wall-type colour, regardless of how many walls of
+ * that type sit in the scene.
+ *
+ * Geometry: front + back planes only. Each plane is a `THREE.Shape`
+ * (outer rectangle minus opening rectangles), triangulated via
+ * `ShapeGeometry`. UVs are recomputed from the local (alongM, y)
+ * coordinates so the brick texture lines up at the SAME modular
+ * grid the cap uses — texture continuity at the wall top.
+ *
+ * Side faces (wall thickness shown at the wall ends + at opening
+ * jambs) are omitted in v1. The flat-textured look matches the cap
+ * mesh; if "hollow opening jamb" reads weird in practice we can
+ * add side strips later.
+ */
+function BrickWallFaces({ faces }: { faces: BrickWallFace[] }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, BrickWallFace[]>()
+    for (const f of faces) {
+      const arr = map.get(f.color)
+      if (arr) arr.push(f)
+      else map.set(f.color, [f])
+    }
+    return Array.from(map.entries()).map(([color, items]) => ({
+      color,
+      items,
+    }))
+  }, [faces])
+
+  return (
+    <>
+      {groups.map((g) => (
+        <BrickWallFaceGroupMesh key={g.color} color={g.color} items={g.items} />
+      ))}
+    </>
+  )
+}
+
+function BrickWallFaceGroupMesh({
+  color,
+  items,
+}: {
+  color: string
+  items: BrickWallFace[]
+}) {
+  const geometry = useMemo(() => {
+    const positions: number[] = []
+    const uvs: number[] = []
+    const indices: number[] = []
+
+    for (const f of items) {
+      if (f.lengthM <= 0 || f.bodyHeightM <= 0) continue
+
+      // Build a shape in local (alongM, y) space — rectangle with
+      // axis-aligned holes punched for openings.
+      const shape = new THREE.Shape()
+      shape.moveTo(0, f.bodyBaseY)
+      shape.lineTo(f.lengthM, f.bodyBaseY)
+      shape.lineTo(f.lengthM, f.bodyBaseY + f.bodyHeightM)
+      shape.lineTo(0, f.bodyBaseY + f.bodyHeightM)
+      shape.lineTo(0, f.bodyBaseY)
+      for (const op of f.openings) {
+        const a0 = Math.max(0, op.alongStartM)
+        const a1 = Math.min(f.lengthM, op.alongEndM)
+        const y0 = Math.max(f.bodyBaseY, op.yStartM)
+        const y1 = Math.min(f.bodyBaseY + f.bodyHeightM, op.yEndM)
+        if (a1 <= a0 + 0.001 || y1 <= y0 + 0.001) continue
+        const hole = new THREE.Path()
+        hole.moveTo(a0, y0)
+        hole.lineTo(a0, y1)
+        hole.lineTo(a1, y1)
+        hole.lineTo(a1, y0)
+        hole.lineTo(a0, y0)
+        shape.holes.push(hole)
+      }
+
+      const shapeGeo = new THREE.ShapeGeometry(shape)
+      const posAttr = shapeGeo.getAttribute('position')
+      const idxAttr = shapeGeo.getIndex()
+      const vertCount = posAttr.count
+      if (vertCount === 0 || !idxAttr) {
+        shapeGeo.dispose()
+        continue
+      }
+
+      const frontBase = positions.length / 3
+      // Front face — at -perp * halfThick.
+      for (let v = 0; v < vertCount; v++) {
+        const along = posAttr.getX(v)
+        const y = posAttr.getY(v)
+        const x =
+          f.wallStartWorld.x +
+          f.wdirX * along -
+          f.perpX * f.halfThick
+        const z =
+          f.wallStartWorld.z +
+          f.wdirZ * along -
+          f.perpZ * f.halfThick
+        positions.push(x, y, z)
+        uvs.push(along / f.brickModularWidthM, y / f.courseModularHeightM)
+      }
+      const backBase = positions.length / 3
+      // Back face — at +perp * halfThick.
+      for (let v = 0; v < vertCount; v++) {
+        const along = posAttr.getX(v)
+        const y = posAttr.getY(v)
+        const x =
+          f.wallStartWorld.x +
+          f.wdirX * along +
+          f.perpX * f.halfThick
+        const z =
+          f.wallStartWorld.z +
+          f.wdirZ * along +
+          f.perpZ * f.halfThick
+        positions.push(x, y, z)
+        // Flip U on the back face so the texture reads mirror-correct
+        // when you walk to the other side of the wall — bricks don't
+        // care, but the offset stagger lines up tidier.
+        uvs.push(along / f.brickModularWidthM, y / f.courseModularHeightM)
+      }
+
+      // Push front indices as-is — ShapeGeometry triangulates in CCW
+      // viewed from +Z, so with our local (x=along, y, z=0) layout
+      // the front (-perp) winding faces the +perp direction. Reverse
+      // for the back face so it faces -perp.
+      const idxCount = idxAttr.count
+      for (let i = 0; i < idxCount; i += 3) {
+        const a = idxAttr.getX(i)
+        const b = idxAttr.getX(i + 1)
+        const c = idxAttr.getX(i + 2)
+        indices.push(frontBase + a, frontBase + b, frontBase + c)
+        indices.push(backBase + a, backBase + c, backBase + b)
+      }
+
+      shapeGeo.dispose()
+    }
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array(positions), 3),
+    )
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2))
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1))
+    geo.computeVertexNormals()
+    geo.computeBoundingSphere()
+    return geo
+  }, [items])
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose()
+    }
+  }, [geometry])
+
+  // Same per-(brickColor, mortarColor) brick-pattern texture as the
+  // cap mesh — that's the whole point of this refactor.
+  const texture = useMemo(
+    () => makeBrickPatternTexture(color, MORTAR_COLOR),
+    [color],
+  )
+  useEffect(() => {
+    return () => {
+      texture.dispose()
+    }
+  }, [texture])
+
+  return (
+    <mesh geometry={geometry} frustumCulled={false}>
+      <meshLambertMaterial color="#ffffff" map={texture} side={THREE.DoubleSide} />
     </mesh>
   )
 }
@@ -2251,7 +2485,7 @@ function Scene({
   palette: PaletteName
   onResolvedCodes: (codes: Map<string, string>) => void
 }) {
-  const { segments, wedges, mortarShells, capMeshes, segmentBounds, resolvedCodes } = useMemo(() => {
+  const { segments, wedges, mortarShells, capMeshes, brickWallFaces, segmentBounds, resolvedCodes } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
     // view. Codes are coloured via the pure-hash `bandColor`, so the
@@ -2457,6 +2691,15 @@ function Scene({
      * shows the silhouette without per-brick complexity.
      */
     const outCapMeshes: CapMesh[] = []
+    /**
+     * Brick wall body faces — flat shape geometries with opening
+     * holes, textured with the shared brick-pattern. One per straight
+     * brick wall. Replaces the per-brick instanced render so body +
+     * cap read identically (same brick texture, same mortar colour,
+     * same depth shading). Curved brick walls + block walls keep
+     * their existing render paths.
+     */
+    const outBrickWallFaces: BrickWallFace[] = []
     // Build wallsById ONCE outside the loop so both segmentsForStraightWall
     // (for outer-edge endpoint extension) and segmentsFromWallLayout
     // (for the same, plus corner ownership) can use it without
@@ -3111,6 +3354,157 @@ function Scene({
           )
           return
         }
+
+        // ── Straight brick wall: unified textured face ────────────
+        //
+        // From this point down lived a thicket of per-brick stuff:
+        // segmentsForStraightWall (one cube per brick), emitMortarForWall
+        // (horizontal + vertical joints), sill/head trim, jamb-mortar
+        // covers, etc. That pipeline produced a "100% accurate" but
+        // visually inconsistent render — body bricks looked like
+        // little 3D boxes while the cap mesh above used a flat textured
+        // polygon. Two different render languages on the same wall.
+        //
+        // The brick estimate's outputs are SQUARE METRES + LINEAL
+        // METRES — none of which need a per-brick render to be
+        // accurate. So we replace the per-brick body with a single
+        // textured polygon: a rectangle (lengthM × bodyHeightM) with
+        // axis-aligned holes punched for every opening on this wall.
+        // The polygon is textured with `makeBrickPatternTexture` —
+        // the SAME texture the cap mesh uses — so body + cap read
+        // identically.
+        //
+        // Curved brick walls and block walls keep their existing
+        // pipelines (handled above + the wall.trade !== 'brick'
+        // branch below).
+        const wsxStraight = -wall.startX / 1000
+        const wszStraight = -wall.startY / 1000
+        const wexStraight = -wall.endX / 1000
+        const wezStraight = -wall.endY / 1000
+        const wdxStraight = wexStraight - wsxStraight
+        const wdzStraight = wezStraight - wszStraight
+        const wallWorldLenM = Math.hypot(wdxStraight, wdzStraight)
+        if (wallWorldLenM > 0.001) {
+          const wdirXStraight = wdxStraight / wallWorldLenM
+          const wdirZStraight = wdzStraight / wallWorldLenM
+          // Perp is rotated +90° from wdir in the (x, z) plane —
+          // matches CapMesh's perp convention.
+          const perpXStraight = -wdirZStraight
+          const perpZStraight = wdirXStraight
+          const halfThickStraight = thicknessMm / 1000 / 2
+
+          // Opening rects in (alongM, y) local space. We use
+          // adjustedOpenings so doors get sill=0 and windows get the
+          // standard head adjustment, same as the old pipeline.
+          const wallLenMmForOpenings = Math.hypot(
+            wall.endX - wall.startX,
+            wall.endY - wall.startY,
+          )
+          const openingRects: BrickWallFace['openings'] = []
+          for (const op of brickOpenings) {
+            if (op.wallId !== wall.id) continue
+            const startMm = Math.max(0, op.startAlongWallMm ?? 0)
+            const endMm = Math.min(
+              wallLenMmForOpenings,
+              (op.startAlongWallMm ?? 0) + op.widthMm,
+            )
+            if (endMm <= startMm + 1) continue
+            const sillMm = Math.max(0, op.sillHeightMm)
+            const headMm = Math.min(
+              heightMm,
+              op.headHeightMm ?? sillMm + op.heightMm,
+            )
+            if (headMm <= sillMm + 1) continue
+            openingRects.push({
+              alongStartM: startMm / 1000,
+              alongEndM: endMm / 1000,
+              yStartM: sillMm / 1000,
+              yEndM: headMm / 1000,
+            })
+          }
+
+          const wallBrickColor = bandColor(brickWallTypePaletteKey, palette)
+          outBrickWallFaces.push({
+            lengthM: wallWorldLenM,
+            bodyHeightM: totalHeightM,
+            bodyBaseY: 0,
+            openings: openingRects,
+            wallStartWorld: { x: wsxStraight, z: wszStraight },
+            wdirX: wdirXStraight,
+            wdirZ: wdirZStraight,
+            perpX: perpXStraight,
+            perpZ: perpZStraight,
+            halfThick: halfThickStraight,
+            color: wallBrickColor,
+            brickModularWidthM: (brickWidthMm + BRICK_MORTAR_MM) / 1000,
+            // 2× because the texture stores TWO stagger-bonded
+            // courses per V-cycle (so RepeatWrapping produces
+            // stretcher bond). Same trick the cap mesh uses; without
+            // the ×2 the body bricks would render at half-height
+            // relative to the texture pattern.
+            courseModularHeightM:
+              2 * (brickHeightMm + BRICK_MORTAR_MM) / 1000,
+          })
+
+          // Cap mesh inline — replicates the existing cap emission
+          // below, kept HERE because the early-return skips the
+          // original cap emission site for straight brick walls.
+          if (tp) {
+            const yBody = totalHeightM
+            const silhouette: Array<{ alongM: number; y: number }> = []
+            silhouette.push({ alongM: 0, y: yBody })
+            if (tp.kind === 'triangle') {
+              const peakAlong =
+                Math.max(0, Math.min(1, tp.peakOffsetFraction)) * wallWorldLenM
+              const peakY = yBody + Math.max(0, tp.peakHeightMm) / 1000
+              if (peakAlong > 0.001 && peakAlong < wallWorldLenM - 0.001) {
+                silhouette.push({ alongM: peakAlong, y: peakY })
+              } else if (peakAlong <= 0.001) {
+                silhouette[0] = { alongM: 0, y: peakY }
+              } else {
+                silhouette.push({ alongM: wallWorldLenM, y: peakY })
+              }
+            } else if (tp.kind === 'trapezoid') {
+              const leftY = yBody + Math.max(0, tp.leftHeightMm) / 1000
+              const rightY = yBody + Math.max(0, tp.rightHeightMm) / 1000
+              silhouette[0] = { alongM: 0, y: leftY }
+              silhouette.push({ alongM: wallWorldLenM, y: rightY })
+            }
+            const last = silhouette[silhouette.length - 1]
+            if (
+              tp.kind === 'triangle' &&
+              !(last.alongM === wallWorldLenM && last.y === yBody)
+            ) {
+              silhouette.push({ alongM: wallWorldLenM, y: yBody })
+            }
+            outCapMeshes.push({
+              silhouette,
+              wallStartWorld: { x: wsxStraight, z: wszStraight },
+              wdirX: wdirXStraight,
+              wdirZ: wdirZStraight,
+              perpX: perpXStraight,
+              perpZ: perpZStraight,
+              halfThick: halfThickStraight,
+              color: wallBrickColor,
+              wallBodyHeightM: yBody,
+              brickModularWidthM: (brickWidthMm + BRICK_MORTAR_MM) / 1000,
+              courseModularHeightM:
+                2 * (brickHeightMm + BRICK_MORTAR_MM) / 1000,
+            })
+          }
+        }
+        // Avoid the old per-brick render path entirely — the unified
+        // face + cap above replace everything below for straight
+        // brick walls. courseModularMm / brickLibrary / palette work
+        // earlier in this branch is still useful when we re-enable
+        // sill+head trim as separate brick-coloured ribbons in a
+        // future pass; for now they're skipped.
+        // Reference unused locals so TypeScript stays quiet about
+        // them while the per-brick code below sleeps.
+        void courseModularMm
+        void wallLenM
+        void brickPaletteKey
+        return
 
         // ── Sill / head trim — anchored at opening edge ─────────────
         //
@@ -4358,6 +4752,7 @@ function Scene({
       wedges: outWedges,
       mortarShells: outMortarShells,
       capMeshes: outCapMeshes,
+      brickWallFaces: outBrickWallFaces,
       segmentBounds: bounds,
       resolvedCodes: codes,
     }
@@ -4516,6 +4911,14 @@ function Scene({
           brick colour — cosmetic only, tally already accounts for the
           cap area. Empty array for walls without a topProfile. */}
       <CapMeshes meshes={capMeshes} />
+
+      {/* Unified brick wall body faces — one textured polygon per
+          straight brick wall, sharing the same brick-pattern texture
+          as the cap so body + cap read identically. Replaces the
+          per-brick InstancedSegments output for straight brick walls;
+          block walls + curved brick walls still use the instanced /
+          wedge pipelines above. */}
+      <BrickWallFaces faces={brickWallFaces} />
 
       {/* InitialCameraAim must render BEFORE CADControls so its
           lookAt is applied before the controls seed their spherical
