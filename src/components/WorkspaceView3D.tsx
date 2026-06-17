@@ -1605,65 +1605,76 @@ function BrickWallFaceGroupMesh({
         shape.holes.push(hole)
       }
 
-      const shapeGeo = new THREE.ShapeGeometry(shape)
-      const posAttr = shapeGeo.getAttribute('position')
-      const idxAttr = shapeGeo.getIndex()
+      // ExtrudeGeometry turns the 2D shape (rect minus holes) into a
+      // full 3D prism with front + back caps AND side walls around
+      // every outline edge (outer rect + each opening hole). That's
+      // what gives the wall actual thickness — flat ShapeGeometry
+      // left the wall looking like a 2D cardboard cutout from any
+      // off-axis angle. No bevel — keep edges sharp like brickwork.
+      //
+      // Local axes:
+      //   x = along the wall (0 .. lengthM)
+      //   y = vertical (bodyBaseY .. bodyBaseY + bodyHeightM)
+      //   z = extrusion (0 .. depth)
+      // We then rotate / translate every vertex into world space so
+      // local x runs along wdir and local z runs along ±perp.
+      const depth = f.halfThick * 2
+      const extrudeGeo = new THREE.ExtrudeGeometry(shape, {
+        depth,
+        bevelEnabled: false,
+        curveSegments: 1,
+        steps: 1,
+      })
+      // ExtrudeGeometry is non-indexed → posAttr.count is already
+      // triangles × 3 vertices, in triangle order.
+      const posAttr = extrudeGeo.getAttribute('position')
+      const idxAttr = extrudeGeo.getIndex()
       const vertCount = posAttr.count
-      if (vertCount === 0 || !idxAttr) {
-        shapeGeo.dispose()
+      if (vertCount === 0) {
+        extrudeGeo.dispose()
         continue
       }
 
-      const frontBase = positions.length / 3
-      // Front face — at -perp * halfThick.
+      const baseIdx = positions.length / 3
       for (let v = 0; v < vertCount; v++) {
         const along = posAttr.getX(v)
-        const y = posAttr.getY(v)
-        const x =
-          f.wallStartWorld.x +
-          f.wdirX * along -
-          f.perpX * f.halfThick
-        const z =
-          f.wallStartWorld.z +
-          f.wdirZ * along -
-          f.perpZ * f.halfThick
-        positions.push(x, y, z)
-        uvs.push(along / f.brickModularWidthM, y / f.courseModularHeightM)
-      }
-      const backBase = positions.length / 3
-      // Back face — at +perp * halfThick.
-      for (let v = 0; v < vertCount; v++) {
-        const along = posAttr.getX(v)
-        const y = posAttr.getY(v)
+        const yLocal = posAttr.getY(v)
+        const zLocal = posAttr.getZ(v)
+        // Centre the extrusion on the wall axis: local z runs 0..depth,
+        // which we map to -halfThick..+halfThick along the perp vector.
+        const perpOff = zLocal - f.halfThick
         const x =
           f.wallStartWorld.x +
           f.wdirX * along +
-          f.perpX * f.halfThick
+          f.perpX * perpOff
         const z =
           f.wallStartWorld.z +
           f.wdirZ * along +
-          f.perpZ * f.halfThick
-        positions.push(x, y, z)
-        // Flip U on the back face so the texture reads mirror-correct
-        // when you walk to the other side of the wall — bricks don't
-        // care, but the offset stagger lines up tidier.
-        uvs.push(along / f.brickModularWidthM, y / f.courseModularHeightM)
+          f.perpZ * perpOff
+        positions.push(x, yLocal, z)
+        // UVs from local along/y so the front + back faces tile the
+        // brick pattern at the SAME modular grid as the cap. Side
+        // faces (top edge, ends, opening jambs) will pick up a slice
+        // of the same texture across their thin band — reads as a
+        // sliver of brick, which is what real masonry looks like
+        // from the edge anyway.
+        uvs.push(along / f.brickModularWidthM, yLocal / f.courseModularHeightM)
       }
 
-      // Push front indices as-is — ShapeGeometry triangulates in CCW
-      // viewed from +Z, so with our local (x=along, y, z=0) layout
-      // the front (-perp) winding faces the +perp direction. Reverse
-      // for the back face so it faces -perp.
-      const idxCount = idxAttr.count
-      for (let i = 0; i < idxCount; i += 3) {
-        const a = idxAttr.getX(i)
-        const b = idxAttr.getX(i + 1)
-        const c = idxAttr.getX(i + 2)
-        indices.push(frontBase + a, frontBase + b, frontBase + c)
-        indices.push(backBase + a, backBase + c, backBase + b)
+      if (idxAttr) {
+        const idxCount = idxAttr.count
+        for (let i = 0; i < idxCount; i++) {
+          indices.push(baseIdx + idxAttr.getX(i))
+        }
+      } else {
+        // Fallback for older three.js where ExtrudeGeometry is
+        // non-indexed — emit triangles in vertex order.
+        for (let v = 0; v < vertCount; v++) {
+          indices.push(baseIdx + v)
+        }
       }
 
-      shapeGeo.dispose()
+      extrudeGeo.dispose()
     }
 
     const geo = new THREE.BufferGeometry()
