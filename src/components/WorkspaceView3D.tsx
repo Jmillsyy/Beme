@@ -3329,14 +3329,26 @@ function Scene({
             out.push(b)
             return
           }
-          // Straddling — clip each side independently to either the
-          // box top or the rake line, whichever is lower.
-          const topLeftY = Math.min(boxTop, rakeLeft)
-          const topRightY = Math.min(boxTop, rakeRight)
+          // Straddling — clip each side to the [boxBottom, boxTop]
+          // window. The MAX(boxBottom, …) lower clamp is what stopped
+          // the prism from inverting (top below bottom) on bricks where
+          // the rake passed UNDER the brick on one side; without it the
+          // resulting top quad sloped down through the bottom face and
+          // rendered as an upside-down triangle, which is the "weird
+          // pyramid stepping" the user saw.
+          const topLeftY = Math.max(
+            boxBottom,
+            Math.min(boxTop, rakeLeft),
+          )
+          const topRightY = Math.max(
+            boxBottom,
+            Math.min(boxTop, rakeRight),
+          )
           if (
             topLeftY <= boxBottom + 0.001 &&
             topRightY <= boxBottom + 0.001
           ) {
+            // Both ends collapsed to the bottom → zero-area prism.
             return
           }
           const halfThick = b.thickness / 2
