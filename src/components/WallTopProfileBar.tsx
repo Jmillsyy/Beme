@@ -146,7 +146,13 @@ export default function WallTopProfileBar({
   const capAreaM2 = wallCapAreaSqMm(wall, wallLengthMm) / 1_000_000
 
   return (
-    <div className="mb-3 px-4 py-3 bg-ink-700/40 border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3">
+    // Floating-panel styling — used to be `bg-ink-700/40` because the
+    // bar lived inside the dark toolbar zone. Now it's an overlay on
+    // top of the (typically white) PDF, so we use a near-opaque dark
+    // surface + backdrop blur + drop-shadow so it reads as a proper
+    // panel instead of a faded watermark. Margin-bottom dropped — the
+    // overlay wrapper controls spacing now.
+    <div className="px-4 py-3 bg-ink-800/95 backdrop-blur-md border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3 shadow-xl">
       <div className="flex items-center gap-3 flex-wrap min-w-0">
         <div className="font-medium whitespace-nowrap">Top shape</div>
 

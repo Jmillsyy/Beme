@@ -9404,8 +9404,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             each time the user clicks a wall / pier). pointer-events:
             none on the wrapper so the canvas underneath still receives
             wheel / drag events outside the banner footprint; the
-            banners themselves opt back in with pointer-events: auto. */}
-        <div className="absolute top-3 left-3 right-3 z-20 pointer-events-none flex flex-col gap-2">
+            banners themselves opt back in with pointer-events: auto.
+
+            Centered with a max-width so the panel reads as a discrete
+            floating bar rather than stretching corner-to-corner over
+            the PDF. */}
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex flex-col gap-2 w-[min(calc(100%-1.5rem),64rem)]">
           {mode === 'block' && selectedPier && !drawingMode && (() => {
             const selPierMakeup = selectedPier.pierMakeupId
               ? pierMakeupsById[selectedPier.pierMakeupId]
