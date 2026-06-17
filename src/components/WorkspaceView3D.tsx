@@ -3320,6 +3320,48 @@ function Scene({
           const rightCz = b.cz + wdirZ * halfLen
           const leftAlong = (leftCx - wsx) * wdirX + (leftCz - wsz) * wdirZ
           const rightAlong = (rightCx - wsx) * wdirX + (rightCz - wsz) * wdirZ
+          // For triangle gables — split a box that straddles the
+          // peak into two halves at the peak X. Without this, the
+          // single-prism linear top runs UNDER the actual peak
+          // (both ends are on the descending slope away from peak)
+          // and the peak brick floats below where its top edge
+          // should be. Subdivision lets each half follow its own
+          // slope direction. Trapezoids and walls with the peak at
+          // a wall end (offset 0 or 1) are pure linear — no split.
+          if (
+            tp.kind === 'triangle' &&
+            tp.peakOffsetFraction > 0 &&
+            tp.peakOffsetFraction < 1
+          ) {
+            const peakAlong =
+              Math.max(0, Math.min(1, tp.peakOffsetFraction)) * wallWorldLen
+            if (
+              leftAlong < peakAlong - 0.001 &&
+              rightAlong > peakAlong + 0.001
+            ) {
+              // Build the LEFT half (leftAlong → peakAlong) and the
+              // RIGHT half (peakAlong → rightAlong) as separate boxes
+              // and recurse. Each half is a single-slope segment so
+              // the standard linear top is accurate.
+              const startCx = leftCx
+              const startCz = leftCz
+              const leftHalfLen = peakAlong - leftAlong
+              const rightHalfLen = rightAlong - peakAlong
+              processBoxAgainstRake({
+                ...b,
+                cx: startCx + wdirX * (leftHalfLen / 2),
+                cz: startCz + wdirZ * (leftHalfLen / 2),
+                length: leftHalfLen,
+              })
+              processBoxAgainstRake({
+                ...b,
+                cx: startCx + wdirX * (leftHalfLen + rightHalfLen / 2),
+                cz: startCz + wdirZ * (leftHalfLen + rightHalfLen / 2),
+                length: rightHalfLen,
+              })
+              return
+            }
+          }
           const rakeLeft = wallBodyHeightM + rakeRiseM(leftAlong)
           const rakeRight = wallBodyHeightM + rakeRiseM(rightAlong)
           // Fully above the rake on both sides → drop.
