@@ -31,6 +31,7 @@ import {
   pickCurveWedge,
   pickFractionBlocks,
   pickHalfBlock,
+  pickDepthScopedSlotBlock,
   pickHeightMakeupBlock,
   pickPierBlock,
 } from '../data/blockLibrary'
@@ -1262,14 +1263,20 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
 
   // ---- Top course ----
   if (stack.totalCourses >= 2) {
-    // topCourseBlockCode is a makeup-level choice (bond beam or not) — keep it
-    // makeup-driven; heal against the live library so a stale AU top
-    // code resolves to the user's top-course (then body) block.
-    const healedTop =
-      BLOCK_LIBRARY[makeup.topCourseBlockCode]
-        ? makeup.topCourseBlockCode
-        : (resolveBlockByRole('top-course', BLOCK_LIBRARY)?.code ??
-            healCode(makeup.topCourseBlockCode, 'body'))
+    // Depth-scoped against the body block so a stale or wrongly-seeded
+    // topCourseBlockCode can't drop a different-series block on the top
+    // (e.g. a 100-series 10.01 cap on a 200-series 20.48 body). When the
+    // saved code's depth matches the body's, it's trusted as-is — same
+    // "user's pick wins" semantics as before. When it doesn't, the
+    // helper falls through to a depth-compatible top-course role block
+    // (or the body block as a last resort, which is guaranteed
+    // depth-correct). Mirrors what pickHeightMakeupBlock does for the
+    // 71 / 140 slots — universal rule, no hardcoded series numbers.
+    const healedTop = pickDepthScopedSlotBlock(
+      makeup.topCourseBlockCode,
+      'top-course',
+      makeup.bodyBlockCode,
+    )
     courses.push({ type: 'top', bodyBlock: healedTop })
   }
 

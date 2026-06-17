@@ -15,6 +15,7 @@ import {
   moduleHeightForBand,
   resolveCourseBlocks,
 } from './makeups'
+import { pickDepthScopedSlotBlockIn } from '../data/blockLibrary'
 import { selectBlockLintel } from './lintels'
 import { outerEdgeEndpoints } from './wallGeom'
 import type { CornerOwnership } from './blockCalc'
@@ -245,7 +246,22 @@ export function resolveWallCourses(
       } else if (courseNum === 1) {
         bodyCode = resolved.baseCourseBlockCode || resolved.bodyBlockCode || band.blockCode
       } else if (courseNum === totalCourses) {
-        bodyCode = scopedMakeup.topCourseBlockCode || resolved.bodyBlockCode || band.blockCode
+        // Depth-scope the top course against the body so a stale
+        // topCourseBlockCode (different series / depth) can't drop a
+        // visually mismatched block onto the top — e.g. a 100-series
+        // 10.01 sitting on a 200-series 20.48 body. Helper trusts the
+        // saved code when depth matches; falls through to a
+        // depth-compatible top-course role block, then body block.
+        // Mirrors the same fix in blockCalc.buildCourses — both calc
+        // and render now agree on the resolved code.
+        const candidateBody =
+          resolved.bodyBlockCode || band.blockCode || scopedMakeup.bodyBlockCode
+        bodyCode = pickDepthScopedSlotBlockIn(
+          library,
+          scopedMakeup.topCourseBlockCode,
+          'top-course',
+          candidateBody,
+        )
       } else if (isHeightMakeupBand) {
         bodyCode = band.blockCode
       } else {

@@ -1044,6 +1044,73 @@ export function pickHeightMakeupBlock(
 }
 
 /**
+ * Resolve a "structural slot" (top course, base course, corner, half) for a
+ * wall whose body block has a known depth — depth-scoped against the body
+ * so a stale or wrongly-seeded code can't drop a different-series block
+ * into the wall.
+ *
+ * Decision tree for `slotCode` (the makeup-saved code for this slot):
+ *   1. If `slotCode` is in the library AND its depth matches `bodyDepthMm`
+ *      (±5 mm tolerance), return it as-is. The user/seed got it right.
+ *   2. Otherwise scan blocks tagged with `role` whose depth matches the
+ *      body's. Pick the first match — same first-tagged-wins logic
+ *      `resolveBlockByRole` uses.
+ *   3. If no depth-scoped role match exists, fall back to `bodyBlockCode`.
+ *      A body block always has the correct depth (it IS the body), so the
+ *      wall reads visually consistent even when the library has no
+ *      dedicated slot block of the right series.
+ *
+ * Why this matters: the renderer pulls the top course block straight off
+ * the makeup. If the user picks a default top-course code in the wall
+ * editor and the body block's depth changes later (or a region default
+ * was set with a mismatched code), the wall used to render a thin
+ * 100-series cap on a 200-series wall. With this helper, the renderer
+ * silently falls through to a depth-compatible block instead.
+ *
+ * `slotCode` may be undefined / empty — same fallback path as a stale
+ * code. The body-block guarantee keeps the output populated regardless.
+ */
+export function pickDepthScopedSlotBlockIn(
+  library: Record<BlockCode, Block>,
+  slotCode: BlockCode | undefined,
+  role: BlockRole,
+  bodyBlockCode: BlockCode,
+): BlockCode {
+  const DEPTH_TOLERANCE_MM = 5
+  const bodyBlock = library[bodyBlockCode]
+  const bodyDepth = bodyBlock?.dimensions.depthMm
+  // 1. Trust the saved code when depth matches the body.
+  if (slotCode) {
+    const candidate = library[slotCode]
+    if (
+      candidate &&
+      (bodyDepth === undefined ||
+        Math.abs(candidate.dimensions.depthMm - bodyDepth) <= DEPTH_TOLERANCE_MM)
+    ) {
+      return slotCode
+    }
+  }
+  // 2. Depth-scoped role lookup.
+  if (bodyDepth !== undefined) {
+    const roleMatch = Object.values(library).find(
+      (b) =>
+        b.roles.includes(role) &&
+        Math.abs(b.dimensions.depthMm - bodyDepth) <= DEPTH_TOLERANCE_MM,
+    )
+    if (roleMatch) return roleMatch.code
+  }
+  // 3. Last resort — body block by definition matches its own depth.
+  return bodyBlockCode
+}
+export function pickDepthScopedSlotBlock(
+  slotCode: BlockCode | undefined,
+  role: BlockRole,
+  bodyBlockCode: BlockCode,
+): BlockCode {
+  return pickDepthScopedSlotBlockIn(BLOCK_LIBRARY, slotCode, role, bodyBlockCode)
+}
+
+/**
  * Curve-wedge block — tapered face for tight-radius curved walls. Single
  * match expected; returns undefined if none defined.
  */
