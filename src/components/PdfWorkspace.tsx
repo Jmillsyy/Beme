@@ -54,6 +54,7 @@ import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import SupplyItemsPanel from './SupplyItemsPanel'
 import OpeningSupplyOverridePicker from './OpeningSupplyOverridePicker'
+import WallTopProfileBar from './WallTopProfileBar'
 import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import AreaTabs from './AreaTabs'
 import { calculateProjectTally } from '../lib/blockCalc'
@@ -4471,6 +4472,33 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setWallsByPage((prev) => {
       const pageWalls = prev[currentPage] ?? []
       const updated = pageWalls.map((w) => (w.id === wallId ? { ...w, makeupId } : w))
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
+  /**
+   * Update the per-wall topProfile (gable / raked cap). Passing
+   * undefined as `next` clears the field entirely so the wall reads
+   * as flat-top again. The cap area feeds calculateBrickTally via
+   * wallTopProfile.wallCapAreaSqMm.
+   */
+  function handleSetWallTopProfile(
+    wallId: string,
+    next: Wall['topProfile'],
+  ) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const updated = pageWalls.map((w) => {
+        if (w.id !== wallId) return w
+        // Drop the field entirely on flat so the saved JSON stays
+        // shape-identical to walls saved before this feature existed.
+        if (next === undefined) {
+          const { topProfile: _drop, ...rest } = w
+          void _drop
+          return rest as Wall
+        }
+        return { ...w, topProfile: next }
+      })
       return { ...prev, [currentPage]: updated }
     })
   }
@@ -9230,11 +9258,39 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           standalone banner row has been removed so the chrome height
           doesn't change when a selection is made. */}
 
-      {/* Single-wall selection banner removed — clicking a wall now just
-          highlights it on the canvas and activates its makeup in the Wall
-          types panel (so the user can see at a glance which type it is).
-          Press Del to remove, drag endpoints to reposition. The Wall types
-          panel handles reassignment; multi-select handles batch ops. */}
+      {/* Single-wall properties bar — surfaced only for BRICK mode when
+          exactly one wall is selected. Today it carries the top-shape
+          picker (gable / raked) for the brick area feature. The pattern
+          is the same as the opening-selected and pier-selected bars
+          above: a sticky row in the action zone with inline controls
+          + a Done button to deselect. Block walls keep their flat-top
+          convention so no bar renders for them. */}
+      {mode === 'brick' &&
+        selectedWallId &&
+        (() => {
+          const selWall = currentPageWalls.find((w) => w.id === selectedWallId)
+          if (!selWall) return null
+          // Curved walls don't carry a meaningful "top shape" yet —
+          // arc-clipping a triangle cap is its own geometry problem
+          // (defer to a later commit). Skip the bar for curves.
+          if (selWall.kind === 'curved') return null
+          const dx = selWall.endX - selWall.startX
+          const dy = selWall.endY - selWall.startY
+          const lengthMm = Math.sqrt(dx * dx + dy * dy)
+          return (
+            <WallTopProfileBar
+              // Remount on wall switch so the editor's buffered
+              // mm inputs reset cleanly to the new wall's stored
+              // values instead of carrying typed-but-uncommitted
+              // numbers across.
+              key={selWall.id}
+              wall={selWall}
+              wallLengthMm={lengthMm}
+              onChange={(next) => handleSetWallTopProfile(selWall.id, next)}
+              onDeselect={() => setSelectedWallId(null)}
+            />
+          )
+        })()}
 
       </div>
       )}
