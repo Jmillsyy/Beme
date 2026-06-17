@@ -3394,7 +3394,35 @@ function Scene({
         emitMortarForWall(wall, thicknessMm, totalHeightM, renderingOpenings)
         if (tp) {
           const justEmitted = out.splice(mortarStart)
-          for (const b of justEmitted) processBoxAgainstRake(b)
+          // Mortar bands come out as ONE wide box spanning the whole
+          // wall length. Rake-cutting that as a single prism gives a
+          // straight top between rakeLeft and rakeRight — which is
+          // FLAT at body height for a triangle gable (both wall ends
+          // sit at the body line) and misses the peak entirely. The
+          // cap loses its mortar backing and the user sees background
+          // through the joints. Subdividing into narrow strips
+          // (~brick width) means the linear approximation per strip
+          // tracks the rake's actual curvature.
+          const STRIP_WIDTH_M = 0.2
+          for (const b of justEmitted) {
+            if (b.length <= STRIP_WIDTH_M * 1.5) {
+              processBoxAgainstRake(b)
+              continue
+            }
+            const nStrips = Math.ceil(b.length / STRIP_WIDTH_M)
+            const stripLen = b.length / nStrips
+            const startCx = b.cx - wdirX * (b.length / 2)
+            const startCz = b.cz - wdirZ * (b.length / 2)
+            for (let i = 0; i < nStrips; i++) {
+              const localCx = stripLen * (i + 0.5)
+              processBoxAgainstRake({
+                ...b,
+                cx: startCx + wdirX * localCx,
+                cz: startCz + wdirZ * localCx,
+                length: stripLen,
+              })
+            }
+          }
         }
 
         // ── Jamb mortar cover ──────────────────────────────────────
