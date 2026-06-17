@@ -1190,14 +1190,14 @@ interface CapMesh {
 
 /**
  * Procedural brick-pattern texture for the gable cap. Built ONCE per
- * page load — the texture is shared across every cap mesh and just
- * tinted to the wall's brick colour by the material below.
+ * page load — the texture is shared across every cap mesh and tinted
+ * to the wall's brick colour by the material below.
  *
- * Transparent brick body (alpha 0) means the material's `color`
- * shows straight through the brick area, so each wall type's cap
- * inherits the right colour without us having to bake the colour
- * into the texture. Mortar joints are opaque gray, so they overlay
- * on top of whatever colour sits beneath.
+ * White (255) brick body so the material's `color` multiplies through
+ * cleanly to the full wall colour (white × colour = colour). Mortar
+ * joints are mid-grey (~85) so they multiply DOWN to a darker tint
+ * of the wall colour at the joints — reads as mortar against any
+ * brick body colour without having to special-case per wall type.
  *
  * Pattern: one brick wide × two courses tall, with the second course
  * offset by half a brick — produces a proper stretcher bond when the
@@ -1205,18 +1205,22 @@ interface CapMesh {
  */
 function makeBrickPatternTexture(): THREE.CanvasTexture {
   const canvas = document.createElement('canvas')
-  // 240 × 172 — represents ONE brick wide (240 = 230 face + 10 mortar)
-  // × TWO courses tall (172 = 2 × 86 modular). Tiles to give
-  // stretcher bond.
+  // 240 × 172 — ONE brick wide (240 = 230 face + 10 mortar) × TWO
+  // courses tall (172 = 2 × 86 modular). Tiles to give stretcher bond.
   canvas.width = 240
   canvas.height = 172
   const ctx = canvas.getContext('2d')
   if (ctx) {
-    // Transparent body — material colour shows through.
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.fillStyle = 'rgba(50, 50, 50, 0.55)'
+    // Brick body — opaque white. Multiplied by material colour →
+    // full wall colour.
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // Mortar joints — mid-grey. Multiplied by material colour →
+    // darker tint at the joints (e.g. mid-grey × orange = darker
+    // orange), which reads as mortar without us needing a per-wall
+    // shader.
+    ctx.fillStyle = '#555555'
     // Horizontal mortar joints at course boundaries (y = 0, 86, 172).
-    // Two bands across the texture height so it tiles cleanly.
     ctx.fillRect(0, 0, canvas.width, 4)
     ctx.fillRect(0, 84, canvas.width, 4)
     ctx.fillRect(0, 168, canvas.width, 4)
