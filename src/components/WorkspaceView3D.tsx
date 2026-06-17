@@ -1176,6 +1176,79 @@ interface CapMesh {
    *  silhouette point in ±perp direction. */
   halfThick: number
   color: string
+  /** Wall body height in metres — baseline for UV V calculation
+   *  (the V coordinate is the height above wall body in courses). */
+  wallBodyHeightM: number
+  /** Brick width + mortar in metres — the U-axis tile unit so the
+   *  brick-pattern texture's vertical mortar joints line up at brick
+   *  centres. */
+  brickModularWidthM: number
+  /** Brick height + mortar in metres — the V-axis tile unit so the
+   *  texture's horizontal mortar joints line up at course tops. */
+  courseModularHeightM: number
+}
+
+/**
+ * Procedural brick-pattern texture for the gable cap. Built ONCE per
+ * page load — the texture is shared across every cap mesh and just
+ * tinted to the wall's brick colour by the material below.
+ *
+ * Transparent brick body (alpha 0) means the material's `color`
+ * shows straight through the brick area, so each wall type's cap
+ * inherits the right colour without us having to bake the colour
+ * into the texture. Mortar joints are opaque gray, so they overlay
+ * on top of whatever colour sits beneath.
+ *
+ * Pattern: one brick wide × two courses tall, with the second course
+ * offset by half a brick — produces a proper stretcher bond when the
+ * texture tiles via RepeatWrapping.
+ */
+function makeBrickPatternTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas')
+  // 240 × 172 — represents ONE brick wide (240 = 230 face + 10 mortar)
+  // × TWO courses tall (172 = 2 × 86 modular). Tiles to give
+  // stretcher bond.
+  canvas.width = 240
+  canvas.height = 172
+  const ctx = canvas.getContext('2d')
+  if (ctx) {
+    // Transparent body — material colour shows through.
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.fillStyle = 'rgba(50, 50, 50, 0.55)'
+    // Horizontal mortar joints at course boundaries (y = 0, 86, 172).
+    // Two bands across the texture height so it tiles cleanly.
+    ctx.fillRect(0, 0, canvas.width, 4)
+    ctx.fillRect(0, 84, canvas.width, 4)
+    ctx.fillRect(0, 168, canvas.width, 4)
+    // Vertical mortar joints — course 1 (top half, y ∈ [4, 84])
+    // has bricks ending at the texture's right edge, so the joint
+    // sits at x = 0 / 240. Course 2 (bottom half, y ∈ [88, 168])
+    // is offset by half a brick so its joint sits at x = 120.
+    ctx.fillRect(0, 4, 4, 80)
+    ctx.fillRect(236, 4, 4, 80)
+    ctx.fillRect(118, 88, 4, 80)
+  }
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.wrapS = THREE.RepeatWrapping
+  tex.wrapT = THREE.RepeatWrapping
+  // Crisp-edge mortar — nearest-neighbour sampling stops the lines
+  // softening into a blurry haze as the camera moves.
+  tex.magFilter = THREE.NearestFilter
+  tex.minFilter = THREE.NearestFilter
+  tex.needsUpdate = true
+  return tex
+}
+
+const BRICK_PATTERN_TEXTURE_SINGLETON: { value: THREE.CanvasTexture | null } = {
+  value: null,
+}
+function getBrickPatternTexture(): THREE.CanvasTexture {
+  if (BRICK_PATTERN_TEXTURE_SINGLETON.value) {
+    return BRICK_PATTERN_TEXTURE_SINGLETON.value
+  }
+  const tex = makeBrickPatternTexture()
+  BRICK_PATTERN_TEXTURE_SINGLETON.value = tex
+  return tex
 }
 
 /**
@@ -1212,11 +1285,8 @@ function CapMeshGroupMesh({
   items: CapMesh[]
 }) {
   const geometry = useMemo(() => {
-    // For each cap: N silhouette points × 2 (front + back face) +
-    // (N triangle indices for each end cap) + 2*(N-1) for the side
-    // strip. We accumulate per cap into shared positions / indices
-    // arrays.
     const positions: number[] = []
+    const uvs: number[] = []
     const indices: number[] = []
     for (const m of items) {
       const n = m.silhouette.length
@@ -1226,15 +1296,24 @@ function CapMeshGroupMesh({
       // +perp). Front comes first so index 0..n-1 = front,
       // n..2n-1 = back at the SAME silhouette index.
       const startBack = baseIdx + n
+      const uvFor = (pt: { alongM: number; y: number }) => {
+        const u = pt.alongM / m.brickModularWidthM
+        const v = (pt.y - m.wallBodyHeightM) / m.courseModularHeightM
+        return [u, v] as const
+      }
       for (const pt of m.silhouette) {
         const x = m.wallStartWorld.x + m.wdirX * pt.alongM - m.perpX * m.halfThick
         const z = m.wallStartWorld.z + m.wdirZ * pt.alongM - m.perpZ * m.halfThick
         positions.push(x, pt.y, z)
+        const [u, v] = uvFor(pt)
+        uvs.push(u, v)
       }
       for (const pt of m.silhouette) {
         const x = m.wallStartWorld.x + m.wdirX * pt.alongM + m.perpX * m.halfThick
         const z = m.wallStartWorld.z + m.wdirZ * pt.alongM + m.perpZ * m.halfThick
         positions.push(x, pt.y, z)
+        const [u, v] = uvFor(pt)
+        uvs.push(u, v)
       }
       // Front face: triangle fan from vertex 0 to (n-1).
       for (let i = 1; i < n - 1; i++) {
@@ -1254,9 +1333,7 @@ function CapMeshGroupMesh({
         const bFront = baseIdx + j
         const aBack = startBack + i
         const bBack = startBack + j
-        // Triangle 1: front-i, back-i, front-j
         indices.push(aFront, aBack, bFront)
-        // Triangle 2: front-j, back-i, back-j
         indices.push(bFront, aBack, bBack)
       }
     }
@@ -1265,6 +1342,7 @@ function CapMeshGroupMesh({
       'position',
       new THREE.BufferAttribute(new Float32Array(positions), 3),
     )
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2))
     geo.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1))
     geo.computeVertexNormals()
     geo.computeBoundingSphere()
@@ -1277,9 +1355,16 @@ function CapMeshGroupMesh({
     }
   }, [geometry])
 
+  // Shared singleton texture — transparent brick body so the
+  // material colour shows through, opaque gray mortar joints.
+  // Same texture instance across every cap mesh; only the material's
+  // `color` differs per wall type, which tints the body without
+  // affecting the mortar shade.
+  const texture = useMemo(() => getBrickPatternTexture(), [])
+
   return (
     <mesh geometry={geometry} frustumCulled={false}>
-      <meshLambertMaterial color={color} />
+      <meshLambertMaterial color={color} map={texture} transparent={false} />
     </mesh>
   )
 }
@@ -3267,6 +3352,13 @@ function Scene({
               perpZ,
               halfThick,
               color: capColor,
+              wallBodyHeightM: yBody,
+              // Modular brick + mortar — drives the texture's tile
+              // size in world units so the pattern's mortar joints
+              // align to actual brick centres.
+              brickModularWidthM: (brickWidthMm + BRICK_MORTAR_MM) / 1000,
+              courseModularHeightM:
+                (brickHeightMm + BRICK_MORTAR_MM) / 1000,
             })
           }
         }
