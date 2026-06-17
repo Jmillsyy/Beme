@@ -1145,6 +1145,176 @@ function InstancedSegmentGroup({
 }
 
 /**
+ * 8-vertex extruded irregular quad used to render a brick (or mortar
+ * box) that straddles a wall's gable-cap rake line. Bottom 4 corners
+ * sit at a shared Y; top 4 corners take their Y from `topLeftY`
+ * (back-left + front-left corners) or `topRightY` (back-right +
+ * front-right), giving the top a clean slope at the brick's cut
+ * boundary. Produced inside the brick-render path and consumed by
+ * `RakeCutPrismGroup` below.
+ */
+interface RakeCutPrism {
+  bottomCorners: [
+    { x: number; y: number; z: number },
+    { x: number; y: number; z: number },
+    { x: number; y: number; z: number },
+    { x: number; y: number; z: number },
+  ]
+  topLeftY: number
+  topRightY: number
+  color: string
+  highlight: boolean
+}
+
+/**
+ * Renders all rake-cut prisms grouped by (colour, highlight), one
+ * merged BufferGeometry per group. Mirrors the WedgeSegments batching
+ * pattern below — same trade-off: prism shapes can't share an
+ * InstancedMesh because top corners differ per prism, so we merge
+ * vertices into a single buffer per palette slot. One draw call per
+ * colour, regardless of brick count in the cap.
+ */
+function RakeCutPrismGroup({ prisms }: { prisms: RakeCutPrism[] }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, RakeCutPrism[]>()
+    for (const p of prisms) {
+      const key = `${p.color}|${p.highlight ? 1 : 0}`
+      const arr = map.get(key)
+      if (arr) arr.push(p)
+      else map.set(key, [p])
+    }
+    return Array.from(map.entries()).map(([key, items]) => {
+      const [color, hi] = key.split('|')
+      return { color, highlight: hi === '1', items }
+    })
+  }, [prisms])
+
+  return (
+    <>
+      {groups.map((g) => (
+        <RakeCutPrismMesh
+          key={`${g.color}|${g.highlight ? 1 : 0}`}
+          color={g.color}
+          highlight={g.highlight}
+          items={g.items}
+        />
+      ))}
+    </>
+  )
+}
+
+function RakeCutPrismMesh({
+  color,
+  highlight,
+  items,
+}: {
+  color: string
+  highlight: boolean
+  items: RakeCutPrism[]
+}) {
+  const geometry = useMemo(() => {
+    // 6 faces × 4 dedicated corners = 24 vertices per prism. Per-face
+    // vertices means flat shading after computeVertexNormals — same
+    // hard-edged look as the straight-wall instanced boxes and the
+    // curved-wall wedges. Triangulation: 2 tris per face, v0-v1-v2
+    // + v0-v2-v3.
+    const VERTS_PER_PRISM = 24
+    const positions = new Float32Array(items.length * VERTS_PER_PRISM * 3)
+    const indices = new Uint32Array(items.length * 36)
+
+    for (let i = 0; i < items.length; i++) {
+      const p = items[i]
+      const vOff = i * VERTS_PER_PRISM * 3
+      const iOff = i * 36
+      const base = i * VERTS_PER_PRISM
+      // Corner aliases for readability. The 4 bottom corners are
+      // [bL, bR, fR, fL] in perimeter CCW order viewed from above
+      // (back-left, back-right, front-right, front-left).
+      const [bL, bR, fR, fL] = p.bottomCorners
+      // Top Y maps: LEFT pair (back-left + front-left) get topLeftY;
+      // RIGHT pair (back-right + front-right) get topRightY.
+      const yTopL = p.topLeftY
+      const yTopR = p.topRightY
+      const setVert = (n: number, x: number, y: number, z: number) => {
+        const idx = vOff + n * 3
+        positions[idx] = x
+        positions[idx + 1] = y
+        positions[idx + 2] = z
+      }
+      // TOP — viewed from +Y, perimeter CCW: bL, bR, fR, fL.
+      setVert(0, bL.x, yTopL, bL.z)
+      setVert(1, bR.x, yTopR, bR.z)
+      setVert(2, fR.x, yTopR, fR.z)
+      setVert(3, fL.x, yTopL, fL.z)
+      // BOTTOM — viewed from −Y, perimeter CCW: bL, fL, fR, bR.
+      setVert(4, bL.x, bL.y, bL.z)
+      setVert(5, fL.x, fL.y, fL.z)
+      setVert(6, fR.x, fR.y, fR.z)
+      setVert(7, bR.x, bR.y, bR.z)
+      // BACK face (between bL and bR), viewed from −Z(-ish):
+      //   perimeter CCW: bL bottom, bR bottom, bR top, bL top.
+      setVert(8, bL.x, bL.y, bL.z)
+      setVert(9, bR.x, bR.y, bR.z)
+      setVert(10, bR.x, yTopR, bR.z)
+      setVert(11, bL.x, yTopL, bL.z)
+      // RIGHT face (between bR and fR):
+      setVert(12, bR.x, bR.y, bR.z)
+      setVert(13, fR.x, fR.y, fR.z)
+      setVert(14, fR.x, yTopR, fR.z)
+      setVert(15, bR.x, yTopR, bR.z)
+      // FRONT face (between fR and fL):
+      setVert(16, fR.x, fR.y, fR.z)
+      setVert(17, fL.x, fL.y, fL.z)
+      setVert(18, fL.x, yTopL, fL.z)
+      setVert(19, fR.x, yTopR, fR.z)
+      // LEFT face (between fL and bL):
+      setVert(20, fL.x, fL.y, fL.z)
+      setVert(21, bL.x, bL.y, bL.z)
+      setVert(22, bL.x, yTopL, bL.z)
+      setVert(23, fL.x, yTopL, fL.z)
+
+      let q = iOff
+      for (let f = 0; f < 6; f++) {
+        const v0 = base + f * 4
+        indices[q++] = v0
+        indices[q++] = v0 + 1
+        indices[q++] = v0 + 2
+        indices[q++] = v0
+        indices[q++] = v0 + 2
+        indices[q++] = v0 + 3
+      }
+    }
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setIndex(new THREE.BufferAttribute(indices, 1))
+    geo.computeVertexNormals()
+    geo.computeBoundingSphere()
+    return geo
+  }, [items])
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose()
+    }
+  }, [geometry])
+
+  return (
+    <mesh geometry={geometry} frustumCulled={false}>
+      {highlight ? (
+        <meshLambertMaterial
+          color={color}
+          emissive={color}
+          emissiveIntensity={0.45}
+        />
+      ) : (
+        <meshLambertMaterial color={color} />
+      )}
+    </mesh>
+  )
+}
+
+/**
  * Wedge renderer for curved walls. Each WallSegmentWedge is a
  * trapezoidal prism (4 ground-plane corners extruded vertically by
  * y1 − y0) so blocks following an arc look correctly cut at the rear.
@@ -1926,7 +2096,7 @@ function Scene({
   palette: PaletteName
   onResolvedCodes: (codes: Map<string, string>) => void
 }) {
-  const { segments, wedges, mortarShells, segmentBounds, resolvedCodes } = useMemo(() => {
+  const { segments, wedges, mortarShells, rakeCutPrisms, segmentBounds, resolvedCodes } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
     // view. Codes are coloured via the pure-hash `bandColor`, so the
@@ -2124,6 +2294,15 @@ function Scene({
     const out: WallSegmentBox[] = []
     const outWedges: WallSegmentWedge[] = []
     const outMortarShells: CurvedMortarShell[] = []
+    /**
+     * Rake-cut prisms — emitted for bricks / mortar boxes that
+     * straddle the wall's gable-cap rake line. Each prism is an
+     * 8-vertex extruded irregular quad: 4 bottom corners at a
+     * shared Y, 4 top corners where the LEFT pair lands at
+     * `topLeftY` and the RIGHT pair lands at `topRightY`. Renders
+     * via `RakeCutPrismGroup` below.
+     */
+    const outRakeCutPrisms: RakeCutPrism[] = []
     // Build wallsById ONCE outside the loop so both segmentsForStraightWall
     // (for outer-edge endpoint extension) and segmentsFromWallLayout
     // (for the same, plus corner ownership) can use it without
@@ -3095,42 +3274,116 @@ function Scene({
           /* disableBlockLintels */ true,
           wallHeightMmByWallId,
         )
-        // Gable / raked cap post-filter. Each brick box's centre is
-        // projected onto the wall's along-X axis; if the centre Y
-        // sits above the rake line at that along position, drop the
-        // box. Boxes entirely below the wall body height (cy <
-        // wallBodyHeightM) skip the test for speed — they're never
-        // affected by the cap.
-        const filteredBrickBoxes = tp
-          ? (() => {
-              // Wall start + direction in WORLD METRES (matches the
-              // negated mapping segmentsForStraightWall uses, so cx /
-              // cz line up against this projection).
-              const wsx = -wall.startX / 1000
-              const wsz = -wall.startY / 1000
-              const wex = -wall.endX / 1000
-              const wez = -wall.endY / 1000
-              const wdx = wex - wsx
-              const wdz = wez - wsz
-              const wlen = Math.hypot(wdx, wdz)
-              if (wlen <= 0) return allBrickBoxes
-              const wdirX = wdx / wlen
-              const wdirZ = wdz / wlen
-              return allBrickBoxes.filter((b) => {
-                if (b.cy <= wallBodyHeightM + 0.001) return true
-                const along = (b.cx - wsx) * wdirX + (b.cz - wsz) * wdirZ
-                const rakeM = wallBodyHeightM + rakeRiseM(along)
-                return b.cy <= rakeM
-              })
-            })()
-          : allBrickBoxes
-        out.push(...filteredBrickBoxes)
-        // Mortar emission uses the wall body height — the cap is
-        // brick-only; mortar bands above the body sit inside the
-        // sloped silhouette and would render as visible joints
-        // extending past the rake. Constrain to body height so the
-        // gable face reads as continuous brick.
-        emitMortarForWall(wall, thicknessMm, wallBodyHeightM, renderingOpenings)
+
+        // ── Rake-cut classifier ────────────────────────────────────
+        //
+        // For walls with a topProfile, each emitted box (brick or
+        // mortar) is classified into one of three buckets:
+        //   1. Below wall body → standard instanced render (out).
+        //   2. Fully above the rake → dropped.
+        //   3. Straddling the rake → rendered as a custom 8-vertex
+        //      prism with a sloped top edge so the boundary brick
+        //      reads as a clean cut, not a step.
+        //
+        // The mortar bands run through the same path because they
+        // come out of emitMortarForWall as plain WallSegmentBoxes,
+        // so the slope-clipping is uniform across both layers.
+        const wsx = -wall.startX / 1000
+        const wsz = -wall.startY / 1000
+        const wex = -wall.endX / 1000
+        const wez = -wall.endY / 1000
+        const wdx = wex - wsx
+        const wdz = wez - wsz
+        const wallWorldLen = Math.hypot(wdx, wdz)
+        const wdirX = wallWorldLen > 0 ? wdx / wallWorldLen : 0
+        const wdirZ = wallWorldLen > 0 ? wdz / wallWorldLen : 0
+        // Perpendicular (in plan) — points across the wall thickness.
+        const perpX = -wdirZ
+        const perpZ = wdirX
+        const processBoxAgainstRake = (b: WallSegmentBox) => {
+          // No profile or box entirely in the wall body → keep as-is.
+          if (!tp) {
+            out.push(b)
+            return
+          }
+          const boxBottom = b.cy - b.heightM / 2
+          const boxTop = b.cy + b.heightM / 2
+          if (boxTop <= wallBodyHeightM + 0.001) {
+            out.push(b)
+            return
+          }
+          // Rake-line Y at the box's LEFT and RIGHT along-wall edges.
+          const halfLen = b.length / 2
+          const leftCx = b.cx - wdirX * halfLen
+          const leftCz = b.cz - wdirZ * halfLen
+          const rightCx = b.cx + wdirX * halfLen
+          const rightCz = b.cz + wdirZ * halfLen
+          const leftAlong = (leftCx - wsx) * wdirX + (leftCz - wsz) * wdirZ
+          const rightAlong = (rightCx - wsx) * wdirX + (rightCz - wsz) * wdirZ
+          const rakeLeft = wallBodyHeightM + rakeRiseM(leftAlong)
+          const rakeRight = wallBodyHeightM + rakeRiseM(rightAlong)
+          // Fully above the rake on both sides → drop.
+          if (boxBottom >= rakeLeft && boxBottom >= rakeRight) return
+          // Fully below the rake on both sides → keep as a regular box.
+          if (boxTop <= rakeLeft && boxTop <= rakeRight) {
+            out.push(b)
+            return
+          }
+          // Straddling — clip each side independently to either the
+          // box top or the rake line, whichever is lower.
+          const topLeftY = Math.min(boxTop, rakeLeft)
+          const topRightY = Math.min(boxTop, rakeRight)
+          if (
+            topLeftY <= boxBottom + 0.001 &&
+            topRightY <= boxBottom + 0.001
+          ) {
+            return
+          }
+          const halfThick = b.thickness / 2
+          // Eight world-space vertices of the prism. Bottom face
+          // first (counter-clockwise from above), then top in the
+          // same order — top corners have their own Y so the top
+          // face slopes from leftY to rightY.
+          const bL = {
+            x: leftCx + perpX * halfThick,
+            y: boxBottom,
+            z: leftCz + perpZ * halfThick,
+          }
+          const bR = {
+            x: rightCx + perpX * halfThick,
+            y: boxBottom,
+            z: rightCz + perpZ * halfThick,
+          }
+          const fR = {
+            x: rightCx - perpX * halfThick,
+            y: boxBottom,
+            z: rightCz - perpZ * halfThick,
+          }
+          const fL = {
+            x: leftCx - perpX * halfThick,
+            y: boxBottom,
+            z: leftCz - perpZ * halfThick,
+          }
+          outRakeCutPrisms.push({
+            bottomCorners: [bL, bR, fR, fL],
+            topLeftY,
+            topRightY,
+            color: b.color,
+            highlight: b.highlight,
+          })
+        }
+
+        for (const b of allBrickBoxes) processBoxAgainstRake(b)
+        // Run emitMortarForWall, then re-process the boxes it just
+        // pushed so the cap mortar gets the same slope clip. Snapshot
+        // / splice keeps the per-wall scope local — we only touch the
+        // mortar boxes emitted by THIS call.
+        const mortarStart = out.length
+        emitMortarForWall(wall, thicknessMm, totalHeightM, renderingOpenings)
+        if (tp) {
+          const justEmitted = out.splice(mortarStart)
+          for (const b of justEmitted) processBoxAgainstRake(b)
+        }
 
         // ── Jamb mortar cover ──────────────────────────────────────
         //
@@ -4020,6 +4273,7 @@ function Scene({
       segments: out,
       wedges: outWedges,
       mortarShells: outMortarShells,
+      rakeCutPrisms: outRakeCutPrisms,
       segmentBounds: bounds,
       resolvedCodes: codes,
     }
@@ -4172,6 +4426,13 @@ function Scene({
           curved wall, recessed behind the block faces so the per-block
           edge insets read as real mortar joints. */}
       <CurvedMortarShells shells={mortarShells} />
+
+      {/* Rake-cut bricks + mortar at the boundary of any wall with a
+          gable / raked topProfile. Each prism is a 6-face extruded
+          irregular quad with a sloped top edge so the cap silhouette
+          reads as a clean cut rather than a stepped row of full-height
+          bricks. Empty for walls without a topProfile. */}
+      <RakeCutPrismGroup prisms={rakeCutPrisms} />
 
       {/* InitialCameraAim must render BEFORE CADControls so its
           lookAt is applied before the controls seed their spherical
