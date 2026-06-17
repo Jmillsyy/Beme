@@ -1207,6 +1207,22 @@ interface CapMesh {
  * the project. With ~4 brick wall types per estimate that's 4 tiny
  * textures.
  */
+/**
+ * Lerp `color` toward white (amount > 0) or black (amount < 0)
+ * and return as a CSS-ready hex string. Used to paint subtle
+ * highlight + shadow stripes into the cap brick texture so each
+ * brick face reads with a bit of depth.
+ */
+function shadeColor(color: string, amount: number): string {
+  const c = new THREE.Color(color)
+  if (amount > 0) {
+    c.lerp(new THREE.Color(1, 1, 1), Math.min(1, amount))
+  } else if (amount < 0) {
+    c.lerp(new THREE.Color(0, 0, 0), Math.min(1, -amount))
+  }
+  return '#' + c.getHexString()
+}
+
 function makeBrickPatternTexture(
   brickColor: string,
   mortarColor: string,
@@ -1216,19 +1232,57 @@ function makeBrickPatternTexture(
   canvas.height = 172
   const ctx = canvas.getContext('2d')
   if (ctx) {
+    // Body — full brick colour everywhere first, then we paint
+    // mortar over it and finally restore depth-cue highlights /
+    // shadows at the brick / mortar boundaries.
     ctx.fillStyle = brickColor
     ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+    // Mortar joints — horizontal bands at course boundaries.
     ctx.fillStyle = mortarColor
-    // Horizontal mortar joints at course boundaries.
     ctx.fillRect(0, 0, canvas.width, 4)
     ctx.fillRect(0, 84, canvas.width, 4)
     ctx.fillRect(0, 168, canvas.width, 4)
-    // Vertical mortar joints — course 1 (top, y ∈ [4, 84]) joints
-    // at the texture's edges (x = 0 / 240); course 2 (bottom,
-    // y ∈ [88, 168]) joints offset by half a brick at x = 120.
+    // Mortar joints — vertical bands. Course 1 (top, y 4–84) joints
+    // at the tile edges; course 2 (bottom, y 88–168) joints offset
+    // half a brick at x = 120 so RepeatWrapping gives stretcher bond.
     ctx.fillRect(0, 4, 4, 80)
     ctx.fillRect(236, 4, 4, 80)
     ctx.fillRect(118, 88, 4, 80)
+
+    // Depth cues — light from above:
+    //   • Highlight stripe along the TOP of each brick (just below
+    //     the upper mortar) reads as catching light.
+    //   • Shadow stripe along the BOTTOM of each brick (just above
+    //     the lower mortar) reads as falling away from light.
+    //   • Subtle shadow in the mortar itself near the top edge
+    //     suggests the joint is recessed.
+    const highlight = shadeColor(brickColor, 0.18)
+    const shadow = shadeColor(brickColor, -0.22)
+    const mortarShadow = shadeColor(mortarColor, -0.2)
+    ctx.fillStyle = highlight
+    // Course 1 top highlight (just below top mortar at y=4)
+    ctx.fillRect(4, 4, 232, 2)
+    // Course 2 top highlight (just below middle mortar at y=84)
+    ctx.fillRect(0, 88, 118, 2)
+    ctx.fillRect(122, 88, 118, 2)
+    ctx.fillStyle = shadow
+    // Course 1 bottom shadow (just above middle mortar at y=84)
+    ctx.fillRect(4, 82, 232, 2)
+    // Course 2 bottom shadow (just above bottom mortar at y=168)
+    ctx.fillRect(0, 166, 118, 2)
+    ctx.fillRect(122, 166, 118, 2)
+    // Subtle vertical-joint shadow stripes — darker pixel at each
+    // brick's left edge (light from upper-right convention).
+    ctx.fillRect(4, 4, 2, 80) // course 1 left
+    ctx.fillRect(0, 88, 2, 80) // course 2 left
+    ctx.fillRect(122, 88, 2, 80) // course 2 right-half left
+    // Mortar-recess shadows — top edge of each horizontal mortar
+    // band, suggests the joint sits behind the brick face.
+    ctx.fillStyle = mortarShadow
+    ctx.fillRect(0, 0, canvas.width, 1)
+    ctx.fillRect(0, 84, canvas.width, 1)
+    ctx.fillRect(0, 168, canvas.width, 1)
   }
   const tex = new THREE.CanvasTexture(canvas)
   tex.wrapS = THREE.RepeatWrapping
