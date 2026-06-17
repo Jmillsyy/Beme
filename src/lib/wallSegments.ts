@@ -1476,6 +1476,24 @@ export function segmentsForStraightWall(
     blockWidthM: number
   }
   const lintelMeshes: LintelMesh[] = []
+  // Snapshot each course's BODY-cell positions BEFORE the lintel stamp
+  // clears them. The Phase 6 "pack lintel top course remainder" pass
+  // uses this to align its fill blocks with the course's natural
+  // stretcher bond offset — without it the pack stepped linearly from
+  // the lintel's start, breaking the bond pattern across the lintel
+  // column. Stored per-course, indexed by course reference identity.
+  const bodyCellSnapshot = new Map<
+    CourseEntry,
+    Array<{ s0: number; s1: number }>
+  >()
+  for (const entry of grid) {
+    bodyCellSnapshot.set(
+      entry,
+      entry.cells
+        .filter((c) => c.role === 'BODY')
+        .map((c) => ({ s0: c.s0, s1: c.s1 })),
+    )
+  }
   for (const lintel of lintelFootprints) {
     for (const entry of grid) {
       const { course, cells } = entry
@@ -1720,8 +1738,12 @@ export function segmentsForStraightWall(
     // top lands mid-course (mid-course opening heads, or a lintel face
     // that isn't a clean course multiple), the full-course carve in
     // Phase 4 left an air gap from the lintel top to the next course
-    // boundary. Fill it with cut body blocks on the course grid — the
-    // mason packs this on site, and the tally counts the cut blocks.
+    // boundary. Fill it with cut body blocks aligned to the course's
+    // NATURAL stretcher bond — the same s0/s1 positions the cells
+    // would have had before the lintel cleared them. Read from the
+    // pre-stamp snapshot rather than stepping linearly from the
+    // lintel start; otherwise the fill blocks wander off the bond
+    // pattern of the courses above/below and the wall reads broken.
     const topCourse = grid.find(
       (g) => g.course.y0 < lm.y1 - 0.005 && g.course.y1 > lm.y1 + 0.005
     )
@@ -1730,19 +1752,21 @@ export function segmentsForStraightWall(
       const fillY1 = topCourse.course.y1
       if (fillY1 - fillY0 >= 0.03) {
         const bodyColor = colorOf(topCourse.course.bodyCode)
-        const stepW = topCourse.bodyW + gridMortarM
-        let c = lm.s0
-        while (c < lm.s1) {
-          const cellEnd = Math.min(c + topCourse.bodyW, lm.s1)
-          if (cellEnd - c > 0.02) {
+        const originalCells = bodyCellSnapshot.get(topCourse) ?? []
+        for (const cell of originalCells) {
+          // Clip each pre-stamp body cell to the lintel's span. Any
+          // cell that doesn't overlap the lintel's column is skipped
+          // (the body grid emits it for real above the lintel).
+          const cs = Math.max(cell.s0, lm.s0)
+          const ce = Math.min(cell.s1, lm.s1)
+          if (ce - cs > 0.02) {
             boxes.push(
               buildBox(
-                c, cellEnd, fillY0, fillY1, bodyColor,
+                cs, ce, fillY0, fillY1, bodyColor,
                 topCourse.course.bodyCode, topCourse.course.courseNumber
               )
             )
           }
-          c += stepW
         }
       }
     }
