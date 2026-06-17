@@ -24,6 +24,7 @@ import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
+import { wallCapAreaSqMm } from './wallTopProfile'
 
 // ---------- Brick tally ----------
 //
@@ -351,6 +352,15 @@ export function calculateBrickTally(
           areaSqMm: len * height,
         },
       ]
+    }
+    // Gable / raked cap area — added to the TOP band so any opening
+    // deduction tier (which works top-down) doesn't accidentally
+    // attribute the cap to a lower brick type. The cap is whatever
+    // sits above the wall's rectangular body; it's almost always the
+    // same brick as the top course continues into the gable.
+    const capArea = wallCapAreaSqMm(wall, len)
+    if (capArea > 0 && bands.length > 0) {
+      bands[0].areaSqMm += capArea
     }
     for (const b of bands) totalAreaSqMm += b.areaSqMm
     wallAreas.push({

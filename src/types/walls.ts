@@ -413,6 +413,51 @@ export interface Wall {
   midX?: number
   /** Midpoint Y for curved walls. */
   midY?: number
+  /**
+   * Optional non-rectangular top shape added on TOP of the rectangular
+   * wall body, e.g. a gable peak or a raked porch wall. The base
+   * rectangle is still the wall's `length × heightMm`; the cap is
+   * extra area sitting above the wall top.
+   *
+   *   - `triangle`: a single peak rising to `peakHeightMm` above the
+   *     wall top, with the peak positioned at `peakOffsetFraction`
+   *     along the wall (0 = at start, 0.5 = centred, 1 = at end).
+   *     Area = `wallLength × peakHeightMm / 2`. Covers most domestic
+   *     gable ends regardless of peak position because the triangle
+   *     area formula doesn't depend on offset.
+   *
+   *   - `trapezoid`: a sloped top with `leftHeightMm` above the wall
+   *     top at the start and `rightHeightMm` at the end. The cap top
+   *     is a single sloped line between the two heights. Covers raked
+   *     porch / carport walls, sheds with a single-pitch roof, and
+   *     stepped party walls where the step is gradual.
+   *     Area = `wallLength × (leftHeightMm + rightHeightMm) / 2`.
+   *
+   * Currently used by the brick tally only (block is rectangular by
+   * convention because timber framing takes over above wall plate).
+   * Undefined → flat top, the existing behaviour.
+   */
+  topProfile?:
+    | {
+        kind: 'triangle'
+        /** Peak rise above the wall top, in mm. */
+        peakHeightMm: number
+        /**
+         * Where the peak sits along the wall as a fraction of length:
+         * 0 = at the start, 0.5 = centred, 1 = at the end. Doesn't
+         * change the area calc (area is base × height / 2 regardless),
+         * but drives the wall preview + 3D mesh clipping when those
+         * land.
+         */
+        peakOffsetFraction: number
+      }
+    | {
+        kind: 'trapezoid'
+        /** Rise above the wall top at the start end, in mm. */
+        leftHeightMm: number
+        /** Rise above the wall top at the end end, in mm. */
+        rightHeightMm: number
+      }
 }
 
 /**
