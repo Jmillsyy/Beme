@@ -1145,149 +1145,127 @@ function InstancedSegmentGroup({
 }
 
 /**
- * 8-vertex extruded irregular quad used to render a brick (or mortar
- * box) that straddles a wall's gable-cap rake line. Bottom 4 corners
- * sit at a shared Y; top 4 corners take their Y from `topLeftY`
- * (back-left + front-left corners) or `topRightY` (back-right +
- * front-right), giving the top a clean slope at the brick's cut
- * boundary. Produced inside the brick-render path and consumed by
- * `RakeCutPrismGroup` below.
+ * Cap mesh for a wall with a `topProfile`. Renders as a solid prism
+ * in the wall's body brick colour, sitting on top of the wall body.
+ *
+ * Triangle gable → 3-vertex top silhouette (left base, peak, right
+ * base) extruded by wall thickness, so 6 vertices + 8 triangles (top
+ * triangle + 2 sloped side quads + bottom + 2 end caps = 8 tris in
+ * fact, but each shared face triangulates to 2).
+ *
+ * Trapezoid raked → 4-vertex top silhouette (left base, left peak,
+ * right peak, right base) extruded by wall thickness, 8 vertices.
+ *
+ * Stored as a generic silhouette (CCW points in along-X / Y space)
+ * + extrusion vectors so a single mesh builder handles both shapes.
  */
-interface RakeCutPrism {
-  bottomCorners: [
-    { x: number; y: number; z: number },
-    { x: number; y: number; z: number },
-    { x: number; y: number; z: number },
-    { x: number; y: number; z: number },
-  ]
-  topLeftY: number
-  topRightY: number
+interface CapMesh {
+  /** Outline points of the cap face in CCW order (along-wall X +
+   *  world Y). First and last points sit on the wall body top. */
+  silhouette: Array<{ alongM: number; y: number }>
+  /** Wall start in world metres (negated-mapping space, matching
+   *  segmentsForStraightWall). */
+  wallStartWorld: { x: number; z: number }
+  /** Unit vector along the wall direction (world space). */
+  wdirX: number
+  wdirZ: number
+  /** Unit vector perpendicular to the wall (across thickness). */
+  perpX: number
+  perpZ: number
+  /** Half the wall thickness in metres — distance to extrude each
+   *  silhouette point in ±perp direction. */
+  halfThick: number
   color: string
-  highlight: boolean
 }
 
 /**
- * Renders all rake-cut prisms grouped by (colour, highlight), one
- * merged BufferGeometry per group. Mirrors the WedgeSegments batching
- * pattern below — same trade-off: prism shapes can't share an
- * InstancedMesh because top corners differ per prism, so we merge
- * vertices into a single buffer per palette slot. One draw call per
- * colour, regardless of brick count in the cap.
+ * Renders every wall cap mesh as one merged BufferGeometry per
+ * colour. Same batching pattern as WedgeSegments — each cap can
+ * have a different silhouette but they share the wall-type colour
+ * within a project, so one draw call per palette slot covers it.
  */
-function RakeCutPrismGroup({ prisms }: { prisms: RakeCutPrism[] }) {
+function CapMeshes({ meshes }: { meshes: CapMesh[] }) {
   const groups = useMemo(() => {
-    const map = new Map<string, RakeCutPrism[]>()
-    for (const p of prisms) {
-      const key = `${p.color}|${p.highlight ? 1 : 0}`
-      const arr = map.get(key)
-      if (arr) arr.push(p)
-      else map.set(key, [p])
+    const map = new Map<string, CapMesh[]>()
+    for (const m of meshes) {
+      const arr = map.get(m.color)
+      if (arr) arr.push(m)
+      else map.set(m.color, [m])
     }
-    return Array.from(map.entries()).map(([key, items]) => {
-      const [color, hi] = key.split('|')
-      return { color, highlight: hi === '1', items }
-    })
-  }, [prisms])
+    return Array.from(map.entries()).map(([color, items]) => ({ color, items }))
+  }, [meshes])
 
   return (
     <>
       {groups.map((g) => (
-        <RakeCutPrismMesh
-          key={`${g.color}|${g.highlight ? 1 : 0}`}
-          color={g.color}
-          highlight={g.highlight}
-          items={g.items}
-        />
+        <CapMeshGroupMesh key={g.color} color={g.color} items={g.items} />
       ))}
     </>
   )
 }
 
-function RakeCutPrismMesh({
+function CapMeshGroupMesh({
   color,
-  highlight,
   items,
 }: {
   color: string
-  highlight: boolean
-  items: RakeCutPrism[]
+  items: CapMesh[]
 }) {
   const geometry = useMemo(() => {
-    // 6 faces × 4 dedicated corners = 24 vertices per prism. Per-face
-    // vertices means flat shading after computeVertexNormals — same
-    // hard-edged look as the straight-wall instanced boxes and the
-    // curved-wall wedges. Triangulation: 2 tris per face, v0-v1-v2
-    // + v0-v2-v3.
-    const VERTS_PER_PRISM = 24
-    const positions = new Float32Array(items.length * VERTS_PER_PRISM * 3)
-    const indices = new Uint32Array(items.length * 36)
-
-    for (let i = 0; i < items.length; i++) {
-      const p = items[i]
-      const vOff = i * VERTS_PER_PRISM * 3
-      const iOff = i * 36
-      const base = i * VERTS_PER_PRISM
-      // Corner aliases for readability. The 4 bottom corners are
-      // [bL, bR, fR, fL] in perimeter CCW order viewed from above
-      // (back-left, back-right, front-right, front-left).
-      const [bL, bR, fR, fL] = p.bottomCorners
-      // Top Y maps: LEFT pair (back-left + front-left) get topLeftY;
-      // RIGHT pair (back-right + front-right) get topRightY.
-      const yTopL = p.topLeftY
-      const yTopR = p.topRightY
-      const setVert = (n: number, x: number, y: number, z: number) => {
-        const idx = vOff + n * 3
-        positions[idx] = x
-        positions[idx + 1] = y
-        positions[idx + 2] = z
+    // For each cap: N silhouette points × 2 (front + back face) +
+    // (N triangle indices for each end cap) + 2*(N-1) for the side
+    // strip. We accumulate per cap into shared positions / indices
+    // arrays.
+    const positions: number[] = []
+    const indices: number[] = []
+    for (const m of items) {
+      const n = m.silhouette.length
+      if (n < 3) continue
+      const baseIdx = positions.length / 3
+      // Emit FRONT face vertices (at -perp), then BACK face (at
+      // +perp). Front comes first so index 0..n-1 = front,
+      // n..2n-1 = back at the SAME silhouette index.
+      const startBack = baseIdx + n
+      for (const pt of m.silhouette) {
+        const x = m.wallStartWorld.x + m.wdirX * pt.alongM - m.perpX * m.halfThick
+        const z = m.wallStartWorld.z + m.wdirZ * pt.alongM - m.perpZ * m.halfThick
+        positions.push(x, pt.y, z)
       }
-      // TOP — viewed from +Y, perimeter CCW: bL, bR, fR, fL.
-      setVert(0, bL.x, yTopL, bL.z)
-      setVert(1, bR.x, yTopR, bR.z)
-      setVert(2, fR.x, yTopR, fR.z)
-      setVert(3, fL.x, yTopL, fL.z)
-      // BOTTOM — viewed from −Y, perimeter CCW: bL, fL, fR, bR.
-      setVert(4, bL.x, bL.y, bL.z)
-      setVert(5, fL.x, fL.y, fL.z)
-      setVert(6, fR.x, fR.y, fR.z)
-      setVert(7, bR.x, bR.y, bR.z)
-      // BACK face (between bL and bR), viewed from −Z(-ish):
-      //   perimeter CCW: bL bottom, bR bottom, bR top, bL top.
-      setVert(8, bL.x, bL.y, bL.z)
-      setVert(9, bR.x, bR.y, bR.z)
-      setVert(10, bR.x, yTopR, bR.z)
-      setVert(11, bL.x, yTopL, bL.z)
-      // RIGHT face (between bR and fR):
-      setVert(12, bR.x, bR.y, bR.z)
-      setVert(13, fR.x, fR.y, fR.z)
-      setVert(14, fR.x, yTopR, fR.z)
-      setVert(15, bR.x, yTopR, bR.z)
-      // FRONT face (between fR and fL):
-      setVert(16, fR.x, fR.y, fR.z)
-      setVert(17, fL.x, fL.y, fL.z)
-      setVert(18, fL.x, yTopL, fL.z)
-      setVert(19, fR.x, yTopR, fR.z)
-      // LEFT face (between fL and bL):
-      setVert(20, fL.x, fL.y, fL.z)
-      setVert(21, bL.x, bL.y, bL.z)
-      setVert(22, bL.x, yTopL, bL.z)
-      setVert(23, fL.x, yTopL, fL.z)
-
-      let q = iOff
-      for (let f = 0; f < 6; f++) {
-        const v0 = base + f * 4
-        indices[q++] = v0
-        indices[q++] = v0 + 1
-        indices[q++] = v0 + 2
-        indices[q++] = v0
-        indices[q++] = v0 + 2
-        indices[q++] = v0 + 3
+      for (const pt of m.silhouette) {
+        const x = m.wallStartWorld.x + m.wdirX * pt.alongM + m.perpX * m.halfThick
+        const z = m.wallStartWorld.z + m.wdirZ * pt.alongM + m.perpZ * m.halfThick
+        positions.push(x, pt.y, z)
+      }
+      // Front face: triangle fan from vertex 0 to (n-1).
+      for (let i = 1; i < n - 1; i++) {
+        indices.push(baseIdx + 0, baseIdx + i, baseIdx + i + 1)
+      }
+      // Back face: triangle fan reversed so the normal points the
+      // other way.
+      for (let i = 1; i < n - 1; i++) {
+        indices.push(startBack + 0, startBack + i + 1, startBack + i)
+      }
+      // Sides: connect each silhouette edge to its mate on the back
+      // face as a quad (two triangles). Edges include the closing
+      // edge (last → first).
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n
+        const aFront = baseIdx + i
+        const bFront = baseIdx + j
+        const aBack = startBack + i
+        const bBack = startBack + j
+        // Triangle 1: front-i, back-i, front-j
+        indices.push(aFront, aBack, bFront)
+        // Triangle 2: front-j, back-i, back-j
+        indices.push(bFront, aBack, bBack)
       }
     }
-
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    geo.setIndex(new THREE.BufferAttribute(indices, 1))
+    geo.setAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array(positions), 3),
+    )
+    geo.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1))
     geo.computeVertexNormals()
     geo.computeBoundingSphere()
     return geo
@@ -1301,15 +1279,7 @@ function RakeCutPrismMesh({
 
   return (
     <mesh geometry={geometry} frustumCulled={false}>
-      {highlight ? (
-        <meshLambertMaterial
-          color={color}
-          emissive={color}
-          emissiveIntensity={0.45}
-        />
-      ) : (
-        <meshLambertMaterial color={color} />
-      )}
+      <meshLambertMaterial color={color} />
     </mesh>
   )
 }
@@ -2096,7 +2066,7 @@ function Scene({
   palette: PaletteName
   onResolvedCodes: (codes: Map<string, string>) => void
 }) {
-  const { segments, wedges, mortarShells, rakeCutPrisms, segmentBounds, resolvedCodes } = useMemo(() => {
+  const { segments, wedges, mortarShells, capMeshes, segmentBounds, resolvedCodes } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
     // view. Codes are coloured via the pure-hash `bandColor`, so the
@@ -2295,14 +2265,13 @@ function Scene({
     const outWedges: WallSegmentWedge[] = []
     const outMortarShells: CurvedMortarShell[] = []
     /**
-     * Rake-cut prisms — emitted for bricks / mortar boxes that
-     * straddle the wall's gable-cap rake line. Each prism is an
-     * 8-vertex extruded irregular quad: 4 bottom corners at a
-     * shared Y, 4 top corners where the LEFT pair lands at
-     * `topLeftY` and the RIGHT pair lands at `topRightY`. Renders
-     * via `RakeCutPrismGroup` below.
+     * Cap meshes — one prism per wall with a `topProfile`. Renders
+     * as a solid brick-coloured triangle (gable) or trapezoid (raked
+     * top) on top of the wall body. The brick tally already accounts
+     * for the cap's sq m + lineal m, so this is purely cosmetic —
+     * shows the silhouette without per-brick complexity.
      */
-    const outRakeCutPrisms: RakeCutPrism[] = []
+    const outCapMeshes: CapMesh[] = []
     // Build wallsById ONCE outside the loop so both segmentsForStraightWall
     // (for outer-edge endpoint extension) and segmentsFromWallLayout
     // (for the same, plus corner ownership) can use it without
@@ -2679,65 +2648,20 @@ function Scene({
         // before; the smaller course height also means partial-height
         // openings line up against course boundaries cleanly.
         const heightMm = resolveWallHeightMm(wall, makeupsById, brickMakeupsById)
-        // ── Gable / raked cap support ──────────────────────────────
-        //
-        // A wall with `topProfile` set carries extra brick area above
-        // its flat-top rectangular body. The brick tally already
-        // includes that area (see lib/wallTopProfile.ts +
-        // brickCalc.ts); the 3D pass extends the brick course range
-        // upward to cover the cap, then post-filters the generated
-        // boxes against the rake line so the silhouette reads as the
-        // configured triangle / trapezoid. Stepped-course silhouette
-        // is acceptable v1; per-boundary brick clipping is a polish
-        // pass later.
-        //
-        // Wall's flat-top rectangular height in metres (kept around
-        // so the rake-line check below can use it as the baseline).
-        const wallBodyHeightM = heightMm / 1000
-        // Per-along-X rise above the wall body, in METRES, derived
-        // from the topProfile. Returns 0 when no profile is set or
-        // for along values outside the wall span.
+        const totalHeightM = heightMm / 1000
+        // Cap-mesh prep — for walls with a topProfile, we render the
+        // wall body as a normal rectangle (existing brick + mortar
+        // pipeline, no rake clipping) and ADD a separate cap prism
+        // mesh on top in the wall's body brick colour. The mesh is
+        // a single triangle / trapezoid prism — clean silhouette,
+        // no per-brick maths. Tally already accounts for the cap
+        // area (see lib/wallTopProfile.ts), so the 3D pass is
+        // purely cosmetic.
         const tp = wall.topProfile
-        // length-along-wall in metres (computed inside segmentsFor
-        // StraightWall but we need it here for the rake function).
         const wallLenM = Math.hypot(
           (wall.endX - wall.startX) / 1000,
           (wall.endY - wall.startY) / 1000,
         )
-        const rakeRiseM = (alongM: number): number => {
-          if (!tp || wallLenM <= 0) return 0
-          if (tp.kind === 'triangle') {
-            const peakX = Math.max(0, Math.min(1, tp.peakOffsetFraction)) * wallLenM
-            const peakM = Math.max(0, tp.peakHeightMm) / 1000
-            // Two-sided linear: rises from 0 at wall ends to peakM at peakX.
-            if (peakX <= 0) {
-              // Peak at start: right side descends from peakM at 0 to 0 at length.
-              return peakM * Math.max(0, (wallLenM - alongM) / wallLenM)
-            }
-            if (peakX >= wallLenM) {
-              // Peak at end: left side rises from 0 at 0 to peakM at length.
-              return peakM * Math.max(0, alongM / wallLenM)
-            }
-            if (alongM <= peakX) return peakM * (alongM / peakX)
-            return peakM * ((wallLenM - alongM) / (wallLenM - peakX))
-          }
-          if (tp.kind === 'trapezoid') {
-            const left = Math.max(0, tp.leftHeightMm) / 1000
-            const right = Math.max(0, tp.rightHeightMm) / 1000
-            const t = wallLenM > 0 ? Math.max(0, Math.min(1, alongM / wallLenM)) : 0
-            return left + (right - left) * t
-          }
-          return 0
-        }
-        const maxRiseM = tp
-          ? tp.kind === 'triangle'
-            ? Math.max(0, tp.peakHeightMm) / 1000
-            : Math.max(
-                0,
-                Math.max(tp.leftHeightMm, tp.rightHeightMm),
-              ) / 1000
-          : 0
-        const totalHeightM = wallBodyHeightM + maxRiseM
 
         // Resolve brick dimensions from the brick library via the
         // makeup's brickTypeCode. Falls back to AU standard if the
@@ -2885,14 +2809,7 @@ function Scene({
         const brickCourses: ResolvedCourse[] = []
         let cursorMm = 0
         let courseIdx = 0
-        // Course generation runs up to the EXTENDED top (wall body
-        // + cap rise). For walls without a topProfile this is the
-        // same as `heightMm` — no behaviour change. For walls with a
-        // gable / raked cap, the extra courses cover the cap; the
-        // post-filter against the rake line below drops any box
-        // whose centre sits above the slope at its along-X.
-        const renderTopMm = heightMm + maxRiseM * 1000
-        while (cursorMm < renderTopMm - 0.5) {
+        while (cursorMm < heightMm - 0.5) {
           const courseNum = courseIdx + 1
           const typeCode = brickTypeForCourse(courseNum)
           // A course is a "body default" when NO range applies — those
@@ -2906,7 +2823,7 @@ function Scene({
           const courseModMm = courseBrickHeight + BRICK_MORTAR_MM
           const { fullKey, halfKey } = ensureSyntheticEntries(typeCode, isBodyCourse)
           const y0Mm = cursorMm
-          const y1Mm = Math.min(renderTopMm, cursorMm + courseBrickHeight)
+          const y1Mm = Math.min(heightMm, cursorMm + courseBrickHeight)
           if (y1Mm - y0Mm > 0.5) {
             brickCourses.push({
               courseNumber: courseNum,
@@ -3268,202 +3185,89 @@ function Scene({
         }
 
         const renderingOpenings = [...brickOpenings, ...trimGhostOpenings]
-        const allBrickBoxes = segmentsForStraightWall(
-          wall, renderingOpenings, thicknessMm, brickCourses, totalHeightM,
-          'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap,
-          /* disableBlockLintels */ true,
-          wallHeightMmByWallId,
+        out.push(
+          ...segmentsForStraightWall(
+            wall, renderingOpenings, thicknessMm, brickCourses, totalHeightM,
+            'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap,
+            /* disableBlockLintels */ true,
+            wallHeightMmByWallId,
+          )
         )
-
-        // ── Rake-cut classifier ────────────────────────────────────
-        //
-        // For walls with a topProfile, each emitted box (brick or
-        // mortar) is classified into one of three buckets:
-        //   1. Below wall body → standard instanced render (out).
-        //   2. Fully above the rake → dropped.
-        //   3. Straddling the rake → rendered as a custom 8-vertex
-        //      prism with a sloped top edge so the boundary brick
-        //      reads as a clean cut, not a step.
-        //
-        // The mortar bands run through the same path because they
-        // come out of emitMortarForWall as plain WallSegmentBoxes,
-        // so the slope-clipping is uniform across both layers.
-        const wsx = -wall.startX / 1000
-        const wsz = -wall.startY / 1000
-        const wex = -wall.endX / 1000
-        const wez = -wall.endY / 1000
-        const wdx = wex - wsx
-        const wdz = wez - wsz
-        const wallWorldLen = Math.hypot(wdx, wdz)
-        const wdirX = wallWorldLen > 0 ? wdx / wallWorldLen : 0
-        const wdirZ = wallWorldLen > 0 ? wdz / wallWorldLen : 0
-        // Perpendicular (in plan) — points across the wall thickness.
-        const perpX = -wdirZ
-        const perpZ = wdirX
-        const processBoxAgainstRake = (b: WallSegmentBox) => {
-          // No profile or box entirely in the wall body → keep as-is.
-          if (!tp) {
-            out.push(b)
-            return
-          }
-          const boxBottom = b.cy - b.heightM / 2
-          const boxTop = b.cy + b.heightM / 2
-          if (boxTop <= wallBodyHeightM + 0.001) {
-            out.push(b)
-            return
-          }
-          // Rake-line Y at the box's LEFT and RIGHT along-wall edges.
-          const halfLen = b.length / 2
-          const leftCx = b.cx - wdirX * halfLen
-          const leftCz = b.cz - wdirZ * halfLen
-          const rightCx = b.cx + wdirX * halfLen
-          const rightCz = b.cz + wdirZ * halfLen
-          const leftAlong = (leftCx - wsx) * wdirX + (leftCz - wsz) * wdirZ
-          const rightAlong = (rightCx - wsx) * wdirX + (rightCz - wsz) * wdirZ
-          // For triangle gables — split a box that straddles the
-          // peak into two halves at the peak X. Without this, the
-          // single-prism linear top runs UNDER the actual peak
-          // (both ends are on the descending slope away from peak)
-          // and the peak brick floats below where its top edge
-          // should be. Subdivision lets each half follow its own
-          // slope direction. Trapezoids and walls with the peak at
-          // a wall end (offset 0 or 1) are pure linear — no split.
-          if (
-            tp.kind === 'triangle' &&
-            tp.peakOffsetFraction > 0 &&
-            tp.peakOffsetFraction < 1
-          ) {
-            const peakAlong =
-              Math.max(0, Math.min(1, tp.peakOffsetFraction)) * wallWorldLen
-            if (
-              leftAlong < peakAlong - 0.001 &&
-              rightAlong > peakAlong + 0.001
-            ) {
-              // Build the LEFT half (leftAlong → peakAlong) and the
-              // RIGHT half (peakAlong → rightAlong) as separate boxes
-              // and recurse. Each half is a single-slope segment so
-              // the standard linear top is accurate.
-              const startCx = leftCx
-              const startCz = leftCz
-              const leftHalfLen = peakAlong - leftAlong
-              const rightHalfLen = rightAlong - peakAlong
-              processBoxAgainstRake({
-                ...b,
-                cx: startCx + wdirX * (leftHalfLen / 2),
-                cz: startCz + wdirZ * (leftHalfLen / 2),
-                length: leftHalfLen,
-              })
-              processBoxAgainstRake({
-                ...b,
-                cx: startCx + wdirX * (leftHalfLen + rightHalfLen / 2),
-                cz: startCz + wdirZ * (leftHalfLen + rightHalfLen / 2),
-                length: rightHalfLen,
-              })
-              return
-            }
-          }
-          const rakeLeft = wallBodyHeightM + rakeRiseM(leftAlong)
-          const rakeRight = wallBodyHeightM + rakeRiseM(rightAlong)
-          // Fully above the rake on both sides → drop.
-          if (boxBottom >= rakeLeft && boxBottom >= rakeRight) return
-          // Fully below the rake on both sides → keep as a regular box.
-          if (boxTop <= rakeLeft && boxTop <= rakeRight) {
-            out.push(b)
-            return
-          }
-          // Straddling — clip each side to the [boxBottom, boxTop]
-          // window. The MAX(boxBottom, …) lower clamp is what stopped
-          // the prism from inverting (top below bottom) on bricks where
-          // the rake passed UNDER the brick on one side; without it the
-          // resulting top quad sloped down through the bottom face and
-          // rendered as an upside-down triangle, which is the "weird
-          // pyramid stepping" the user saw.
-          const topLeftY = Math.max(
-            boxBottom,
-            Math.min(boxTop, rakeLeft),
-          )
-          const topRightY = Math.max(
-            boxBottom,
-            Math.min(boxTop, rakeRight),
-          )
-          if (
-            topLeftY <= boxBottom + 0.001 &&
-            topRightY <= boxBottom + 0.001
-          ) {
-            // Both ends collapsed to the bottom → zero-area prism.
-            return
-          }
-          const halfThick = b.thickness / 2
-          // Eight world-space vertices of the prism. Bottom face
-          // first (counter-clockwise from above), then top in the
-          // same order — top corners have their own Y so the top
-          // face slopes from leftY to rightY.
-          const bL = {
-            x: leftCx + perpX * halfThick,
-            y: boxBottom,
-            z: leftCz + perpZ * halfThick,
-          }
-          const bR = {
-            x: rightCx + perpX * halfThick,
-            y: boxBottom,
-            z: rightCz + perpZ * halfThick,
-          }
-          const fR = {
-            x: rightCx - perpX * halfThick,
-            y: boxBottom,
-            z: rightCz - perpZ * halfThick,
-          }
-          const fL = {
-            x: leftCx - perpX * halfThick,
-            y: boxBottom,
-            z: leftCz - perpZ * halfThick,
-          }
-          outRakeCutPrisms.push({
-            bottomCorners: [bL, bR, fR, fL],
-            topLeftY,
-            topRightY,
-            color: b.color,
-            highlight: b.highlight,
-          })
-        }
-
-        for (const b of allBrickBoxes) processBoxAgainstRake(b)
-        // Run emitMortarForWall, then re-process the boxes it just
-        // pushed so the cap mortar gets the same slope clip. Snapshot
-        // / splice keeps the per-wall scope local — we only touch the
-        // mortar boxes emitted by THIS call.
-        const mortarStart = out.length
         emitMortarForWall(wall, thicknessMm, totalHeightM, renderingOpenings)
-        if (tp) {
-          const justEmitted = out.splice(mortarStart)
-          // Mortar bands come out as ONE wide box spanning the whole
-          // wall length. Rake-cutting that as a single prism gives a
-          // straight top between rakeLeft and rakeRight — which is
-          // FLAT at body height for a triangle gable (both wall ends
-          // sit at the body line) and misses the peak entirely. The
-          // cap loses its mortar backing and the user sees background
-          // through the joints. Subdividing into narrow strips
-          // (~brick width) means the linear approximation per strip
-          // tracks the rake's actual curvature.
-          const STRIP_WIDTH_M = 0.2
-          for (const b of justEmitted) {
-            if (b.length <= STRIP_WIDTH_M * 1.5) {
-              processBoxAgainstRake(b)
-              continue
+
+        // ── Gable / raked cap mesh ─────────────────────────────────
+        //
+        // The tally already includes the cap area (sq m + lineal m
+        // are what the brick estimate outputs). The 3D pass is
+        // purely cosmetic, so render the cap as a single triangle
+        // or trapezoid prism in the wall's body brick colour instead
+        // of trying to slice individual bricks against the rake.
+        // Clean silhouette, no peak / boundary subdivision maths
+        // needed.
+        if (tp && wallLenM > 0.001) {
+          // Wall start + direction in WORLD METRES (matches the
+          // negated mapping segmentsForStraightWall uses).
+          const wsx = -wall.startX / 1000
+          const wsz = -wall.startY / 1000
+          const wex = -wall.endX / 1000
+          const wez = -wall.endY / 1000
+          const wdx = wex - wsx
+          const wdz = wez - wsz
+          const worldLen = Math.hypot(wdx, wdz)
+          if (worldLen > 0.001) {
+            const wdirX = wdx / worldLen
+            const wdirZ = wdz / worldLen
+            const perpX = -wdirZ
+            const perpZ = wdirX
+            const halfThick = thicknessMm / 1000 / 2
+            const yBody = totalHeightM
+            const capColor = bandColor(brickWallTypePaletteKey, palette)
+            // Pre-compute the 2D silhouette of the cap as a list of
+            // along-X / world-Y points (CCW around the polygon
+            // viewed from +perp, i.e. from "front" of the wall).
+            // Bottom edge runs from along=0 to along=worldLen on the
+            // wall body's top. The top edge follows the rake — a
+            // peak point for triangles, a single sloped line for
+            // trapezoids.
+            const silhouette: Array<{ alongM: number; y: number }> = []
+            silhouette.push({ alongM: 0, y: yBody })
+            if (tp.kind === 'triangle') {
+              const peakAlong =
+                Math.max(0, Math.min(1, tp.peakOffsetFraction)) * worldLen
+              const peakY = yBody + Math.max(0, tp.peakHeightMm) / 1000
+              if (peakAlong > 0.001 && peakAlong < worldLen - 0.001) {
+                silhouette.push({ alongM: peakAlong, y: peakY })
+              } else if (peakAlong <= 0.001) {
+                silhouette[0] = { alongM: 0, y: peakY }
+              } else {
+                silhouette.push({ alongM: worldLen, y: peakY })
+              }
+            } else if (tp.kind === 'trapezoid') {
+              const leftY = yBody + Math.max(0, tp.leftHeightMm) / 1000
+              const rightY = yBody + Math.max(0, tp.rightHeightMm) / 1000
+              silhouette[0] = { alongM: 0, y: leftY }
+              silhouette.push({ alongM: worldLen, y: rightY })
             }
-            const nStrips = Math.ceil(b.length / STRIP_WIDTH_M)
-            const stripLen = b.length / nStrips
-            const startCx = b.cx - wdirX * (b.length / 2)
-            const startCz = b.cz - wdirZ * (b.length / 2)
-            for (let i = 0; i < nStrips; i++) {
-              const localCx = stripLen * (i + 0.5)
-              processBoxAgainstRake({
-                ...b,
-                cx: startCx + wdirX * localCx,
-                cz: startCz + wdirZ * localCx,
-                length: stripLen,
-              })
+            // Always close the silhouette on the right end at the
+            // wall body height (unless trapezoid which already
+            // pushed that point).
+            const last = silhouette[silhouette.length - 1]
+            if (
+              tp.kind === 'triangle' &&
+              !(last.alongM === worldLen && last.y === yBody)
+            ) {
+              silhouette.push({ alongM: worldLen, y: yBody })
             }
+            outCapMeshes.push({
+              silhouette,
+              wallStartWorld: { x: wsx, z: wsz },
+              wdirX,
+              wdirZ,
+              perpX,
+              perpZ,
+              halfThick,
+              color: capColor,
+            })
           }
         }
 
@@ -4355,7 +4159,7 @@ function Scene({
       segments: out,
       wedges: outWedges,
       mortarShells: outMortarShells,
-      rakeCutPrisms: outRakeCutPrisms,
+      capMeshes: outCapMeshes,
       segmentBounds: bounds,
       resolvedCodes: codes,
     }
@@ -4509,12 +4313,11 @@ function Scene({
           edge insets read as real mortar joints. */}
       <CurvedMortarShells shells={mortarShells} />
 
-      {/* Rake-cut bricks + mortar at the boundary of any wall with a
-          gable / raked topProfile. Each prism is a 6-face extruded
-          irregular quad with a sloped top edge so the cap silhouette
-          reads as a clean cut rather than a stepped row of full-height
-          bricks. Empty for walls without a topProfile. */}
-      <RakeCutPrismGroup prisms={rakeCutPrisms} />
+      {/* Solid cap prisms for walls with a gable / raked topProfile.
+          Each cap is a single extruded silhouette in the wall's body
+          brick colour — cosmetic only, tally already accounts for the
+          cap area. Empty array for walls without a topProfile. */}
+      <CapMeshes meshes={capMeshes} />
 
       {/* InitialCameraAim must render BEFORE CADControls so its
           lookAt is applied before the controls seed their spherical
