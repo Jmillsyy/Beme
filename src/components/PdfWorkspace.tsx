@@ -8703,6 +8703,73 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   </p>
                 </section>
 
+                {/* Lintel override — per-opening pick. Lists every
+                    block tagged with the `lintel` role. Empty value =
+                    auto-pick (selectBlockLintel chooses based on the
+                    head allowance).
+                    Smart-fill behaviour at render time:
+                      - If the picked lintel is taller than the head
+                        allowance, it's CLIPPED at the wall top so it
+                        doesn't poke above. Block count still includes
+                        the whole one (you buy and cut on site).
+                      - If it's shorter, normal body courses stack
+                        above it to fill the head zone, with a
+                        height-makeup block dropped in for any
+                        leftover sliver. Same gap-fill logic the
+                        auto-pick path uses.
+                    So the user can pick any lintel and the wall reads
+                    cleanly — no broken stacks. */}
+                {(() => {
+                  const lintelOptions = Object.values(BLOCK_LIBRARY)
+                    .filter((b) => b.roles.includes('lintel'))
+                    .sort(
+                      (a, b) => a.dimensions.heightMm - b.dimensions.heightMm,
+                    )
+                  // Live auto-pick preview against the current head
+                  // allowance — so the "Auto" option shows what the
+                  // engine would choose, and switching back is an
+                  // informed decision.
+                  const wallHeightMod200 = Math.round(wallHeightMm) % 200
+                  const previewExtras: number[] =
+                    wallHeightMod200 === 100
+                      ? [100]
+                      : wallHeightMod200 === 150
+                        ? [150]
+                        : []
+                  const autoPick =
+                    blockOpeningHeadMm > 0
+                      ? selectBlockLintel(blockOpeningHeadMm, previewExtras)?.code ?? null
+                      : null
+                  if (lintelOptions.length === 0) return null
+                  return (
+                    <section>
+                      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                        Lintel
+                      </h4>
+                      <select
+                        value={blockOpeningLintelOverride}
+                        onChange={(e) =>
+                          setBlockOpeningLintelOverride(e.target.value)
+                        }
+                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      >
+                        <option value="">
+                          Auto-pick{autoPick ? ` — currently ${autoPick}` : ''}
+                        </option>
+                        {lintelOptions.map((b) => (
+                          <option key={b.code} value={b.code}>
+                            {b.code} — {b.name} ({b.dimensions.heightMm} mm tall)
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                        Too tall? It's cut at the wall top. Too short?
+                        Normal body courses stack above to fill the head.
+                      </p>
+                    </section>
+                  )
+                })()}
+
                 {/* Validation states */}
                 {tooTall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
