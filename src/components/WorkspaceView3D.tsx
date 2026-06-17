@@ -1124,12 +1124,15 @@ function InstancedSegmentGroup({
 
   // args: [geometry, material, count] — passing nulls lets r3f wire
   // in the <boxGeometry> + <meshStandardMaterial> children below.
-  // The instanced bricks share a single small "depth gradient"
-  // texture — bright at the top edge of each cube, darker at the
-  // bottom — so every brick reads with a subtle 3D depth highlight
-  // matching the cap mesh's painted shading. The texture multiplies
-  // with material.color so it tints to the wall colour per group.
-  const depthTexture = useMemo(() => getInstancedDepthGradient(), [])
+  //
+  // No depth-gradient map here. We briefly textured every instanced
+  // cube with a vertical bright→dark gradient so brick body cubes
+  // matched the cap mesh's painted shading; that's no longer needed
+  // because straight brick walls render through `BrickWallFaces`
+  // (textured polygon) now. Block walls share this instanced path,
+  // and the gradient was muddying their flat solid-colour look —
+  // dropped so blocks render exactly like they did before the brick
+  // refactor.
   return (
     <instancedMesh
       ref={meshRef}
@@ -1142,10 +1145,9 @@ function InstancedSegmentGroup({
           color={color}
           emissive={color}
           emissiveIntensity={0.45}
-          map={depthTexture}
         />
       ) : (
-        <meshLambertMaterial color={color} map={depthTexture} />
+        <meshLambertMaterial color={color} />
       )}
     </instancedMesh>
   )
@@ -1270,49 +1272,16 @@ interface BrickWallFace {
  * textures.
  */
 /**
- * Tiny vertical-gradient texture used by every instanced cube in
- * the body brick / block segments. White at the top, mid-grey at
- * the bottom — multiplies with the material's colour so each cube
- * picks up a free "bright at top, shadow at bottom" depth cue that
- * matches the cap mesh's painted shading. One shared singleton
- * texture covers the whole scene regardless of how many wall
- * types are in play.
+ * Instanced depth-gradient texture removed.
  *
- * Tiny (1×32) — cheap to upload to the GPU, sampled at every
- * fragment but tiny memory footprint.
+ * We used to ship a tiny 1×32 white→grey vertical gradient as a map
+ * on the InstancedSegments material — gave each instanced cube a
+ * "bright at top, dark at bottom" shading cue so brick body cubes
+ * matched the painted cap mesh. With brick body now rendered as a
+ * textured polygon (BrickWallFaces), the gradient was only affecting
+ * BLOCK walls, where it added a muddy grey tint to what should be
+ * a flat solid colour. Removed for that reason.
  */
-const INSTANCED_DEPTH_GRADIENT_SINGLETON: {
-  value: THREE.CanvasTexture | null
-} = { value: null }
-function getInstancedDepthGradient(): THREE.CanvasTexture {
-  if (INSTANCED_DEPTH_GRADIENT_SINGLETON.value) {
-    return INSTANCED_DEPTH_GRADIENT_SINGLETON.value
-  }
-  const canvas = document.createElement('canvas')
-  canvas.width = 1
-  canvas.height = 32
-  const ctx = canvas.getContext('2d')
-  if (ctx) {
-    const grad = ctx.createLinearGradient(0, 0, 0, 32)
-    // V=0 (TOP of the texture) → V=1 (BOTTOM). Three.js BoxGeometry
-    // maps V increasing downward on the side faces, so V=0 is the
-    // top of each cube face. Bright at the top, darker at the
-    // bottom mirrors what the cap mesh already paints.
-    grad.addColorStop(0, 'rgb(255, 255, 255)')
-    grad.addColorStop(0.6, 'rgb(220, 220, 220)')
-    grad.addColorStop(1, 'rgb(170, 170, 170)')
-    ctx.fillStyle = grad
-    ctx.fillRect(0, 0, 1, 32)
-  }
-  const tex = new THREE.CanvasTexture(canvas)
-  tex.wrapS = THREE.RepeatWrapping
-  tex.wrapT = THREE.RepeatWrapping
-  tex.magFilter = THREE.LinearFilter
-  tex.minFilter = THREE.LinearFilter
-  tex.needsUpdate = true
-  INSTANCED_DEPTH_GRADIENT_SINGLETON.value = tex
-  return tex
-}
 
 /**
  * Lerp `color` toward white (amount > 0) or black (amount < 0)
