@@ -9177,120 +9177,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           )
         })()}
 
-      {mode === 'block' && selectedPier && !drawingMode && (() => {
-        const selPierMakeup = selectedPier.pierMakeupId
-          ? pierMakeupsById[selectedPier.pierMakeupId]
-          : undefined
-        // Pattern string for the selection banner. Resolve from the
-        // pier's makeup when set; otherwise fall back to a generic
-        // description so US / UK projects without a makeup yet don't
-        // see AU codes ("40.925 / 20.01") in their banner.
-        const patternStr = selPierMakeup
-          ? selPierMakeup.coursePattern.join(' / ')
-          : selectedPier.type === 'tied'
-            ? 'pier / corner alternating'
-            : 'pier stacked'
-        return (
-          <div className="mb-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-sm text-emerald-200 flex items-center justify-between flex-wrap gap-2">
-            <div>
-              {selectedPier.type === 'tied' ? (
-                <>1 <strong>tied pier</strong> selected — built into its wall, course pattern: <span className="font-mono">{patternStr}</span>.</>
-              ) : (
-                <>1 <strong>freestanding pier</strong> selected — course pattern: <span className="font-mono">{patternStr}</span>.</>
-              )}
-              <div className="text-xs text-emerald-200 mt-0.5">
-                Press <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
-              </div>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <label className="flex items-center gap-2 text-sm">
-                <span>Pier type:</span>
-                <select
-                  value={selectedPier.pierMakeupId ?? ''}
-                  onChange={(e) => handleReassignPierMakeup(selectedPier.id, e.target.value)}
-                  className="px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
-                >
-                  {pierMakeups.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {selectedPier.type === 'freestanding' && (
-                <label className="flex items-center gap-2 text-sm">
-                  <span>Height:</span>
-                  <input
-                    type="number"
-                    min="200"
-                    step="200"
-                    value={selectedPier.heightMm}
-                    onChange={(e) =>
-                      handleUpdateFreestandingPierHeight(
-                        selectedPier.id,
-                        Math.max(200, parseInt(e.target.value || '0', 10))
-                      )
-                    }
-                    className="w-20 px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
-                  />
-                  <span className="text-xs text-emerald-200">mm</span>
-                </label>
-              )}
-              <button
-                onClick={() => handleDeletePier(selectedPier.id)}
-                className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
-              >
-                Delete pier
-              </button>
-              <button
-                onClick={() => setSelectedPierId(null)}
-                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-              >
-                Deselect
-              </button>
-            </div>
-          </div>
-        )
-      })()}
+      {/* Selected-pier + single-wall-properties bars used to live HERE
+          as sticky rows above the canvas, which pushed the PDF view
+          down each time the user selected something — janky vertical
+          shift on every click. They now overlay at the TOP of the
+          canvas viewport instead (see containerRef below) so the
+          canvas stays anchored. Logic is identical, just relocated. */}
 
       {/* Multi-select state (prose + action buttons) lives inline in the
           wall-drawing toolbar above when 2+ items are selected — the old
           standalone banner row has been removed so the chrome height
           doesn't change when a selection is made. */}
-
-      {/* Single-wall properties bar — surfaced only for BRICK mode when
-          exactly one wall is selected. Today it carries the top-shape
-          picker (gable / raked) for the brick area feature. The pattern
-          is the same as the opening-selected and pier-selected bars
-          above: a sticky row in the action zone with inline controls
-          + a Done button to deselect. Block walls keep their flat-top
-          convention so no bar renders for them. */}
-      {mode === 'brick' &&
-        selectedWallId &&
-        (() => {
-          const selWall = currentPageWalls.find((w) => w.id === selectedWallId)
-          if (!selWall) return null
-          // Curved walls don't carry a meaningful "top shape" yet —
-          // arc-clipping a triangle cap is its own geometry problem
-          // (defer to a later commit). Skip the bar for curves.
-          if (selWall.kind === 'curved') return null
-          const dx = selWall.endX - selWall.startX
-          const dy = selWall.endY - selWall.startY
-          const lengthMm = Math.sqrt(dx * dx + dy * dy)
-          return (
-            <WallTopProfileBar
-              // Remount on wall switch so the editor's buffered
-              // mm inputs reset cleanly to the new wall's stored
-              // values instead of carrying typed-but-uncommitted
-              // numbers across.
-              key={selWall.id}
-              wall={selWall}
-              wallLengthMm={lengthMm}
-              onChange={(next) => handleSetWallTopProfile(selWall.id, next)}
-              onDeselect={() => setSelectedWallId(null)}
-            />
-          )
-        })()}
 
       </div>
       )}
@@ -9500,6 +9397,114 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               : 'grab',
         }}
       >
+        {/* Selection overlay banners — pinned to the TOP of the canvas
+            viewport instead of sitting above it in the sticky toolbar
+            zone. Floats over the PDF / Konva layer without shifting
+            layout when a selection happens (no more vertical jump
+            each time the user clicks a wall / pier). pointer-events:
+            none on the wrapper so the canvas underneath still receives
+            wheel / drag events outside the banner footprint; the
+            banners themselves opt back in with pointer-events: auto. */}
+        <div className="absolute top-3 left-3 right-3 z-20 pointer-events-none flex flex-col gap-2">
+          {mode === 'block' && selectedPier && !drawingMode && (() => {
+            const selPierMakeup = selectedPier.pierMakeupId
+              ? pierMakeupsById[selectedPier.pierMakeupId]
+              : undefined
+            const patternStr = selPierMakeup
+              ? selPierMakeup.coursePattern.join(' / ')
+              : selectedPier.type === 'tied'
+                ? 'pier / corner alternating'
+                : 'pier stacked'
+            return (
+              <div className="pointer-events-auto px-4 py-3 bg-emerald-500/10 backdrop-blur-sm border border-emerald-500/40 rounded-lg text-sm text-emerald-200 flex items-center justify-between flex-wrap gap-2 shadow-lg">
+                <div>
+                  {selectedPier.type === 'tied' ? (
+                    <>1 <strong>tied pier</strong> selected — built into its wall, course pattern: <span className="font-mono">{patternStr}</span>.</>
+                  ) : (
+                    <>1 <strong>freestanding pier</strong> selected — course pattern: <span className="font-mono">{patternStr}</span>.</>
+                  )}
+                  <div className="text-xs text-emerald-200 mt-0.5">
+                    Press <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="flex items-center gap-2 text-sm">
+                    <span>Pier type:</span>
+                    <select
+                      value={selectedPier.pierMakeupId ?? ''}
+                      onChange={(e) => handleReassignPierMakeup(selectedPier.id, e.target.value)}
+                      className="px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
+                    >
+                      {pierMakeups.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {selectedPier.type === 'freestanding' && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <span>Height:</span>
+                      <input
+                        type="number"
+                        min="200"
+                        step="200"
+                        value={selectedPier.heightMm}
+                        onChange={(e) =>
+                          handleUpdateFreestandingPierHeight(
+                            selectedPier.id,
+                            Math.max(200, parseInt(e.target.value || '0', 10))
+                          )
+                        }
+                        className="w-20 px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
+                      />
+                      <span className="text-xs text-emerald-200">mm</span>
+                    </label>
+                  )}
+                  <button
+                    onClick={() => handleDeletePier(selectedPier.id)}
+                    className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+                  >
+                    Delete pier
+                  </button>
+                  <button
+                    onClick={() => setSelectedPierId(null)}
+                    className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+                  >
+                    Deselect
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Single-wall properties bar — surfaced only for BRICK mode
+              when exactly one wall is selected. Carries the top-shape
+              picker (gable / raked). Block walls keep flat-top so no
+              bar renders for them. */}
+          {mode === 'brick' &&
+            selectedWallId &&
+            (() => {
+              const selWall = currentPageWalls.find((w) => w.id === selectedWallId)
+              if (!selWall) return null
+              if (selWall.kind === 'curved') return null
+              const dx = selWall.endX - selWall.startX
+              const dy = selWall.endY - selWall.startY
+              const lengthMm = Math.sqrt(dx * dx + dy * dy)
+              return (
+                <div className="pointer-events-auto">
+                  <WallTopProfileBar
+                    key={selWall.id}
+                    wall={selWall}
+                    wallLengthMm={lengthMm}
+                    onChange={(next) => handleSetWallTopProfile(selWall.id, next)}
+                    onDeselect={() => setSelectedWallId(null)}
+                  />
+                </div>
+              )
+            })()}
+        </div>
+
         {/* Bluebeam-style transform-based viewport.
             The container is overflow:hidden (a clipping viewport),
             NOT a scroll container. The page wrapper is absolutely
