@@ -784,6 +784,8 @@ export default function WallTypesPanel({
 
 // ---------- Internal: WallTypeEditorModal ----------
 
+type TabKey = 'basics' | 'composition' | 'pattern' | 'advanced'
+
 /**
  * Three-way segmented picker at the top of the wall / pier editor modals.
  * Drives the kind being created — Wall / Tied pier / Freestanding pier.
@@ -940,13 +942,7 @@ export function WallTypeEditorModal({
     [library]
   )
 
-  // The modal used to be a tabbed editor (Basics / Composition /
-  // Course pattern / Advanced) with a left rail. Detabbed in favour of
-  // a single scrolling form with a "Show advanced options" disclosure
-  // — same pattern as the opening edit modal, no tabs to navigate.
-  // Kept as a single state flag so we remember whether the user
-  // expanded the advanced section while opening / closing the modal.
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<TabKey>('basics')
   // User-level defaults — when creating a NEW wall type, seed match-
   // exact-length and its scope from the user's Settings preferences so
   // the user only sets them once globally. Existing makeups keep their
@@ -1486,31 +1482,53 @@ export function WallTypeEditorModal({
     return () => document.removeEventListener('keydown', onKey)
   }, [onCancel])
 
-  // When the user has switched to a course pattern, the per-role
-  // pickers (body / corner / base / top / half) are no longer
-  // consulted by the calc engine, so we hide the Composition section
-  // entirely. A small note in its place tells the user where to look.
-  const compositionReplacedByPattern = hasCoursePattern
-  // Advanced section is hidden entirely for wedge curves (per-course
-  // overrides / series ranges don't apply to a single wedge band).
-  const advancedAvailable = !wedgeDisablesCourseMix
-  // Auto-expand the disclosure when the user is editing a wall type
-  // that already has advanced content set, so they don't have to
-  // hunt for it to see what's there. New types open with it
-  // collapsed (90% of users never need it). One-shot effect — keyed
-  // off the makeup id so re-renders mid-edit don't slam it open
-  // every time the user types a course number.
+  // Disable the Composition tab when the user has switched to a course
+  // pattern — the bands carry per-course block codes, so the legacy
+  // per-role pickers (body / corner / base / top / half) are no longer
+  // consulted. Showing them as editable would suggest they still matter
+  // and confuse the user about which surface "wins". Same disabled-rail
+  // pattern as wedgeDisablesCourseMix.
+  const compositionDisabledByPattern = hasCoursePattern
+  const tabs: { key: TabKey; label: string; badge?: string; disabled?: boolean; disabledReason?: string }[] = [
+    { key: 'basics', label: 'Basics' },
+    {
+      key: 'composition',
+      label: isCurveMakeup ? 'Composition (curve)' : 'Composition',
+      disabled: compositionDisabledByPattern,
+      disabledReason: compositionDisabledByPattern
+        ? 'Replaced by Course pattern — clear the pattern to re-enable.'
+        : undefined,
+    },
+    {
+      key: 'pattern',
+      label: 'Course pattern',
+      badge: hasCoursePattern ? `${coursePattern.length}` : undefined,
+      disabled: wedgeDisablesCourseMix,
+      disabledReason: wedgeDisablesCourseMix ? 'Not applicable for wedge curves' : undefined,
+    },
+    {
+      key: 'advanced',
+      label: 'Advanced',
+      badge:
+        courseOverrides.length + seriesRanges.length > 0
+          ? `${courseOverrides.length + seriesRanges.length}`
+          : undefined,
+      disabled: wedgeDisablesCourseMix,
+      disabledReason: wedgeDisablesCourseMix ? 'Not applicable for wedge curves' : undefined,
+    },
+    // Piers used to live as a tab inside this modal. They now have their
+    // own "+ Add" / "Edit" buttons in the Pier types section of the panel.
+  ]
+
+  // If the user just enabled course pattern (added the first band) while
+  // sitting on the Composition tab, hop them to Course pattern so they
+  // don't stare at a now-disabled tab with no content. One-shot effect
+  // keyed off the disable flag flipping true.
   useEffect(() => {
-    if (!existing) return
-    if (
-      hasCoursePattern ||
-      courseOverrides.length > 0 ||
-      seriesRanges.length > 0
-    ) {
-      setAdvancedOpen(true)
+    if (compositionDisabledByPattern && activeTab === 'composition') {
+      setActiveTab('pattern')
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existing?.id])
+  }, [compositionDisabledByPattern, activeTab])
 
   return (
     <div
@@ -1567,18 +1585,40 @@ export function WallTypeEditorModal({
           />
         )}
 
-        {/* Single scrollable form — replaces the old 4-tab layout.
-            Sections stack vertically: Basics + Composition always
-            visible (the 90% case), Course pattern + Advanced live
-            inside a single disclosure ("Show advanced options"). Same
-            shape as the opening edit modal — vertically stacked
-            sections, one column, no tabs to navigate. */}
+        {/* Tabs + content */}
         <div className="flex flex-1 min-h-0">
-          <div className="flex-1 overflow-y-auto p-6 min-w-0 space-y-8">
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-                Basics
-              </h3>
+          {/* Left tab rail */}
+          <nav className="w-44 border-r border-ink-600 bg-ink-900/30 p-2 flex flex-col gap-1">
+            {tabs.map((t) => {
+              const isActive = activeTab === t.key
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => !t.disabled && setActiveTab(t.key)}
+                  disabled={t.disabled}
+                  className={`text-left text-sm px-3 py-2 rounded-lg transition-colors flex items-center justify-between gap-2 ${
+                    isActive
+                      ? 'bg-beme-500/15 text-beme-200 border border-beme-500/40'
+                      : t.disabled
+                      ? 'text-ink-600 cursor-not-allowed'
+                      : 'text-ink-300 hover:bg-ink-700/60 border border-transparent'
+                  }`}
+                  title={t.disabled ? t.disabledReason ?? 'Not applicable here' : undefined}
+                >
+                  <span>{t.label}</span>
+                  {t.badge && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-700 text-ink-300">
+                      {t.badge}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </nav>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto p-6 min-w-0">
+            {activeTab === 'basics' && (
               <BasicsTab
                 name={name}
                 setName={setName}
@@ -1596,141 +1636,69 @@ export function WallTypeEditorModal({
                 isCurveMakeup={isCurveMakeup}
                 curveRadiusMm={curveRadiusMm}
                 curveZone={curveZone}
-                onJumpToPattern={() => setAdvancedOpen(true)}
+                onJumpToPattern={() => setActiveTab('pattern')}
               />
-            </section>
+            )}
 
-            <section>
-              <div className="flex items-baseline justify-between mb-3">
-                <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  {isCurveMakeup ? 'Composition (curve)' : 'Composition'}
-                </h3>
-                {compositionReplacedByPattern && (
-                  <span className="text-[11px] text-ink-500">
-                    Replaced by the course pattern below.
-                  </span>
-                )}
-              </div>
-              {compositionReplacedByPattern ? (
-                <p className="text-[11px] text-ink-500 leading-relaxed">
-                  Per-role block pickers are turned off while a course
-                  pattern is active — clear the bands in the advanced
-                  section below to re-enable them.
-                </p>
-              ) : (
-                <CompositionTab
-                  isCurveMakeup={isCurveMakeup}
-                  curveRadiusMm={curveRadiusMm}
-                  curveZone={curveZone}
-                  wedgeRequired={wedgeRequired}
-                  wedgeFeasible={wedgeFeasible}
-                  wedgeBodyBlockCode={wedgeBodyBlockCode}
-                  setWedgeBodyBlockCode={setWedgeBodyBlockCode}
-                  normalBodyBlockCode={normalBodyBlockCode}
-                  setNormalBodyBlockCode={setNormalBodyBlockCode}
-                  baseCourseBlockCode={baseCourseBlockCode}
-                  setBaseCourseBlockCode={setBaseCourseBlockCode}
-                  bodyBlockCode={bodyBlockCode}
-                  setBodyBlockCode={setBodyBlockCode}
-                  topCourseBlockCode={topCourseBlockCode}
-                  setTopCourseBlockCode={setTopCourseBlockCode}
-                  cornerBlockCode={cornerBlockCode}
-                  setCornerBlockCode={setCornerBlockCode}
-                  halfBlockCode={halfBlockCode}
-                  setHalfBlockCode={setHalfBlockCode}
-                  capBlockCode={capBlockCode}
-                  setCapBlockCode={setCapBlockCode}
-                  selectableBlocks={selectableBlocks}
-                />
-              )}
-            </section>
+            {activeTab === 'composition' && (
+              <CompositionTab
+                isCurveMakeup={isCurveMakeup}
+                curveRadiusMm={curveRadiusMm}
+                curveZone={curveZone}
+                wedgeRequired={wedgeRequired}
+                wedgeFeasible={wedgeFeasible}
+                wedgeBodyBlockCode={wedgeBodyBlockCode}
+                setWedgeBodyBlockCode={setWedgeBodyBlockCode}
+                normalBodyBlockCode={normalBodyBlockCode}
+                setNormalBodyBlockCode={setNormalBodyBlockCode}
+                baseCourseBlockCode={baseCourseBlockCode}
+                setBaseCourseBlockCode={setBaseCourseBlockCode}
+                bodyBlockCode={bodyBlockCode}
+                setBodyBlockCode={setBodyBlockCode}
+                topCourseBlockCode={topCourseBlockCode}
+                setTopCourseBlockCode={setTopCourseBlockCode}
+                cornerBlockCode={cornerBlockCode}
+                setCornerBlockCode={setCornerBlockCode}
+                halfBlockCode={halfBlockCode}
+                setHalfBlockCode={setHalfBlockCode}
+                capBlockCode={capBlockCode}
+                setCapBlockCode={setCapBlockCode}
+                selectableBlocks={selectableBlocks}
+              />
+            )}
 
-            {/* Advanced disclosure — collapsed by default for new
-                types so casual users never see the dense overrides /
-                series-ranges fields. Auto-opens when editing a type
-                that already has advanced content (see the effect
-                above). For wedge curves the section is hidden
-                entirely — none of these fields apply there. */}
-            {advancedAvailable && (() => {
-              const advancedCount =
-                (hasCoursePattern ? coursePattern.length : 0) +
-                courseOverrides.length +
-                seriesRanges.length
-              return (
-                <section className="border-t border-ink-700 pt-6">
-                  <button
-                    type="button"
-                    onClick={() => setAdvancedOpen((v) => !v)}
-                    className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-300 hover:text-ink-100 transition-colors"
-                    aria-expanded={advancedOpen}
-                  >
-                    <span
-                      className={`inline-block transition-transform ${advancedOpen ? 'rotate-90' : ''}`}
-                      aria-hidden="true"
-                    >
-                      ›
-                    </span>
-                    Show advanced options
-                    {advancedCount > 0 && (
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-700 text-ink-300 normal-case tracking-normal">
-                        {advancedCount}
-                      </span>
-                    )}
-                  </button>
-                  {advancedOpen && (
-                    <div className="mt-5 space-y-8">
-                      <div>
-                        <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-                          Course pattern
-                          {hasCoursePattern && (
-                            <span className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-700 text-ink-300 normal-case tracking-normal">
-                              {coursePattern.length}
-                            </span>
-                          )}
-                        </h4>
-                        <PatternTab
-                          coursePattern={coursePattern}
-                          hasCoursePattern={hasCoursePattern}
-                          patternTotalHeight={patternTotalHeight}
-                          patternTotalCourses={patternTotalCourses}
-                          library={library}
-                          selectableBlocks={selectableBlocks}
-                          addBand={addBand}
-                          updateBand={updateBand}
-                          removeBand={removeBand}
-                          moveBand={moveBand}
-                          convertCurrentToBands={convertCurrentToBands}
-                          clearCoursePattern={clearCoursePattern}
-                          hasOverrides={courseOverrides.length > 0}
-                        />
-                      </div>
+            {activeTab === 'pattern' && (
+              <PatternTab
+                coursePattern={coursePattern}
+                hasCoursePattern={hasCoursePattern}
+                patternTotalHeight={patternTotalHeight}
+                patternTotalCourses={patternTotalCourses}
+                library={library}
+                selectableBlocks={selectableBlocks}
+                addBand={addBand}
+                updateBand={updateBand}
+                removeBand={removeBand}
+                moveBand={moveBand}
+                convertCurrentToBands={convertCurrentToBands}
+                clearCoursePattern={clearCoursePattern}
+                hasOverrides={courseOverrides.length > 0}
+              />
+            )}
 
-                      <div className="border-t border-ink-700 pt-6">
-                        <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-                          Per-course overrides &amp; series ranges
-                          {courseOverrides.length + seriesRanges.length > 0 && (
-                            <span className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-700 text-ink-300 normal-case tracking-normal">
-                              {courseOverrides.length + seriesRanges.length}
-                            </span>
-                          )}
-                        </h4>
-                        <AdvancedTab
-                          courseOverrides={courseOverrides}
-                          addOverride={addOverride}
-                          updateOverride={updateOverride}
-                          removeOverride={removeOverride}
-                          seriesRanges={seriesRanges}
-                          addSeriesRange={addSeriesRange}
-                          updateSeriesRange={updateSeriesRange}
-                          removeSeriesRange={removeSeriesRange}
-                          selectableBlocks={selectableBlocks}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </section>
-              )
-            })()}
+            {activeTab === 'advanced' && (
+              <AdvancedTab
+                courseOverrides={courseOverrides}
+                addOverride={addOverride}
+                updateOverride={updateOverride}
+                removeOverride={removeOverride}
+                seriesRanges={seriesRanges}
+                addSeriesRange={addSeriesRange}
+                updateSeriesRange={updateSeriesRange}
+                removeSeriesRange={removeSeriesRange}
+                selectableBlocks={selectableBlocks}
+              />
+            )}
+
           </div>
 
           {/* Right rail: live visual stack preview. Shows on every tab so
@@ -1752,8 +1720,8 @@ export function WallTypeEditorModal({
             </div>
             <p className="text-[10px] text-ink-500 mb-3 leading-snug">
               {hasCoursePattern
-                ? 'From the bands you defined under Show advanced options.'
-                : 'Derived from Basics + Composition. Open Show advanced options for full course-by-course control.'}
+                ? 'From the bands you defined on the Course pattern tab.'
+                : 'Derived from Basics + Composition. Switch to Course pattern for full control.'}
             </p>
             <div className="flex-1 min-h-0">
               <CoursePatternPreview
@@ -1782,7 +1750,7 @@ export function WallTypeEditorModal({
           <p className="text-[11px] text-ink-500 hidden sm:block">
             {hasCoursePattern
               ? 'Height is computed from the course pattern.'
-              : 'Open advanced options for walls with mixed-height courses.'}
+              : 'Use the Course pattern tab for walls with mixed-height courses.'}
           </p>
           <div className="flex gap-2 ml-auto">
             <button
