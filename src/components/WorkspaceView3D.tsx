@@ -2500,7 +2500,65 @@ function Scene({
         // before; the smaller course height also means partial-height
         // openings line up against course boundaries cleanly.
         const heightMm = resolveWallHeightMm(wall, makeupsById, brickMakeupsById)
-        const totalHeightM = heightMm / 1000
+        // ── Gable / raked cap support ──────────────────────────────
+        //
+        // A wall with `topProfile` set carries extra brick area above
+        // its flat-top rectangular body. The brick tally already
+        // includes that area (see lib/wallTopProfile.ts +
+        // brickCalc.ts); the 3D pass extends the brick course range
+        // upward to cover the cap, then post-filters the generated
+        // boxes against the rake line so the silhouette reads as the
+        // configured triangle / trapezoid. Stepped-course silhouette
+        // is acceptable v1; per-boundary brick clipping is a polish
+        // pass later.
+        //
+        // Wall's flat-top rectangular height in metres (kept around
+        // so the rake-line check below can use it as the baseline).
+        const wallBodyHeightM = heightMm / 1000
+        // Per-along-X rise above the wall body, in METRES, derived
+        // from the topProfile. Returns 0 when no profile is set or
+        // for along values outside the wall span.
+        const tp = wall.topProfile
+        // length-along-wall in metres (computed inside segmentsFor
+        // StraightWall but we need it here for the rake function).
+        const wallLenM = Math.hypot(
+          (wall.endX - wall.startX) / 1000,
+          (wall.endY - wall.startY) / 1000,
+        )
+        const rakeRiseM = (alongM: number): number => {
+          if (!tp || wallLenM <= 0) return 0
+          if (tp.kind === 'triangle') {
+            const peakX = Math.max(0, Math.min(1, tp.peakOffsetFraction)) * wallLenM
+            const peakM = Math.max(0, tp.peakHeightMm) / 1000
+            // Two-sided linear: rises from 0 at wall ends to peakM at peakX.
+            if (peakX <= 0) {
+              // Peak at start: right side descends from peakM at 0 to 0 at length.
+              return peakM * Math.max(0, (wallLenM - alongM) / wallLenM)
+            }
+            if (peakX >= wallLenM) {
+              // Peak at end: left side rises from 0 at 0 to peakM at length.
+              return peakM * Math.max(0, alongM / wallLenM)
+            }
+            if (alongM <= peakX) return peakM * (alongM / peakX)
+            return peakM * ((wallLenM - alongM) / (wallLenM - peakX))
+          }
+          if (tp.kind === 'trapezoid') {
+            const left = Math.max(0, tp.leftHeightMm) / 1000
+            const right = Math.max(0, tp.rightHeightMm) / 1000
+            const t = wallLenM > 0 ? Math.max(0, Math.min(1, alongM / wallLenM)) : 0
+            return left + (right - left) * t
+          }
+          return 0
+        }
+        const maxRiseM = tp
+          ? tp.kind === 'triangle'
+            ? Math.max(0, tp.peakHeightMm) / 1000
+            : Math.max(
+                0,
+                Math.max(tp.leftHeightMm, tp.rightHeightMm),
+              ) / 1000
+          : 0
+        const totalHeightM = wallBodyHeightM + maxRiseM
 
         // Resolve brick dimensions from the brick library via the
         // makeup's brickTypeCode. Falls back to AU standard if the
@@ -2648,7 +2706,14 @@ function Scene({
         const brickCourses: ResolvedCourse[] = []
         let cursorMm = 0
         let courseIdx = 0
-        while (cursorMm < heightMm - 0.5) {
+        // Course generation runs up to the EXTENDED top (wall body
+        // + cap rise). For walls without a topProfile this is the
+        // same as `heightMm` — no behaviour change. For walls with a
+        // gable / raked cap, the extra courses cover the cap; the
+        // post-filter against the rake line below drops any box
+        // whose centre sits above the slope at its along-X.
+        const renderTopMm = heightMm + maxRiseM * 1000
+        while (cursorMm < renderTopMm - 0.5) {
           const courseNum = courseIdx + 1
           const typeCode = brickTypeForCourse(courseNum)
           // A course is a "body default" when NO range applies — those
@@ -2662,7 +2727,7 @@ function Scene({
           const courseModMm = courseBrickHeight + BRICK_MORTAR_MM
           const { fullKey, halfKey } = ensureSyntheticEntries(typeCode, isBodyCourse)
           const y0Mm = cursorMm
-          const y1Mm = Math.min(heightMm, cursorMm + courseBrickHeight)
+          const y1Mm = Math.min(renderTopMm, cursorMm + courseBrickHeight)
           if (y1Mm - y0Mm > 0.5) {
             brickCourses.push({
               courseNumber: courseNum,
@@ -3024,15 +3089,48 @@ function Scene({
         }
 
         const renderingOpenings = [...brickOpenings, ...trimGhostOpenings]
-        out.push(
-          ...segmentsForStraightWall(
-            wall, renderingOpenings, thicknessMm, brickCourses, totalHeightM,
-            'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap,
-            /* disableBlockLintels */ true,
-            wallHeightMmByWallId,
-          )
+        const allBrickBoxes = segmentsForStraightWall(
+          wall, renderingOpenings, thicknessMm, brickCourses, totalHeightM,
+          'stretcher', brickColorMap, brickLibrary, brickCubeThicknessMap, wallsByIdMap,
+          /* disableBlockLintels */ true,
+          wallHeightMmByWallId,
         )
-        emitMortarForWall(wall, thicknessMm, totalHeightM, renderingOpenings)
+        // Gable / raked cap post-filter. Each brick box's centre is
+        // projected onto the wall's along-X axis; if the centre Y
+        // sits above the rake line at that along position, drop the
+        // box. Boxes entirely below the wall body height (cy <
+        // wallBodyHeightM) skip the test for speed — they're never
+        // affected by the cap.
+        const filteredBrickBoxes = tp
+          ? (() => {
+              // Wall start + direction in WORLD METRES (matches the
+              // negated mapping segmentsForStraightWall uses, so cx /
+              // cz line up against this projection).
+              const wsx = -wall.startX / 1000
+              const wsz = -wall.startY / 1000
+              const wex = -wall.endX / 1000
+              const wez = -wall.endY / 1000
+              const wdx = wex - wsx
+              const wdz = wez - wsz
+              const wlen = Math.hypot(wdx, wdz)
+              if (wlen <= 0) return allBrickBoxes
+              const wdirX = wdx / wlen
+              const wdirZ = wdz / wlen
+              return allBrickBoxes.filter((b) => {
+                if (b.cy <= wallBodyHeightM + 0.001) return true
+                const along = (b.cx - wsx) * wdirX + (b.cz - wsz) * wdirZ
+                const rakeM = wallBodyHeightM + rakeRiseM(along)
+                return b.cy <= rakeM
+              })
+            })()
+          : allBrickBoxes
+        out.push(...filteredBrickBoxes)
+        // Mortar emission uses the wall body height — the cap is
+        // brick-only; mortar bands above the body sit inside the
+        // sloped silhouette and would render as visible joints
+        // extending past the rake. Constrain to body height so the
+        // gable face reads as continuous brick.
+        emitMortarForWall(wall, thicknessMm, wallBodyHeightM, renderingOpenings)
 
         // ── Jamb mortar cover ──────────────────────────────────────
         //
