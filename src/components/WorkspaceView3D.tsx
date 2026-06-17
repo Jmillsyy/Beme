@@ -1189,45 +1189,43 @@ interface CapMesh {
 }
 
 /**
- * Procedural brick-pattern texture for the gable cap. Built ONCE per
- * page load — the texture is shared across every cap mesh and tinted
- * to the wall's brick colour by the material below.
+ * Procedural brick-pattern texture for the gable cap.
  *
- * White (255) brick body so the material's `color` multiplies through
- * cleanly to the full wall colour (white × colour = colour). Mortar
- * joints are mid-grey (~85) so they multiply DOWN to a darker tint
- * of the wall colour at the joints — reads as mortar against any
- * brick body colour without having to special-case per wall type.
+ * Built per (brickColor, mortarColor) pair: brick body painted at
+ * the EXACT wall colour, mortar joints painted at the SHARED
+ * MORTAR_COLOR (#c4bfb6 — same warm beige the body brickwork uses).
+ * No multiply-tint magic; what's painted in the canvas is what
+ * shows on the cap. Cap mortar reads identical to body mortar
+ * regardless of wall colour.
  *
  * Pattern: one brick wide × two courses tall, with the second course
  * offset by half a brick — produces a proper stretcher bond when the
  * texture tiles via RepeatWrapping.
+ *
+ * Cheap: one 240×172 canvas per UNIQUE wall colour, generated lazily
+ * on first cap render of that colour. Disposed when the colour leaves
+ * the project. With ~4 brick wall types per estimate that's 4 tiny
+ * textures.
  */
-function makeBrickPatternTexture(): THREE.CanvasTexture {
+function makeBrickPatternTexture(
+  brickColor: string,
+  mortarColor: string,
+): THREE.CanvasTexture {
   const canvas = document.createElement('canvas')
-  // 240 × 172 — ONE brick wide (240 = 230 face + 10 mortar) × TWO
-  // courses tall (172 = 2 × 86 modular). Tiles to give stretcher bond.
   canvas.width = 240
   canvas.height = 172
   const ctx = canvas.getContext('2d')
   if (ctx) {
-    // Brick body — opaque white. Multiplied by material colour →
-    // full wall colour.
-    ctx.fillStyle = '#ffffff'
+    ctx.fillStyle = brickColor
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    // Mortar joints — mid-grey. Multiplied by material colour →
-    // darker tint at the joints (e.g. mid-grey × orange = darker
-    // orange), which reads as mortar without us needing a per-wall
-    // shader.
-    ctx.fillStyle = '#555555'
-    // Horizontal mortar joints at course boundaries (y = 0, 86, 172).
+    ctx.fillStyle = mortarColor
+    // Horizontal mortar joints at course boundaries.
     ctx.fillRect(0, 0, canvas.width, 4)
     ctx.fillRect(0, 84, canvas.width, 4)
     ctx.fillRect(0, 168, canvas.width, 4)
-    // Vertical mortar joints — course 1 (top half, y ∈ [4, 84])
-    // has bricks ending at the texture's right edge, so the joint
-    // sits at x = 0 / 240. Course 2 (bottom half, y ∈ [88, 168])
-    // is offset by half a brick so its joint sits at x = 120.
+    // Vertical mortar joints — course 1 (top, y ∈ [4, 84]) joints
+    // at the texture's edges (x = 0 / 240); course 2 (bottom,
+    // y ∈ [88, 168]) joints offset by half a brick at x = 120.
     ctx.fillRect(0, 4, 4, 80)
     ctx.fillRect(236, 4, 4, 80)
     ctx.fillRect(118, 88, 4, 80)
@@ -1235,23 +1233,9 @@ function makeBrickPatternTexture(): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas)
   tex.wrapS = THREE.RepeatWrapping
   tex.wrapT = THREE.RepeatWrapping
-  // Crisp-edge mortar — nearest-neighbour sampling stops the lines
-  // softening into a blurry haze as the camera moves.
   tex.magFilter = THREE.NearestFilter
   tex.minFilter = THREE.NearestFilter
   tex.needsUpdate = true
-  return tex
-}
-
-const BRICK_PATTERN_TEXTURE_SINGLETON: { value: THREE.CanvasTexture | null } = {
-  value: null,
-}
-function getBrickPatternTexture(): THREE.CanvasTexture {
-  if (BRICK_PATTERN_TEXTURE_SINGLETON.value) {
-    return BRICK_PATTERN_TEXTURE_SINGLETON.value
-  }
-  const tex = makeBrickPatternTexture()
-  BRICK_PATTERN_TEXTURE_SINGLETON.value = tex
   return tex
 }
 
@@ -1359,16 +1343,22 @@ function CapMeshGroupMesh({
     }
   }, [geometry])
 
-  // Shared singleton texture — transparent brick body so the
-  // material colour shows through, opaque gray mortar joints.
-  // Same texture instance across every cap mesh; only the material's
-  // `color` differs per wall type, which tints the body without
-  // affecting the mortar shade.
-  const texture = useMemo(() => getBrickPatternTexture(), [])
+  // Per-wall-type texture: brick body painted at the wall colour,
+  // mortar joints at the shared MORTAR_COLOR. Material colour stays
+  // white so the texture renders straight through without tinting.
+  const texture = useMemo(
+    () => makeBrickPatternTexture(color, MORTAR_COLOR),
+    [color],
+  )
+  useEffect(() => {
+    return () => {
+      texture.dispose()
+    }
+  }, [texture])
 
   return (
     <mesh geometry={geometry} frustumCulled={false}>
-      <meshLambertMaterial color={color} map={texture} transparent={false} />
+      <meshLambertMaterial color="#ffffff" map={texture} />
     </mesh>
   )
 }
