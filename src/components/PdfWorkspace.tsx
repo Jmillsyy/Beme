@@ -4503,6 +4503,34 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }
 
+  /**
+   * Per-wall height override setter.
+   *
+   * Drives the inline "Height" input on the single-wall canvas
+   * banner. Passing `undefined` strips the override and reverts the
+   * wall to its wall-type default — same field-deletion pattern
+   * `handleSetWallTopProfile` uses so saved JSON shapes stay
+   * shape-identical to walls created before per-wall overrides.
+   */
+  function handleSetWallHeightOverride(
+    wallId: string,
+    next: number | undefined,
+  ) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const updated = pageWalls.map((w) => {
+        if (w.id !== wallId) return w
+        if (next === undefined) {
+          const { heightMmOverride: _drop, ...rest } = w
+          void _drop
+          return rest as Wall
+        }
+        return { ...w, heightMmOverride: next }
+      })
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
   // ---------- Opening handlers ----------
 
   const handleOpeningPlaced = useCallback((wallId: string, startAlongWallMm: number, widthMm: number) => {
@@ -9419,25 +9447,24 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               : selectedPier.type === 'tied'
                 ? 'pier / corner alternating'
                 : 'pier stacked'
+            // Restyled to the SHARED dark-floating-panel surface used
+            // by WallTopProfileBar — emerald accent dropped so all
+            // canvas-click overlays read as one visual language. The
+            // pier-specific info still surfaces via the `Pier:` label
+            // and pattern monospace text, no colour cue needed.
             return (
-              <div className="pointer-events-auto px-4 py-3 bg-emerald-500/10 backdrop-blur-sm border border-emerald-500/40 rounded-lg text-sm text-emerald-200 flex items-center justify-between flex-wrap gap-2 shadow-lg">
-                <div>
-                  {selectedPier.type === 'tied' ? (
-                    <>1 <strong>tied pier</strong> selected — built into its wall, course pattern: <span className="font-mono">{patternStr}</span>.</>
-                  ) : (
-                    <>1 <strong>freestanding pier</strong> selected — course pattern: <span className="font-mono">{patternStr}</span>.</>
-                  )}
-                  <div className="text-xs text-emerald-200 mt-0.5">
-                    Press <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
+              <div className="pointer-events-auto px-4 py-3 bg-ink-800/95 backdrop-blur-md border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3 shadow-xl">
+                <div className="flex items-center gap-3 flex-wrap min-w-0">
+                  <div className="font-medium whitespace-nowrap">
+                    {selectedPier.type === 'tied' ? 'Tied pier' : 'Freestanding pier'}
+                    <span className="text-ink-400 font-normal"> · <span className="font-mono text-ink-200">{patternStr}</span></span>
                   </div>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <label className="flex items-center gap-2 text-sm">
-                    <span>Pier type:</span>
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <span className="text-ink-300">Type</span>
                     <select
                       value={selectedPier.pierMakeupId ?? ''}
                       onChange={(e) => handleReassignPierMakeup(selectedPier.id, e.target.value)}
-                      className="px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
+                      className="px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                     >
                       {pierMakeups.map((m) => (
                         <option key={m.id} value={m.id}>
@@ -9447,8 +9474,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     </select>
                   </label>
                   {selectedPier.type === 'freestanding' && (
-                    <label className="flex items-center gap-2 text-sm">
-                      <span>Height:</span>
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <span className="text-ink-300">Height</span>
                       <input
                         type="number"
                         min="200"
@@ -9460,50 +9487,127 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                             Math.max(200, parseInt(e.target.value || '0', 10))
                           )
                         }
-                        className="w-20 px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
+                        className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
                       />
-                      <span className="text-xs text-emerald-200">mm</span>
+                      <span className="text-ink-400">mm</span>
                     </label>
                   )}
+                </div>
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleDeletePier(selectedPier.id)}
-                    className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
+                    className="px-3 py-1.5 rounded-lg border border-rose-500/40 text-rose-300 text-xs hover:bg-rose-500/10 transition-colors"
                   >
-                    Delete pier
+                    Delete
                   </button>
                   <button
                     onClick={() => setSelectedPierId(null)}
-                    className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+                    className="px-3 py-1.5 rounded-lg border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
                   >
-                    Deselect
+                    Done
                   </button>
                 </div>
               </div>
             )
           })()}
 
-          {/* Single-wall properties bar — surfaced only for BRICK mode
-              when exactly one wall is selected. Carries the top-shape
-              picker (gable / raked). Block walls keep flat-top so no
-              bar renders for them. */}
-          {mode === 'brick' &&
+          {/* Single-wall properties bar — surfaces for BOTH modes now
+              so a single-wall selection always reads as "something is
+              selected, here are its props". Brick mode carries the
+              top-shape picker (gable / raked); block mode shows
+              length + makeup + height. Both share the dark floating
+              surface, matching the pier banner above. */}
+          {(mode === 'brick' || mode === 'block') &&
             selectedWallId &&
             (() => {
               const selWall = currentPageWalls.find((w) => w.id === selectedWallId)
               if (!selWall) return null
-              if (selWall.kind === 'curved') return null
               const dx = selWall.endX - selWall.startX
               const dy = selWall.endY - selWall.startY
               const lengthMm = Math.sqrt(dx * dx + dy * dy)
+              if (mode === 'brick') {
+                // Curved walls don't carry a meaningful "top shape" yet —
+                // arc-clipping a triangle cap is its own geometry problem.
+                if (selWall.kind === 'curved') return null
+                return (
+                  <div className="pointer-events-auto">
+                    <WallTopProfileBar
+                      key={selWall.id}
+                      wall={selWall}
+                      wallLengthMm={lengthMm}
+                      onChange={(next) => handleSetWallTopProfile(selWall.id, next)}
+                      onDeselect={() => setSelectedWallId(null)}
+                    />
+                  </div>
+                )
+              }
+              // Block-mode single-wall banner — same dark floating
+              // surface as the brick variant + pier banner. Surfaces
+              // makeup name, length, and an inline height override so
+              // single-wall selection isn't a UI dead end like it used
+              // to be.
+              const selMakeup = makeupsById[selWall.makeupId]
+              const makeupHeightMm = selMakeup?.heightMm ?? 0
+              const effectiveHeightMm =
+                selWall.heightMmOverride ?? makeupHeightMm
               return (
-                <div className="pointer-events-auto">
-                  <WallTopProfileBar
-                    key={selWall.id}
-                    wall={selWall}
-                    wallLengthMm={lengthMm}
-                    onChange={(next) => handleSetWallTopProfile(selWall.id, next)}
-                    onDeselect={() => setSelectedWallId(null)}
-                  />
+                <div className="pointer-events-auto px-4 py-3 bg-ink-800/95 backdrop-blur-md border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3 shadow-xl">
+                  <div className="flex items-center gap-3 flex-wrap min-w-0">
+                    <div className="font-medium whitespace-nowrap">
+                      {selMakeup?.name ?? 'Wall'}
+                      <span className="text-ink-400 font-normal"> · {(lengthMm / 1000).toFixed(2)} m</span>
+                    </div>
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <span className="text-ink-300">Height</span>
+                      <input
+                        type="number"
+                        min="200"
+                        step="200"
+                        value={Math.round(effectiveHeightMm)}
+                        onChange={(e) => {
+                          const next = Math.max(
+                            200,
+                            parseInt(e.target.value || '0', 10),
+                          )
+                          // Only stamp an override when the value differs
+                          // from the makeup default — otherwise clear it so
+                          // future makeup edits propagate.
+                          if (next === makeupHeightMm) {
+                            handleSetWallHeightOverride(selWall.id, undefined)
+                          } else {
+                            handleSetWallHeightOverride(selWall.id, next)
+                          }
+                        }}
+                        className="w-24 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                      <span className="text-ink-400">mm</span>
+                      {selWall.heightMmOverride !== undefined && (
+                        <button
+                          onClick={() =>
+                            handleSetWallHeightOverride(selWall.id, undefined)
+                          }
+                          className="text-[10px] text-ink-400 hover:text-ink-200 underline"
+                          title={`Reset to wall type default (${makeupHeightMm} mm)`}
+                        >
+                          reset
+                        </button>
+                      )}
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleWallDelete(selWall.id)}
+                      className="px-3 py-1.5 rounded-lg border border-rose-500/40 text-rose-300 text-xs hover:bg-rose-500/10 transition-colors"
+                    >
+                      Delete
+                    </button>
+                    <button
+                      onClick={() => setSelectedWallId(null)}
+                      className="px-3 py-1.5 rounded-lg border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
                 </div>
               )
             })()}
