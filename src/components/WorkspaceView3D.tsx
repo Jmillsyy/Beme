@@ -3671,7 +3671,13 @@ function Scene({
             }
 
             // ── Head trim ──
-            if (trimMakeup.headBrickCode) {
+            // No-head openings are notches at the top of the wall —
+            // the opening's top edge IS the wall top, so there's no
+            // course to lay a head trim band on. Skip emission so we
+            // don't paint a phantom band stretching across the wall
+            // top above the notch. Tally side already skips the head
+            // lineal for noHead (see brickCalc.ts).
+            if (trimMakeup.headBrickCode && !op.noHead) {
               const headType = BRICK_LIBRARY[trimMakeup.headBrickCode]
               const {
                 faceWMm: headBrickWidthMm,
