@@ -586,9 +586,11 @@ export function calculateBrickTally(
     // fallback matters because openings created in block mode
     // don't persist a kind field — they only carry sill / head
     // measurements, and a door is geometrically a sill=0 opening.
+    // noHead openings also skip — they're raw cutouts with no
+    // decorative sill course (matches the 3D render skip).
     const isDoor =
       op.kind === 'door' || (op.sillHeightMm ?? 0) <= 0
-    if (!isDoor) {
+    if (!isDoor && !op.noHead) {
       const sillCode = makeup.sillBrickCode || primaryBrickCode
       if (sillCode) {
         sillLinealMmByType[sillCode] =

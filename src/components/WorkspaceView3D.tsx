@@ -3591,7 +3591,13 @@ function Scene({
             // ── Sill trim ──
             // Doors skip the sill trim — opening reaches the floor,
             // so there's no sill course to lay bricks under.
-            if (trimMakeup.sillBrickCode && op.kind !== 'door') {
+            // noHead openings also skip — the brickwork above the
+            // opening is gone, so adding decorative sill trim
+            // doesn't make architectural sense (and the trim was
+            // rendering as small floating columns inside the
+            // extended void). Same intent as the head-trim skip:
+            // a noHead opening is a raw cutout.
+            if (trimMakeup.sillBrickCode && op.kind !== 'door' && !op.noHead) {
               const sillType = BRICK_LIBRARY[trimMakeup.sillBrickCode]
               const {
                 faceWMm: sillBrickWidthMm,
