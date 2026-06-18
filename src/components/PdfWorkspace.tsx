@@ -1247,8 +1247,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    *  window=wallH-300-openingH) and sill-trim suppression in 3D. */
   const [brickOpeningKind, setBrickOpeningKind] = useState<'window' | 'door'>('window')
   /** Brick modal: "No head" — the opening runs to the top of the wall
-   *  (no head course, brickwork above removed from the area). */
+   *  (no head course, brickwork above removed from the area). Decoupled
+   *  from position now — doesn't change where the opening sits, just
+   *  opens up the head zone above wherever it lands. */
   const [brickOpeningNoHead, setBrickOpeningNoHead] = useState(false)
+  /** Brick modal: optional head-allowance override (mm from wall top
+   *  to top of opening). Blank string = use kind default (door sits
+   *  at floor, window auto-anchors so head lands 300mm from top).
+   *  Anything else parses to a number and overrides the kind-derived
+   *  sill at save time: sill = wallH − headAllowance − openingHeight.
+   *  Lets the user specify a custom-height window without losing the
+   *  "type height + Enter" minimal flow. */
+  const [brickOpeningHeadAllowanceMm, setBrickOpeningHeadAllowanceMm] = useState<string>('')
   /** Block-mode per-opening lintel override. Empty string = auto-pick
    *  (smallest covering lintel-tagged block). Any other value is a
    *  BlockCode that must reference a lintel-tagged entry in the library
@@ -2861,6 +2871,38 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           setBrickOpeningHeightMm(opening.heightMm)
           setBrickOpeningKind(opening.kind ?? 'window')
           setBrickOpeningNoHead(opening.noHead ?? false)
+          // Re-derive the head allowance from the saved sill so the
+          // override field shows what the user (or the kind default)
+          // produced. If it matches the kind default we leave the
+          // field blank — keeps "default" as the visible state. If
+          // it doesn't match, the explicit value populates the input
+          // so the user can see and tweak it.
+          const editPageWalls = wallsByPage[currentPage] ?? []
+          const editBrickWall = editPageWalls.find((w) => w.id === opening.wallId)
+          const editBrickMakeup = editBrickWall?.makeupId
+            ? brickMakeups.find((m) => m.id === editBrickWall.makeupId)
+            : undefined
+          const editBrickWallH =
+            editBrickWall?.heightMmOverride ??
+            editBrickMakeup?.heightMm ??
+            brickSettings.defaultWallHeightMm
+          const savedHeadAllowance = Math.max(
+            0,
+            editBrickWallH - opening.sillHeightMm - opening.heightMm,
+          )
+          const defaultHeadAllowance =
+            editBrickWallH -
+            deriveSillMm(
+              opening.kind ?? 'window',
+              opening.heightMm,
+              editBrickWallH,
+            ) -
+            opening.heightMm
+          setBrickOpeningHeadAllowanceMm(
+            Math.abs(savedHeadAllowance - defaultHeadAllowance) <= 1
+              ? ''
+              : String(Math.round(savedHeadAllowance)),
+          )
         } else {
           // Block modal asks for HEAD, not opening height. Derive
           // head from the persisted (sill, openingH) + the wall's
@@ -4545,6 +4587,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // over from the last edit session so the modal doesn't open
     // pre-pinned to a previously edited block.
     setBlockOpeningLintelOverride('')
+    // Reset brick head-allowance override so fresh placements show
+    // the kind default (blank input). Edit-load re-derives below.
+    setBrickOpeningHeadAllowanceMm('')
     setPlacingOpening(false)
   }, [])
 
@@ -4647,19 +4692,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickMakeup?.heightMm ??
         brickSettings.defaultWallHeightMm
       openingHeightForSave = brickOpeningHeightMm
-      // noHead = the opening is a NOTCH at the TOP of the wall — the
-      // opening sits flush with the wall top with no head course
-      // above. A 300 mm noHead opening reads as a 300 mm deep gap
-      // cut out of the top of the wall, with full-height brickwork
-      // below.
-      //
-      // Sill = wallH - openingHeight puts the opening's bottom that
-      // distance below the wall top so the void's top edge IS the
-      // wall top. adjustOpeningForRender does an effH = wallH - sill
-      // pass for noHead which lines up exactly — no extension
-      // happens, the void stays the typed height.
-      sillForSave = brickOpeningNoHead
-        ? Math.max(0, brickWallHeightMm - brickOpeningHeightMm)
+      // Position rule: explicit head allowance (if set) wins over
+      // the kind default. Sill = wallH − headAllowance − height.
+      // Blank head allowance falls back to deriveSillMm which uses
+      // the kind default (door = floor, window = 300mm from top).
+      // noHead is now position-independent — it doesn't move the
+      // opening, just extends the void above to the wall top
+      // (handled at render time in adjustOpeningForRender).
+      const parsedHeadAllowance = brickOpeningHeadAllowanceMm.trim() !== ''
+        ? Number.parseInt(brickOpeningHeadAllowanceMm.trim(), 10)
+        : NaN
+      sillForSave = Number.isFinite(parsedHeadAllowance) && parsedHeadAllowance >= 0
+        ? Math.max(
+            0,
+            brickWallHeightMm - parsedHeadAllowance - brickOpeningHeightMm,
+          )
         : deriveSillMm(
             brickOpeningKind,
             brickOpeningHeightMm,
@@ -8942,28 +8989,53 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     />
                     No head
                   </label>
+                  {/* Optional head-allowance override. Blank = kind
+                      default (door = floor, window = 300 mm from
+                      top). Anything else positions the opening so
+                      its top sits that distance below the wall top.
+                      Decoupled from noHead — purely a position knob. */}
+                  <label className="flex items-center gap-1.5 text-xs text-ink-300">
+                    <span>Head allowance</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      placeholder="auto"
+                      value={brickOpeningHeadAllowanceMm}
+                      onChange={(e) =>
+                        setBrickOpeningHeadAllowanceMm(
+                          e.target.value.replace(/[^0-9]/g, ''),
+                        )
+                      }
+                      className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                    />
+                    <span className="text-ink-400">mm</span>
+                  </label>
                 </div>
 
-                {/* Sub-line hint — surfaces what the auto-sill will
-                    be for the current kind/height, so the user can
-                    sanity-check without expanding any section. Goes
-                    quiet (low contrast) so it doesn't compete with
-                    the inputs. */}
-                <p className="text-[11px] text-ink-500 mt-2 leading-snug">
-                  Auto sill{' '}
-                  {Math.round(
-                    brickOpeningNoHead
-                      ? Math.max(0, wallHeightMm - brickOpeningHeightMm)
+                {/* Sub-line hint — shows the resulting sill so the
+                    user can sanity-check positioning without doing
+                    arithmetic. */}
+                {(() => {
+                  const headAllowanceParsed = brickOpeningHeadAllowanceMm.trim() !== ''
+                    ? Number.parseInt(brickOpeningHeadAllowanceMm.trim(), 10)
+                    : NaN
+                  const previewSillMm =
+                    Number.isFinite(headAllowanceParsed) && headAllowanceParsed >= 0
+                      ? Math.max(0, wallHeightMm - headAllowanceParsed - brickOpeningHeightMm)
                       : deriveSillMm(
                           brickOpeningKind,
                           brickOpeningHeightMm,
                           wallHeightMm,
-                        ),
-                  )}{' '}
-                  mm on a {Math.round(wallHeightMm)} mm wall.
-                  {brickOpeningNoHead &&
-                    ` Notch cut out of the top of the wall.`}
-                </p>
+                        )
+                  return (
+                    <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                      Sill {Math.round(previewSillMm)} mm on a {Math.round(wallHeightMm)} mm wall.
+                      {brickOpeningNoHead &&
+                        ' No head — brickwork above the opening also removed.'}
+                    </p>
+                  )
+                })()}
 
                 {tooSmall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed mt-3">

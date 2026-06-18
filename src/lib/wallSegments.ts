@@ -26,51 +26,52 @@ export const RENDER_HEAD_GAP_FROM_TOP_MM = 300
 /**
  * The renderer's opening-positioning rules, shared with the tally so
  * blocks are counted exactly where they are drawn:
- *   - no-head openings are always a NOTCH at the wall top — sill is
- *     re-anchored to `wallHeight − openingHeight` regardless of how
- *     they were saved. The opening's typed height stays exact; only
- *     the position shifts to the top of the wall.
  *   - doors sit on the floor (sill forced to 0)
  *   - sill = 0 is respected as floor-to-head (door-like) positioning
  *   - windows with a non-zero sill auto-anchor so the head lands
- *     RENDER_HEAD_GAP_FROM_TOP_MM below the wall top (clamped >= 0)
- *
- * The no-head branch is FIRST so older openings (saved before the
- * "notch at the top" rule existed) still render where the user
- * expects them — the saved sill is overridden, not honoured.
+ *     RENDER_HEAD_GAP_FROM_TOP_MM below the wall top (clamped >= 0).
+ *     This default is what the modal uses when the user hasn't set
+ *     an explicit head allowance.
+ *   - no-head openings keep their stored sill but extend the void
+ *     UP to the wall top — the brickwork above the typed opening
+ *     height is removed. noHead doesn't relocate the opening; it
+ *     just opens up the head zone above wherever the opening sits.
  */
 export function adjustOpeningForRender(
   o: Opening,
   wallHeightMm: number
 ): Opening {
-  // No-head: ALWAYS render as a notch at the top of the wall. The
-  // typed height stays exact, the sill is computed so the opening's
-  // top edge IS the wall top. Overrides whatever sill was saved.
-  if (o.noHead) {
-    const targetSill = Math.max(0, wallHeightMm - o.heightMm)
-    return targetSill === o.sillHeightMm
-      ? o
-      : { ...o, sillHeightMm: targetSill }
-  }
+  let adjusted: Opening
   if (o.kind === 'door') {
-    return o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
+    adjusted = o.sillHeightMm === 0 ? o : { ...o, sillHeightMm: 0 }
+  } else if (o.kind !== 'window' || o.sillHeightMm === 0 || o.noHead) {
+    // Keep stored sill exactly for:
+    //   - block-mode openings (no kind, explicit head+sill from user)
+    //   - sill = 0 (already floor-anchored)
+    //   - no-head openings (their saved sill is the position; the
+    //     void extension below opens up the head zone)
+    adjusted = o
+  } else {
+    const targetSill = Math.max(
+      0,
+      wallHeightMm - RENDER_HEAD_GAP_FROM_TOP_MM - o.heightMm,
+    )
+    adjusted =
+      targetSill === o.sillHeightMm ? o : { ...o, sillHeightMm: targetSill }
   }
-  if (o.kind !== 'window' || o.sillHeightMm === 0) {
-    // Auto-anchoring is for BRICK windows only (their modal captures
-    // height but no sill, so the renderer derives one). Everything
-    // else keeps its stored sill exactly:
-    //   - block-mode openings carry NO kind and an EXPLICIT sill — the
-    //     user typed head + sill and the render must honour them
-    //   - sill = 0 is respected as floor-to-head positioning
-    return o
+  // No-head: extend the void from the (already-positioned) opening
+  // upward to the wall top so the brickwork above is removed. The
+  // opening's POSITION doesn't change — only its effective height.
+  if (o.noHead) {
+    const effH = Math.max(
+      adjusted.heightMm,
+      wallHeightMm - adjusted.sillHeightMm,
+    )
+    if (effH !== adjusted.heightMm) {
+      adjusted = { ...adjusted, heightMm: effH }
+    }
   }
-  const targetSill = Math.max(
-    0,
-    wallHeightMm - RENDER_HEAD_GAP_FROM_TOP_MM - o.heightMm,
-  )
-  return targetSill === o.sillHeightMm
-    ? o
-    : { ...o, sillHeightMm: targetSill }
+  return adjusted
 }
 
 
