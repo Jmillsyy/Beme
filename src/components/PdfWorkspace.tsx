@@ -4647,11 +4647,21 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickMakeup?.heightMm ??
         brickSettings.defaultWallHeightMm
       openingHeightForSave = brickOpeningHeightMm
-      sillForSave = deriveSillMm(
-        brickOpeningKind,
-        brickOpeningHeightMm,
-        brickWallHeightMm
-      )
+      // noHead = the opening reads as a LOW CUTOUT with no brickwork
+      // above. Force sill to 0 (floor-anchored) regardless of the
+      // window/door kind — otherwise a window + noHead saved sill at
+      // wallH - 300 - height, putting the cutout at the TOP of the wall
+      // instead of the bottom. The render's adjustOpeningForRender
+      // already extends the void from sill to wall top when noHead is
+      // set, so sill = 0 produces the "300 mm low cutout + open head
+      // above" the user expects.
+      sillForSave = brickOpeningNoHead
+        ? 0
+        : deriveSillMm(
+            brickOpeningKind,
+            brickOpeningHeightMm,
+            brickWallHeightMm,
+          )
     } else {
       // Block mode: user types HEAD (lintel allowance) and SILL
       // directly. Opening height is DERIVED — matches how plans
@@ -8939,14 +8949,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 <p className="text-[11px] text-ink-500 mt-2 leading-snug">
                   Auto sill{' '}
                   {Math.round(
-                    deriveSillMm(
-                      brickOpeningKind,
-                      brickOpeningHeightMm,
-                      wallHeightMm,
-                    ),
+                    brickOpeningNoHead
+                      ? 0
+                      : deriveSillMm(
+                          brickOpeningKind,
+                          brickOpeningHeightMm,
+                          wallHeightMm,
+                        ),
                   )}{' '}
                   mm on a {Math.round(wallHeightMm)} mm wall.
-                  {brickOpeningNoHead && ' No head — runs to wall top.'}
+                  {brickOpeningNoHead && ' Low cutout, head open to wall top.'}
                 </p>
 
                 {tooSmall && (
