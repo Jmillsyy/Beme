@@ -386,22 +386,16 @@ export function calculateBrickTally(
     }
   }
 
-  // ── No-head openings: effective height runs sill -> wall top ──
-  // The stored heightMm keeps the user's typed value; everywhere the
-  // tally consumes an opening's vertical extent it uses this helper so
-  // the brickwork above a no-head opening is genuinely removed.
-  const wallHeightForOpening = (op: Opening): number | null => {
-    const w = walls.find((x) => x.id === op.wallId)
-    if (!w) return null
-    const m = w.makeupId ? makeupsById.get(w.makeupId) : undefined
-    return w.heightMmOverride ?? m?.heightMm ?? settings.defaultWallHeightMm
-  }
-  const effectiveOpeningHeightMm = (op: Opening): number => {
-    if (!op.noHead) return op.heightMm
-    const wh = wallHeightForOpening(op)
-    if (wh === null) return op.heightMm
-    return Math.max(op.heightMm, wh - op.sillHeightMm)
-  }
+  // ── No-head openings: typed height is the notch height ──
+  // No-head now means "the opening is a NOTCH cut out of the top of
+  // the wall" — the void's top edge is the wall top, the void's
+  // height is exactly what the user typed. The renderer's
+  // adjustOpeningForRender re-anchors the sill to wallH - typedHeight
+  // so the geometry sits at the top regardless of what was saved;
+  // here the tally just deducts (width × typedHeight) for the void.
+  // No more extending from sill to wall top — that was the old "full
+  // void from saved sill up" interpretation we replaced.
+  const effectiveOpeningHeightMm = (op: Opening): number => op.heightMm
 
   // Deduct openings from each wall's bands top-down — opening area
   // comes off the topmost band first (the band most likely to contain
