@@ -8866,14 +8866,36 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </button>
               </header>
 
-              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
-                {/* Door vs window — drives 3D sill suppression. Door
-                    openings render without a sill trim band, since
-                    they typically reach the floor or wall base. */}
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Type
-                  </h4>
+              <div className="flex-1 overflow-y-auto px-6 py-5 text-sm">
+                {/* The bare-minimum flow: width was placed on the
+                    canvas, height auto-focuses on modal open, user
+                    types and presses Enter. Everything else (type,
+                    no-head) is technically optional and stays small
+                    next to the height field rather than dominating
+                    the modal.
+
+                    Auto-sill behaviour and per-opening supply
+                    overrides still run downstream — kind drives the
+                    sill derivation, project-default supply items still
+                    charge per opening. We just don't surface UI for
+                    them here. */}
+                <label className="block">
+                  <span className="block text-ink-300 text-xs mb-1">Opening height</span>
+                  <LengthInput
+                    valueMm={brickOpeningHeightMm}
+                    onChangeMm={(mm) => setBrickOpeningHeightMm(Math.round(mm))}
+                    minMm={0}
+                    className="w-full"
+                    autoFocus
+                    onEnter={() => {
+                      if (!(brickOpeningHeightMm < 0) && !(brickOpeningHeightMm > wallHeightMm)) {
+                        handleSavePendingOpening()
+                      }
+                    }}
+                  />
+                </label>
+
+                <div className="flex items-center gap-3 flex-wrap mt-3">
                   <div
                     className="inline-flex border border-ink-600 rounded-lg overflow-hidden bg-ink-900"
                     role="radiogroup"
@@ -8898,119 +8920,43 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       )
                     })}
                   </div>
-                  <p className="text-[10px] text-ink-500 mt-1.5 leading-snug">
-                    {brickOpeningKind === 'door'
-                      ? 'Door: sits on the floor (sill = 0). No sill trim in 3D.'
-                      : 'Window: top of the opening sits 300mm below the wall top. Sill is computed from the wall height.'}
-                  </p>
-                  <label className="flex items-center gap-2 mt-2 text-xs text-ink-300 cursor-pointer select-none">
+                  <label className="flex items-center gap-1.5 text-xs text-ink-300 cursor-pointer select-none">
                     <input
                       type="checkbox"
                       checked={brickOpeningNoHead}
                       onChange={(e) => setBrickOpeningNoHead(e.target.checked)}
                       className="accent-beme-500"
                     />
-                    No head — opening runs to the top of the wall
+                    No head
                   </label>
-                  {brickOpeningNoHead && (
-                    <p className="text-[10px] text-ink-500 mt-1 leading-snug">
-                      No head course is counted, and the brickwork above the
-                      opening is removed from the area.
-                    </p>
-                  )}
-                </section>
+                </div>
 
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Presets
-                  </h4>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[
-                      { label: 'Door 2100', h: 2100, kind: 'door' as const },
-                      { label: 'Door 2040', h: 2040, kind: 'door' as const },
-                      { label: 'Window 1500', h: 1500, kind: 'window' as const },
-                      { label: 'Window 1200', h: 1200, kind: 'window' as const },
-                      { label: 'Window 1800', h: 1800, kind: 'window' as const },
-                    ].map((p) => (
-                      <button
-                        key={p.label}
-                        onClick={() => {
-                          setBrickOpeningHeightMm(p.h)
-                          setBrickOpeningKind(p.kind)
-                        }}
-                        disabled={p.h > wallHeightMm}
-                        title={`${p.h}mm tall`}
-                        className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Dimensions
-                  </h4>
-                  <label className="block">
-                    <span className="block text-ink-300 text-xs mb-1">Opening height</span>
-                    <LengthInput
-                      valueMm={brickOpeningHeightMm}
-                      onChangeMm={(mm) => setBrickOpeningHeightMm(Math.round(mm))}
-                      minMm={0}
-                      className="w-40"
-                      autoFocus
-                      onEnter={() => {
-                        if (!(brickOpeningHeightMm < 0) && !(brickOpeningHeightMm > wallHeightMm)) {
-                          handleSavePendingOpening()
-                        }
-                      }}
-                    />
-                    <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
-                      Auto sill{' '}
-                      {Math.round(
-                        deriveSillMm(
-                          brickOpeningKind,
-                          brickOpeningHeightMm,
-                          wallHeightMm
-                        )
-                      )}
-                      mm on a {Math.round(wallHeightMm)}mm wall. Use 0mm height
-                      to place a lintel-only marker.
-                    </span>
-                  </label>
-                </section>
-
-                {/* Per-opening supply overrides — mirror of the block
-                    modal section, kind-aware (sill picker hides for
-                    doors). */}
-                <section className="rounded-lg border border-ink-700 bg-ink-900/40 overflow-hidden">
-                  <div className="px-3.5 py-2 border-b border-ink-700 bg-ink-900/60">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-ink-400">
-                      Supply items for this opening
-                    </div>
-                  </div>
-                  <div className="p-3">
-                    <OpeningSupplyOverridePicker
-                      opening={{
-                        widthMm: pendingOpening.widthMm,
-                        kind: brickOpeningKind,
-                        supplyOverrides: pendingOpeningSupplyOverrides,
-                      }}
-                      libraryItems={allSupplyItems}
-                      onChange={setPendingOpeningSupplyOverrides}
-                    />
-                  </div>
-                </section>
+                {/* Sub-line hint — surfaces what the auto-sill will
+                    be for the current kind/height, so the user can
+                    sanity-check without expanding any section. Goes
+                    quiet (low contrast) so it doesn't compete with
+                    the inputs. */}
+                <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                  Auto sill{' '}
+                  {Math.round(
+                    deriveSillMm(
+                      brickOpeningKind,
+                      brickOpeningHeightMm,
+                      wallHeightMm,
+                    ),
+                  )}{' '}
+                  mm on a {Math.round(wallHeightMm)} mm wall.
+                  {brickOpeningNoHead && ' No head — runs to wall top.'}
+                </p>
 
                 {tooSmall && (
-                  <p className="text-[11px] text-rose-400 leading-relaxed">
+                  <p className="text-[11px] text-rose-400 leading-relaxed mt-3">
                     Opening height can't be negative.
                   </p>
                 )}
                 {tooTall && (
-                  <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Opening height ({brickOpeningHeightMm}mm) exceeds the wall height ({Math.round(wallHeightMm)}mm).
+                  <p className="text-[11px] text-rose-400 leading-relaxed mt-3">
+                    Opening height ({brickOpeningHeightMm} mm) exceeds the wall height ({Math.round(wallHeightMm)} mm).
                   </p>
                 )}
               </div>
