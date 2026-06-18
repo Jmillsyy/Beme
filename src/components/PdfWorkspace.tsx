@@ -4647,16 +4647,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickMakeup?.heightMm ??
         brickSettings.defaultWallHeightMm
       openingHeightForSave = brickOpeningHeightMm
-      // noHead = the opening reads as a LOW CUTOUT with no brickwork
-      // above. Force sill to 0 (floor-anchored) regardless of the
-      // window/door kind — otherwise a window + noHead saved sill at
-      // wallH - 300 - height, putting the cutout at the TOP of the wall
-      // instead of the bottom. The render's adjustOpeningForRender
-      // already extends the void from sill to wall top when noHead is
-      // set, so sill = 0 produces the "300 mm low cutout + open head
-      // above" the user expects.
+      // noHead = the opening is a NOTCH at the TOP of the wall — the
+      // opening sits flush with the wall top with no head course
+      // above. A 300 mm noHead opening reads as a 300 mm deep gap
+      // cut out of the top of the wall, with full-height brickwork
+      // below.
+      //
+      // Sill = wallH - openingHeight puts the opening's bottom that
+      // distance below the wall top so the void's top edge IS the
+      // wall top. adjustOpeningForRender does an effH = wallH - sill
+      // pass for noHead which lines up exactly — no extension
+      // happens, the void stays the typed height.
       sillForSave = brickOpeningNoHead
-        ? 0
+        ? Math.max(0, brickWallHeightMm - brickOpeningHeightMm)
         : deriveSillMm(
             brickOpeningKind,
             brickOpeningHeightMm,
@@ -8950,7 +8953,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   Auto sill{' '}
                   {Math.round(
                     brickOpeningNoHead
-                      ? 0
+                      ? Math.max(0, wallHeightMm - brickOpeningHeightMm)
                       : deriveSillMm(
                           brickOpeningKind,
                           brickOpeningHeightMm,
@@ -8958,7 +8961,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                         ),
                   )}{' '}
                   mm on a {Math.round(wallHeightMm)} mm wall.
-                  {brickOpeningNoHead && ' Low cutout, head open to wall top.'}
+                  {brickOpeningNoHead &&
+                    ` Notch cut out of the top of the wall.`}
                 </p>
 
                 {tooSmall && (
