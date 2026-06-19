@@ -1551,26 +1551,66 @@ function BrickWallFaceGroupMesh({
     for (const f of items) {
       if (f.lengthM <= 0 || f.bodyHeightM <= 0) continue
 
-      // Build a shape in local (alongM, y) space — rectangle with
-      // axis-aligned holes punched for openings.
-      const shape = new THREE.Shape()
-      shape.moveTo(0, f.bodyBaseY)
-      shape.lineTo(f.lengthM, f.bodyBaseY)
-      shape.lineTo(f.lengthM, f.bodyBaseY + f.bodyHeightM)
-      shape.lineTo(0, f.bodyBaseY + f.bodyHeightM)
-      shape.lineTo(0, f.bodyBaseY)
+      // Build a shape in local (alongM, y) space. Two opening kinds:
+      //   - INTERNAL: a hole punched through the rectangle.
+      //   - TOP-NOTCH: when the opening reaches the wall top
+      //     (noHead or huge head allowance), it's not a hole — it's
+      //     a notch cut into the outer outline. THREE.Shape doesn't
+      //     handle a hole whose top edge coincides with the outer
+      //     rect's top edge cleanly — it triangulates as if the hole
+      //     wasn't there, leaving a strip across the wall top above
+      //     the opening. Carving the notch into the outline itself
+      //     produces a clean void all the way through.
+      const wallTopY = f.bodyBaseY + f.bodyHeightM
+      const TOP_REACH_EPS_M = 0.001
+      const topNotches: Array<{ a0: number; a1: number; yStart: number }> = []
+      const internalHoles: Array<{ a0: number; a1: number; y0: number; y1: number }> = []
       for (const op of f.openings) {
         const a0 = Math.max(0, op.alongStartM)
         const a1 = Math.min(f.lengthM, op.alongEndM)
         const y0 = Math.max(f.bodyBaseY, op.yStartM)
-        const y1 = Math.min(f.bodyBaseY + f.bodyHeightM, op.yEndM)
+        const y1 = Math.min(wallTopY, op.yEndM)
         if (a1 <= a0 + 0.001 || y1 <= y0 + 0.001) continue
+        // Skip notches that span the entire wall length — the wall
+        // would have no outline left. (Edge case — unlikely in real
+        // estimates but cheap to guard.)
+        if (op.yEndM >= wallTopY - TOP_REACH_EPS_M && a0 > 0.001 && a1 < f.lengthM - 0.001) {
+          topNotches.push({ a0, a1, yStart: y0 })
+        } else {
+          internalHoles.push({ a0, a1, y0, y1 })
+        }
+      }
+      // Sort top-notches by alongStart so we encounter them in order
+      // while walking the outline left-to-right along the top edge.
+      topNotches.sort((x, y) => x.a0 - y.a0)
+
+      const shape = new THREE.Shape()
+      // Walk counter-clockwise: bottom-left → bottom-right → up the
+      // right side → ACROSS THE TOP (rightwards through notches in
+      // reverse) → down the left side → back to bottom-left. Holes
+      // get added at the end.
+      shape.moveTo(0, f.bodyBaseY)
+      shape.lineTo(f.lengthM, f.bodyBaseY)
+      shape.lineTo(f.lengthM, wallTopY)
+      // Walk the top edge from right (lengthM) to left (0). For each
+      // top-notch in REVERSE alongStart order, drop down to yStart,
+      // cross to its left edge, then come back up to wallTopY.
+      for (let i = topNotches.length - 1; i >= 0; i--) {
+        const n = topNotches[i]
+        shape.lineTo(n.a1, wallTopY)
+        shape.lineTo(n.a1, n.yStart)
+        shape.lineTo(n.a0, n.yStart)
+        shape.lineTo(n.a0, wallTopY)
+      }
+      shape.lineTo(0, wallTopY)
+      shape.lineTo(0, f.bodyBaseY)
+      for (const h of internalHoles) {
         const hole = new THREE.Path()
-        hole.moveTo(a0, y0)
-        hole.lineTo(a0, y1)
-        hole.lineTo(a1, y1)
-        hole.lineTo(a1, y0)
-        hole.lineTo(a0, y0)
+        hole.moveTo(h.a0, h.y0)
+        hole.lineTo(h.a0, h.y1)
+        hole.lineTo(h.a1, h.y1)
+        hole.lineTo(h.a1, h.y0)
+        hole.lineTo(h.a0, h.y0)
         shape.holes.push(hole)
       }
 
