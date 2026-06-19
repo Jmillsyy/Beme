@@ -6983,7 +6983,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             <div className="px-6 py-4 border-b border-ink-600 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-ink-50">
-                  Start a new {mode} estimate
+                  Start a new estimate
                 </h2>
                 <p className="text-xs text-ink-400 mt-0.5">
                   Fill in the customer + project info first — this lands in the
