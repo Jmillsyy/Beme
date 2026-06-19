@@ -348,14 +348,20 @@ const WALL_FACE_SNAP_MM = 25
  * Angular tolerance for orthogonal snap, in degrees.
  *
  * When drawing a new wall (or dragging an endpoint), if the segment is within
- * ±this-many degrees of horizontal or vertical, it snaps cleanly to that axis.
- * Most plans are drawn on a grid so the *intent* is almost always ortho — this
- * removes a frustrating class of "wall is 1° off and I have to nudge it" bugs
- * without locking out walls that are genuinely on an angle.
+ * ±this-many degrees of an axis (0° / 90°) OR a 45° diagonal (45° / 135°), it
+ * snaps cleanly to that bearing. Most plans are drawn on a grid so the
+ * intent is usually ortho or 45°; this removes "wall is 1° off and I have
+ * to nudge it" without locking out walls that are genuinely on an angle.
  *
- * Hold Shift while drawing or dragging to bypass the snap.
+ * Tightened from 4° → 2° per user feedback that 4° was too aggressive:
+ * a nearly-straight wall drawn at ~3° couldn't be placed because the
+ * snap kept yanking it to exact horizontal. 2° still catches the "I
+ * meant to draw flat" intent without swallowing a deliberate 3-5°
+ * sloped wall.
+ *
+ * Hold Shift while drawing or dragging to bypass the snap entirely.
  */
-const AXIS_SNAP_DEGREES = 4
+const AXIS_SNAP_DEGREES = 2
 
 /**
  * Ruler-specific axis snap window. Wider than the wall-drawing AXIS_SNAP_DEGREES
@@ -453,16 +459,23 @@ function snapOpeningMm(mm: number): number {
 }
 
 /**
- * If the segment from `from` → `to` is near horizontal or vertical, return a
- * snapped `to` that lies exactly on the axis. Otherwise return `to` unchanged.
- * Operates in any coordinate system since the comparison is purely angular.
+ * If the segment from `from` → `to` is near one of the 45° bearings
+ * (0°, 45°, 90°, 135°) return a snapped `to` that lies exactly on
+ * that bearing. Otherwise return `to` unchanged. Operates in any
+ * coordinate system since the comparison is purely angular.
+ *
+ * The 45° snap projects the cursor onto the appropriate diagonal
+ * through the anchor — preserving the cursor's distance as cleanly as
+ * possible — rather than forcing |dx| = |dy| via min/max which would
+ * snap the line shorter or longer than the user dragged.
  */
 function applyAxisSnap(from: Point, to: Point): Point {
   const dx = to.x - from.x
   const dy = to.y - from.y
   if (dx === 0 && dy === 0) return to
-  // atan2(|dy|, |dx|) → 0 = horizontal, π/2 = vertical. Comparing against a
-  // small threshold catches both axes symmetrically regardless of direction.
+  // atan2(|dy|, |dx|) → 0 = horizontal, π/2 = vertical. Comparing
+  // against AXIS_SNAP_DEGREES catches both axes symmetrically
+  // regardless of direction.
   const angleDeg = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI
   if (angleDeg < AXIS_SNAP_DEGREES) {
     // Near horizontal — flatten the segment by collapsing y to the anchor.
@@ -471,6 +484,21 @@ function applyAxisSnap(from: Point, to: Point): Point {
   if (angleDeg > 90 - AXIS_SNAP_DEGREES) {
     // Near vertical — collapse x.
     return { x: from.x, y: to.y }
+  }
+  if (Math.abs(angleDeg - 45) < AXIS_SNAP_DEGREES) {
+    // Near 45° diagonal — project the cursor onto the diagonal line
+    // through the anchor. Which diagonal depends on whether dx and
+    // dy share signs (45° / 225° = direction (+, +) or (-, -)) or
+    // differ (135° / 315° = direction (+, -) or (-, +)).
+    const sameSign = dx >= 0 === dy >= 0
+    if (sameSign) {
+      // Direction (1, 1) normalised: projection scalar = (dx + dy) / 2.
+      const t = (dx + dy) / 2
+      return { x: from.x + t, y: from.y + t }
+    }
+    // Direction (1, -1) normalised: projection scalar = (dx - dy) / 2.
+    const t = (dx - dy) / 2
+    return { x: from.x + t, y: from.y - t }
   }
   return to
 }
