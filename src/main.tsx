@@ -9,6 +9,7 @@ import { initBrickLibrary } from './data/brickLibrary'
 import { initUserSettings } from './lib/userSettings'
 import { initOrganisations } from './lib/organisations'
 import { initOrgSupplyItems } from './lib/orgSupplyItems'
+import { initUserWallTypeTemplates } from './lib/userWallTypeTemplates'
 
 // Apply the persisted theme (dark / light) before first render so there's no
 // flash of the wrong colour scheme.
@@ -29,6 +30,10 @@ initOrganisations()
 // subscribes to org-state changes so switching orgs refetches the
 // matching item list. No-op when Supabase isn't configured.
 initOrgSupplyItems()
+// Per-user wall type templates sync to Supabase when signed in; offline /
+// signed-out mode falls back to the legacy IndexedDB list inside
+// userSettings. No-op when Supabase isn't configured.
+initUserWallTypeTemplates()
 
 // Wrap the existing <App /> (which still owns the <Routes> tree) in a
 // Data Router. Doing it this way means we get useBlocker / useNavigation

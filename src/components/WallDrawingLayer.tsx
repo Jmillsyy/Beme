@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
 import type { Opening, Pier, Wall } from '../types/walls'
@@ -114,6 +114,14 @@ function MeasurementChip({
 }
 
 interface WallDrawingLayerProps {
+  /**
+   * Surfaces the underlying Konva.Stage to the workspace. Used by the
+   * hi-res settle overlay to snapshot the visible stage region at true
+   * screen resolution when zoom exceeds the raster cap (the stage
+   * itself rasterises at renderedZoom and gets CSS-stretched beyond
+   * it). Optional — omitted by callers that predate the overlay.
+   */
+  onStageRef?: (stage: Konva.Stage | null) => void
   walls: Wall[]
   /** Openings on the current page (across all walls). */
   openings: Opening[]
@@ -157,6 +165,22 @@ interface WallDrawingLayerProps {
   activeWallColor?: string
   visualWidth: number
   visualHeight: number
+  /**
+   * Optional render-window crop, in stage-content (rendered-page) px.
+   * When set, the Stage canvas covers ONLY this window of the page —
+   * positioned at (cropX, cropY) inside the transformed wrapper and
+   * offset internally so content coordinates are unchanged — and
+   * `pixelRatio` raises the canvas backing density to true screen
+   * resolution. PdfWorkspace drives this above the whole-page raster
+   * cap so walls, previews and snap chrome stay SHARP while drawing at
+   * deep zoom, with viewport-bounded memory. Omitted -> full-page
+   * stage at default density (the original behaviour).
+   */
+  cropX?: number
+  cropY?: number
+  cropW?: number
+  cropH?: number
+  pixelRatio?: number
   /** Visual pixels per mm at the current zoom. */
   pxPerMmAtCurrentZoom: number
   /** Whether drawing-wall mode is active. */
@@ -295,16 +319,20 @@ interface WallDrawingLayerProps {
 /** Pixel radius for snapping to an existing wall's endpoint (corner candidate).
  *  Used as the PERPENDICULAR-to-wall tolerance during the corner-snap check —
  *  the along-wall direction is handled separately with a larger radius (see
- *  `snapRadiusPx` below) so a click at the visible end face still hits. 8 px
- *  is the comfortable aim margin: close-but-distinct parallel endpoints stay
- *  separable but the user doesn't need pixel-precise targeting. Shift bypasses
- *  snap entirely. */
-const SNAP_THRESHOLD_PX = 8
+ *  `snapRadiusPx` below) so a click at the visible end face still hits.
+ *
+ *  Was 8px which felt overly grabby at small scales (1:100, 1:200) — a wall
+ *  that's a few pixels long on screen could claim the cursor from way out.
+ *  5px is a tighter aim margin that still tolerates normal mouse jitter on
+ *  any half-decent screen, and Shift bypasses snap entirely if a user
+ *  needs to land RIGHT next to an existing endpoint without it grabbing. */
+const SNAP_THRESHOLD_PX = 5
 /** Pixel radius for projecting a click onto a wall when placing openings, control joints
  *  and piers. Used in `findClosestWallProjection`. Kept in pixels because it represents
  *  click precision against a visible wall — the user targets the wall on screen. Tightened
- *  so two adjacent walls don't both claim the cursor on a single click. */
-const WALL_PROJECTION_THRESHOLD_PX = 8
+ *  in step with SNAP_THRESHOLD_PX so two adjacent walls don't both claim the cursor on
+ *  a single click — especially at small scales where the wall stack is dense. */
+const WALL_PROJECTION_THRESHOLD_PX = 5
 /**
  * Real-world distance at which a cursor near an existing wall's *face* will snap onto it
  * to form a T-junction. Expressed in mm so the snap feels the same at every zoom level
@@ -819,6 +847,7 @@ function bandPxForCurvedWall(
  * Konva overlay for drawing/selecting/editing walls + placing/displaying openings.
  */
 function WallDrawingLayerInner({
+  onStageRef,
   walls,
   openings,
   wallThicknessByWallId,
@@ -828,6 +857,11 @@ function WallDrawingLayerInner({
   activeWallColor = '#ED7D31',
   visualWidth,
   visualHeight,
+  cropX = 0,
+  cropY = 0,
+  cropW,
+  cropH,
+  pixelRatio,
   pxPerMmAtCurrentZoom,
   drawingMode,
   drawingCurveMode,
@@ -1126,14 +1160,33 @@ function WallDrawingLayerInner({
 
   function findClosestWallProjection(
     clickPx: Point,
-    only?: string
+    only?: string,
+    opts?: {
+      /**
+       * When true, treat the cursor as "on the wall" if it sits anywhere
+       * within the wall's drawn THICKNESS (half-thickness either side of
+       * the centreline). Used by opening placement so the user can hover
+       * anywhere over the visible wall body — including the wide block-
+       * wall faces — instead of having to nail the centreline within
+       * WALL_PROJECTION_THRESHOLD_PX. The projection still returns a
+       * point on the centreline, so the preview snaps cleanly onto the
+       * wall axis.
+       */
+      includeBody?: boolean
+    },
   ): WallProjection | null {
     let best: WallProjection | null = null
     for (const wall of walls) {
       if (only && wall.id !== only) continue
       const proj = projectOntoWall(clickPx, wall)
       if (!proj) continue
-      if (proj.distFromLinePx > WALL_PROJECTION_THRESHOLD_PX) continue
+      const thresholdPx = opts?.includeBody
+        ? Math.max(
+            WALL_PROJECTION_THRESHOLD_PX,
+            mmToPx((wallThicknessByWallId[wall.id] ?? 190) / 2) + 2,
+          )
+        : WALL_PROJECTION_THRESHOLD_PX
+      if (proj.distFromLinePx > thresholdPx) continue
       if (!best || proj.distFromLinePx < best.distFromLinePx) {
         best = proj
       }
@@ -1168,14 +1221,84 @@ function WallDrawingLayerInner({
     // Modest threshold so the curve picks up an existing wall when the user
     // is clearly targeting one (cursor within ~25 px of the wall's drawn
     // line), but doesn't reach across dense layouts. Outside this radius we
-    // fall through to a 'free' anchor at the raw cursor position so the user
-    // can draw a curve between any two points without needing existing walls
-    // to anchor on — that's the dominant case now that free placement is
-    // supported, so over-snapping costs more than under-snapping.
+    // fall through to a 'free' anchor at the raw cursor position.
     const CURVE_ANCHOR_THRESHOLD_PX = 25
+    // END anchors snap at the same tight radius as the straight-wall
+    // tool (SNAP_THRESHOLD_PX). The generous 25px radius is for SIDE
+    // anchors only — peeling a curve off a wall face benefits from
+    // reach, but endpoint snapping from 300mm away (at 1:100) made the
+    // ends grab the cursor across half the drawing.
+    const cursorMm = { x: pxToMm(cursorPx.x), y: pxToMm(cursorPx.y) }
 
-    let best: { wallId: string; distPx: number; tUnclamped: number } | null = null
+    let best: {
+      wallId: string
+      distPx: number
+      xMm: number
+      yMm: number
+    } | null = null
+    const consider = (
+      wallId: string,
+      distPx: number,
+      xMm: number,
+      yMm: number,
+      thresholdPx = CURVE_ANCHOR_THRESHOLD_PX
+    ) => {
+      if (distPx > thresholdPx) return
+      if (!best || distPx < best.distPx) best = { wallId, distPx, xMm, yMm }
+    }
+
     for (const wall of walls) {
+      const halfTmm = (wallThicknessByWallId[wall.id] ?? 190) / 2
+
+      // Curved walls: measure against the ACTUAL ARC, not the chord. The
+      // chord of a deep arc runs through empty space far from the drawn
+      // wall, so chord-distance snapping grabbed the cursor from way
+      // outside the visible curve — and the straight-wall side-anchor
+      // normal doesn't apply to an arc anyway.
+      if (
+        isCurvedWall(wall) &&
+        wall.midX !== undefined &&
+        wall.midY !== undefined
+      ) {
+        const geom = arcFromThreePoints(
+          { x: wall.startX, y: wall.startY },
+          { x: wall.midX, y: wall.midY },
+          { x: wall.endX, y: wall.endY }
+        )
+        if (!geom) continue
+        const arcProj = projectOntoArc(cursorMm, geom)
+        const distPx = mmToPx(arcProj.distFromArcMm)
+        // End anchors: projectOntoArc clamps to the arc's ends, so a
+        // boundary hit means the cursor sits past that tip.
+        const END_ZONE_MM = 1
+        if (arcProj.alongMm <= END_ZONE_MM) {
+          consider(wall.id, distPx, wall.startX, wall.startY, SNAP_THRESHOLD_PX)
+        } else if (arcProj.alongMm >= geom.arcLengthMm - END_ZONE_MM) {
+          consider(wall.id, distPx, wall.endX, wall.endY, SNAP_THRESHOLD_PX)
+        } else {
+          // Side-face anchor on the cursor's side of the arc: offset the
+          // centreline projection radially — outward when the cursor is
+          // outside the arc's radius, inward when inside.
+          const rdx = arcProj.point.x - geom.centerX
+          const rdy = arcProj.point.y - geom.centerY
+          const rLen = Math.hypot(rdx, rdy)
+          if (rLen < 1e-9) continue
+          const cursorR = Math.hypot(
+            cursorMm.x - geom.centerX,
+            cursorMm.y - geom.centerY
+          )
+          const sign = cursorR >= geom.radiusMm ? 1 : -1
+          consider(
+            wall.id,
+            distPx,
+            arcProj.point.x + (rdx / rLen) * sign * halfTmm,
+            arcProj.point.y + (rdy / rLen) * sign * halfTmm
+          )
+        }
+        continue
+      }
+
+      // Straight walls: chord projection (the chord IS the wall).
       const sx = mmToPx(wall.startX)
       const sy = mmToPx(wall.startY)
       const ex = mmToPx(wall.endX)
@@ -1184,76 +1307,50 @@ function WallDrawingLayerInner({
       const dy = ey - sy
       const lenSq = dx * dx + dy * dy
       if (lenSq === 0) continue
-      const tUnclamped = ((cursorPx.x - sx) * dx + (cursorPx.y - sy) * dy) / lenSq
+      const tUnclamped =
+        ((cursorPx.x - sx) * dx + (cursorPx.y - sy) * dy) / lenSq
       const tClamped = Math.max(0, Math.min(1, tUnclamped))
       const projX = sx + tClamped * dx
       const projY = sy + tClamped * dy
       const distPx = Math.hypot(cursorPx.x - projX, cursorPx.y - projY)
-      if (distPx > CURVE_ANCHOR_THRESHOLD_PX) continue
-      if (!best || distPx < best.distPx) {
-        best = { wallId: wall.id, distPx, tUnclamped }
+
+      // End-face anchors: cursor past the wall's tip — anchor on the
+      // centreline endpoint so a curve drawn from here continues
+      // straight off the end of the wall.
+      if (tUnclamped > 1) {
+        consider(wall.id, distPx, wall.endX, wall.endY, SNAP_THRESHOLD_PX)
+        continue
       }
+      if (tUnclamped < 0) {
+        consider(wall.id, distPx, wall.startX, wall.startY, SNAP_THRESHOLD_PX)
+        continue
+      }
+      // Side-face anchor: half-thickness off the centreline projection,
+      // on the cursor's side of the wall.
+      const dxMm = wall.endX - wall.startX
+      const dyMm = wall.endY - wall.startY
+      const lenMm = Math.hypot(dxMm, dyMm)
+      if (lenMm <= 0) continue
+      const projXmm = wall.startX + tUnclamped * dxMm
+      const projYmm = wall.startY + tUnclamped * dyMm
+      const normXmm = -dyMm / lenMm
+      const normYmm = dxMm / lenMm
+      const dot =
+        (cursorMm.x - projXmm) * normXmm + (cursorMm.y - projYmm) * normYmm
+      const sign = dot >= 0 ? 1 : -1
+      consider(
+        wall.id,
+        distPx,
+        projXmm + sign * halfTmm * normXmm,
+        projYmm + sign * halfTmm * normYmm
+      )
     }
-    // No wall nearby → free anchor at the cursor. The curve still works
-    // geometrically; it just isn't tied to a wall.
+
     if (!best) {
-      return {
-        wallId: null,
-        xMm: pxToMm(cursorPx.x),
-        yMm: pxToMm(cursorPx.y),
-      }
+      return { wallId: null, xMm: cursorMm.x, yMm: cursorMm.y }
     }
-
-    const wall = walls.find((w) => w.id === best!.wallId)
-    if (!wall) {
-      return {
-        wallId: null,
-        xMm: pxToMm(cursorPx.x),
-        yMm: pxToMm(cursorPx.y),
-      }
-    }
-    const lengthMm = wallLengthMmOf(wall)
-    if (lengthMm <= 0) {
-      return {
-        wallId: null,
-        xMm: pxToMm(cursorPx.x),
-        yMm: pxToMm(cursorPx.y),
-      }
-    }
-
-    // End-face anchors: cursor is past the wall's tip in the wall's own
-    // direction. Anchor sits on the centreline endpoint with no perpendicular
-    // offset, so a curve drawn from here visually continues off the end of
-    // the wall rather than peeling off one of its sides.
-    if (best.tUnclamped > 1) {
-      return { wallId: wall.id, xMm: wall.endX, yMm: wall.endY }
-    }
-    if (best.tUnclamped < 0) {
-      return { wallId: wall.id, xMm: wall.startX, yMm: wall.startY }
-    }
-
-    // Side-face anchor: existing behaviour for cursor alongside the wall.
-    // The anchor sits on the cursor's side of the wall, half-thickness off
-    // the centreline projection.
-    const cursorXmm = pxToMm(cursorPx.x)
-    const cursorYmm = pxToMm(cursorPx.y)
-    const dxMm = wall.endX - wall.startX
-    const dyMm = wall.endY - wall.startY
-    const projXmm = wall.startX + best.tUnclamped * dxMm
-    const projYmm = wall.startY + best.tUnclamped * dyMm
-    const dirXmm = dxMm / lengthMm
-    const dirYmm = dyMm / lengthMm
-    const normXmm = -dirYmm
-    const normYmm = dirXmm
-    const dot =
-      (cursorXmm - projXmm) * normXmm + (cursorYmm - projYmm) * normYmm
-    const sign = dot >= 0 ? 1 : -1
-    const halfTmm = (wallThicknessByWallId[wall.id] ?? 190) / 2
-    return {
-      wallId: wall.id,
-      xMm: projXmm + sign * halfTmm * normXmm,
-      yMm: projYmm + sign * halfTmm * normYmm,
-    }
+    const resolved: { wallId: string; distPx: number; xMm: number; yMm: number } = best
+    return { wallId: resolved.wallId, xMm: resolved.xMm, yMm: resolved.yMm }
   }
 
   /** A point along a wall, in pixel coords, given start-along-wall in mm. */
@@ -1813,8 +1910,21 @@ function WallDrawingLayerInner({
     const lenPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx)
     if (lenPx <= 0) return { point: axisSnapped, snap: null }
     const lenMm = pxToMm(lenPx)
-    const snappedMm = snapMmToGrid(lenMm, wallSnapMm)
-    if (snappedMm < wallSnapMm) {
+    // Grid-snap the DISPLAYED (outer) length, not the raw centreline.
+    // An anchor that will form a corner sits halfThickness inside the
+    // outer corner, and wallLengthMm adds that extension back after
+    // placement — so snapping the centreline to 50s made the displayed
+    // length read 1045 / 1095 / ... off a 190-thick corner. Same
+    // correction the typed-length path applies via
+    // cornerLengthAdjustAt: snap (length + extension) to the grid,
+    // then store the centreline remainder.
+    const startAdjust = cornerLengthAdjustAt({
+      x: pxToMm(anchor.x),
+      y: pxToMm(anchor.y),
+    })
+    const snappedDisplayMm = snapMmToGrid(lenMm + startAdjust, wallSnapMm)
+    const snappedMm = snappedDisplayMm - startAdjust
+    if (snappedMm < Math.min(wallSnapMm, 50) || snappedMm <= 0) {
       return { point: axisSnapped, snap: null }
     }
     const scale = snappedMm / lenMm
@@ -1824,6 +1934,26 @@ function WallDrawingLayerInner({
     }
     return { point: lengthSnapped, snap: null }
   }
+
+  // ── Render-window canvas density ──
+  // When PdfWorkspace supplies a crop + pixelRatio (deep zoom), raise
+  // every layer's canvas backing density so the live stage rasterises
+  // at true screen resolution. Konva re-applies the canvas size from
+  // (stage size x pixelRatio) inside setPixelRatio, so this is safe to
+  // run after any crop/size commit. Default density (devicePixelRatio)
+  // is restored when the crop is dropped.
+  const stageSelfRef = useRef<Konva.Stage | null>(null)
+  useEffect(() => {
+    const stage = stageSelfRef.current
+    if (!stage) return
+    const ratio =
+      pixelRatio ??
+      (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1)
+    for (const layer of stage.getLayers()) {
+      layer.getCanvas().setPixelRatio(ratio)
+    }
+    stage.batchDraw()
+  }, [pixelRatio, cropX, cropY, cropW, cropH, visualWidth, visualHeight])
 
   // ---------- Stage events ----------
 
@@ -1836,7 +1966,11 @@ function WallDrawingLayerInner({
     if (e.evt.button !== 0) return
     const stage = e.target.getStage()
     if (!stage) return
-    const raw = stage.getPointerPosition()
+    // Transform-aware pointer: with a render-window crop the stage
+    // carries an x/y offset, so the RELATIVE position is the
+    // rendered-page-space coordinate all the maths below expect.
+    // Identity transform without a crop — same value as before.
+    const raw = stage.getRelativePointerPosition()
     if (!raw) return
 
     if (drawingMode) {
@@ -1936,8 +2070,11 @@ function WallDrawingLayerInner({
       // the wall mid-placement, fall back to the last valid hover so a
       // brief drag-off doesn't lose the in-progress opening. The first
       // click still requires a real wall hit (otherwise we have no
-      // anchor to project against).
-      const projFresh = findClosestWallProjection(raw, onlyWall)
+      // anchor to project against). includeBody: true so the click
+      // registers anywhere on the wall body — same generous hit area
+      // as the hover preview, so the user can commit from wherever
+      // they were aiming.
+      const projFresh = findClosestWallProjection(raw, onlyWall, { includeBody: true })
       const proj =
         projFresh ?? (openingPlacementStart ? openingHoverProjection : null)
       if (!proj) return
@@ -2091,7 +2228,7 @@ function WallDrawingLayerInner({
   function handleStageMouseMove(e: Konva.KonvaEventObject<MouseEvent>) {
     const stage = e.target.getStage()
     if (!stage) return
-    const raw = stage.getPointerPosition()
+    const raw = stage.getRelativePointerPosition()
     if (!raw) return
 
     if (drawingMode) {
@@ -2123,7 +2260,7 @@ function WallDrawingLayerInner({
       }
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
-      const proj = findClosestWallProjection(raw, onlyWall)
+      const proj = findClosestWallProjection(raw, onlyWall, { includeBody: true })
       if (proj) {
         // Snap the hover preview to the same 10 mm grid the click uses so
         // the live width readout climbs in 10 mm steps — matches how doors
@@ -2474,8 +2611,17 @@ function WallDrawingLayerInner({
 
   return (
     <Stage
-      width={visualWidth}
-      height={visualHeight}
+      ref={(stage: Konva.Stage | null) => {
+        stageSelfRef.current = stage
+        onStageRef?.(stage)
+      }}
+      width={cropW ?? visualWidth}
+      height={cropH ?? visualHeight}
+      // Offset the content by the crop origin so content coordinates
+      // (rendered-page px) are unchanged — the canvas just shows the
+      // [cropX, cropX+cropW] x [cropY, cropY+cropH] window of the page.
+      x={-cropX}
+      y={-cropY}
       // listening=false during zoom turns off Konva's hit-detection entirely.
       // Each pointer-position change otherwise costs O(walls) — Konva runs a
       // hit test against every shape on the layer to figure out which one
@@ -2489,8 +2635,8 @@ function WallDrawingLayerInner({
       listening={!isZooming}
       style={{
         position: 'absolute',
-        top: 0,
-        left: 0,
+        top: cropY,
+        left: cropX,
         pointerEvents: 'auto',
         cursor: containerCursor,
       }}
@@ -2765,6 +2911,13 @@ function WallDrawingLayerInner({
             4,
             wallThicknessMm * pxPerMmAtCurrentZoom
           )
+          // Kind-based colours: windows keep the original amber; doors
+          // render teal so the two read apart at a glance on the plan
+          // (brick mode tags openings with `kind`; block openings
+          // without one stay amber — unchanged). Selection blue wins.
+          const isDoor = opening.kind === 'door'
+          const openingAccent = isDoor ? '#0D9488' : '#D97706'
+          const openingFill = isDoor ? '#CCFBF1' : '#FEF3C7'
 
           return (
             <Group
@@ -2803,7 +2956,7 @@ function WallDrawingLayerInner({
                   at any zoom). */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
-                stroke={isSelected ? '#1e40af' : '#FEF3C7'}
+                stroke={isSelected ? '#1e40af' : openingFill}
                 strokeWidth={openingStrokePx}
                 hitStrokeWidth={Math.max(openingStrokePx + 6, 14)}
               />
@@ -2812,7 +2965,7 @@ function WallDrawingLayerInner({
                   band, not a fixed 8px strip. */}
               <Line
                 points={[start.x, start.y, end.x, end.y]}
-                stroke={isSelected ? '#1e40af' : '#D97706'}
+                stroke={isSelected ? '#1e40af' : openingAccent}
                 strokeWidth={openingStrokePx}
                 dash={[8, 4]}
                 listening={false}
@@ -2844,14 +2997,14 @@ function WallDrawingLayerInner({
                   <>
                     <Line
                       points={[fStartA.x, fStartA.y, fEndA.x, fEndA.y]}
-                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      stroke={isSelected ? '#1e40af' : openingAccent}
                       strokeWidth={2}
                       dash={[8, 4]}
                       listening={false}
                     />
                     <Line
                       points={[fStartB.x, fStartB.y, fEndB.x, fEndB.y]}
-                      stroke={isSelected ? '#1e40af' : '#D97706'}
+                      stroke={isSelected ? '#1e40af' : openingAccent}
                       strokeWidth={2}
                       dash={[8, 4]}
                       listening={false}
@@ -2859,8 +3012,8 @@ function WallDrawingLayerInner({
                   </>
                 )
               })()}
-              <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
-              <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : '#D97706'} stroke="white" strokeWidth={1} listening={false} />
+              <Circle x={start.x} y={start.y} radius={2.5} fill={isSelected ? '#1e40af' : openingAccent} stroke="white" strokeWidth={1} listening={false} />
+              <Circle x={end.x} y={end.y} radius={2.5} fill={isSelected ? '#1e40af' : openingAccent} stroke="white" strokeWidth={1} listening={false} />
               <MeasurementChip
                 x={midX}
                 y={midY + openingStrokePx / 2 + 6}
@@ -2946,17 +3099,55 @@ function WallDrawingLayerInner({
             </Group>
           )
         })()}
-        {placingOpening && !openingPlacementStart && openingHoverProjection && (
-          <Circle
-            x={openingHoverProjection.px.x}
-            y={openingHoverProjection.px.y}
-            radius={4}
-            stroke="#D97706"
-            strokeWidth={1.5}
-            fill="rgba(217, 119, 6, 0.3)"
-            listening={false}
-          />
-        )}
+        {placingOpening && !openingPlacementStart && openingHoverProjection && (() => {
+          // Pre-placement hover indicator: a SHORT line perpendicular
+          // to the wall, spanning the wall's thickness. Reads as a
+          // "where will the opening start" tick mark across the wall —
+          // visually clearer than a dot, especially on thick block
+          // walls where the cursor sits well inside the body. Curved
+          // walls fall back to the dot for now (perpendicular at an
+          // arc point needs the tangent — straightforward but not in
+          // scope here).
+          const hoverWall = wallsById.get(openingHoverProjection.wallId)
+          if (!hoverWall || isCurvedWall(hoverWall)) {
+            return (
+              <Circle
+                x={openingHoverProjection.px.x}
+                y={openingHoverProjection.px.y}
+                radius={4}
+                stroke="#D97706"
+                strokeWidth={1.5}
+                fill="rgba(217, 119, 6, 0.3)"
+                listening={false}
+              />
+            )
+          }
+          const dx = hoverWall.endX - hoverWall.startX
+          const dy = hoverWall.endY - hoverWall.startY
+          const len = Math.hypot(dx, dy)
+          if (len === 0) return null
+          // Perpendicular = wall direction rotated +90° in screen space.
+          const perpX = -dy / len
+          const perpY = dx / len
+          const thicknessMm = wallThicknessByWallId[hoverWall.id] ?? 190
+          const halfThicknessPx = mmToPx(thicknessMm / 2)
+          const cx = openingHoverProjection.px.x
+          const cy = openingHoverProjection.px.y
+          return (
+            <Line
+              points={[
+                cx - perpX * halfThicknessPx,
+                cy - perpY * halfThicknessPx,
+                cx + perpX * halfThicknessPx,
+                cy + perpY * halfThicknessPx,
+              ]}
+              stroke="#D97706"
+              strokeWidth={3}
+              lineCap="round"
+              listening={false}
+            />
+          )
+        })()}
 
         {/* Piers — rendered above wall polygons. Footprint comes from the
             project's pier block (via the `pierFootprintMm` prop) so US /

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
-import BrickLibraryPanel from '../components/BrickLibraryPanel'
+import { WallTypeTemplatesSection } from '../components/WallTypesPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import LibraryTemplateControls from '../components/LibraryTemplateControls'
 import LibrarySectionControls from '../components/LibrarySectionControls'
@@ -146,9 +146,15 @@ export default function MaterialLibraryPage() {
           )}
         </div>
 
-        {/* Trade selector — sits immediately under the page header so
-            the active scope (Blocks / Bricks / Supply items) is the
-            first thing the user sees. Card style: each trade is a
+        {/* Section selector — sits immediately under the page header so
+            the active scope (Blocks / Wall types / Supply items) is the
+            first thing the user sees. Each card carries its CATEGORY as
+            the small overline (Catalogue / Your builds / Rates &
+            extras) so the page reads as grouped sections — block
+            catalogue data, your reusable builds, and cross-trade rates
+            — rather than a flat everything-at-once list. Bricks no
+            longer have a library: brick walls count one standard brick
+            and the look is uniform. Card style: each trade is a
             full-width clickable card with title + kindLabel, active
             card lights up with the brand border + background tint
             and a left accent stripe. Reads as "pick a section" rather
@@ -213,7 +219,7 @@ export default function MaterialLibraryPage() {
             selected trade" rather than a separate competing control.
             Hidden on the Supply items tab (templates don't seed
             supply items). */}
-        {activeTabId !== 'supply-items' && (
+        {activeTabId === 'blocks' && (
           <div className="mt-4">
             <LibraryTemplateControls readOnly={readOnly} />
           </div>
@@ -233,13 +239,12 @@ export default function MaterialLibraryPage() {
             </TabSection>
           )}
 
-          {activeTabId === 'bricks' && (
+          {activeTabId === 'wall-types' && (
             <TabSection
-              title="Bricks"
-              description="Brick types you supply. Dimensions, mortar joint, and the auto-calculated bricks-per-square-metre rate."
+              title="Wall types"
+              description="Your named wall type templates — full compositions (height, bond, blocks, course pattern) reusable across every project. Build them here, or save one from any project's wall type card. The new-wall-type modal offers these as starting points."
             >
-              <LibrarySectionControls kind="brick" readOnly={readOnly} />
-              <BrickLibraryPanel defaultExpanded hideChrome readOnly={readOnly} />
+              <WallTypeTemplatesSection readOnly={readOnly} />
             </TabSection>
           )}
 
@@ -275,9 +280,9 @@ export default function MaterialLibraryPage() {
  * a cross-trade tab" inspectable in one place.
  */
 const LIBRARY_TABS = [
-  { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Trade' },
-  { id: 'bricks' as const, label: 'Bricks', kindLabel: 'Trade' },
-  { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Cross-trade' },
+  { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Catalogue' },
+  { id: 'wall-types' as const, label: 'Wall types', kindLabel: 'Your builds' },
+  { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Rates & extras' },
 ]
 type LibraryTabId = (typeof LIBRARY_TABS)[number]['id']
 
@@ -322,6 +327,16 @@ const UNIT_OPTIONS: Array<{ value: SupplyItemUnit; label: string; hint: string }
   { value: 'per-m2', label: 'Per m² of wall', hint: 'Rate × total brickwork or blockwork area.' },
   { value: 'per-m-lineal', label: 'Per lineal m', hint: 'Rate × total wall run.' },
   { value: 'per-opening', label: 'Per opening', hint: 'Rate × number of openings.' },
+  {
+    value: 'per-opening-head',
+    label: 'Per opening head',
+    hint: 'Rate × number of opening heads. Counts every opening (doors + windows). Optional width range narrows it.',
+  },
+  {
+    value: 'per-opening-sill',
+    label: 'Per opening sill',
+    hint: 'Rate × number of window sills. Doors are excluded automatically — no sill on a doorway.',
+  },
 ]
 
 function unitLabelOf(unit: SupplyItemUnit): string {
@@ -642,6 +657,15 @@ function SupplyItemForm({
   const [decimalPlaces, setDecimalPlaces] = useState<number>(
     existing?.decimalPlaces ?? 0
   )
+  // Project-default flag — only meaningful for the three opening-
+  // scoped units. When set, the resolver counts ONLY this item
+  // (and any other defaults) for matching openings, suppressing
+  // non-default matches. Lets the user shape an opening's price
+  // around a specific lintel / sill / head product without ticking
+  // off every other item that happens to fit the same width range.
+  const [isProjectDefault, setIsProjectDefault] = useState<boolean>(
+    existing?.isProjectDefault ?? false,
+  )
 
   const canSave =
     name.trim().length > 0 && rate > 0 && (appliesToBlock || appliesToBrick)
@@ -655,10 +679,14 @@ function SupplyItemForm({
     const appliesTo: ('block' | 'brick')[] = []
     if (appliesToBlock) appliesTo.push('block')
     if (appliesToBrick) appliesTo.push('brick')
-    // Only persist opening-width range for per-opening supplies — the
-    // fields are hidden for other units, and storing them would just
-    // confuse the next editor open.
-    const isPerOpening = unit === 'per-opening'
+    // Only persist opening-width range for per-opening / per-opening-
+    // head / per-opening-sill supplies — the fields are hidden for
+    // other units, and storing them would just confuse the next
+    // editor open.
+    const isPerOpening =
+      unit === 'per-opening' ||
+      unit === 'per-opening-head' ||
+      unit === 'per-opening-sill'
     onSave({
       id: existing?.id ?? generateId(),
       name: name.trim(),
@@ -680,6 +708,10 @@ function SupplyItemForm({
       // (no field) and "0 decimals" cases on the same shape so
       // existing serialised libraries don't gain a trailing 0.
       ...(decimalPlaces > 0 ? { decimalPlaces } : {}),
+      // Only persist isProjectDefault for opening-scoped units (the
+      // only places the resolver consults it) and only when ON, so
+      // older libraries stay shape-identical until a default is set.
+      ...(isPerOpening && isProjectDefault ? { isProjectDefault: true } : {}),
     })
   }
 
@@ -801,12 +833,16 @@ function SupplyItemForm({
           </p>
         </label>
 
-        {/* Opening-width range — only shown for per-opening supplies.
-            Used for lintels / sills / heads where the item depends on
-            the opening's width (e.g. Galintel 100×100 for 1200–1800mm
-            openings, steel angle for >1800mm). Leave both blank to
-            apply to every opening (ties, sealants, flashings, etc.). */}
-        {unit === 'per-opening' && (
+        {/* Opening-width range — shown for per-opening / per-opening-
+            head / per-opening-sill supplies. Used for lintels / sills /
+            heads where the item depends on the opening's width (e.g.
+            Galintel 100×100 for 1200–1800mm openings, steel angle for
+            >1800mm). Leave both blank to apply to every in-scope
+            opening (every opening for per-opening + per-opening-head;
+            every window for per-opening-sill). */}
+        {(unit === 'per-opening' ||
+          unit === 'per-opening-head' ||
+          unit === 'per-opening-sill') && (
           <div className="md:col-span-2 p-3 rounded-lg border border-ink-700 bg-ink-900/40">
             <div className="text-xs font-semibold text-ink-300 mb-1">
               Opening width range (optional)
@@ -852,6 +888,36 @@ function SupplyItemForm({
                 />
               </label>
             </div>
+
+            {/* Project-default toggle — applies to opening-scoped units
+                only (shown inside the same card as the width range
+                because the two settings are closely related: a default
+                only matters when multiple library items could match
+                the same opening). When ON, the resolver counts this
+                item — and any other defaults — for matching openings
+                and suppresses non-default matches. Doesn't change the
+                rate or the unit; only changes which items "win" when
+                more than one fits. */}
+            <label className="mt-3 flex items-start gap-2 cursor-pointer text-xs">
+              <input
+                type="checkbox"
+                checked={isProjectDefault}
+                onChange={(e) => setIsProjectDefault(e.target.checked)}
+                className="w-4 h-4 mt-0.5 accent-beme-500 flex-shrink-0"
+              />
+              <span>
+                <span className="block text-ink-200 font-semibold">
+                  Project default for this scope
+                </span>
+                <span className="block text-ink-500 mt-0.5 leading-snug">
+                  When two or more library items match the same opening
+                  (e.g. two lintels both cover 1200–1800 mm), only the
+                  defaults are counted. Non-default matches are
+                  suppressed. Leave unticked for items that always
+                  count alongside others.
+                </span>
+              </span>
+            </label>
           </div>
         )}
 

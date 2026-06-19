@@ -24,6 +24,7 @@ import { rasterisePdfPage } from './pdfRaster'
 import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
 import { getCurrentOrgId } from './organisations'
+import { countOpeningsForSupplyItem } from './openingSupplyResolver'
 import {
   formatSupplyQuantity,
   roundSupplyQuantity,
@@ -484,8 +485,12 @@ function buildBrickPlanOverviewPage(
       const t1y = oy1 + py * tickHalf
       const t1xN = ox1 - px * tickHalf
       const t1yN = oy1 - py * tickHalf
+      // Colour-code by kind so the printed plan reads at a glance:
+      // window = amber, door = teal. Mirrors the live-canvas
+      // colours used by WallDrawingLayer for brick openings.
+      const fillColour = op.kind === 'door' ? '#CCFBF1' : '#FEF3C7'
       return [
-        `<line x1="${ox0.toFixed(1)}" y1="${oy0.toFixed(1)}" x2="${ox1.toFixed(1)}" y2="${oy1.toFixed(1)}" stroke="#fef3c7" stroke-opacity="0.96" stroke-width="${(brickThicknessMm * 0.92).toFixed(1)}" stroke-linecap="butt"/>`,
+        `<line x1="${ox0.toFixed(1)}" y1="${oy0.toFixed(1)}" x2="${ox1.toFixed(1)}" y2="${oy1.toFixed(1)}" stroke="${fillColour}" stroke-opacity="0.96" stroke-width="${(brickThicknessMm * 0.92).toFixed(1)}" stroke-linecap="butt"/>`,
         `<line x1="${t0x.toFixed(1)}" y1="${t0y.toFixed(1)}" x2="${t0xN.toFixed(1)}" y2="${t0yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(brickThicknessMm * 0.18).toFixed(1)}" stroke-linecap="round"/>`,
         `<line x1="${t1x.toFixed(1)}" y1="${t1y.toFixed(1)}" x2="${t1xN.toFixed(1)}" y2="${t1yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(brickThicknessMm * 0.18).toFixed(1)}" stroke-linecap="round"/>`,
       ].join('\n          ')
@@ -555,16 +560,16 @@ function buildBrickPlanOverviewPage(
     .join('')
 
   // Opening keys — break out by door / window kind so the reader
-  // can match the cream-break markers on the plan to "opening of
-  // kind X" in the legend. Inline SVG swatch shows the same cream
-  // body + dark jamb tick treatment the plan uses, so the key is
-  // visually grounded to the markers above.
+  // can match the kind-coloured markers on the plan to "opening of
+  // kind X" in the legend. Each kind gets its own SVG swatch with
+  // the same fill the plan uses (window=amber, door=teal), so the key
+  // is visually grounded to the markers above.
   const windowCount = openings.filter((o) => o.kind !== 'door').length
   const doorCount = openings.filter((o) => o.kind === 'door').length
-  const openingSwatch = `
+  const openingSwatch = (fill: string) => `
     <svg viewBox="0 0 24 12" xmlns="http://www.w3.org/2000/svg" class="legend-opening-swatch" aria-hidden="true">
       <rect x="0" y="3" width="24" height="6" fill="#cbb89a" stroke="#0f172a" stroke-width="0.5"/>
-      <rect x="3" y="3" width="18" height="6" fill="#fef3c7"/>
+      <rect x="3" y="3" width="18" height="6" fill="${fill}"/>
       <line x1="3" y1="1" x2="3" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
       <line x1="21" y1="1" x2="21" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
     </svg>
@@ -573,7 +578,7 @@ function buildBrickPlanOverviewPage(
   if (windowCount > 0) {
     openingKeyItems.push(`
       <span class="legend-item">
-        ${openingSwatch}
+        ${openingSwatch('#FEF3C7')}
         <strong>Window</strong>
         <span class="legend-sub">${windowCount} on this page</span>
       </span>
@@ -582,7 +587,7 @@ function buildBrickPlanOverviewPage(
   if (doorCount > 0) {
     openingKeyItems.push(`
       <span class="legend-item">
-        ${openingSwatch}
+        ${openingSwatch('#CCFBF1')}
         <strong>Door</strong>
         <span class="legend-sub">${doorCount} on this page</span>
       </span>
@@ -1068,31 +1073,26 @@ export async function buildBrickEstimateHtml(
         qty = rate * brickRun_m
         noteRate = `${rate} per lineal metre`
         break
-      case 'per-opening': {
-        // If the supply item carries an opening-width range (used for
-        // lintels / sills / heads), only count openings whose width
-        // falls within that range. No range = applies to every opening
-        // (the pre-existing behaviour for ties / flashings / etc.).
-        //
-        // Both bounds INCLUSIVE — matches the block-lintel bucket
-        // convention. A "Galintel 100×100" with range 1200–1800
-        // covers both a 1200mm and a 1800mm opening.
+      case 'per-opening':
+      case 'per-opening-head':
+      case 'per-opening-sill': {
+        // Shared resolver — respects per-opening overrides + project
+        // defaults + width-range / kind filter. Mirrors block export.
+        const inScope = countOpeningsForSupplyItem(item, openings, supplyItems)
+        qty = rate * inScope
         const min = item.openingWidthMinMm
         const max = item.openingWidthMaxMm
-        const inScope =
-          min === undefined && max === undefined
-            ? openings.length
-            : openings.filter(
-                (o) =>
-                  (min === undefined || o.widthMm >= min) &&
-                  (max === undefined || o.widthMm <= max)
-              ).length
-        qty = rate * inScope
         const rangeLabel =
           min !== undefined || max !== undefined
             ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
             : ''
-        noteRate = `${rate} per opening${rangeLabel}`
+        const scopeLabel =
+          item.unit === 'per-opening-sill'
+            ? 'opening sill (windows)'
+            : item.unit === 'per-opening-head'
+              ? 'opening head'
+              : 'opening'
+        noteRate = `${rate} per ${scopeLabel}${rangeLabel}`
         break
       }
       case 'per-block':
@@ -2154,16 +2154,11 @@ export async function buildBrickEstimateHtml(
     display: inline-block;
     width: 10px;
     height: 10px;
-    background: #FF7A2D;
+    border: 2px solid #FF7A2D;
     border-radius: 2px;
-    position: relative;
-  }
-  .beme-credit .beme-mark::after {
-    content: '';
-    position: absolute;
-    inset: 2px;
-    background: #111111;
-    border-radius: 1px;
+    box-sizing: border-box;
+    /* True transparent hole through the middle — matches the
+       BemeMark component in the app. */
   }
   .beme-credit strong {
     color: #1F2937;

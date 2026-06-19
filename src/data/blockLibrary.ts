@@ -285,6 +285,161 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
     dimensions: { widthMm: 390, heightMm: 90, depthMm: 290 },
     roles: ['height-makeup'],
   },
+
+  // ── 100mm series (90mm wide) — National Masonry SEQ price list ──
+  '10.01': {
+    code: '10.01',
+    name: '100-series Standard',
+    description:
+      'Standard 100-series block, 390 × 190 × 90mm — partition and ' +
+      'veneer-backing walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['body', 'corner', 'end-termination'],
+  },
+  '10.02': {
+    code: '10.02',
+    name: '100-series Three Quarter',
+    description: '3/4-length closure, 290 × 190 × 90mm.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 90 },
+    roles: ['fraction'],
+    fraction: 0.75,
+  },
+  '10.03': {
+    code: '10.03',
+    name: '100-series Half',
+    description:
+      'Half-length block, 190 × 190 × 90mm (doubles as the 200-series ' +
+      'quarter, 20.04).',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 90 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '10.31': {
+    code: '10.31',
+    name: '100-series Solid',
+    description: 'Solid 100-series block, 390 × 190 × 90mm.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 90 },
+    roles: ['body'],
+  },
+  '10.71': {
+    code: '10.71',
+    name: '100-series Half Height',
+    description:
+      'Half-height unit, 390 × 90 × 90mm — height makeup on 100-series ' +
+      'walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 90 },
+    roles: ['height-makeup'],
+  },
+
+  // ── 150mm series (140mm wide) — National Masonry SEQ price list ──
+  '15.48': {
+    code: '15.48',
+    name: '150-series H Block',
+    description:
+      'Open-web H block, 390 × 190 × 140mm — the main reinforced body ' +
+      'unit for 150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['body'],
+  },
+  '15.01': {
+    code: '15.01',
+    name: '150-series Standard',
+    description:
+      'Standard closed-end block, 390 × 190 × 140mm — corners and wall ' +
+      'ends on 150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['corner', 'end-termination'],
+  },
+  '15.02': {
+    code: '15.02',
+    name: '150-series Three Quarter',
+    description: '3/4-length closure, 290 × 190 × 140mm.',
+    dimensions: { widthMm: 290, heightMm: 190, depthMm: 140 },
+    roles: ['fraction'],
+    fraction: 0.75,
+  },
+  '15.03': {
+    code: '15.03',
+    name: '150-series Half',
+    description: 'Half-length block, 190 × 190 × 140mm.',
+    dimensions: { widthMm: 190, heightMm: 190, depthMm: 140 },
+    roles: ['end-termination', 'fraction'],
+    fraction: 0.5,
+  },
+  '15.22': {
+    code: '15.22',
+    name: '150-series Seven Eighths',
+    description: '7/8-length closure, 340 × 190 × 140mm.',
+    dimensions: { widthMm: 340, heightMm: 190, depthMm: 140 },
+    roles: ['fraction'],
+    fraction: 0.875,
+  },
+  '15.12': {
+    code: '15.12',
+    name: '150-series Lintel',
+    description:
+      'Full-length lintel unit, 390 × 190 × 140mm — opening heads on ' +
+      '150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['lintel'],
+    lintelMinHeadHeightMm: 0,
+    lintelMaxHeadHeightMm: 400,
+  },
+  '15.20': {
+    code: '15.20',
+    name: '150-series Knockout Bond Beam',
+    description:
+      'Knockout bond-beam block, 390 × 190 × 140mm — reinforced top ' +
+      'course on 150-series walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['top-course'],
+  },
+  '15.45': {
+    code: '15.45',
+    name: '150-series Cleanout',
+    description:
+      'Cleanout block, 390 × 190 × 140mm — grouted base course.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 140 },
+    roles: ['base-course'],
+  },
+  '15.71': {
+    code: '15.71',
+    name: '150-series Half Height',
+    description:
+      'Half-height unit, 390 × 90 × 140mm — height makeup on 150-series ' +
+      'walls.',
+    dimensions: { widthMm: 390, heightMm: 90, depthMm: 140 },
+    roles: ['height-makeup'],
+  },
+  '50.15': {
+    code: '50.15',
+    name: '150-series Cap',
+    description:
+      'Capping tile, 390 × 40 × 140mm — closes the cores on top of a ' +
+      'finished 150-series wall.',
+    dimensions: { widthMm: 390, heightMm: 40, depthMm: 140 },
+    roles: ['cap'],
+  },
+
+  // ── Caps + 400 series — National Masonry SEQ price list ──
+  '50.31': {
+    code: '50.31',
+    name: '200-series Cap',
+    description:
+      'Capping tile, 390 × 40 × 190mm — closes the cores on top of a ' +
+      'finished 200-series wall.',
+    dimensions: { widthMm: 390, heightMm: 40, depthMm: 190 },
+    roles: ['cap'],
+  },
+  '40.48': {
+    code: '40.48',
+    name: '400-series H Block',
+    description:
+      'Open-web H block, 390 × 190 × 390mm — heavy retaining and ' +
+      'foundation walls.',
+    dimensions: { widthMm: 390, heightMm: 190, depthMm: 390 },
+    roles: ['body'],
+  },
 }
 
 /** Codes from the seed library that should never be deletable — the calc engine depends on them. */
@@ -873,13 +1028,86 @@ export function pickHeightMakeupBlockIn(
   const pickFrom = (candidates: Block[]): Block | undefined =>
     candidates.find((b) => b.dimensions.heightMm === targetHeightMm) ??
     candidates.find((b) => b.dimensions.heightMm <= targetHeightMm)
-  return pickFrom(depthScoped) ?? pickFrom(all)
+  // STRICT depth scoping: when the caller supplies the wall's body
+  // depth, only a height-makeup block of that same series/depth may be
+  // used. No cross-series fallback — a 300-series wall with no
+  // 300-series height-makeup block in the library gets NO height-makeup
+  // course (callers handle undefined by laying full courses) rather
+  // than a 200-series block stuffed into a 290mm-deep wall.
+  return pickFrom(depthScoped)
 }
 export function pickHeightMakeupBlock(
   targetHeightMm: number,
   preferredDepthMm?: number,
 ): Block | undefined {
   return pickHeightMakeupBlockIn(BLOCK_LIBRARY, targetHeightMm, preferredDepthMm)
+}
+
+/**
+ * Resolve a "structural slot" (top course, base course, corner, half) for a
+ * wall whose body block has a known depth — depth-scoped against the body
+ * so a stale or wrongly-seeded code can't drop a different-series block
+ * into the wall.
+ *
+ * Decision tree for `slotCode` (the makeup-saved code for this slot):
+ *   1. If `slotCode` is in the library AND its depth matches `bodyDepthMm`
+ *      (±5 mm tolerance), return it as-is. The user/seed got it right.
+ *   2. Otherwise scan blocks tagged with `role` whose depth matches the
+ *      body's. Pick the first match — same first-tagged-wins logic
+ *      `resolveBlockByRole` uses.
+ *   3. If no depth-scoped role match exists, fall back to `bodyBlockCode`.
+ *      A body block always has the correct depth (it IS the body), so the
+ *      wall reads visually consistent even when the library has no
+ *      dedicated slot block of the right series.
+ *
+ * Why this matters: the renderer pulls the top course block straight off
+ * the makeup. If the user picks a default top-course code in the wall
+ * editor and the body block's depth changes later (or a region default
+ * was set with a mismatched code), the wall used to render a thin
+ * 100-series cap on a 200-series wall. With this helper, the renderer
+ * silently falls through to a depth-compatible block instead.
+ *
+ * `slotCode` may be undefined / empty — same fallback path as a stale
+ * code. The body-block guarantee keeps the output populated regardless.
+ */
+export function pickDepthScopedSlotBlockIn(
+  library: Record<BlockCode, Block>,
+  slotCode: BlockCode | undefined,
+  role: BlockRole,
+  bodyBlockCode: BlockCode,
+): BlockCode {
+  const DEPTH_TOLERANCE_MM = 5
+  const bodyBlock = library[bodyBlockCode]
+  const bodyDepth = bodyBlock?.dimensions.depthMm
+  // 1. Trust the saved code when depth matches the body.
+  if (slotCode) {
+    const candidate = library[slotCode]
+    if (
+      candidate &&
+      (bodyDepth === undefined ||
+        Math.abs(candidate.dimensions.depthMm - bodyDepth) <= DEPTH_TOLERANCE_MM)
+    ) {
+      return slotCode
+    }
+  }
+  // 2. Depth-scoped role lookup.
+  if (bodyDepth !== undefined) {
+    const roleMatch = Object.values(library).find(
+      (b) =>
+        b.roles.includes(role) &&
+        Math.abs(b.dimensions.depthMm - bodyDepth) <= DEPTH_TOLERANCE_MM,
+    )
+    if (roleMatch) return roleMatch.code
+  }
+  // 3. Last resort — body block by definition matches its own depth.
+  return bodyBlockCode
+}
+export function pickDepthScopedSlotBlock(
+  slotCode: BlockCode | undefined,
+  role: BlockRole,
+  bodyBlockCode: BlockCode,
+): BlockCode {
+  return pickDepthScopedSlotBlockIn(BLOCK_LIBRARY, slotCode, role, bodyBlockCode)
 }
 
 /**
@@ -1000,12 +1228,23 @@ export function pickLintelBlockIn(
   for (const c of candidates) {
     const remainderMm = Math.max(0, openingHeightMm - c.dimensions.heightMm)
     const dist = computeDistance(remainderMm)
-    if (
+    // Tiebreak: prefer the SMALLEST lintel that decomposes cleanly —
+    // the remaining head fills with ordinary body courses, which is
+    // both the cheaper order and what the opening modal promises
+    // ("smallest lintel-tagged block whose face height covers the
+    // head"). A 600mm head lays one 190mm lintel course + two body
+    // courses, not a 390mm deep lintel. Deep lintels still win
+    // whenever they're the only clean modular fit (e.g. 300mm head
+    // -> 290mm lintel). Among equal heights, prefer the WIDER unit
+    // (the standard full-length lintel over the half/closer piece).
+    const better =
       dist < bestDist ||
-      // Tiebreak: prefer the LARGER lintel (fewer body courses above).
       (dist === bestDist &&
-        (!best || c.dimensions.heightMm > best.dimensions.heightMm))
-    ) {
+        best !== null &&
+        (c.dimensions.heightMm < best.dimensions.heightMm ||
+          (c.dimensions.heightMm === best.dimensions.heightMm &&
+            c.dimensions.widthMm > best.dimensions.widthMm)))
+    if (best === null || better) {
       bestDist = dist
       best = c
     }

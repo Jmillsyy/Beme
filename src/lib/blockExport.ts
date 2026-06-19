@@ -39,6 +39,7 @@ import { downloadPdfFromHtml } from './pdfExport'
 import { getEffectiveWallThicknessMm, getMakeupHeightMm } from './makeups'
 import { getUserSettings } from './userSettings'
 import { getOrgSupplyItems } from './orgSupplyItems'
+import { countOpeningsForSupplyItem } from './openingSupplyResolver'
 import { getCurrentOrgId } from './organisations'
 import {
   formatSupplyQuantity,
@@ -1518,31 +1519,29 @@ export async function buildBlockEstimateHtml(
         qty = rate * blockRun_m
         noteRate = `${rate} per lineal metre`
         break
-      case 'per-opening': {
-        // Optional opening-width range filter — used for lintels / sills /
-        // any per-opening supply that depends on opening size. No range
-        // means the supply applies to every opening (per-block behaviour).
-        // BOTH bounds inclusive — matches brickExport + the
-        // SupplyItem.openingWidthMinMm / Max contract. Using strict `<`
-        // on max here previously skipped openings exactly at the upper
-        // boundary value (e.g. a 1200mm opening fell into the 1500-mm
-        // Galintel row instead of the 1200-mm row).
+      case 'per-opening':
+      case 'per-opening-head':
+      case 'per-opening-sill': {
+        // Shared resolver: respects per-opening overrides + project
+        // defaults + the width-range / kind filter. See
+        // src/lib/openingSupplyResolver.ts for the rules. Same chain
+        // the workspace tally + export preview use, so the PDF row
+        // matches the modal preview exactly.
+        const inScope = countOpeningsForSupplyItem(item, openings, supplyItems)
+        qty = rate * inScope
         const min = item.openingWidthMinMm
         const max = item.openingWidthMaxMm
-        const inScope =
-          min === undefined && max === undefined
-            ? openings.length
-            : openings.filter(
-                (o) =>
-                  (min === undefined || o.widthMm >= min) &&
-                  (max === undefined || o.widthMm <= max)
-              ).length
-        qty = rate * inScope
         const rangeLabel =
           min !== undefined || max !== undefined
             ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
             : ''
-        noteRate = `${rate} per opening${rangeLabel}`
+        const scopeLabel =
+          item.unit === 'per-opening-sill'
+            ? 'opening sill (windows)'
+            : item.unit === 'per-opening-head'
+              ? 'opening head'
+              : 'opening'
+        noteRate = `${rate} per ${scopeLabel}${rangeLabel}`
         break
       }
       case 'per-brick':
@@ -2399,16 +2398,13 @@ export async function buildBlockEstimateHtml(
     display: inline-block;
     width: 10px;
     height: 10px;
-    background: #FF7A2D;
+    border: 2px solid #FF7A2D;
     border-radius: 2px;
-    position: relative;
-  }
-  .beme-credit .beme-mark::after {
-    content: '';
-    position: absolute;
-    inset: 2px;
-    background: #111111;
-    border-radius: 1px;
+    box-sizing: border-box;
+    /* True transparent hole through the middle — matches the BemeMark
+       component in the app, so the PDF credit mark reads the same as
+       the in-product brand mark instead of trying to fake a dark
+       inset on a white page. */
   }
   .beme-credit strong {
     color: #1F2937;

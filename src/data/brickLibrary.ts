@@ -16,9 +16,13 @@ import { isSupabaseConfigured, supabase } from '../lib/supabase'
 // ─── Seed library ───────────────────────────────────────────────────────────
 
 /**
- * Default brick library — common Australian sizes. The codes are short
- * machine-friendly strings; the human name carries the dimensions for clarity
- * in dropdowns.
+ * Default brick library — ONE standard brick. The curated brick library
+ * was phased out: brick estimates count the standard 230 × 76 face
+ * everywhere, and the 3D brick render uses the same size. Legacy
+ * projects whose makeups reference retired codes (maxi, double-height,
+ * …) still resolve through the calc engine's standard-size fallbacks,
+ * and any custom bricks previously synced to the cloud are simply no
+ * longer surfaced in the UI.
  */
 export const DEFAULT_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
   standard: {
@@ -27,38 +31,6 @@ export const DEFAULT_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
     description: 'The default Australian face brick. ~48 bricks/m².',
     widthMm: 230,
     heightMm: 76,
-    depthMm: 110,
-  },
-  maxi: {
-    code: 'maxi',
-    name: 'Maxi 290×90',
-    description: 'Larger format — wider and slightly taller. ~33 bricks/m².',
-    widthMm: 290,
-    heightMm: 90,
-    depthMm: 110,
-  },
-  'double-height': {
-    code: 'double-height',
-    name: 'Double-height 230×162',
-    description: 'Twice the height of a standard. ~24 bricks/m².',
-    widthMm: 230,
-    heightMm: 162,
-    depthMm: 110,
-  },
-  'double-skin': {
-    code: 'double-skin',
-    name: 'Double-skin 230×76×230',
-    description: 'Full-depth brick (cavity inner skin or solid wall). Same face but 230mm deep.',
-    widthMm: 230,
-    heightMm: 76,
-    depthMm: 230,
-  },
-  'half-height': {
-    code: 'half-height',
-    name: 'Half-height 230×38',
-    description: 'Half-height brick — used for trim courses or matching odd dimensions.',
-    widthMm: 230,
-    heightMm: 38,
     depthMm: 110,
   },
 }

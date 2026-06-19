@@ -48,16 +48,20 @@ function lazyWithReload<T extends ComponentType<any>>(
 const WorkspaceView3D = lazyWithReload(() => import('./WorkspaceView3D'))
 import { PDFDocument } from 'pdf-lib'
 import { Document, Page, pdfjs } from 'react-pdf'
+import { renderPdfRegion, type PdfRegionTask } from '../lib/pdfViewportRender'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import SupplyItemsPanel from './SupplyItemsPanel'
+import OpeningSupplyOverridePicker from './OpeningSupplyOverridePicker'
+import WallTopProfileBar from './WallTopProfileBar'
+import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import AreaTabs from './AreaTabs'
 import { calculateProjectTally } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import BlockTallyPanel from './BlockTallyPanel'
 import WallTypesPanel from './WallTypesPanel'
-import BrickTypesPanel from './BrickTypesPanel'
+import BrickWallSettingsPanel from './BrickWallSettingsPanel'
 import TradeRail from './TradeRail'
 import MaterialLibraryGate from './MaterialLibraryGate'
 import LibraryGuidance from './LibraryGuidance'
@@ -310,7 +314,7 @@ const MM_PER_INCH = 25.4
 
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 8
-const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
+const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32]
 
 /**
  * Cap on how high the PDF + Konva canvases will rasterise.
@@ -1217,22 +1221,44 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const placingOpeningRef = useRef(false)
   /** Block-mode head height — distance from the TOP of the opening
    *  to the top of the wall (the lintel allowance). The opening
-   *  height itself is DERIVED: openingH = wallH − sill − head.
-   *  Default 600 mm = 2700 mm wall − 2100 mm door − 0 mm sill, so
-   *  a freshly drawn standard door opening on a standard wall
-   *  comes out at the right size without the user typing anything. */
+   *  height itself is DERIVED at save time: openingH = wallH − sill
+   *  − head. Matches how plans typically call out an opening (head
+   *  allowance + sill, not the hole dimensions). On a fresh
+   *  placement the snap-to-courses effect below sets head so the
+   *  resulting opening height is a whole number of body block
+   *  courses. */
   const [blockOpeningHeadMm, setBlockOpeningHeadMm] = useState(600)
   /** Block-mode sill height — typed directly. Block walls don't
    *  carry a door/window distinction (no sill-course concept), so
    *  the sill is just a free dimension the user sets manually.
    *  Default 0 = door-style opening reaching the floor. */
   const [blockOpeningSillMm, setBlockOpeningSillMm] = useState(0)
+  /** Per-opening supply-item overrides being edited in the pending
+   *  opening modal. Hydrated from the opening when editing an
+   *  existing one, reset to undefined for a fresh placement. Passed
+   *  through to the saved Opening on commit. undefined = no
+   *  overrides set (everything on auto). */
+  const [pendingOpeningSupplyOverrides, setPendingOpeningSupplyOverrides] =
+    useState<Opening['supplyOverrides']>(undefined)
   /** Brick-mode opening height — user types it directly, sill is
    *  derived from kind via deriveSillMm at save time. */
   const [brickOpeningHeightMm, setBrickOpeningHeightMm] = useState(2100)
   /** Brick-mode opening kind — drives the auto-derived sill (door=0,
    *  window=wallH-300-openingH) and sill-trim suppression in 3D. */
   const [brickOpeningKind, setBrickOpeningKind] = useState<'window' | 'door'>('window')
+  /** Brick modal: "No head" — the opening runs to the top of the wall
+   *  (no head course, brickwork above removed from the area). Decoupled
+   *  from position now — doesn't change where the opening sits, just
+   *  opens up the head zone above wherever it lands. */
+  const [brickOpeningNoHead, setBrickOpeningNoHead] = useState(false)
+  /** Brick modal: optional head-allowance override (mm from wall top
+   *  to top of opening). Blank string = use kind default (door sits
+   *  at floor, window auto-anchors so head lands 300mm from top).
+   *  Anything else parses to a number and overrides the kind-derived
+   *  sill at save time: sill = wallH − headAllowance − openingHeight.
+   *  Lets the user specify a custom-height window without losing the
+   *  "type height + Enter" minimal flow. */
+  const [brickOpeningHeadAllowanceMm, setBrickOpeningHeadAllowanceMm] = useState<string>('')
   /** Block-mode per-opening lintel override. Empty string = auto-pick
    *  (smallest covering lintel-tagged block). Any other value is a
    *  BlockCode that must reference a lintel-tagged entry in the library
@@ -2835,15 +2861,53 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           widthMm: opening.widthMm,
           editingId: opening.id,
         })
+        // Hydrate the supply-override pickers from the opening's
+        // current settings so the modal opens on whatever the user
+        // last picked (auto / specific item / none per scope).
+        setPendingOpeningSupplyOverrides(opening.supplyOverrides)
         // Seed the modal state from the opening's persisted values
         // so the user sees the actual numbers when the modal opens.
         if (mode === 'brick') {
           setBrickOpeningHeightMm(opening.heightMm)
           setBrickOpeningKind(opening.kind ?? 'window')
+          setBrickOpeningNoHead(opening.noHead ?? false)
+          // Re-derive the head allowance from the saved sill so the
+          // override field shows what the user (or the kind default)
+          // produced. If it matches the kind default we leave the
+          // field blank — keeps "default" as the visible state. If
+          // it doesn't match, the explicit value populates the input
+          // so the user can see and tweak it.
+          const editPageWalls = wallsByPage[currentPage] ?? []
+          const editBrickWall = editPageWalls.find((w) => w.id === opening.wallId)
+          const editBrickMakeup = editBrickWall?.makeupId
+            ? brickMakeups.find((m) => m.id === editBrickWall.makeupId)
+            : undefined
+          const editBrickWallH =
+            editBrickWall?.heightMmOverride ??
+            editBrickMakeup?.heightMm ??
+            brickSettings.defaultWallHeightMm
+          const savedHeadAllowance = Math.max(
+            0,
+            editBrickWallH - opening.sillHeightMm - opening.heightMm,
+          )
+          const defaultHeadAllowance =
+            editBrickWallH -
+            deriveSillMm(
+              opening.kind ?? 'window',
+              opening.heightMm,
+              editBrickWallH,
+            ) -
+            opening.heightMm
+          setBrickOpeningHeadAllowanceMm(
+            Math.abs(savedHeadAllowance - defaultHeadAllowance) <= 1
+              ? ''
+              : String(Math.round(savedHeadAllowance)),
+          )
         } else {
           // Block modal asks for HEAD, not opening height. Derive
           // head from the persisted (sill, openingH) + the wall's
-          // current height.
+          // current height — same as the placement effect, just
+          // working backwards from the saved opening.
           const pageWalls = wallsByPage[currentPage] ?? []
           const editWall = pageWalls.find((w) => w.id === opening.wallId)
           const editMakeup = editWall
@@ -3399,6 +3463,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         // Individual opening widths so width-ranged supply items
         // (Galintels et al.) count only the openings they cover.
         openingWidthsMm: allOpenings.map((o) => o.widthMm),
+        // Parallel kinds so per-opening-sill supplies can skip doors
+        // (windows-only count). Defaults to 'window' to match the
+        // rest of the app — older openings saved before opening.kind
+        // existed are treated as windows.
+        openingKinds: allOpenings.map((o) =>
+          o.kind === 'door' ? ('door' as const) : ('window' as const),
+        ),
+        // Parallel per-opening supply-override maps so the resolver
+        // can honour explicit per-opening picks (Opening.supplyOverrides).
+        openingSupplyOverrides: allOpenings.map((o) => o.supplyOverrides),
       }
     }
     // Block mode (or any unknown — fall back to block math which yields 0s).
@@ -3430,6 +3504,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       blockCount,
       openingCount: allOpenings.length,
       openingWidthsMm: allOpenings.map((o) => o.widthMm),
+      // Same parallel kind list as the brick branch — drives
+      // per-opening-sill (windows only) and lets the per-opening-head
+      // unit share the same plumbing.
+      openingKinds: allOpenings.map((o) =>
+        o.kind === 'door' ? ('door' as const) : ('window' as const),
+      ),
+      openingSupplyOverrides: allOpenings.map((o) => o.supplyOverrides),
     }
     // blockLibraryVersion is a tally-engine dependency (calculateProjectTally
     // reaches into the live BLOCK_LIBRARY); listing it here re-runs the memo
@@ -4198,21 +4279,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, selectedWallId, setSelectedWallId])
 
   function handleAddMakeup(makeup: WallMakeup) {
-    // Resolve an areaId for the new makeup. Without this every
-    // makeup needs SOME area to belong to — otherwise it shows under
-    // 'All areas' but never appears in any specific area panel,
-    // which is the orphan-makeup bug the user reported.
+    // Resolve an areaId for the new makeup. The new wall type should
+    // always land in the area the user is currently viewing — even
+    // when the source carries its own areaId (library template
+    // saved against a different area, etc.). Without this rule,
+    // templates from another project lose their areaId match and
+    // the area filter at the panel level (`m.areaId ===
+    // activeAreaId`) hides the new entry instantly — which reads
+    // exactly like "save doesn't save" because the modal closes and
+    // nothing visible appears.
     //
     // Resolution order:
-    //   1. makeup.areaId (caller provided one already — uncommon)
-    //   2. activeAreaId (we're inside a specific area)
+    //   1. activeAreaId (we're inside a specific area — use it)
+    //   2. makeup.areaId (if still valid against the current
+    //      project's areas)
     //   3. areas[0]?.id (we're on All view; pick the first area)
     //   4. auto-create a 'New Area' (no areas exist at all)
     let stamped: WallMakeup
-    if (makeup.areaId) {
-      stamped = makeup
-    } else if (activeAreaId) {
+    const validAreaIds = new Set(areas.map((a) => a.id))
+    if (activeAreaId) {
       stamped = { ...makeup, areaId: activeAreaId }
+    } else if (makeup.areaId && validAreaIds.has(makeup.areaId)) {
+      stamped = makeup
     } else if (areas.length > 0) {
       stamped = { ...makeup, areaId: areas[0].id }
     } else {
@@ -4332,17 +4420,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   }
 
   // ---------- Brick makeup CRUD ----------
+  //
+  // Brick wall types are simplified — just name + height + straight /
+  // curved. No brick-type picker, no course composition, no sill / head
+  // brick codes, no orientation choices. The handlers below mirror the
+  // block-side shape but skip every field that the simplified model
+  // doesn't carry.
 
   function handleAddBrickMakeup(makeup: BrickMakeup) {
-    // Same area-resolution chain as handleAddMakeup — see comment
-    // there for the reasoning. Auto-creates a 'New Area' if the
-    // project has none, so a brick wall type can never end up
-    // orphaned (areaId undefined).
+    // Same area-resolution chain as handleAddMakeup — see comment there
+    // for the reasoning. Auto-creates a 'New Area' if the project has
+    // none so a brick wall type can never end up orphaned.
     let stamped: BrickMakeup
-    if (makeup.areaId) {
-      stamped = makeup
-    } else if (activeAreaId) {
+    const validBrickAreaIds = new Set(areas.map((a) => a.id))
+    if (activeAreaId) {
       stamped = { ...makeup, areaId: activeAreaId }
+    } else if (makeup.areaId && validBrickAreaIds.has(makeup.areaId)) {
+      stamped = makeup
     } else if (areas.length > 0) {
       stamped = { ...makeup, areaId: areas[0].id }
     } else {
@@ -4360,30 +4454,19 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   }
 
   function handleUpdateBrickMakeup(updated: BrickMakeup) {
-    // Capture prev BEFORE applying the update so we can detect a height
-    // change and propagate it. Two reasons we need this propagation:
-    //
-    //  1. Legacy projects (and any walls drawn before the draw-time
-    //     stamp was removed) carry heightMmOverride set to whatever
-    //     the makeup height was at draw time. That override wins
-    //     forever in the calc precedence chain, so the user editing
-    //     the wall type's height does nothing for those walls without
-    //     this sweep.
-    //  2. There's no per-wall height-override UI for brick walls right
-    //     now — every heightMmOverride on a brick wall today is a
-    //     stale draw-time stamp, never user-explicit. Safe to clear
-    //     unconditionally when the wall type's height changes. If a
-    //     per-wall override surface ever lands, this sweep needs a
-    //     "user-set" flag to avoid clobbering deliberate overrides.
+    // Clear any per-wall heightMmOverride when the wall type's height
+    // changes so the height edit actually moves the existing walls —
+    // there's no per-wall height UI on brick today, so every
+    // heightMmOverride is a stale draw-time stamp.
     const prevMakeup = brickMakeups.find((m) => m.id === updated.id)
-    setBrickMakeups((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
-
+    setBrickMakeups((prev) =>
+      prev.map((m) => (m.id === updated.id ? updated : m)),
+    )
     const heightChanged =
       prevMakeup &&
       typeof prevMakeup.heightMm === 'number' &&
       typeof updated.heightMm === 'number' &&
       prevMakeup.heightMm !== updated.heightMm
-
     if (heightChanged) {
       setWallsByPage((pages) => {
         const next: Record<number, Wall[]> = {}
@@ -4415,9 +4498,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       if (activeBrickMakeupId === id) setActiveBrickMakeupId(remaining[0].id)
       return remaining
     })
-    // Same as the block path — drop every wall referencing this
-    // brick wall type. The panel's confirm dialog explicitly names
-    // the count so the user knows what they're agreeing to.
+    // Drop every wall referencing this type — same as block.
     setWallsByPage((prev) => {
       const next: Record<number, Wall[]> = {}
       let changed = false
@@ -4430,14 +4511,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }
 
-  /**
-   * Same "click a brick wall type to select all walls of that type" affordance
-   * as block. Sets active for newly-drawn walls AND lights up matching walls
-   * on the current page so the user sees the mapping at a glance.
-   */
   function handleActivateBrickMakeup(id: string) {
     setActiveBrickMakeupId(id)
-    // Same per-area memory as handleActivateMakeup — see comment there.
+    // Per-area memory mirrors the block side.
     if (activeAreaId) {
       const prev = lastWallTypeByAreaRef.current[activeAreaId] ?? {}
       lastWallTypeByAreaRef.current[activeAreaId] = { ...prev, brick: id }
@@ -4453,16 +4529,127 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }
 
+  /**
+   * Update the per-wall topProfile (gable / raked cap). Passing
+   * undefined as `next` clears the field entirely so the wall reads
+   * as flat-top again. The cap area feeds calculateBrickTally via
+   * wallTopProfile.wallCapAreaSqMm.
+   */
+  function handleSetWallTopProfile(
+    wallId: string,
+    next: Wall['topProfile'],
+  ) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const updated = pageWalls.map((w) => {
+        if (w.id !== wallId) return w
+        // Drop the field entirely on flat so the saved JSON stays
+        // shape-identical to walls saved before this feature existed.
+        if (next === undefined) {
+          const { topProfile: _drop, ...rest } = w
+          void _drop
+          return rest as Wall
+        }
+        return { ...w, topProfile: next }
+      })
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
+  /**
+   * Per-wall height override setter.
+   *
+   * Drives the inline "Height" input on the single-wall canvas
+   * banner. Passing `undefined` strips the override and reverts the
+   * wall to its wall-type default — same field-deletion pattern
+   * `handleSetWallTopProfile` uses so saved JSON shapes stay
+   * shape-identical to walls created before per-wall overrides.
+   */
+  function handleSetWallHeightOverride(
+    wallId: string,
+    next: number | undefined,
+  ) {
+    setWallsByPage((prev) => {
+      const pageWalls = prev[currentPage] ?? []
+      const updated = pageWalls.map((w) => {
+        if (w.id !== wallId) return w
+        if (next === undefined) {
+          const { heightMmOverride: _drop, ...rest } = w
+          void _drop
+          return rest as Wall
+        }
+        return { ...w, heightMmOverride: next }
+      })
+      return { ...prev, [currentPage]: updated }
+    })
+  }
+
   // ---------- Opening handlers ----------
 
   const handleOpeningPlaced = useCallback((wallId: string, startAlongWallMm: number, widthMm: number) => {
     setPendingOpening({ wallId, startAlongWallMm, widthMm })
+    // Fresh placement — reset overrides so a previous edit doesn't
+    // bleed into a brand-new opening on a different wall.
+    setPendingOpeningSupplyOverrides(undefined)
     // New openings default to auto-pick — reset any override carried
     // over from the last edit session so the modal doesn't open
     // pre-pinned to a previously edited block.
     setBlockOpeningLintelOverride('')
+    // Reset brick head-allowance override so fresh placements show
+    // the kind default (blank input). Edit-load re-derives below.
+    setBrickOpeningHeadAllowanceMm('')
     setPlacingOpening(false)
   }, [])
+
+  /**
+   * Block-mode default head allowance — set so the resulting opening
+   * height is a whole number of BODY-BLOCK courses for the wall the
+   * user just clicked on. The opening lands clean on a course
+   * boundary instead of leaving a sliver above. Runs whenever a
+   * fresh (non-editing) `pendingOpening` arrives in block mode.
+   *
+   * The user types HEAD + SILL in the modal (matches how plans
+   * call out openings — lintel allowance + sill height, with the
+   * actual hole size falling out). This effect just sets a sensible
+   * starting HEAD so a fresh placement doesn't need any typing on
+   * the common case.
+   *
+   * Target opening: 2000 mm. Picked because it's a typical interior
+   * door opening and snaps cleanly to 10 × 200 mm body courses; on a
+   * 290 mm or 240 mm course wall the same snap math still gives a
+   * sensible number for that block size. Head defaults to
+   * wallHeight − snappedOpening, clamped at 0.
+   *
+   * Why an effect rather than inline in handleOpeningPlaced: the
+   * callback uses `useCallback([])` and would need stale-closure refs
+   * to read `mode` / walls / makeups; an effect reads them naturally
+   * through React state at the moment the pending opening lands.
+   */
+  useEffect(() => {
+    if (!pendingOpening) return
+    if (pendingOpening.editingId) return // editing reuses the stored values
+    if (mode !== 'block') return
+    const wall = currentPageWalls.find((w) => w.id === pendingOpening.wallId)
+    if (!wall) return
+    const makeup = makeupsById[wall.makeupId]
+    const bodyBlock = makeup
+      ? BLOCK_LIBRARY[makeup.bodyBlockCode]
+      : undefined
+    const courseModuleMm = bodyBlock
+      ? bodyBlock.dimensions.heightMm + 10 // 10 mm standard mortar joint
+      : 200
+    const wallHeightMm =
+      wall.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
+    const TARGET_OPENING_MM = 2000
+    const courses = Math.max(1, Math.round(TARGET_OPENING_MM / courseModuleMm))
+    const snappedOpeningMm = courses * courseModuleMm
+    const defaultHeadMm = Math.max(0, wallHeightMm - snappedOpeningMm)
+    setBlockOpeningHeadMm(defaultHeadMm)
+    setBlockOpeningSillMm(0)
+    // Only react to pendingOpening reference changes — currentPageWalls
+    // changing mid-edit would re-snap and clobber what the user typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpening])
 
   /**
    * Derive the sill height for a new opening from its kind, height,
@@ -4513,18 +4700,32 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         brickMakeup?.heightMm ??
         brickSettings.defaultWallHeightMm
       openingHeightForSave = brickOpeningHeightMm
-      sillForSave = deriveSillMm(
-        brickOpeningKind,
-        brickOpeningHeightMm,
-        brickWallHeightMm
-      )
+      // Position rule: explicit head allowance (if set) wins over
+      // the kind default. Sill = wallH − headAllowance − height.
+      // Blank head allowance falls back to deriveSillMm which uses
+      // the kind default (door = floor, window = 300mm from top).
+      // noHead is now position-independent — it doesn't move the
+      // opening, just extends the void above to the wall top
+      // (handled at render time in adjustOpeningForRender).
+      const parsedHeadAllowance = brickOpeningHeadAllowanceMm.trim() !== ''
+        ? Number.parseInt(brickOpeningHeadAllowanceMm.trim(), 10)
+        : NaN
+      sillForSave = Number.isFinite(parsedHeadAllowance) && parsedHeadAllowance >= 0
+        ? Math.max(
+            0,
+            brickWallHeightMm - parsedHeadAllowance - brickOpeningHeightMm,
+          )
+        : deriveSillMm(
+            brickOpeningKind,
+            brickOpeningHeightMm,
+            brickWallHeightMm,
+          )
     } else {
-      // Block mode: user types HEAD HEIGHT (lintel allowance) and
-      // SILL height directly. Opening height is DERIVED so the user
-      // can specify the head allowance — what's typically called
-      // out on plans — instead of having to back-calculate the
-      // opening height. No door/window kind here; block walls don't
-      // have a sill-trim concept.
+      // Block mode: user types HEAD (lintel allowance) and SILL
+      // directly. Opening height is DERIVED — matches how plans
+      // call out openings (head allowance + sill, with the actual
+      // hole size falling out). No door/window kind here; block
+      // walls don't carry a sill-trim concept.
       const makeup = makeupsById[wall.makeupId]
       const wallHeightMm = wall.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
       if (blockOpeningHeadMm < 0) return
@@ -4570,14 +4771,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 // user has now switched modes — we keep block
                 // openings clean of brick-only fields).
                 ...(mode === 'brick'
-                  ? { kind: kindForSave }
-                  : { kind: undefined }),
+                  ? { kind: kindForSave, noHead: brickOpeningNoHead || undefined }
+                  : { kind: undefined, noHead: undefined }),
                 // Lintel override: write when set, explicitly clear
                 // when the user has flipped back to Auto in the
                 // modal. Block mode only.
                 ...(mode === 'block'
                   ? { lintelBlockCodeOverride: lintelOverrideForSave }
                   : {}),
+                // Supply-item overrides — write whatever the picker
+                // committed (or undefined to clear the field entirely
+                // when the user reset every scope to Auto).
+                supplyOverrides: pendingOpeningSupplyOverrides,
               }
             : o
         )
@@ -4596,8 +4801,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         heightMm: openingHeightForSave,
         sillHeightMm: sillForSave,
         ...(kindForSave ? { kind: kindForSave } : {}),
+        ...(mode === 'brick' && brickOpeningNoHead ? { noHead: true } : {}),
         ...(lintelOverrideForSave
           ? { lintelBlockCodeOverride: lintelOverrideForSave }
+          : {}),
+        ...(pendingOpeningSupplyOverrides
+          ? { supplyOverrides: pendingOpeningSupplyOverrides }
           : {}),
       }
       setOpeningsByPage((prev) => ({
@@ -5272,6 +5481,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // getUserSettings() to grab the freshest value without binding the
   // callback identity to the hook.
   const { settings: userSettings } = useUserSettings()
+  // Resolved supply items — org-scoped when the user is in an org,
+  // otherwise the local user-settings list. Same precedence the
+  // SupplyItemsPanel uses; we read it here so the opening modal's
+  // override picker can show every applicable item.
+  const { items: orgSupplyItemsResolved } = useOrgSupplyItems()
+  const allSupplyItems = orgSupplyItemsResolved.length
+    ? orgSupplyItemsResolved
+    : userSettings.supplyItems ?? []
 
   // Click-to-calibrate state
   const [calibrating, setCalibrating] = useState(false)
@@ -5307,6 +5524,35 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
    * whenever the source values change so they're always current.
    */
   const renderedZoomRef = useRef(1)
+  // ── Hi-res viewport overlay (sharp PDF above the raster ceiling) ──
+  // Region-rendered crop of the visible page, repainted when the view
+  // settles. See the settle effect near the zoom buttons.
+  const hiResWrapRef = useRef<HTMLDivElement>(null)
+  const hiResCanvasRef = useRef<HTMLCanvasElement>(null)
+  const hiResTaskRef = useRef<PdfRegionTask | null>(null)
+  const [viewSettleTick, setViewSettleTick] = useState(0)
+  // ── Wall-layer render window ──
+  // Above the raster cap the wall stage shrinks to the visible region
+  // (plus margin) and raises its canvas density to true screen
+  // resolution — the LIVE stage, so walls, previews and snap chrome
+  // are sharp while drawing, with viewport-bounded memory. Null below
+  // the cap -> full-page stage at default density (original
+  // behaviour). Committed on settle by the hi-res effect below.
+  const [wallCrop, setWallCrop] = useState<{
+    x: number
+    y: number
+    w: number
+    h: number
+    ratio: number
+  } | null>(null)
+  /** What the hi-res canvases currently show — used to decide whether a
+   *  settle re-run must hide them (page/file switched) or can leave the
+   *  still-valid pixels visible until the repaint lands in place. */
+  const hiResPaintedKeyRef = useRef<{ file: File | null; page: number }>({
+    file: null,
+    page: 0,
+  })
+
   const renderedPageWidthRef = useRef(0)
   const renderedPageHeightRef = useRef<number | null>(null)
   /**
@@ -5373,6 +5619,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // primary view falls back to the primary's pagesData via the
   // selector.
   const pageData = activePagesData[currentPage]
+
+  // ── Scale-aware zoom ceiling ──
+  // A 1:100 plan needs ~2x the zoom of a 1:50 to inspect the same wall
+  // at the same screen size, so the ceiling scales with the calibrated
+  // plan ratio: 8x at 1:50 and finer, growing to 32x for site-plan
+  // scales. The hi-res viewport overlay keeps the sheet sharp up there
+  // — the whole-page raster still caps at MAX_RENDERED_ZOOM.
+  const planRatioForZoom = pageData?.pageScaleRatio ?? 50
+  const maxZoomDynamic = Math.min(
+    32,
+    Math.max(MAX_ZOOM, MAX_ZOOM * (planRatioForZoom / 50))
+  )
+  const maxZoomRef = useRef(maxZoomDynamic)
+  useEffect(() => {
+    maxZoomRef.current = maxZoomDynamic
+    // Pull the live zoom back inside the ceiling if the plan ratio
+    // drops (e.g. recalibrating 1:200 -> 1:50 while zoomed deep).
+    if (zoomRef.current > maxZoomDynamic) setZoom(maxZoomDynamic)
+  }, [maxZoomDynamic])
   /**
    * Canvas-pixels per real-world-mm at zoom = 1.
    *
@@ -5617,7 +5882,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       // sensitivity matters less.
       const sensitivity = pendingCtrlKey ? 0.01 : 0.0012
       const factor = Math.exp(-delta * sensitivity)
-      const newZoom = clamp(oldZoom * factor, MIN_ZOOM, MAX_ZOOM)
+      const newZoom = clamp(oldZoom * factor, MIN_ZOOM, maxZoomRef.current)
       if (newZoom === oldZoom) return
 
       const pageEl = pageWrapperRef.current
@@ -5687,6 +5952,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = newZoom / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
+      // Hi-res overlays stay visible through the gesture: they live
+      // inside the transformed wrapper, so they scale/translate WITH
+      // the page and remain geometrically aligned — mid-gesture
+      // they're never softer than the base canvas, and the settle
+      // effect repaints them pixel-sharp afterwards.
 
       // 3) Debounce the React state commit so consumers that depend on
       //    `zoom` (toolbar %, layout effects, render of giant subtrees)
@@ -5786,6 +6056,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       const renderedZ = renderedZoomRef.current || 1
       const visualScaleNow = zoomRef.current / renderedZ
       pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
+      // Overlays pan with the wrapper (they're positioned in page
+      // space) — keep them visible; only the newly exposed viewport
+      // edge shows the soft base until the settle repaint.
     }
 
     const handleDocMouseUp = (e: MouseEvent) => {
@@ -5794,6 +6067,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         if (containerRef.current) {
           containerRef.current.classList.remove('beme-pan-active')
         }
+        // Pan finished — let the hi-res overlay repaint for the new
+        // viewport (zoom state hasn't changed, so this tick is the
+        // only signal the settle effect gets).
+        setViewSettleTick((t) => t + 1)
       }
       // Right-click never fires a 'click' event for the capture-phase
       // listener to swallow, so clear the pan-during-press flag here on a
@@ -6206,10 +6483,143 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setIsDragging(false)
   }, [])
 
+  // ── Hi-res viewport overlay: settle repaint ──
+  //
+  // Above the whole-page raster ceiling the base canvas is CSS-
+  // stretched and goes soft. Once the view settles (zoom commit, pan
+  // release, page/file change), render just the VISIBLE region of the
+  // PDF at the true zoom into a viewport-sized canvas that sits between
+  // the PDF canvas and the wall layer. Bluebeam behaviour: soft while
+  // the gesture is in flight, pixel-sharp the moment it lands. The
+  // canvas never exceeds the viewport, so memory is constant no matter
+  // how deep the zoom goes.
+  //
+  // Geometry note: the overlay lives INSIDE the transformed page
+  // wrapper, so it's positioned in rendered-page coordinates (divide
+  // the zoomed-space crop by visualScale) while its BITMAP is backed at
+  // true screen resolution — the wrapper's CSS scale then maps bitmap
+  // pixels 1:1 onto screen pixels.
+  useEffect(() => {
+    const wrap = hiResWrapRef.current
+    const canvas = hiResCanvasRef.current
+    const container = containerRef.current
+    if (!wrap || !canvas || !container) return
+    hiResTaskRef.current?.cancel()
+    hiResTaskRef.current = null
+    const hideBoth = () => {
+      wrap.style.display = 'none'
+      setWallCrop((prev) => (prev === null ? prev : null))
+    }
+    // Only hide when the painted content is genuinely invalid: a
+    // different page/file than what's on the canvases, or zoom back
+    // inside the cap. Pans and zoom deltas keep the overlays visible —
+    // they track the wrapper's transform and get repainted in place.
+    const key = hiResPaintedKeyRef.current
+    if (key.file !== displayedPdfFile || key.page !== currentPage) {
+      hideBoth()
+    }
+    if (!displayedPdfFile || isEmptyWorkspace || !aspectRatio) {
+      hideBoth()
+      return
+    }
+    // Base canvas is rendered AT or ABOVE the live zoom -> already sharp.
+    if (zoom <= renderedZoom + 0.01) {
+      hideBoth()
+      return
+    }
+    const timer = setTimeout(() => {
+      const visualScaleNow = zoom / (renderedZoom || 1)
+      const zoomedW = baseWidth * zoom
+      const zoomedH = zoomedW * aspectRatio
+      const tx = viewTxRef.current
+      const ty = viewTyRef.current
+      const cropX = Math.max(0, -tx)
+      const cropY = Math.max(0, -ty)
+      const cropW = Math.min(
+        zoomedW - cropX,
+        container.clientWidth - Math.max(0, tx)
+      )
+      const cropH = Math.min(
+        zoomedH - cropY,
+        container.clientHeight - Math.max(0, ty)
+      )
+      if (cropW < 8 || cropH < 8) return
+      // DPR capped at 2 — beyond that the GPU downscale is invisible
+      // and the fill-rate cost isn't.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const task = renderPdfRegion({
+        file: displayedPdfFile,
+        pageNumber: currentPage,
+        cropX,
+        cropY,
+        cropW,
+        cropH,
+        zoomedPageWidthPx: zoomedW,
+        dpr,
+        canvas,
+      })
+      hiResTaskRef.current = task
+      void task.done.then((ok) => {
+        if (!ok || hiResTaskRef.current !== task) return
+        hiResPaintedKeyRef.current = {
+          file: displayedPdfFile,
+          page: currentPage,
+        }
+        wrap.style.left = `${cropX / visualScaleNow}px`
+        wrap.style.top = `${cropY / visualScaleNow}px`
+        wrap.style.width = `${cropW / visualScaleNow}px`
+        wrap.style.height = `${cropH / visualScaleNow}px`
+        wrap.style.display = 'block'
+      })
+
+      // ── Wall-layer render window (same crop, content-space) ──
+      // Margin keeps walls visible through moderate pans before the
+      // next settle re-crop; canvas pixels stay viewport-bounded
+      // (crop x ratio == screen px x dpr regardless of zoom depth).
+      const MARGIN = 0.35
+      const wx0 = Math.max(0, cropX - cropW * MARGIN) / visualScaleNow
+      const wy0 = Math.max(0, cropY - cropH * MARGIN) / visualScaleNow
+      const wx1 =
+        Math.min(zoomedW, cropX + cropW * (1 + MARGIN)) / visualScaleNow
+      const wy1 =
+        Math.min(zoomedH, cropY + cropH * (1 + MARGIN)) / visualScaleNow
+      const ratio = visualScaleNow * dpr
+      setWallCrop((prev) => {
+        const next = {
+          x: Math.floor(wx0),
+          y: Math.floor(wy0),
+          w: Math.ceil(wx1 - wx0),
+          h: Math.ceil(wy1 - wy0),
+          ratio,
+        }
+        return prev &&
+          prev.x === next.x &&
+          prev.y === next.y &&
+          prev.w === next.w &&
+          prev.h === next.h &&
+          prev.ratio === next.ratio
+          ? prev
+          : next
+      })
+    }, 180)
+    return () => clearTimeout(timer)
+    // viewSettleTick: pan-release signal (transform refs aren't reactive).
+  }, [
+    zoom,
+    renderedZoom,
+    viewSettleTick,
+    displayedPdfFile,
+    currentPage,
+    aspectRatio,
+    baseWidth,
+    isEmptyWorkspace,
+  ])
+
+
   // ---------- Zoom (button) ----------
 
   function zoomInButton() {
-    const next = ZOOM_LEVELS.find((z) => z > zoom)
+    const next = ZOOM_LEVELS.find((z) => z > zoom && z <= maxZoomDynamic)
     if (next) setZoom(next)
   }
 
@@ -6916,18 +7326,15 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               )}
               {mode === 'brick' && (
-                <BrickTypesPanel
-                  // Remount on area switch — see the keyed note on the
-                  // canvas-rail render below.
+                <BrickWallSettingsPanel
+                  // Same per-area filter as block — see the canvas-rail
+                  // mount note below for the rationale.
                   key={`wt-brick-3d-${activeAreaId ?? 'all'}`}
                   makeups={
                     activeAreaId
                       ? brickMakeups.filter((m) => m.areaId === activeAreaId)
                       : brickMakeups
                   }
-                  // Always pass the FULL brick makeups list as the
-                  // palette source so swatch colours stay stable
-                  // across area filters.
                   paletteMakeups={brickMakeups}
                   activeMakeupId={activeBrickMakeupId}
                   wallCountsByMakeupId={wallCountsByMakeupId}
@@ -6935,17 +7342,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   onAddMakeup={handleAddBrickMakeup}
                   onUpdateMakeup={handleUpdateBrickMakeup}
                   onDeleteMakeup={handleDeleteBrickMakeup}
-                  onToggleCurvedWall={() => {
-                    setDrawingCurveMode(true)
-                    setDrawingMode(false)
-                    setPlacingOpening(false)
-                    setPlacingControlJoint(false)
-                    setPlacingTiedPier(false)
-                    setPlacingFreestandingPier(false)
-                    setSelectedWallId(null)
-                    setSelectedOpeningId(null)
-                    setSelectedPierId(null)
-                  }}
                 />
               )}
             </aside>
@@ -7382,7 +7778,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           </button>
           <button
             onClick={zoomInButton}
-            disabled={zoom >= MAX_ZOOM - 0.001}
+            disabled={zoom >= maxZoomDynamic - 0.001}
             className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             aria-label="Zoom in"
           >
@@ -8280,19 +8676,23 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           wall-drawing toolbar's left slot. Chrome height stays the same
           regardless of which mode the user is in. */}
 
-      {/* Pending opening form — block mode (opening height + sill,
-          NO door/window kind — that's a brick-only concept and would
-          leak brick UI into block work) */}
+      {/* Pending opening form — block mode.
+          Stripped down to the rule: HEAD HEIGHT + SILL HEIGHT,
+          that's it. Presets, lintel auto-pick override, and
+          per-opening supply overrides removed. Lintel block
+          selection still happens automatically downstream
+          (selectBlockLintel) based on the head allowance; just no
+          UI surface here for picking it. */}
       {pendingOpening && pendingOpeningWall && mode === 'block' && (() => {
         const pendingMakeup = makeupsById[pendingOpeningWall.makeupId]
         const wallHeightMm =
           pendingOpeningWall.heightMmOverride ?? pendingMakeup?.heightMm ?? 0
         // Derived opening height — falls out of wallH − sill − head.
-        // Shown in the input hint so the user can see the resulting
+        // Shown in the input hint so the user sees the resulting
         // opening height live as they type the head allowance.
         const derivedOpeningMm = Math.max(
           0,
-          wallHeightMm - blockOpeningSillMm - blockOpeningHeadMm
+          wallHeightMm - blockOpeningSillMm - blockOpeningHeadMm,
         )
         // 0mm openings are explicitly allowed — lets the user place a
         // lintel-only marker (counts toward the lintel supply item but
@@ -8300,21 +8700,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         const tooSmall = blockOpeningHeadMm < 0 || blockOpeningSillMm < 0
         const tooTall =
           blockOpeningSillMm + blockOpeningHeadMm > wallHeightMm
-        // Presets specify the (opening height, sill) pair the user
-        // is choosing — head is derived from the current wall height
-        // when the preset is applied, so the same preset works
-        // across walls of different heights.
-        const blockOpeningPresets: Array<{
-          label: string
-          openingMm: number
-          sillMm: number
-        }> = [
-          { label: 'Door 2100', openingMm: 2100, sillMm: 0 },
-          { label: 'Door 2040', openingMm: 2040, sillMm: 0 },
-          { label: 'Window 1500 (sill 900)', openingMm: 1500, sillMm: 900 },
-          { label: 'Window 1200 (sill 900)', openingMm: 1200, sillMm: 900 },
-          { label: 'Window 1800 (sill 600)', openingMm: 1800, sillMm: 600 },
-        ]
         return (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
@@ -8346,60 +8731,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               </header>
 
               <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
-                {/* Presets — one click sets opening height + sill in
-                    a single tap. No door/window concept here; block
-                    walls don't carry a sill-trim distinction. */}
+                {/* Just two numbers — head height + sill height.
+                    Opening height falls out as wallH − sill − head
+                    and is shown as a read-only hint below. Default
+                    head is set on placement so the derived opening
+                    lands on a whole body-block course. */}
                 <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Presets
-                  </h4>
-                  <div className="flex flex-wrap gap-1.5">
-                    {blockOpeningPresets.map((p) => {
-                      const fits = p.openingMm + p.sillMm <= wallHeightMm
-                      // Derive head from the preset's opening height
-                      // against the current wall height — same preset
-                      // produces different head allowances on walls
-                      // of different heights, which is correct: a
-                      // 2100mm door on a 2700mm wall has 600mm head,
-                      // on a 3000mm wall it has 900mm.
-                      const derivedHead = Math.max(
-                        0,
-                        wallHeightMm - p.sillMm - p.openingMm,
-                      )
-                      return (
-                        <button
-                          key={p.label}
-                          onClick={() => {
-                            setBlockOpeningHeadMm(derivedHead)
-                            setBlockOpeningSillMm(p.sillMm)
-                          }}
-                          disabled={!fits}
-                          title={
-                            fits
-                              ? `${p.openingMm}mm tall, sill ${p.sillMm}mm, head ${derivedHead}mm`
-                              : `Doesn't fit on a ${Math.round(wallHeightMm)}mm wall`
-                          }
-                          className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                        >
-                          {p.label}
-                        </button>
-                      )
-                    })}
-                  </div>
-                </section>
-
-                {/* Dimensions — HEAD (lintel allowance) + SILL,
-                    both editable. Opening height is derived
-                    (wallH − sill − head) and shown as a hint so the
-                    user can see what the resulting opening height
-                    will be. Head matches what's typically called
-                    out on plans (lintel allowance from wall top to
-                    top of opening). AutoFocus on head so the
-                    Enter-then-type flow works after the modal pops. */}
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Dimensions
-                  </h4>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="block">
                       <span className="block text-ink-300 text-xs mb-1">Head height</span>
@@ -8428,81 +8765,75 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     </label>
                   </div>
                   <p className="text-[11px] text-ink-500 mt-2 leading-snug">
-                    Opening height {Math.round(derivedOpeningMm)}mm on a {Math.round(wallHeightMm)}mm wall.
-                    Use sill 0 for door-style openings.
+                    Opening height {Math.round(derivedOpeningMm)} mm on a {Math.round(wallHeightMm)} mm wall.
+                    Sill 0 = door-style. Default head snaps the opening
+                    to the wall's body block course size.
                   </p>
                 </section>
 
-                {/* Lintel section — block mode only. Lets the user pin a
-                    specific lintel block to this opening instead of the
-                    auto-pick. Empty value = auto-pick. Lists every block
-                    in the library tagged with the `lintel` role.
-
-                    Disabled when the user hasn't tagged any lintel
-                    blocks — explanatory empty state replaces the
-                    dropdown so the user knows what's missing and where
-                    to go. */}
+                {/* Lintel override — per-opening pick. Lists every
+                    block tagged with the `lintel` role. Empty value =
+                    auto-pick (selectBlockLintel chooses based on the
+                    head allowance).
+                    Smart-fill behaviour at render time:
+                      - If the picked lintel is taller than the head
+                        allowance, it's CLIPPED at the wall top so it
+                        doesn't poke above. Block count still includes
+                        the whole one (you buy and cut on site).
+                      - If it's shorter, normal body courses stack
+                        above it to fill the head zone, with a
+                        height-makeup block dropped in for any
+                        leftover sliver. Same gap-fill logic the
+                        auto-pick path uses.
+                    So the user can pick any lintel and the wall reads
+                    cleanly — no broken stacks. */}
                 {(() => {
                   const lintelOptions = Object.values(BLOCK_LIBRARY)
                     .filter((b) => b.roles.includes('lintel'))
-                    .sort((a, b) => a.dimensions.heightMm - b.dimensions.heightMm)
-                  // Wall-height-derived extras same as the calc engine.
-                  // The picker preview shows the auto-pick using the
-                  // current dimensions, so the user knows what they're
-                  // overriding.
+                    .sort(
+                      (a, b) => a.dimensions.heightMm - b.dimensions.heightMm,
+                    )
+                  // Live auto-pick preview against the current head
+                  // allowance — so the "Auto" option shows what the
+                  // engine would choose, and switching back is an
+                  // informed decision.
                   const wallHeightMod200 = Math.round(wallHeightMm) % 200
                   const previewExtras: number[] =
                     wallHeightMod200 === 100
                       ? [100]
                       : wallHeightMod200 === 150
-                      ? [150]
-                      : []
-                  // Live auto-pick preview against the head the user is
-                  // currently editing — when they switch back to "Auto"
-                  // they see exactly which block the engine would
-                  // choose, so the override is an informed decision.
+                        ? [150]
+                        : []
                   const autoPick =
                     blockOpeningHeadMm > 0
                       ? selectBlockLintel(blockOpeningHeadMm, previewExtras)?.code ?? null
                       : null
+                  if (lintelOptions.length === 0) return null
                   return (
                     <section>
                       <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
                         Lintel
                       </h4>
-                      {lintelOptions.length === 0 ? (
-                        <p className="text-[11px] text-ink-400 leading-relaxed">
-                          No lintel-tagged blocks in your library yet — head
-                          courses won't get a lintel in the tally. Tag a block
-                          with the <code className="text-ink-200">lintel</code> role
-                          in Material Library to enable selection here.
-                        </p>
-                      ) : (
-                        <>
-                          <select
-                            value={blockOpeningLintelOverride}
-                            onChange={(e) =>
-                              setBlockOpeningLintelOverride(e.target.value)
-                            }
-                            className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
-                          >
-                            <option value="">
-                              Auto-pick
-                              {autoPick ? ` — currently ${autoPick}` : ''}
-                            </option>
-                            {lintelOptions.map((b) => (
-                              <option key={b.code} value={b.code}>
-                                {b.code} — {b.name} ({b.dimensions.heightMm}mm tall)
-                              </option>
-                            ))}
-                          </select>
-                          <p className="text-[11px] text-ink-500 mt-2 leading-snug">
-                            Auto-pick uses the smallest lintel-tagged block
-                            whose face height covers the head. Override to
-                            pin this opening to a specific block.
-                          </p>
-                        </>
-                      )}
+                      <select
+                        value={blockOpeningLintelOverride}
+                        onChange={(e) =>
+                          setBlockOpeningLintelOverride(e.target.value)
+                        }
+                        className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      >
+                        <option value="">
+                          Auto-pick{autoPick ? ` — currently ${autoPick}` : ''}
+                        </option>
+                        {lintelOptions.map((b) => (
+                          <option key={b.code} value={b.code}>
+                            {b.code} — {b.name} ({b.dimensions.heightMm} mm tall)
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                        Too tall? It's cut at the wall top. Too short?
+                        Normal body courses stack above to fill the head.
+                      </p>
                     </section>
                   )
                 })()}
@@ -8510,13 +8841,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 {/* Validation states */}
                 {tooTall && (
                   <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Sill + head exceeds the {Math.round(wallHeightMm)}mm wall.
+                    Sill + head exceeds the {Math.round(wallHeightMm)} mm wall.
                     Reduce one of them.
                   </p>
                 )}
                 {!tooTall && derivedOpeningMm === 0 && (
                   <p className="text-[11px] text-ink-400 leading-relaxed">
-                    0mm opening — counts toward lintel supply items but no
+                    0 mm opening — counts toward lintel supply items but no
                     wall area is removed.
                   </p>
                 )}
@@ -8603,14 +8934,36 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </button>
               </header>
 
-              <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
-                {/* Door vs window — drives 3D sill suppression. Door
-                    openings render without a sill trim band, since
-                    they typically reach the floor or wall base. */}
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Type
-                  </h4>
+              <div className="flex-1 overflow-y-auto px-6 py-5 text-sm">
+                {/* The bare-minimum flow: width was placed on the
+                    canvas, height auto-focuses on modal open, user
+                    types and presses Enter. Everything else (type,
+                    no-head) is technically optional and stays small
+                    next to the height field rather than dominating
+                    the modal.
+
+                    Auto-sill behaviour and per-opening supply
+                    overrides still run downstream — kind drives the
+                    sill derivation, project-default supply items still
+                    charge per opening. We just don't surface UI for
+                    them here. */}
+                <label className="block">
+                  <span className="block text-ink-300 text-xs mb-1">Opening height</span>
+                  <LengthInput
+                    valueMm={brickOpeningHeightMm}
+                    onChangeMm={(mm) => setBrickOpeningHeightMm(Math.round(mm))}
+                    minMm={0}
+                    className="w-full"
+                    autoFocus
+                    onEnter={() => {
+                      if (!(brickOpeningHeightMm < 0) && !(brickOpeningHeightMm > wallHeightMm)) {
+                        handleSavePendingOpening()
+                      }
+                    }}
+                  />
+                </label>
+
+                <div className="flex items-center gap-3 flex-wrap mt-3">
                   <div
                     className="inline-flex border border-ink-600 rounded-lg overflow-hidden bg-ink-900"
                     role="radiogroup"
@@ -8635,82 +8988,71 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       )
                     })}
                   </div>
-                  <p className="text-[10px] text-ink-500 mt-1.5 leading-snug">
-                    {brickOpeningKind === 'door'
-                      ? 'Door: sits on the floor (sill = 0). No sill trim in 3D.'
-                      : 'Window: top of the opening sits 300mm below the wall top. Sill is computed from the wall height.'}
-                  </p>
-                </section>
-
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Presets
-                  </h4>
-                  <div className="flex flex-wrap gap-1.5">
-                    {[
-                      { label: 'Door 2100', h: 2100, kind: 'door' as const },
-                      { label: 'Door 2040', h: 2040, kind: 'door' as const },
-                      { label: 'Window 1500', h: 1500, kind: 'window' as const },
-                      { label: 'Window 1200', h: 1200, kind: 'window' as const },
-                      { label: 'Window 1800', h: 1800, kind: 'window' as const },
-                    ].map((p) => (
-                      <button
-                        key={p.label}
-                        onClick={() => {
-                          setBrickOpeningHeightMm(p.h)
-                          setBrickOpeningKind(p.kind)
-                        }}
-                        disabled={p.h > wallHeightMm}
-                        title={`${p.h}mm tall`}
-                        className="px-2.5 py-1 rounded-md border border-ink-600 bg-ink-900 text-ink-200 text-xs hover:border-beme-500/50 hover:text-beme-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                <section>
-                  <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
-                    Dimensions
-                  </h4>
-                  <label className="block">
-                    <span className="block text-ink-300 text-xs mb-1">Opening height</span>
-                    <LengthInput
-                      valueMm={brickOpeningHeightMm}
-                      onChangeMm={(mm) => setBrickOpeningHeightMm(Math.round(mm))}
-                      minMm={0}
-                      className="w-40"
-                      autoFocus
-                      onEnter={() => {
-                        if (!(brickOpeningHeightMm < 0) && !(brickOpeningHeightMm > wallHeightMm)) {
-                          handleSavePendingOpening()
-                        }
-                      }}
+                  <label className="flex items-center gap-1.5 text-xs text-ink-300 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={brickOpeningNoHead}
+                      onChange={(e) => setBrickOpeningNoHead(e.target.checked)}
+                      className="accent-beme-500"
                     />
-                    <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
-                      Auto sill{' '}
-                      {Math.round(
-                        deriveSillMm(
+                    No head
+                  </label>
+                  {/* Optional head-allowance override. Blank = kind
+                      default (door = floor, window = 300 mm from
+                      top). Anything else positions the opening so
+                      its top sits that distance below the wall top.
+                      Decoupled from noHead — purely a position knob. */}
+                  <label className="flex items-center gap-1.5 text-xs text-ink-300">
+                    <span>Head allowance</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      placeholder="auto"
+                      value={brickOpeningHeadAllowanceMm}
+                      onChange={(e) =>
+                        setBrickOpeningHeadAllowanceMm(
+                          e.target.value.replace(/[^0-9]/g, ''),
+                        )
+                      }
+                      className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                    />
+                    <span className="text-ink-400">mm</span>
+                  </label>
+                </div>
+
+                {/* Sub-line hint — shows the resulting sill so the
+                    user can sanity-check positioning without doing
+                    arithmetic. */}
+                {(() => {
+                  const headAllowanceParsed = brickOpeningHeadAllowanceMm.trim() !== ''
+                    ? Number.parseInt(brickOpeningHeadAllowanceMm.trim(), 10)
+                    : NaN
+                  const previewSillMm =
+                    Number.isFinite(headAllowanceParsed) && headAllowanceParsed >= 0
+                      ? Math.max(0, wallHeightMm - headAllowanceParsed - brickOpeningHeightMm)
+                      : deriveSillMm(
                           brickOpeningKind,
                           brickOpeningHeightMm,
-                          wallHeightMm
+                          wallHeightMm,
                         )
-                      )}
-                      mm on a {Math.round(wallHeightMm)}mm wall. Use 0mm height
-                      to place a lintel-only marker.
-                    </span>
-                  </label>
-                </section>
+                  return (
+                    <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+                      Sill {Math.round(previewSillMm)} mm on a {Math.round(wallHeightMm)} mm wall.
+                      {brickOpeningNoHead &&
+                        ' No head — brickwork above the opening also removed.'}
+                    </p>
+                  )
+                })()}
 
                 {tooSmall && (
-                  <p className="text-[11px] text-rose-400 leading-relaxed">
+                  <p className="text-[11px] text-rose-400 leading-relaxed mt-3">
                     Opening height can't be negative.
                   </p>
                 )}
                 {tooTall && (
-                  <p className="text-[11px] text-rose-400 leading-relaxed">
-                    Opening height ({brickOpeningHeightMm}mm) exceeds the wall height ({Math.round(wallHeightMm)}mm).
+                  <p className="text-[11px] text-rose-400 leading-relaxed mt-3">
+                    Opening height ({brickOpeningHeightMm} mm) exceeds the wall height ({Math.round(wallHeightMm)} mm).
                   </p>
                 )}
               </div>
@@ -8869,92 +9211,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           )
         })()}
 
-      {mode === 'block' && selectedPier && !drawingMode && (() => {
-        const selPierMakeup = selectedPier.pierMakeupId
-          ? pierMakeupsById[selectedPier.pierMakeupId]
-          : undefined
-        // Pattern string for the selection banner. Resolve from the
-        // pier's makeup when set; otherwise fall back to a generic
-        // description so US / UK projects without a makeup yet don't
-        // see AU codes ("40.925 / 20.01") in their banner.
-        const patternStr = selPierMakeup
-          ? selPierMakeup.coursePattern.join(' / ')
-          : selectedPier.type === 'tied'
-            ? 'pier / corner alternating'
-            : 'pier stacked'
-        return (
-          <div className="mb-3 px-4 py-3 bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-sm text-emerald-200 flex items-center justify-between flex-wrap gap-2">
-            <div>
-              {selectedPier.type === 'tied' ? (
-                <>1 <strong>tied pier</strong> selected — built into its wall, course pattern: <span className="font-mono">{patternStr}</span>.</>
-              ) : (
-                <>1 <strong>freestanding pier</strong> selected — course pattern: <span className="font-mono">{patternStr}</span>.</>
-              )}
-              <div className="text-xs text-emerald-200 mt-0.5">
-                Press <kbd className="px-1.5 py-0.5 rounded border border-emerald-300 bg-ink-900 text-ink-100 text-xs font-mono">Del</kbd> to remove.
-              </div>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <label className="flex items-center gap-2 text-sm">
-                <span>Pier type:</span>
-                <select
-                  value={selectedPier.pierMakeupId ?? ''}
-                  onChange={(e) => handleReassignPierMakeup(selectedPier.id, e.target.value)}
-                  className="px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
-                >
-                  {pierMakeups.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {selectedPier.type === 'freestanding' && (
-                <label className="flex items-center gap-2 text-sm">
-                  <span>Height:</span>
-                  <input
-                    type="number"
-                    min="200"
-                    step="200"
-                    value={selectedPier.heightMm}
-                    onChange={(e) =>
-                      handleUpdateFreestandingPierHeight(
-                        selectedPier.id,
-                        Math.max(200, parseInt(e.target.value || '0', 10))
-                      )
-                    }
-                    className="w-20 px-2 py-1 border border-emerald-300 rounded text-sm bg-ink-900 text-ink-50"
-                  />
-                  <span className="text-xs text-emerald-200">mm</span>
-                </label>
-              )}
-              <button
-                onClick={() => handleDeletePier(selectedPier.id)}
-                className="px-3 py-1.5 rounded-lg bg-rose-500 text-ink-50 text-sm hover:bg-rose-400 font-medium transition-colors"
-              >
-                Delete pier
-              </button>
-              <button
-                onClick={() => setSelectedPierId(null)}
-                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
-              >
-                Deselect
-              </button>
-            </div>
-          </div>
-        )
-      })()}
+      {/* Selected-pier + single-wall-properties bars used to live HERE
+          as sticky rows above the canvas, which pushed the PDF view
+          down each time the user selected something — janky vertical
+          shift on every click. They now overlay at the TOP of the
+          canvas viewport instead (see containerRef below) so the
+          canvas stays anchored. Logic is identical, just relocated. */}
 
       {/* Multi-select state (prose + action buttons) lives inline in the
           wall-drawing toolbar above when 2+ items are selected — the old
           standalone banner row has been removed so the chrome height
           doesn't change when a selection is made. */}
-
-      {/* Single-wall selection banner removed — clicking a wall now just
-          highlights it on the canvas and activates its makeup in the Wall
-          types panel (so the user can see at a glance which type it is).
-          Press Del to remove, drag endpoints to reposition. The Wall types
-          panel handles reassignment; multi-select handles batch ops. */}
 
       </div>
       )}
@@ -9164,6 +9431,194 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               : 'grab',
         }}
       >
+        {/* Selection overlay banners — pinned to the TOP of the canvas
+            viewport instead of sitting above it in the sticky toolbar
+            zone. Floats over the PDF / Konva layer without shifting
+            layout when a selection happens (no more vertical jump
+            each time the user clicks a wall / pier). pointer-events:
+            none on the wrapper so the canvas underneath still receives
+            wheel / drag events outside the banner footprint; the
+            banners themselves opt back in with pointer-events: auto.
+
+            Centered with a max-width so the panel reads as a discrete
+            floating bar rather than stretching corner-to-corner over
+            the PDF. */}
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 pointer-events-none flex flex-col gap-2 w-[min(calc(100%-1.5rem),64rem)]">
+          {mode === 'block' && selectedPier && !drawingMode && (() => {
+            const selPierMakeup = selectedPier.pierMakeupId
+              ? pierMakeupsById[selectedPier.pierMakeupId]
+              : undefined
+            const patternStr = selPierMakeup
+              ? selPierMakeup.coursePattern.join(' / ')
+              : selectedPier.type === 'tied'
+                ? 'pier / corner alternating'
+                : 'pier stacked'
+            // Restyled to the SHARED dark-floating-panel surface used
+            // by WallTopProfileBar — emerald accent dropped so all
+            // canvas-click overlays read as one visual language. The
+            // pier-specific info still surfaces via the `Pier:` label
+            // and pattern monospace text, no colour cue needed.
+            return (
+              <div className="pointer-events-auto px-4 py-3 bg-ink-800/95 backdrop-blur-md border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3 shadow-xl">
+                <div className="flex items-center gap-3 flex-wrap min-w-0">
+                  <div className="font-medium whitespace-nowrap">
+                    {selectedPier.type === 'tied' ? 'Tied pier' : 'Freestanding pier'}
+                    <span className="text-ink-400 font-normal"> · <span className="font-mono text-ink-200">{patternStr}</span></span>
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs">
+                    <span className="text-ink-300">Type</span>
+                    <select
+                      value={selectedPier.pierMakeupId ?? ''}
+                      onChange={(e) => handleReassignPierMakeup(selectedPier.id, e.target.value)}
+                      className="px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                    >
+                      {pierMakeups.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {selectedPier.type === 'freestanding' && (
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <span className="text-ink-300">Height</span>
+                      <input
+                        type="number"
+                        min="200"
+                        step="200"
+                        value={selectedPier.heightMm}
+                        onChange={(e) =>
+                          handleUpdateFreestandingPierHeight(
+                            selectedPier.id,
+                            Math.max(200, parseInt(e.target.value || '0', 10))
+                          )
+                        }
+                        className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                      <span className="text-ink-400">mm</span>
+                    </label>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDeletePier(selectedPier.id)}
+                    className="px-3 py-1.5 rounded-lg border border-rose-500/40 text-rose-300 text-xs hover:bg-rose-500/10 transition-colors"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={() => setSelectedPierId(null)}
+                    className="px-3 py-1.5 rounded-lg border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Single-wall properties bar — surfaces for BOTH modes now
+              so a single-wall selection always reads as "something is
+              selected, here are its props". Brick mode carries the
+              top-shape picker (gable / raked); block mode shows
+              length + makeup + height. Both share the dark floating
+              surface, matching the pier banner above. */}
+          {(mode === 'brick' || mode === 'block') &&
+            selectedWallId &&
+            (() => {
+              const selWall = currentPageWalls.find((w) => w.id === selectedWallId)
+              if (!selWall) return null
+              const dx = selWall.endX - selWall.startX
+              const dy = selWall.endY - selWall.startY
+              const lengthMm = Math.sqrt(dx * dx + dy * dy)
+              if (mode === 'brick') {
+                // Curved walls don't carry a meaningful "top shape" yet —
+                // arc-clipping a triangle cap is its own geometry problem.
+                if (selWall.kind === 'curved') return null
+                return (
+                  <div className="pointer-events-auto">
+                    <WallTopProfileBar
+                      key={selWall.id}
+                      wall={selWall}
+                      wallLengthMm={lengthMm}
+                      onChange={(next) => handleSetWallTopProfile(selWall.id, next)}
+                      onDeselect={() => setSelectedWallId(null)}
+                    />
+                  </div>
+                )
+              }
+              // Block-mode single-wall banner — same dark floating
+              // surface as the brick variant + pier banner. Surfaces
+              // makeup name, length, and an inline height override so
+              // single-wall selection isn't a UI dead end like it used
+              // to be.
+              const selMakeup = makeupsById[selWall.makeupId]
+              const makeupHeightMm = selMakeup?.heightMm ?? 0
+              const effectiveHeightMm =
+                selWall.heightMmOverride ?? makeupHeightMm
+              return (
+                <div className="pointer-events-auto px-4 py-3 bg-ink-800/95 backdrop-blur-md border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3 shadow-xl">
+                  <div className="flex items-center gap-3 flex-wrap min-w-0">
+                    <div className="font-medium whitespace-nowrap">
+                      {selMakeup?.name ?? 'Wall'}
+                      <span className="text-ink-400 font-normal"> · {(lengthMm / 1000).toFixed(2)} m</span>
+                    </div>
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <span className="text-ink-300">Height</span>
+                      <input
+                        type="number"
+                        min="200"
+                        step="200"
+                        value={Math.round(effectiveHeightMm)}
+                        onChange={(e) => {
+                          const next = Math.max(
+                            200,
+                            parseInt(e.target.value || '0', 10),
+                          )
+                          // Only stamp an override when the value differs
+                          // from the makeup default — otherwise clear it so
+                          // future makeup edits propagate.
+                          if (next === makeupHeightMm) {
+                            handleSetWallHeightOverride(selWall.id, undefined)
+                          } else {
+                            handleSetWallHeightOverride(selWall.id, next)
+                          }
+                        }}
+                        className="w-24 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                      <span className="text-ink-400">mm</span>
+                      {selWall.heightMmOverride !== undefined && (
+                        <button
+                          onClick={() =>
+                            handleSetWallHeightOverride(selWall.id, undefined)
+                          }
+                          className="text-[10px] text-ink-400 hover:text-ink-200 underline"
+                          title={`Reset to wall type default (${makeupHeightMm} mm)`}
+                        >
+                          reset
+                        </button>
+                      )}
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleWallDelete(selWall.id)}
+                      className="px-3 py-1.5 rounded-lg border border-rose-500/40 text-rose-300 text-xs hover:bg-rose-500/10 transition-colors"
+                    >
+                      Delete
+                    </button>
+                    <button
+                      onClick={() => setSelectedWallId(null)}
+                      className="px-3 py-1.5 rounded-lg border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
+        </div>
+
         {/* Bluebeam-style transform-based viewport.
             The container is overflow:hidden (a clipping viewport),
             NOT a scroll container. The page wrapper is absolutely
@@ -9304,6 +9759,25 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </Document>
               )}
 
+              {/* Hi-res viewport overlay — sharp crop of the visible
+                  PDF region once zoom exceeds the whole-page raster
+                  ceiling. ABOVE the PDF canvas, BELOW the wall layer;
+                  pointer-events off so drawing is unaffected. Painted
+                  and positioned by the settle effect. */}
+              <div
+                ref={hiResWrapRef}
+                style={{
+                  position: 'absolute',
+                  display: 'none',
+                  pointerEvents: 'none',
+                }}
+              >
+                <canvas
+                  ref={hiResCanvasRef}
+                  style={{ display: 'block', width: '100%', height: '100%' }}
+                />
+              </div>
+
               {/* Wall drawing layer — at renderedZoom resolution; scales with
                   parent. On reference PDFs the layer ONLY mounts when the user
                   has the ruler active, so they can measure things on the
@@ -9316,6 +9790,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 renderedPageHeight !== null &&
                 currentScale && (
                 <WallDrawingLayer
+                  cropX={wallCrop?.x ?? 0}
+                  cropY={wallCrop?.y ?? 0}
+                  cropW={wallCrop?.w}
+                  cropH={wallCrop?.h}
+                  pixelRatio={wallCrop?.ratio}
                   // Reference-view passes the frozen EMPTY_WALLS / EMPTY_OPENINGS
                   // constants instead of a fresh `[]` so the wall layer's memo()
                   // sees a stable identity (reference views typically stay
@@ -9401,6 +9880,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   onCancelDraw={handleCancelDraw}
                 />
               )}
+
 
               {/* Calibration overlay — rendered AFTER WallDrawingLayer so it
                   sits on top of the Konva canvas. The Konva Stage has
@@ -9904,21 +10384,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           />
         )}
 
-        {/* Brick wall types (brick mode). Brick library is edited
-            from the Material library page; we don't show it in the
-            workspace right-rail any more. Same per-area filtering as
-            block. */}
+        {/* Brick wall types (brick mode). Simplified shape — each
+            type is just name + height + straight/curved. No brick-
+            type / course / sill / head fields, no palette colour
+            picker. Per-area scoping kept; brick walls render flat
+            warm terracotta in 3D and tally as area + lineal m only. */}
         {mode === 'brick' && (
-          <BrickTypesPanel
-            // Remount on area switch — see the block-side note above.
+          <BrickWallSettingsPanel
+            // Remount on area switch — see the block-side note above
+            // for why the keyed remount matters (kills stale closures
+            // captured by the panel's internal state).
             key={`wt-brick-${activeAreaId ?? 'all'}`}
             makeups={
               activeAreaId
                 ? brickMakeups.filter((m) => m.areaId === activeAreaId)
                 : brickMakeups
             }
-            // Always pass the FULL brick makeups list as the palette
-            // source so swatch colours stay stable across area filters.
             paletteMakeups={brickMakeups}
             activeMakeupId={activeBrickMakeupId}
             wallCountsByMakeupId={wallCountsByMakeupId}
@@ -9926,21 +10407,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             onAddMakeup={handleAddBrickMakeup}
             onUpdateMakeup={handleUpdateBrickMakeup}
             onDeleteMakeup={handleDeleteBrickMakeup}
-            // Wire curve-draw activator so the brick wall-type modal
-            // exposes the Wall shape (Straight / Curved) picker. The
-            // saved brick type's `kind` flag drives whether subsequent
-            // Draw clicks route to curve-draw mode.
-            onToggleCurvedWall={() => {
-              setDrawingCurveMode(true)
-              setDrawingMode(false)
-              setPlacingOpening(false)
-              setPlacingControlJoint(false)
-              setPlacingTiedPier(false)
-              setPlacingFreestandingPier(false)
-              setSelectedWallId(null)
-              setSelectedOpeningId(null)
-              setSelectedPierId(null)
-            }}
           />
         )}
 

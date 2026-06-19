@@ -1,0 +1,66 @@
+/**
+ * Wall top-profile geometry — the optional non-rectangular shape sitting
+ * ABOVE the wall's flat rectangular body (gable peak, raked roof line,
+ * etc.). Centralised so the brick tally, the wall preview, the future
+ * 3D mesh clipping and any export pages all read the same numbers
+ * regardless of which call site computes them.
+ *
+ * See `Wall.topProfile` in src/types/walls.ts for the data shape — two
+ * supported kinds (triangle, trapezoid) plus a defer for stepped
+ * parapets.
+ */
+import type { Wall } from '../types/walls'
+
+/**
+ * Cap area in mm² — the EXTRA area sitting above the wall's
+ * rectangular body, contributed by the `topProfile`. Returns 0 when no
+ * top profile is set (the existing flat-top behaviour).
+ *
+ * Inputs:
+ *   - `wall.topProfile` — the gable / raked spec from the data model.
+ *   - `wallLengthMm` — the wall's base length (length of the top edge
+ *     of the rectangular body); we don't reach into `wall.startX/.endX`
+ *     directly because curved walls and explicit lengths get computed
+ *     elsewhere and we don't want a second source of truth here.
+ *
+ * Formulas:
+ *   - Triangle: area = length × peakHeight / 2. Doesn't depend on
+ *     peakOffsetFraction — moving the peak left or right along the
+ *     base doesn't change the triangle's area, only its shape. The
+ *     offset matters for the preview and 3D mesh, not for the tally.
+ *   - Trapezoid: area = length × (leftHeight + rightHeight) / 2.
+ *     The cap top is a single sloped line between the two heights.
+ *
+ * Negative heights are clamped to 0 — the field is supposed to be
+ * RISE above the wall top; below-top "caps" don't exist in this model.
+ */
+export function wallCapAreaSqMm(wall: Wall, wallLengthMm: number): number {
+  const tp = wall.topProfile
+  if (!tp) return 0
+  if (wallLengthMm <= 0) return 0
+  if (tp.kind === 'triangle') {
+    const peak = Math.max(0, tp.peakHeightMm)
+    return (wallLengthMm * peak) / 2
+  }
+  if (tp.kind === 'trapezoid') {
+    const left = Math.max(0, tp.leftHeightMm)
+    const right = Math.max(0, tp.rightHeightMm)
+    return (wallLengthMm * (left + right)) / 2
+  }
+  return 0
+}
+
+/**
+ * Maximum cap rise above the wall top, in mm. Used by the wall preview
+ * to draw the cap silhouette and by the future 3D mesh clipping to
+ * decide how tall to extend the wall mesh. Returns 0 when no profile.
+ */
+export function wallCapMaxRiseMm(wall: Wall): number {
+  const tp = wall.topProfile
+  if (!tp) return 0
+  if (tp.kind === 'triangle') return Math.max(0, tp.peakHeightMm)
+  if (tp.kind === 'trapezoid') {
+    return Math.max(0, tp.leftHeightMm, tp.rightHeightMm)
+  }
+  return 0
+}

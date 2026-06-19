@@ -1,25 +1,22 @@
 /**
- * The canonical Beme brand mark — orange rounded square with a dark
- * inset square cut from the middle. Sourced from `/public/favicon.svg`
- * so every rendering across the app uses the same exact geometry.
+ * The canonical Beme brand mark — orange rounded square with a square
+ * HOLE cut from the middle (true transparency, not a dark inset). The
+ * page background shows through the hole, so the mark sits cleanly on
+ * any surface — cream dashboard, dark hero, screenshot card, anywhere.
  *
- * Why an SVG instead of two nested divs:
- *   • The div-based version we had across LeftNav, AppShell, BemeLoader
- *     and others used `inset-[Npx]` + `rounded-[Mpx]` to approximate
- *     the mark. Each call site picked a slightly different N / M for
- *     its target size, so a w-11 instance had different proportions
- *     to a w-10 instance, and sub-pixel rounding made the inner
- *     square look subtly off-centre at certain sizes.
- *   • An SVG keeps the geometry exact at every size — no rounding
- *     artifacts, no per-component proportion drift.
+ * Why a single path with `evenodd` instead of two stacked rects:
+ *   • Two-rect version filled the hole with a theme-tracking colour
+ *     (ink-900). That worked when the mark sat on the page bg, but on
+ *     a coloured card or hover treatment the inset was the wrong
+ *     colour and the mark looked layered rather than cut.
+ *   • The single-path approach uses fill-rule="evenodd" to subtract
+ *     the inner rect from the outer one in a single fill operation,
+ *     so the centre is GENUINELY transparent. No theme dependency,
+ *     no per-surface colour mismatch.
  *
- * Colours:
- *   • Outer rect uses `currentColor` so the consuming wrapper drives
- *     it via `text-beme-500` (or hover `text-beme-400`, etc).
- *   • Inner rect uses the `--color-ink-900` token so it tracks the
- *     theme automatically — dark inset in dark mode, light inset
- *     would be wrong (the mark stays orange/dark even in light
- *     theme, matching the favicon).
+ * Colour:
+ *   • `currentColor` so the consuming wrapper drives it via
+ *     `text-beme-500` (or hover `text-beme-400`, etc).
  */
 export default function BemeMark({
   size = 32,
@@ -41,14 +38,26 @@ export default function BemeMark({
       aria-hidden="true"
       role="img"
     >
-      {/* Outer rounded square — orange brand fill via currentColor so
-          a parent wrapper's text-* class drives it. */}
-      <rect x="0" y="0" width="64" height="64" rx="12" ry="12" fill="currentColor" />
-      {/* Inner dark inset — 12px inset on all sides, sliughtly less
-          pronounced corner radius (5px on a 40px square) so the
-          mark reads as "square with a square hole" rather than two
-          nested rounded shapes. */}
-      <rect x="12" y="12" width="40" height="40" rx="5" ry="5" fill="#0E0E10" />
+      {/*
+        Path notes:
+          - First subpath traces the outer rounded square clockwise
+            (12px corner radius on a 64px square).
+          - Second subpath traces the inner rounded square (40×40
+            offset (12,12), 5px corner radius) — direction doesn't
+            matter for evenodd, which subtracts any enclosed area
+            from the fill.
+          - Result: a single fill of `currentColor` with a square
+            hole through the middle, so whatever sits behind the
+            wrapper (cream page bg, white card, dark hero, etc.)
+            shows through.
+      */}
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        fill="currentColor"
+        d="M12 0 H52 A12 12 0 0 1 64 12 V52 A12 12 0 0 1 52 64 H12 A12 12 0 0 1 0 52 V12 A12 12 0 0 1 12 0 Z
+           M17 12 A5 5 0 0 0 12 17 V47 A5 5 0 0 0 17 52 H47 A5 5 0 0 0 52 47 V17 A5 5 0 0 0 47 12 H17 Z"
+      />
     </svg>
   )
 }

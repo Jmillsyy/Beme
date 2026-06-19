@@ -7,6 +7,8 @@
  * exported estimates.
  */
 
+import type { WallMakeup } from './walls'
+
 export type Units = 'metric' | 'imperial'
 export type DateFormat = 'DD/MM/YYYY' | 'MM/DD/YYYY' | 'YYYY-MM-DD'
 export type Theme = 'dark' | 'light'
@@ -61,7 +63,13 @@ export interface UserPreferences {
    * AU-SEQ seed library that's been live since v1. Set to one of the
    * keys from LIBRARY_TEMPLATES in src/data/libraryTemplates.ts.
    */
-  libraryTemplateKey?: 'au-seq' | 'us-cmu' | 'uk-block' | 'blank'
+  libraryTemplateKey?:
+    | 'au-seq'
+    | 'nz-block'
+    | 'us-cmu'
+    | 'ca-cmu'
+    | 'uk-block'
+    | 'blank'
 
   // Currency + regional features were retired. Beme estimates quantities,
   // not prices, so a currency selector was misleading. Regional feature
@@ -112,6 +120,14 @@ export interface EstimatingDefaults {
    * that course type. Undefined = all course types (default).
    */
   defaultExactLengthCourses?: Array<'base' | 'body' | 'height-makeup' | 'top'>
+
+  /**
+   * Whether new wall makeups default to "match exact wall height"
+   * (dedicated height-makeup blocks vs cut body blocks). Set by the
+   * "Set default" action on a wall type card. Undefined -> true (the
+   * AU bricklaying default, same as before).
+   */
+  defaultMatchExactHeight?: boolean
 }
 
 /**
@@ -124,6 +140,16 @@ export interface EstimatingDefaults {
  * - `per-m2`: rate × total brickwork / blockwork area.
  * - `per-m-lineal`: rate × total wall run length.
  * - `per-opening`: rate × number of openings on the plan.
+ * - `per-opening-head`: rate × number of opening HEADS. Every opening
+ *   has a head, so this equals the opening count unless a width range
+ *   filter narrows it. Lets the user price head-specific consumables
+ *   (lintel bedding compound, head-trim mastic, etc.) separately from
+ *   the opening itself.
+ * - `per-opening-sill`: rate × number of opening SILLS. Doors don't
+ *   have sills, so this counts WINDOW openings only (kind !== 'door').
+ *   Same width-range filter applies. Lets the user price sill-specific
+ *   consumables (sill bedding, sill flashing per window) without
+ *   double-counting doors.
  */
 export type SupplyItemUnit =
   | 'each'
@@ -132,6 +158,8 @@ export type SupplyItemUnit =
   | 'per-m2'
   | 'per-m-lineal'
   | 'per-opening'
+  | 'per-opening-head'
+  | 'per-opening-sill'
 
 /**
  * A user-defined supply item that gets added to estimate totals based on a
@@ -171,17 +199,19 @@ export interface SupplyItem {
    */
   category?: string
   /**
-   * For `unit: 'per-opening'` supplies ONLY — restrict the count to
-   * openings whose WIDTH falls within this range (mm). Lets the user
-   * configure lintels / sills / heads as supply items that auto-pick
-   * based on opening width:
+   * For `unit: 'per-opening'`, `'per-opening-head'`, and
+   * `'per-opening-sill'` supplies — restrict the count to openings
+   * whose WIDTH falls within this range (mm). Lets the user configure
+   * lintels / sills / heads as supply items that auto-pick based on
+   * opening width:
    *
    *   - "Galintel 100×100" → openingWidthMinMm 1200, openingWidthMaxMm 1800
    *   - "Steel angle L 3.5×3.5" → openingWidthMinMm 1800, openingWidthMaxMm 3000
    *
    * Either bound undefined means "open" on that side. Both undefined
-   * means the supply applies to EVERY opening (which is the
-   * pre-existing per-opening behaviour, kept for back-compat).
+   * means the supply applies to EVERY in-scope opening (every opening
+   * for `per-opening` and `per-opening-head`; every window for
+   * `per-opening-sill`).
    */
   openingWidthMinMm?: number
   openingWidthMaxMm?: number
@@ -198,6 +228,26 @@ export interface SupplyItem {
    * the original whole-unit behaviour.
    */
   decimalPlaces?: number
+  /**
+   * Marks this item as the user's PROJECT DEFAULT for its scope. Only
+   * meaningful for the per-opening / per-opening-head / per-opening-sill
+   * units — where multiple library items can match the same opening
+   * (e.g. two galintels both ranged 1200–1800 mm).
+   *
+   * Resolution per opening + scope at tally time:
+   *   1. If the opening carries an explicit override for this scope,
+   *      that wins (override = supply item id, 'none' = skip).
+   *   2. Else if ANY matching library item has `isProjectDefault`
+   *      set, only the default(s) count for this opening. Non-default
+   *      matches are suppressed.
+   *   3. Else (no default, no override) every matching item counts —
+   *      the legacy behaviour, kept so existing libraries don't shift
+   *      until the user opts in by marking a default.
+   *
+   * Library-wide setting (not per project) so the same default reads
+   * consistently across every estimate that uses the library.
+   */
+  isProjectDefault?: boolean
 }
 
 /** Clamp a SupplyItem's decimalPlaces to a sane range (0–3) and default
@@ -264,6 +314,8 @@ export interface DefaultsByRole {
   heightMakeup90?: string
   heightMakeup140?: string
   cornerLeadIn?: string
+  /** Capping tile seeded onto new wall types ('' / undefined = no cap). */
+  cap?: string
 }
 
 export interface UserSettings {
@@ -283,6 +335,13 @@ export interface UserSettings {
    * per-project in the brick/block settings panel.
    */
   supplyItems?: SupplyItem[]
+  /**
+   * Your library — named wall type templates, reusable across projects.
+   * Saved from a project's wall type card ("Save to library") or managed
+   * on the Material Library page. The new-wall-type modal offers these
+   * as starting points. Replaced wholesale on update, like supplyItems.
+   */
+  wallTypeTemplates?: WallMakeup[]
 }
 
 /**
@@ -329,6 +388,7 @@ export function createDefaultUserSettings(): UserSettings {
       // 'height-makeup', 'top'])
     },
     supplyItems: createDefaultSupplyItems(),
+    wallTypeTemplates: [],
   }
 }
 

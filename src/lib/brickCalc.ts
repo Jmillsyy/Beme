@@ -24,6 +24,7 @@ import type { BrickCode, BrickType } from '../types/bricks'
 import { bricksPerSquareMetreOf, DEFAULT_BRICK_MORTAR_MM } from '../types/bricks'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
+import { wallCapAreaSqMm } from './wallTopProfile'
 
 // ---------- Brick tally ----------
 //
@@ -352,6 +353,15 @@ export function calculateBrickTally(
         },
       ]
     }
+    // Gable / raked cap area — added to the TOP band so any opening
+    // deduction tier (which works top-down) doesn't accidentally
+    // attribute the cap to a lower brick type. The cap is whatever
+    // sits above the wall's rectangular body; it's almost always the
+    // same brick as the top course continues into the gable.
+    const capArea = wallCapAreaSqMm(wall, len)
+    if (capArea > 0 && bands.length > 0) {
+      bands[0].areaSqMm += capArea
+    }
     for (const b of bands) totalAreaSqMm += b.areaSqMm
     wallAreas.push({
       wallId: wall.id,
@@ -376,6 +386,25 @@ export function calculateBrickTally(
     }
   }
 
+  // ── No-head openings: effective height runs sill -> wall top ──
+  // noHead means "the brickwork ABOVE this opening, up to the wall
+  // top, is also gone". The opening's position is whatever the user
+  // saved (kind default or explicit head allowance); noHead just
+  // extends the deducted area upward so it reads as one continuous
+  // void from sill to wall top.
+  const wallHeightForOpening = (op: Opening): number | null => {
+    const w = walls.find((x) => x.id === op.wallId)
+    if (!w) return null
+    const m = w.makeupId ? makeupsById.get(w.makeupId) : undefined
+    return w.heightMmOverride ?? m?.heightMm ?? settings.defaultWallHeightMm
+  }
+  const effectiveOpeningHeightMm = (op: Opening): number => {
+    if (!op.noHead) return op.heightMm
+    const wh = wallHeightForOpening(op)
+    if (wh === null) return op.heightMm
+    return Math.max(op.heightMm, wh - op.sillHeightMm)
+  }
+
   // Deduct openings from each wall's bands top-down — opening area
   // comes off the topmost band first (the band most likely to contain
   // the window / door), spilling into lower bands only if the opening
@@ -383,7 +412,10 @@ export function calculateBrickTally(
   for (const entry of wallAreas) {
     const ops = openingsByWall.get(entry.wallId)
     if (!ops || ops.length === 0) continue
-    let remaining = ops.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
+    let remaining = ops.reduce(
+      (s, o) => s + o.widthMm * effectiveOpeningHeightMm(o),
+      0
+    )
     for (const band of entry.bands) {
       if (remaining <= 0) break
       const take = Math.min(band.areaSqMm, remaining)
@@ -396,7 +428,8 @@ export function calculateBrickTally(
   // orphans). totalAreaSqMm should still equal the sum of per-band areas
   // after deduction, with rounding tolerance.
   let openingTotalArea = 0
-  for (const op of openings) openingTotalArea += op.widthMm * op.heightMm
+  for (const op of openings)
+    openingTotalArea += op.widthMm * effectiveOpeningHeightMm(op)
   totalAreaSqMm -= openingTotalArea
   if (totalAreaSqMm < 0) totalAreaSqMm = 0
 
@@ -465,7 +498,7 @@ export function calculateBrickTally(
       ]
       for (const op of wallOpenings) {
         const opSill = op.sillHeightMm
-        const opHead = op.sillHeightMm + op.heightMm
+        const opHead = op.sillHeightMm + effectiveOpeningHeightMm(op)
         if (opHead <= y0 + 0.5 || opSill >= y1 - 0.5) continue
         const opStart = op.startAlongWallMm
         const opEnd = op.startAlongWallMm + op.widthMm
@@ -553,9 +586,11 @@ export function calculateBrickTally(
     // fallback matters because openings created in block mode
     // don't persist a kind field — they only carry sill / head
     // measurements, and a door is geometrically a sill=0 opening.
+    // noHead openings also skip — they're raw cutouts with no
+    // decorative sill course (matches the 3D render skip).
     const isDoor =
       op.kind === 'door' || (op.sillHeightMm ?? 0) <= 0
-    if (!isDoor) {
+    if (!isDoor && !op.noHead) {
       const sillCode = makeup.sillBrickCode || primaryBrickCode
       if (sillCode) {
         sillLinealMmByType[sillCode] =
@@ -566,15 +601,18 @@ export function calculateBrickTally(
           (sillLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
       }
     }
-    // Head — doors AND windows.
-    const headCode = makeup.headBrickCode || primaryBrickCode
-    if (headCode) {
-      headLinealMmByType[headCode] =
-        (headLinealMmByType[headCode] ?? 0) + trimSpanMm
-    }
-    if (wall.makeupId) {
-      headLinealMmByMakeup[wall.makeupId] =
-        (headLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
+    // Head — doors AND windows, EXCEPT no-head openings (the void
+    // runs to the top of the wall; there's nothing to bridge).
+    if (!op.noHead) {
+      const headCode = makeup.headBrickCode || primaryBrickCode
+      if (headCode) {
+        headLinealMmByType[headCode] =
+          (headLinealMmByType[headCode] ?? 0) + trimSpanMm
+      }
+      if (wall.makeupId) {
+        headLinealMmByMakeup[wall.makeupId] =
+          (headLinealMmByMakeup[wall.makeupId] ?? 0) + trimSpanMm
+      }
     }
   }
 
@@ -686,7 +724,7 @@ export function calculateBrickTally(
     bucket.netAreaSqMm += netArea
     const wallOpenings = openingsByWall.get(entry.wallId) ?? []
     const wallOpeningArea = wallOpenings.reduce(
-      (s, o) => s + o.widthMm * o.heightMm,
+      (s, o) => s + o.widthMm * effectiveOpeningHeightMm(o),
       0
     )
     bucket.openingAreaSqMm += wallOpeningArea

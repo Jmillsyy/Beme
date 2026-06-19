@@ -122,11 +122,10 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
         <>
           {/* Big total card — orange hero, exact same structure as
               BlockTallyPanel: uppercase eyebrow, big extrabold
-              headline number, single-line subtitle stacking the
-              supporting figures. Keeps the brand-colour real estate
-              tight to the headline so the panel reads as "one
-              feature card on a neutral surface" rather than "all
-              orange". */}
+              headline number, single-line subtitle for wall count.
+              Body lineal moved out of the subtitle and into its own
+              row below so all four primary metrics (area, lineal,
+              head, sill) stack in a consistent order. */}
           <div className="px-3 py-3 bg-gradient-to-br from-beme-500 to-beme-600 text-ink-900">
             <div className="text-[11px] font-semibold uppercase tracking-[0.1em] opacity-85">
               Total brickwork area
@@ -135,20 +134,28 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
               <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
             </div>
             <div className="text-xs opacity-85 mt-1 tabular-nums">
-              {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'} ·{' '}
-              <AnimatedNumber value={lengthM} format={(n) => n.toFixed(2)} /> m run
+              {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
+              {tally.openingCount > 0 && (
+                <>
+                  {' · '}
+                  {tally.openingCount} opening
+                  {tally.openingCount === 1 ? '' : 's'}
+                </>
+              )}
             </div>
           </div>
 
-          {/* Metadata strip — opening count + head/sill lineal metres.
-              Sources from byMakeup so the values populate for any
-              opening regardless of whether the wall type names a
-              head/sill brick code (the brick code is a 3D-render
-              concern, the lineal m is a real takeoff metric). Doors
-              are excluded from sill (they sit on the floor, no sill
-              course). "Total Lineal m" was removed — it summed head
-              + sill which double-counts every window opening and
-              made the figure read as unusually large. */}
+          {/* Lineal metres — stacked in fixed order under the hero:
+              Total lineal → Head lineal → Sill lineal. Mirrors the
+              user's mental model from the block tally where the
+              primary metric (count / area) headlines and the
+              supporting metrics flow underneath in a predictable
+              order. Each row uses the same label / value layout so
+              the panel reads as a list rather than a grid. Sources
+              from byMakeup so values populate even when the wall
+              type doesn't name a head/sill brick code. Doors are
+              excluded from the sill total (they reach the floor, no
+              sill course). */}
           {(() => {
             const headLinealM =
               Object.values(tally.headLinealMmByMakeup ?? {}).reduce(
@@ -160,40 +167,28 @@ function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyP
                 (s, v) => s + v,
                 0,
               ) / 1000
+            const rows: Array<{ label: string; value: number }> = [
+              { label: 'Total lineal', value: lengthM },
+              { label: 'Head lineal', value: headLinealM },
+              { label: 'Sill lineal', value: sillLinealM },
+            ]
             return (
-              <div className="px-3 py-2.5 text-xs border-t border-ink-600 grid grid-cols-3 gap-x-3 gap-y-2 tabular-nums">
-                <div>
-                  <div className="text-ink-400 text-[11px]">Openings</div>
-                  <div className="text-ink-100 font-medium text-sm mt-0.5">
-                    <AnimatedNumber value={tally.openingCount} />
+              <div className="border-t border-ink-600 divide-y divide-ink-700/60">
+                {rows.map((r) => (
+                  <div
+                    key={r.label}
+                    className="px-3 py-2 flex items-center justify-between gap-2 text-sm tabular-nums"
+                  >
+                    <span className="text-ink-300 text-xs">{r.label}</span>
+                    <span className="text-ink-100 font-medium">
+                      <AnimatedNumber
+                        value={r.value}
+                        format={(n) => n.toFixed(2)}
+                      />{' '}
+                      m
+                    </span>
                   </div>
-                </div>
-                <div>
-                  {/* Labels shortened to single words so they fit on one
-                      line in the narrow right rail — "Head Lineal m" was
-                      wrapping to two rows on the standard 272px panel
-                      width which left the values floating mid-card. The
-                      value already carries the unit suffix so the eyebrow
-                      doesn't need to spell it out. */}
-                  <div className="text-ink-400 text-[11px]">Head</div>
-                  <div className="text-ink-100 font-medium text-sm mt-0.5">
-                    <AnimatedNumber
-                      value={headLinealM}
-                      format={(n) => n.toFixed(2)}
-                    />{' '}
-                    m
-                  </div>
-                </div>
-                <div>
-                  <div className="text-ink-400 text-[11px]">Sill</div>
-                  <div className="text-ink-100 font-medium text-sm mt-0.5">
-                    <AnimatedNumber
-                      value={sillLinealM}
-                      format={(n) => n.toFixed(2)}
-                    />{' '}
-                    m
-                  </div>
-                </div>
+                ))}
               </div>
             )
           })()}

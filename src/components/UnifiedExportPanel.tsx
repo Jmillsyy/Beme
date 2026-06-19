@@ -13,6 +13,7 @@ import type {
 } from '../types/walls'
 import type { SupplyItem } from '../types/userSettings'
 import { roundSupplyQuantity } from '../types/userSettings'
+import { countOpeningsForSupplyItem } from '../lib/openingSupplyResolver'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { PageInfo } from '../lib/blockExport'
 import { exportBlockEstimate } from '../lib/blockExport'
@@ -1026,6 +1027,14 @@ function ExportEstimateModal({
       blockCount,
       openingCount: blockOpenings.length,
       openingWidthsMm: blockOpenings.map((o) => o.widthMm),
+      // Parallel kind list so per-opening-sill (windows only) and
+      // per-opening-head (everything) read from the same metrics
+      // object as per-opening — same shape as PdfWorkspace's
+      // supplyMetrics. 'window' is the default for older openings.
+      openingKinds: blockOpenings.map((o) =>
+        o.kind === 'door' ? ('door' as const) : ('window' as const),
+      ),
+      openingSupplyOverrides: blockOpenings.map((o) => o.supplyOverrides),
     }
   }, [blockWalls, blockMakeups, blockOpenings, blockBaseTally])
 
@@ -1037,6 +1046,10 @@ function ExportEstimateModal({
         brickCount: 0,
         openingCount: 0,
         openingWidthsMm: [] as number[],
+        openingKinds: [] as Array<'window' | 'door'>,
+        openingSupplyOverrides: [] as Array<
+          { opening?: string | 'none'; head?: string | 'none'; sill?: string | 'none' } | undefined
+        >,
       }
     }
     const tally = calculateBrickTally(
@@ -1051,6 +1064,11 @@ function ExportEstimateModal({
       brickCount: tally.brickCount,
       openingCount: brickOpenings.length,
       openingWidthsMm: brickOpenings.map((o) => o.widthMm),
+      // Parallel kind list — see blockMetrics comment.
+      openingKinds: brickOpenings.map((o) =>
+        o.kind === 'door' ? ('door' as const) : ('window' as const),
+      ),
+      openingSupplyOverrides: brickOpenings.map((o) => o.supplyOverrides),
     }
   }, [brickWalls, brickOpenings, brickSettings, brickMakeups])
 
@@ -1094,26 +1112,20 @@ function ExportEstimateModal({
       case 'per-m-lineal':
         raw = rate * metrics.lengthM
         break
-      case 'per-opening': {
-        const min = item.openingWidthMinMm
-        const max = item.openingWidthMaxMm
+      case 'per-opening':
+      case 'per-opening-head':
+      case 'per-opening-sill': {
+        // Shared resolver — keeps the modal preview locked to the
+        // workspace tally + the printed PDF.
         const widths = metrics.openingWidthsMm
-        let scope: number
-        if (min === undefined && max === undefined) {
-          scope = metrics.openingCount
-        } else if (widths.length === 0) {
-          // Caller didn't pass widths — fall back to total count
-          // rather than silently zeroing the row (matches both
-          // exporters' fallback).
-          scope = metrics.openingCount
-        } else {
-          scope = widths.filter(
-            (w) =>
-              (min === undefined || w >= min) &&
-              (max === undefined || w <= max)
-          ).length
-        }
-        raw = rate * scope
+        const kinds = metrics.openingKinds
+        const overrides = metrics.openingSupplyOverrides
+        const openings = widths.map((w, i) => ({
+          widthMm: w,
+          kind: kinds[i] ?? ('window' as const),
+          supplyOverrides: overrides[i],
+        }))
+        raw = rate * countOpeningsForSupplyItem(item, openings, supplyItems)
         break
       }
     }
