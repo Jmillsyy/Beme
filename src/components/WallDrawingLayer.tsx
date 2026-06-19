@@ -353,15 +353,14 @@ const WALL_FACE_SNAP_MM = 25
  * intent is usually ortho or 45°; this removes "wall is 1° off and I have
  * to nudge it" without locking out walls that are genuinely on an angle.
  *
- * Tightened from 4° → 2° per user feedback that 4° was too aggressive:
- * a nearly-straight wall drawn at ~3° couldn't be placed because the
- * snap kept yanking it to exact horizontal. 2° still catches the "I
- * meant to draw flat" intent without swallowing a deliberate 3-5°
- * sloped wall.
- *
- * Hold Shift while drawing or dragging to bypass the snap entirely.
+ * Tightened progressively: 4° → 2° → 1°. Even 2° was reading as 'too
+ * snappy' on long walls (2° = ~35 px of cursor jump at 1000 px wall
+ * length, which is plainly visible). 1° catches near-perfect
+ * ortho/diagonal intent without grabbing walls the user is
+ * deliberately offsetting by a few degrees. Hold Shift to bypass
+ * entirely if a wall is so close to an axis that even 1° snaps it.
  */
-const AXIS_SNAP_DEGREES = 2
+const AXIS_SNAP_DEGREES = 1
 
 /**
  * Ruler-specific axis snap window. Wider than the wall-drawing AXIS_SNAP_DEGREES
