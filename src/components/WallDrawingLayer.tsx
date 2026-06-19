@@ -3099,17 +3099,55 @@ function WallDrawingLayerInner({
             </Group>
           )
         })()}
-        {placingOpening && !openingPlacementStart && openingHoverProjection && (
-          <Circle
-            x={openingHoverProjection.px.x}
-            y={openingHoverProjection.px.y}
-            radius={4}
-            stroke="#D97706"
-            strokeWidth={1.5}
-            fill="rgba(217, 119, 6, 0.3)"
-            listening={false}
-          />
-        )}
+        {placingOpening && !openingPlacementStart && openingHoverProjection && (() => {
+          // Pre-placement hover indicator: a SHORT line perpendicular
+          // to the wall, spanning the wall's thickness. Reads as a
+          // "where will the opening start" tick mark across the wall —
+          // visually clearer than a dot, especially on thick block
+          // walls where the cursor sits well inside the body. Curved
+          // walls fall back to the dot for now (perpendicular at an
+          // arc point needs the tangent — straightforward but not in
+          // scope here).
+          const hoverWall = wallsById.get(openingHoverProjection.wallId)
+          if (!hoverWall || isCurvedWall(hoverWall)) {
+            return (
+              <Circle
+                x={openingHoverProjection.px.x}
+                y={openingHoverProjection.px.y}
+                radius={4}
+                stroke="#D97706"
+                strokeWidth={1.5}
+                fill="rgba(217, 119, 6, 0.3)"
+                listening={false}
+              />
+            )
+          }
+          const dx = hoverWall.endX - hoverWall.startX
+          const dy = hoverWall.endY - hoverWall.startY
+          const len = Math.hypot(dx, dy)
+          if (len === 0) return null
+          // Perpendicular = wall direction rotated +90° in screen space.
+          const perpX = -dy / len
+          const perpY = dx / len
+          const thicknessMm = wallThicknessByWallId[hoverWall.id] ?? 190
+          const halfThicknessPx = mmToPx(thicknessMm / 2)
+          const cx = openingHoverProjection.px.x
+          const cy = openingHoverProjection.px.y
+          return (
+            <Line
+              points={[
+                cx - perpX * halfThicknessPx,
+                cy - perpY * halfThicknessPx,
+                cx + perpX * halfThicknessPx,
+                cy + perpY * halfThicknessPx,
+              ]}
+              stroke="#D97706"
+              strokeWidth={3}
+              lineCap="round"
+              listening={false}
+            />
+          )
+        })()}
 
         {/* Piers — rendered above wall polygons. Footprint comes from the
             project's pier block (via the `pierFootprintMm` prop) so US /
