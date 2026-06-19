@@ -181,6 +181,11 @@ export async function deleteUserWallTypeTemplate(id: string): Promise<void> {
   const removed = state.templates.find((t) => t.id === id)
   state = { ...state, templates: state.templates.filter((t) => t.id !== id) }
   notify()
+  // Always remove from the local fallback store as well — when the
+  // cloud table is missing the template might live ONLY in local
+  // storage (see saveUserWallTypeTemplate's missing-table branch),
+  // and a cloud-only delete would leave it behind on this device.
+  setLocalTemplates(localTemplates().filter((t) => t.id !== id))
   const client = supabase()
   const { error } = await client
     .from('user_wall_type_templates')
@@ -189,6 +194,22 @@ export async function deleteUserWallTypeTemplate(id: string): Promise<void> {
   if (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to delete wall type template', error.message)
+    // Missing-table case: there's nothing in the cloud to delete
+    // anyway, and we already removed from local. Treat as success
+    // with a heads-up so the caller can surface the right toast.
+    const isMissingTable =
+      error.code === 'PGRST205' ||
+      /could not find the table/i.test(error.message)
+    if (isMissingTable) {
+      throw new Error(
+        `Cloud sync unavailable — removed locally on this device. ` +
+        `Run supabase/migrations/2026_06_user_wall_type_templates.sql to enable cross-device sync.`,
+      )
+    }
+    // Other errors — roll back the in-memory remove. We DON'T put
+    // the template back into local storage here because we don't
+    // know whether the local list ever held it; safer to leave it
+    // off than to risk a phantom revival.
     if (removed) {
       state = { ...state, templates: state.templates.concat(removed) }
       notify()

@@ -3676,7 +3676,38 @@ export function WallTypeTemplatesSection({
                         confirmLabel: 'Remove',
                         variant: 'destructive',
                       })
-                      if (ok) void deleteUserWallTypeTemplate(t.id)
+                      if (!ok) return
+                      try {
+                        await deleteUserWallTypeTemplate(t.id)
+                        toast.success(
+                          `"${t.name}" removed from your library`,
+                        )
+                      } catch (err) {
+                        const msg =
+                          err instanceof Error
+                            ? err.message
+                            : 'Unknown error'
+                        // Local-fallback: removed on this device but
+                        // cloud sync is off. Treat as success so the
+                        // user doesn't see a red error after the
+                        // template visibly disappeared.
+                        const isLocalFallback =
+                          /removed locally/i.test(msg)
+                        if (isLocalFallback) {
+                          toast.success(
+                            `"${t.name}" removed on this device`,
+                            {
+                              description:
+                                'Cloud sync is off — apply the Supabase migration to sync across devices.',
+                            },
+                          )
+                        } else {
+                          toast.error(
+                            `Couldn't remove "${t.name}"`,
+                            { description: msg },
+                          )
+                        }
+                      }
                     }}
                     className="text-[11px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer ml-auto"
                   >
