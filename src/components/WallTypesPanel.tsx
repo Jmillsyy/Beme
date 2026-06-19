@@ -3737,9 +3737,27 @@ export function WallTypeTemplatesSection({
                   err instanceof Error
                     ? err.message
                     : 'Unknown error'
-                toast.error(`Couldn't save wall type`, {
-                  description: msg,
-                })
+                // Local-fallback case: the cloud table is missing
+                // but the wall type DID save to this device. Read
+                // as info, not error — the wall type is in the
+                // library, just not synced. Other failures stay as
+                // a hard error so they can't be ignored.
+                const isLocalFallback = /saved locally/i.test(msg)
+                if (isLocalFallback) {
+                  toast.success(
+                    editing
+                      ? `Wall type "${payload.name}" updated on this device`
+                      : `Wall type "${payload.name}" saved on this device`,
+                    {
+                      description:
+                        'Cloud sync is off — apply the Supabase migration to sync across devices.',
+                    },
+                  )
+                } else {
+                  toast.error(`Couldn't save wall type`, {
+                    description: msg,
+                  })
+                }
               }
             })()
             setEditing(null)
