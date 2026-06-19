@@ -1160,14 +1160,33 @@ function WallDrawingLayerInner({
 
   function findClosestWallProjection(
     clickPx: Point,
-    only?: string
+    only?: string,
+    opts?: {
+      /**
+       * When true, treat the cursor as "on the wall" if it sits anywhere
+       * within the wall's drawn THICKNESS (half-thickness either side of
+       * the centreline). Used by opening placement so the user can hover
+       * anywhere over the visible wall body — including the wide block-
+       * wall faces — instead of having to nail the centreline within
+       * WALL_PROJECTION_THRESHOLD_PX. The projection still returns a
+       * point on the centreline, so the preview snaps cleanly onto the
+       * wall axis.
+       */
+      includeBody?: boolean
+    },
   ): WallProjection | null {
     let best: WallProjection | null = null
     for (const wall of walls) {
       if (only && wall.id !== only) continue
       const proj = projectOntoWall(clickPx, wall)
       if (!proj) continue
-      if (proj.distFromLinePx > WALL_PROJECTION_THRESHOLD_PX) continue
+      const thresholdPx = opts?.includeBody
+        ? Math.max(
+            WALL_PROJECTION_THRESHOLD_PX,
+            mmToPx((wallThicknessByWallId[wall.id] ?? 190) / 2) + 2,
+          )
+        : WALL_PROJECTION_THRESHOLD_PX
+      if (proj.distFromLinePx > thresholdPx) continue
       if (!best || proj.distFromLinePx < best.distFromLinePx) {
         best = proj
       }
@@ -2051,8 +2070,11 @@ function WallDrawingLayerInner({
       // the wall mid-placement, fall back to the last valid hover so a
       // brief drag-off doesn't lose the in-progress opening. The first
       // click still requires a real wall hit (otherwise we have no
-      // anchor to project against).
-      const projFresh = findClosestWallProjection(raw, onlyWall)
+      // anchor to project against). includeBody: true so the click
+      // registers anywhere on the wall body — same generous hit area
+      // as the hover preview, so the user can commit from wherever
+      // they were aiming.
+      const projFresh = findClosestWallProjection(raw, onlyWall, { includeBody: true })
       const proj =
         projFresh ?? (openingPlacementStart ? openingHoverProjection : null)
       if (!proj) return
@@ -2238,7 +2260,7 @@ function WallDrawingLayerInner({
       }
     } else if (placingOpening) {
       const onlyWall = openingPlacementStart?.wallId
-      const proj = findClosestWallProjection(raw, onlyWall)
+      const proj = findClosestWallProjection(raw, onlyWall, { includeBody: true })
       if (proj) {
         // Snap the hover preview to the same 10 mm grid the click uses so
         // the live width readout climbs in 10 mm steps — matches how doors
