@@ -4279,21 +4279,28 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   }, [mode, wallsByPage, currentPage, makeupsById, brickSettings, selectedWallId, setSelectedWallId])
 
   function handleAddMakeup(makeup: WallMakeup) {
-    // Resolve an areaId for the new makeup. Without this every
-    // makeup needs SOME area to belong to — otherwise it shows under
-    // 'All areas' but never appears in any specific area panel,
-    // which is the orphan-makeup bug the user reported.
+    // Resolve an areaId for the new makeup. The new wall type should
+    // always land in the area the user is currently viewing — even
+    // when the source carries its own areaId (library template
+    // saved against a different area, etc.). Without this rule,
+    // templates from another project lose their areaId match and
+    // the area filter at the panel level (`m.areaId ===
+    // activeAreaId`) hides the new entry instantly — which reads
+    // exactly like "save doesn't save" because the modal closes and
+    // nothing visible appears.
     //
     // Resolution order:
-    //   1. makeup.areaId (caller provided one already — uncommon)
-    //   2. activeAreaId (we're inside a specific area)
+    //   1. activeAreaId (we're inside a specific area — use it)
+    //   2. makeup.areaId (if still valid against the current
+    //      project's areas)
     //   3. areas[0]?.id (we're on All view; pick the first area)
     //   4. auto-create a 'New Area' (no areas exist at all)
     let stamped: WallMakeup
-    if (makeup.areaId) {
-      stamped = makeup
-    } else if (activeAreaId) {
+    const validAreaIds = new Set(areas.map((a) => a.id))
+    if (activeAreaId) {
       stamped = { ...makeup, areaId: activeAreaId }
+    } else if (makeup.areaId && validAreaIds.has(makeup.areaId)) {
+      stamped = makeup
     } else if (areas.length > 0) {
       stamped = { ...makeup, areaId: areas[0].id }
     } else {
@@ -4425,10 +4432,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // for the reasoning. Auto-creates a 'New Area' if the project has
     // none so a brick wall type can never end up orphaned.
     let stamped: BrickMakeup
-    if (makeup.areaId) {
-      stamped = makeup
-    } else if (activeAreaId) {
+    const validBrickAreaIds = new Set(areas.map((a) => a.id))
+    if (activeAreaId) {
       stamped = { ...makeup, areaId: activeAreaId }
+    } else if (makeup.areaId && validBrickAreaIds.has(makeup.areaId)) {
+      stamped = makeup
     } else if (areas.length > 0) {
       stamped = { ...makeup, areaId: areas[0].id }
     } else {
