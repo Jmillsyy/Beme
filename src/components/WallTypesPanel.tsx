@@ -3713,12 +3713,35 @@ export function WallTypeTemplatesSection({
           existing={editing}
           onSave={(makeup) => {
             // Upsert by id — editing keeps the template's identity,
-            // adding mints a fresh one.
-            void saveUserWallTypeTemplate(
-              editing
-                ? { ...makeup, id: editing.id }
-                : { ...makeup, id: generateMakeupId() }
-            )
+            // adding mints a fresh one. Modal closes optimistically;
+            // saveUserWallTypeTemplate does its own optimistic insert,
+            // so the user sees the new template immediately. If the
+            // Supabase upsert fails, the optimistic insert is rolled
+            // back (template disappears) — surface that here via a
+            // toast so the user knows save FAILED and isn't left
+            // wondering why their wall type vanished. Without this
+            // every failed upsert reads as "save did nothing".
+            const payload = editing
+              ? { ...makeup, id: editing.id }
+              : { ...makeup, id: generateMakeupId() }
+            void (async () => {
+              try {
+                await saveUserWallTypeTemplate(payload)
+                toast.success(
+                  editing
+                    ? `Wall type "${payload.name}" updated`
+                    : `Wall type "${payload.name}" added to your library`,
+                )
+              } catch (err) {
+                const msg =
+                  err instanceof Error
+                    ? err.message
+                    : 'Unknown error'
+                toast.error(`Couldn't save wall type`, {
+                  description: msg,
+                })
+              }
+            })()
             setEditing(null)
             setAdding(false)
           }}
