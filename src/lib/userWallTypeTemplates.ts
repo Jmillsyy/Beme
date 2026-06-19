@@ -135,7 +135,33 @@ export async function saveUserWallTypeTemplate(makeup: WallMakeup): Promise<void
   if (error) {
     // eslint-disable-next-line no-console
     console.error('Failed to save wall type template', error.message)
-    // Roll back the optimistic insert so the UI doesn't show a phantom.
+    // Specific case: the migration hasn't been run on this Supabase
+    // project, so the table literally doesn't exist. Don't roll back
+    // — fall back to the local IndexedDB list so the user's work
+    // isn't lost, and surface a clearer error so they know they
+    // need to apply the migration. Same fallback the signed-out
+    // path uses; the template will live locally until the table
+    // exists and a future sync can push it up.
+    const isMissingTable =
+      error.code === 'PGRST205' ||
+      /could not find the table/i.test(error.message)
+    if (isMissingTable) {
+      setLocalTemplates(
+        localTemplates()
+          .filter((t) => t.id !== makeup.id)
+          .concat(makeup),
+      )
+      // Keep the optimistic insert in `state.templates` too so the
+      // UI doesn't lose the template while signed in — local list +
+      // cloud list both carry it. When the table is added later,
+      // refreshUserWallTypeTemplates will migrate the local list up.
+      throw new Error(
+        `Cloud sync unavailable — saved locally on this device. ` +
+        `Run supabase/migrations/2026_06_user_wall_type_templates.sql to enable cross-device sync.`,
+      )
+    }
+    // Other failures — roll back the optimistic insert so the UI
+    // doesn't show a phantom.
     state = {
       ...state,
       templates: state.templates.filter((t) => t.id !== makeup.id),
