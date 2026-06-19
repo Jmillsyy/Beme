@@ -257,30 +257,10 @@ export default function BlockLibraryPanel({
                 readOnly={readOnly}
                 onEdit={() => setEditingCode(block.code)}
                 onDelete={async () => {
-                  const isProtected = PROTECTED_BLOCK_CODES.has(block.code)
-                  if (isProtected) {
-                    // Strong confirm — protected codes are referenced
-                    // by name in the calc engine and as defaults in
-                    // wall-type creation. Force-deleting is allowed so
-                    // users can truly start fresh with a custom library
-                    // (e.g. US CMU, UK metric), but they need to know
-                    // any wall type using this code will go missing.
-                    const ok = await confirm({
-                      title: `Delete protected block "${block.code} — ${block.name}"?`,
-                      message:
-                        'This block is a default reference in the calc ' +
-                        'engine. Any existing wall type referencing this ' +
-                        'code will point at a missing block, and new wall ' +
-                        'types created in an empty library will open with ' +
-                        'empty slots instead of being pre-filled. Use this ' +
-                        'when wiping the library to swap to a different ' +
-                        'catalogue (US CMU, UK metric, custom supplier range).',
-                      confirmLabel: 'Delete anyway',
-                      variant: 'destructive',
-                    })
-                    if (ok) removeBlock(block.code, { force: true })
-                    return
-                  }
+                  // PROTECTED_BLOCK_CODES is empty — every block in
+                  // the library is deletable. The calc engine resolves
+                  // every slot via role tags + body-block fallback, so
+                  // there's no code-specific guard to honour.
                   const ok = await confirm({
                     title: `Delete block "${block.code} — ${block.name}"?`,
                     message:
@@ -350,7 +330,9 @@ function BlockRow({
   onDelete: () => void
   readOnly?: boolean
 }) {
-  const protectedBlock = PROTECTED_BLOCK_CODES.has(block.code)
+  // Reserved for callers that still want to call out seed-shipped
+  // codes, but the engine no longer treats any block as protected.
+  const protectedBlock = false
   const dims = `${block.dimensions.widthMm}×${block.dimensions.heightMm}×${block.dimensions.depthMm}mm`
   return (
     <div className="flex items-center gap-2 py-1.5 px-2 rounded-md border border-ink-600/40 hover:border-ink-600 hover:bg-ink-700/40 group">
@@ -358,14 +340,11 @@ function BlockRow({
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-xs text-beme-300 font-medium">{block.code}</span>
           <span className="text-sm text-ink-100 truncate">{block.name}</span>
-          {protectedBlock && (
-            <span
-              className="text-[10px] uppercase tracking-wider text-ink-400 border border-ink-600 rounded px-1.5 py-0.5"
-              title="Calc engine depends on this block — can be renamed but not deleted"
-            >
-              built-in
-            </span>
-          )}
+          {/* 'built-in' badge removed — every block is now fully
+              editable and deletable. The calc engine is role-based
+              and falls back to the body block for any unfilled slot,
+              so no specific block code is required for the program
+              to work. */}
         </div>
         <div className="text-[11px] text-ink-400 font-mono">
           {dims}
@@ -452,7 +431,11 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
 
   // Block built-in code rename to avoid breaking the calc engine. Built-in
   // block codes are fixed; only their name / description / dimensions are editable.
-  const codeLocked = !!existing && PROTECTED_BLOCK_CODES.has(existing.code)
+  // Code rename is unrestricted now — there's no protected-code list.
+  // Kept as a constant so the disabled / hint branches still compile;
+  // they're dead in practice and noop until a future workflow needs
+  // to re-introduce code locking (e.g. force-pinned regional codes).
+  const codeLocked = false
 
   const trimmedCode = code.trim()
   const codeClash =

@@ -680,9 +680,13 @@ export function planEnd(
     // [full][body…][half] layout (e.g. 990 mm) — the inversion always
     // swaps the START side so the FULL lands on the LEFT of Course 1.
     //
-    // Half block: per-makeup override → library role pick → '20.03' fallback.
+    // Half block: per-makeup override → library role pick → corner
+    // block fallback (which IS the full-end block) so a wall whose
+    // library doesn't carry a dedicated half still renders cleanly
+    // with the user's actual corner code instead of a guessed AU
+    // SEQ code that probably isn't in the library.
     const halfFromLib = pickHalfBlock()
-    const resolvedHalf = halfBlockCode ?? halfFromLib?.code ?? '20.03'
+    const resolvedHalf = halfBlockCode ?? halfFromLib?.code ?? fullEndBlock
     return {
       oddBlock: fullEndBlock,
       evenBlock: resolvedHalf,
@@ -2772,21 +2776,30 @@ function calculateCurvedWallTally(wall: Wall, makeup: WallMakeup): BlockTally {
  * Default course pattern when a pier has no PierMakeup attached.
  *
  * Derived from the live library by role: pier-tagged block for the pier
- * course, corner-tagged block for the alternating tie course. Falls back to
- * SEQ codes (40.925 / 20.01) if the library has nothing tagged with those
- * roles — keeps existing AU projects working unchanged.
- *
- * Computed lazily inside helpers so library edits flow through without an
- * app restart.
+ * course, corner-tagged block for the alternating tie course. If the user's
+ * library doesn't carry a pier role at all, the pattern collapses to a
+ * single course of whatever IS tagged (corner, body, etc.) — anything
+ * but a hardcoded AU SEQ code that wouldn't exist in their library.
  */
 function defaultTiedPierPattern(): BlockCode[] {
   const pier = pickPierBlock()
   const corner = pickCornerBlock()
-  return [pier?.code ?? '40.925', corner?.code ?? '20.01']
+  // Pier role missing → use the corner block as the column block too.
+  // Corner role missing → use the pier block both ways.
+  // Both missing → caller must supply a pierMakeup; return empty so
+  // downstream emits nothing rather than fabricating a phantom code.
+  if (pier && corner) return [pier.code, corner.code]
+  if (pier) return [pier.code]
+  if (corner) return [corner.code]
+  return []
 }
 function defaultFreestandingPierPattern(): BlockCode[] {
   const pier = pickPierBlock()
-  return [pier?.code ?? '40.925']
+  if (pier) return [pier.code]
+  // No pier role tagged — fall back to whatever the library treats as
+  // the corner / column block. Nothing to emit if neither is tagged.
+  const corner = pickCornerBlock()
+  return corner ? [corner.code] : []
 }
 
 /**

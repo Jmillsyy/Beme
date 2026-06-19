@@ -311,31 +311,41 @@ export function findSeriesRangeForCourse(
  * 300 series for the body and corner only" and the base course will still be
  * makeup.baseCourseBlockCode.
  *
- * Pass the constants for `defaultHalfBlockCode` (usually '20.03') and
- * `defaultHeightMakeup71BlockCode` (usually '20.71') in via the makeup-level
- * defaults — the calc engine knows these as hard-coded constants today, so we
- * pass them through here too rather than hard-coding inside the resolver.
+ * `defaults` is OPTIONAL — when omitted, unresolved slots fall back to
+ * the makeup's body block (anywhere a guess is needed: half, 71). This
+ * keeps the engine modular: any block name / size combination works,
+ * no AU SEQ code is assumed to exist in the user's library. Callers
+ * with explicit defaults (e.g. tests or migration helpers that know
+ * about a particular catalogue) can still pass them through.
  */
 export function resolveCourseBlocks(
   makeup: WallMakeup,
   courseNumber: number,
-  defaults: {
-    halfBlockCode: BlockCode
-    heightMakeup71BlockCode: BlockCode
-  } = { halfBlockCode: '20.03', heightMakeup71BlockCode: '20.71' }
+  defaults?: {
+    halfBlockCode?: BlockCode
+    heightMakeup71BlockCode?: BlockCode
+  },
 ): ResolvedCourseBlocks {
   const range = findSeriesRangeForCourse(makeup, courseNumber)
+  // Body block is required on every makeup, so it's the safest fallback
+  // for an unfilled half / height-makeup slot — same trick a mason
+  // uses: cut a body block to fit when there's no dedicated unit.
+  const bodyFallback = range?.bodyBlockCode ?? makeup.bodyBlockCode
   return {
     bodyBlockCode: range?.bodyBlockCode ?? makeup.bodyBlockCode,
     cornerBlockCode: range?.cornerBlockCode ?? makeup.cornerBlockCode,
-    // Half-block resolution chain: range override → makeup override (new
-    // top-level halfBlockCode field) → constant default. Older makeups
-    // without halfBlockCode set fall straight through to the default so
-    // pre-existing saves render unchanged.
-    halfBlockCode: range?.halfBlockCode ?? makeup.halfBlockCode ?? defaults.halfBlockCode,
+    // Half-block resolution chain: range override → makeup override →
+    // explicit default (when passed) → body block.
+    halfBlockCode:
+      range?.halfBlockCode ??
+      makeup.halfBlockCode ??
+      defaults?.halfBlockCode ??
+      bodyFallback,
     baseCourseBlockCode: range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode,
     heightMakeup71BlockCode:
-      range?.heightMakeup71BlockCode ?? defaults.heightMakeup71BlockCode,
+      range?.heightMakeup71BlockCode ??
+      defaults?.heightMakeup71BlockCode ??
+      bodyFallback,
     // Lead-in blocks (e.g. 30.02 ×2 after 300-series corners) are
     // permanently disabled — the cut block emission in planWallLayout
     // (startCutWidthMm / endCutWidthMm) now handles getting the body

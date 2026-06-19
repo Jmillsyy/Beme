@@ -442,27 +442,20 @@ export const DEFAULT_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
-/** Codes from the seed library that should never be deletable — the calc engine depends on them. */
-export const PROTECTED_BLOCK_CODES = new Set<BlockCode>([
-  '20.48',
-  '20.01',
-  '20.03',
-  '20.45',
-  '50.45',
-  '20.02',
-  '20.22',
-  '20.71',
-  '20.140',
-  // 300-series core codes — once a wall makeup references a course range that
-  // uses these, deleting them would break the tally. Protect for the same
-  // reason the 200-series core codes are protected.
-  '30.48',
-  '30.01',
-  '30.02',
-  '30.03',
-  '30.45',
-  '30.71',
-])
+/**
+ * Block codes that the calc engine treats as undeletable. Used to be a
+ * hardcoded list of AU SEQ codes (20.48, 20.01, 20.03, 20.45 …) on the
+ * grounds that legacy string-fallbacks like `?? '20.03'` would leave the
+ * cell pointing at a missing block if the user deleted those codes.
+ *
+ * Now empty — the engine resolves every role via the body block or the
+ * library role tags, so any block name / size combination works. The
+ * export is kept so existing imports compile; callers treating the set
+ * as "always empty" deliberately means deletion is never blocked on
+ * protection, only on the standard "wall types still reference this
+ * block" guard the UI does.
+ */
+export const PROTECTED_BLOCK_CODES = new Set<BlockCode>()
 
 // ─── Mutable singleton ──────────────────────────────────────────────────────
 

@@ -322,7 +322,12 @@ export function resolveWallCourses(
       y1: totalHeightM,
       bodyCode: makeup.bodyBlockCode,
       cornerCode: makeup.cornerBlockCode,
-      halfCode: makeup.halfBlockCode ?? '20.03',
+      // If the makeup hasn't named a half block, fall through to the
+      // body block. Real masons cut a body block to fit at a free end
+      // when no dedicated half exists, and using the body code keeps
+      // the cell pointing at a real block in any library (the old
+      // '20.03' fallback assumed the AU SEQ catalogue).
+      halfCode: makeup.halfBlockCode ?? makeup.bodyBlockCode,
     })
   }
   // Optional cap tile — sits ON TOP of the wall's structural height
