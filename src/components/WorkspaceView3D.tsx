@@ -138,6 +138,17 @@ export interface WorkspaceView3DProps {
   brickMakeupsById: Record<string, BrickMakeup>
   wallThicknessByWallId: Record<string, number>
   areas: ProjectArea[]
+  /**
+   * Per-area Y offset (mm) applied at 3D render time. Drives multi-
+   * storey stacking when the user is viewing "All areas" — each
+   * area's walls render with their base at this offset above world
+   * y=0. In single-area view the upstream sets every entry to 0 so
+   * the walls render at floor level as before.
+   *
+   * Keyed by `Area.id`. Missing entries default to 0 (treated as the
+   * baseline). Walls with no `areaId` also default to 0.
+   */
+  areaYOffsetMmByAreaId?: Record<string, number>
   library: Record<string, Block>
   /**
    * Piers placed on the active page — both tied (on a wall) and
@@ -2490,6 +2501,7 @@ function Scene({
   piers = [],
   pierMakeupsById = {},
   pierColorByPierId = {},
+  areaYOffsetMmByAreaId,
   navStyle,
   planTexture,
   pageWidthMm,
@@ -3085,6 +3097,24 @@ function Scene({
 
     walls.forEach((wall, i) => {
       const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+      // Capture the size of every output array BEFORE this wall pushes
+      // anything, so we can post-shift just this wall's entries by the
+      // area's vertical offset (multi-storey stacking in All-areas
+      // view). When the offset is 0 (single-area view, or the
+      // top-of-list area) the post-shift is a no-op.
+      const yOffsetMmRaw =
+        (wall.areaId &&
+          areaYOffsetMmByAreaId &&
+          areaYOffsetMmByAreaId[wall.areaId]) ||
+        0
+      const wallYOffsetM = yOffsetMmRaw / 1000
+      const outStartLens = {
+        out: out.length,
+        outWedges: outWedges.length,
+        outMortarShells: outMortarShells.length,
+        outCapMeshes: outCapMeshes.length,
+        outBrickWallFaces: outBrickWallFaces.length,
+      }
 
       if (wall.trade === 'brick') {
         // Brick walls render as a stacked grid of actual brick-sized
@@ -4559,6 +4589,53 @@ function Scene({
           )
         }
       }
+
+      // ── Per-wall vertical shift for multi-storey stacking ──
+      // Apply the area's footing offset to every geometry this wall
+      // just emitted (boxes, wedges, mortar shells, caps, brick wall
+      // faces). The shift is a single additive bump in world Y, so
+      // it composes cleanly with the wall's own height + any
+      // gable/raked cap on top of it. No-op when wallYOffsetM is 0,
+      // which is the case in single-area views and for walls in the
+      // top-of-list area.
+      if (wallYOffsetM !== 0) {
+        for (let i = outStartLens.out; i < out.length; i++) {
+          out[i].cy += wallYOffsetM
+        }
+        for (let i = outStartLens.outWedges; i < outWedges.length; i++) {
+          outWedges[i].y0 += wallYOffsetM
+          outWedges[i].y1 += wallYOffsetM
+        }
+        for (
+          let i = outStartLens.outMortarShells;
+          i < outMortarShells.length;
+          i++
+        ) {
+          outMortarShells[i].y0 += wallYOffsetM
+          outMortarShells[i].y1 += wallYOffsetM
+        }
+        for (
+          let i = outStartLens.outCapMeshes;
+          i < outCapMeshes.length;
+          i++
+        ) {
+          const cap = outCapMeshes[i]
+          for (const pt of cap.silhouette) pt.y += wallYOffsetM
+          // wallBodyHeightM is the baseline for the cap texture's V
+          // coordinate: V = (pt.y − wallBodyHeightM) / courseModular.
+          // Shift it too so the V mapping stays anchored to the wall
+          // top (otherwise the brick pattern slides up the cap by
+          // the offset amount and visibly fights the body).
+          cap.wallBodyHeightM += wallYOffsetM
+        }
+        for (
+          let i = outStartLens.outBrickWallFaces;
+          i < outBrickWallFaces.length;
+          i++
+        ) {
+          outBrickWallFaces[i].bodyBaseY += wallYOffsetM
+        }
+      }
     })
 
     // ── Pier segments ──
@@ -4800,6 +4877,7 @@ function Scene({
     pierColorByPierId,
     planTexture,
     palette,
+    areaYOffsetMmByAreaId,
   ])
 
   // Bubble the resolved code/colour map up to the parent so it can

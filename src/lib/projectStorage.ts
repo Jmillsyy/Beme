@@ -74,6 +74,19 @@ export interface ProjectArea {
    * canvas. v1 leaves this undefined — the v2 colour-picker fills it in.
    */
   colorHex?: string
+  /**
+   * Floor level of this area in millimetres, measured from the FIRST
+   * area's floor (which is treated as the project datum in 3D). The
+   * top-of-list area is the baseline — its footing acts as zero in
+   * world space, every other area's walls are offset by
+   * `area.footingLevelMm − topAreaFootingLevelMm` so a 2700 mm
+   * difference renders Level 1 sitting on top of Ground Floor.
+   *
+   * Defaults to 0. User edits it on area creation / edit. Optional on
+   * the type for back-compat with projects saved before the field
+   * existed; treat undefined as 0 at every read site.
+   */
+  footingLevelMm?: number
 }
 export type ProjectStatus = 'in-progress' | 'completed'
 /**

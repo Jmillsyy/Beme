@@ -50,8 +50,12 @@ export default function AreaTabs({
    *  activeAreaId to the new id. When `copyWalls` is true the workspace
    *  also clones every wall currently visible (geometry only — new ids,
    *  new makeup) into the new area. */
-  onCreate: (name: string, copyWalls: boolean) => void
-  onRename: (areaId: string, newName: string) => void
+  onCreate: (name: string, copyWalls: boolean, footingLevelMm: number) => void
+  /** Update an area's name AND/OR footing level. Callers should
+   *  treat any field that hasn't actually changed as a no-op (the
+   *  modal commits both in one shot, but unchanged values mean
+   *  unchanged state). */
+  onRename: (areaId: string, newName: string, footingLevelMm: number) => void
   /** Optional — when omitted, the per-row × delete button is hidden. */
   onDelete?: (areaId: string) => void
   /** Called with the new ordered list of area ids when the user drops
@@ -67,6 +71,10 @@ export default function AreaTabs({
   // rename via the existing ✎ affordance if they want a custom label.
   const [expanded, setExpanded] = useState(true)
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** True while the "+ New area" modal is open. Separate from
+   *  editingId because creation is a fresh blank, not editing an
+   *  existing row. */
+  const [creating, setCreating] = useState(false)
   // "+ New area" used to open a small AreaCreateChoiceModal asking
   // start-fresh vs copy-existing; the user found this an unnecessary
   // gate. New areas now create immediately with copyWalls=false (fresh
@@ -137,11 +145,20 @@ export default function AreaTabs({
     return `New Area ${maxN + 1}`
   }
 
-  const handleRename = (id: string, name: string) => {
+  const handleRename = (
+    id: string,
+    name: string,
+    footingLevelMm: number,
+  ) => {
     const trimmed = name.trim()
     const existing = areas.find((a) => a.id === id)
-    if (trimmed && existing && trimmed !== existing.name) {
-      onRename(id, trimmed)
+    if (
+      trimmed &&
+      existing &&
+      (trimmed !== existing.name ||
+        footingLevelMm !== (existing.footingLevelMm ?? 0))
+    ) {
+      onRename(id, trimmed, footingLevelMm)
     }
     setEditingId(null)
   }
@@ -302,14 +319,14 @@ export default function AreaTabs({
             )
           })}
           <div className="border-t border-ink-700 my-1" />
-          {/* One-click create: skips the modal entirely (no
-              start-fresh / copy-existing prompt) and creates an area
-              with the next auto-numbered "New Area N" name and a
-              fresh wall type. Rename via the row's ✎ button if a
-              custom label is wanted. */}
+          {/* Create modal: name (pre-filled with the next auto
+              number) + floor level. The footing field drives 3D
+              multi-storey stacking, so capturing it on creation is
+              cheaper than asking the user to edit every area after
+              the fact. */}
           <button
             type="button"
-            onClick={() => onCreate(nextDefaultAreaName(), false)}
+            onClick={() => setCreating(true)}
             className="w-full text-left px-2 py-1 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded transition-colors"
           >
             + New area
@@ -321,9 +338,26 @@ export default function AreaTabs({
         <AreaNameModal
           mode="edit"
           initialName={editingArea.name}
+          initialFootingLevelMm={editingArea.footingLevelMm ?? 0}
           existingNames={existingNamesFor(editingArea.id)}
-          onSubmit={(name) => handleRename(editingArea.id, name)}
+          onSubmit={(name, footing) =>
+            handleRename(editingArea.id, name, footing)
+          }
           onCancel={() => setEditingId(null)}
+        />
+      )}
+
+      {creating && (
+        <AreaNameModal
+          mode="create"
+          initialName={nextDefaultAreaName()}
+          initialFootingLevelMm={0}
+          existingNames={areas.map((a) => a.name.trim().toLowerCase())}
+          onSubmit={(name, footing) => {
+            onCreate(name, false, footing)
+            setCreating(false)
+          }}
+          onCancel={() => setCreating(false)}
         />
       )}
     </div>
@@ -490,8 +524,11 @@ function AreaMenuRow({
 interface AreaNameModalProps {
   mode: 'create' | 'edit'
   initialName: string
+  /** Pre-filled footing level (mm). 0 for fresh creates; existing
+   *  area's footing for edit. */
+  initialFootingLevelMm: number
   existingNames: string[]
-  onSubmit: (name: string) => void
+  onSubmit: (name: string, footingLevelMm: number) => void
   onCancel: () => void
 }
 
@@ -508,11 +545,15 @@ interface AreaNameModalProps {
 function AreaNameModal({
   mode,
   initialName,
+  initialFootingLevelMm,
   existingNames,
   onSubmit,
   onCancel,
 }: AreaNameModalProps) {
   const [name, setName] = useState(initialName)
+  const [footingDraft, setFootingDraft] = useState(
+    String(initialFootingLevelMm),
+  )
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -528,19 +569,27 @@ function AreaNameModal({
   const trimmed = name.trim()
   const isDuplicate =
     trimmed.length > 0 && existingNames.includes(trimmed.toLowerCase())
-  const isUnchanged = mode === 'edit' && trimmed === initialName.trim()
-  const canSubmit = trimmed.length > 0 && !isDuplicate && !isUnchanged
+  const parsedFooting = Number.parseInt(footingDraft.trim(), 10)
+  const footingValid =
+    footingDraft.trim() === '' || Number.isFinite(parsedFooting)
+  const effectiveFooting = Number.isFinite(parsedFooting) ? parsedFooting : 0
+  const isUnchanged =
+    mode === 'edit' &&
+    trimmed === initialName.trim() &&
+    effectiveFooting === initialFootingLevelMm
+  const canSubmit =
+    trimmed.length > 0 && !isDuplicate && !isUnchanged && footingValid
 
   function handleSubmit() {
     if (!canSubmit) return
-    onSubmit(trimmed)
+    onSubmit(trimmed, effectiveFooting)
   }
 
   const title = mode === 'create' ? 'New area' : 'Edit area'
   const explainer =
     mode === 'create'
       ? 'Group walls into named buckets — Balcony, Staircase, Level 1, Front facade. Walls drawn while an area is active get stamped with it.'
-      : 'Rename this area. Walls assigned to it stay assigned — only the label changes.'
+      : 'Rename this area or change its floor level. Walls stay assigned.'
   const submitLabel = mode === 'create' ? 'Create area' : 'Save changes'
 
   return (
@@ -569,7 +618,7 @@ function AreaNameModal({
           </button>
         </header>
 
-        <div className="p-5">
+        <div className="p-5 space-y-3">
           <label className="text-sm block">
             <span className="block text-ink-300 mb-1">Area name</span>
             <input
@@ -587,8 +636,42 @@ function AreaNameModal({
               className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
             />
           </label>
+
+          {/* Floor level — drives multi-storey stacking in the 3D
+              All-areas view. The TOP-of-list area is the baseline;
+              every other area's walls render with their floor at
+              area.footingLevelMm − topAreaFootingLevelMm in world
+              space. Default 0; user types the actual level (e.g.
+              2700 for Level 1 sitting on top of a Ground Floor
+              with a 2700 mm wall height). */}
+          <label className="text-sm block">
+            <span className="block text-ink-300 mb-1">Floor level (mm)</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={footingDraft}
+              onChange={(e) =>
+                setFootingDraft(e.target.value.replace(/[^0-9-]/g, ''))
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
+              placeholder="0"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+            />
+            <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
+              Measured from the FIRST area's floor. Used in 3D when
+              viewing all areas to stack the walls at the right
+              storey height. Leave 0 for the ground floor.
+            </span>
+          </label>
+
           {isDuplicate && (
-            <p className="text-[11px] text-rose-300 mt-2">
+            <p className="text-[11px] text-rose-300">
               An area called "{trimmed}" already exists. Pick a different
               name.
             </p>

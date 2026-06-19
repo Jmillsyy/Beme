@@ -9381,6 +9381,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 brickMakeupsById={brickMakeupsById}
                 wallThicknessByWallId={wallThicknessByWallId}
                 areas={areas}
+                /* Per-area vertical offset (mm) for multi-storey
+                   stacking. In All view (activeAreaId === null) each
+                   area's walls offset by its footing − the top-of-list
+                   area's footing so the building reads top-down with
+                   Ground Floor at world y=0. In specific-area view
+                   the offset map is empty so the active area's walls
+                   render at floor level regardless of its footing. */
+                areaYOffsetMmByAreaId={(() => {
+                  if (activeAreaId !== null) return {}
+                  const baseline = areas[0]?.footingLevelMm ?? 0
+                  const map: Record<string, number> = {}
+                  for (const a of areas) {
+                    map[a.id] = (a.footingLevelMm ?? 0) - baseline
+                  }
+                  return map
+                })()}
                 library={BLOCK_LIBRARY}
                 piers={currentPagePiers}
                 pierMakeupsById={pierMakeupsById}
@@ -10089,7 +10105,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   setCurrentPage(bestPage)
                 }
               }}
-              onCreate={(name, copyWalls) => {
+              onCreate={(name, copyWalls, footingLevelMm) => {
                 // Generate the id client-side — uses the same UUID helper
                 // as project ids so it's stable across saves and unique
                 // across users in the cloud.
@@ -10098,7 +10114,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     ? crypto.randomUUID()
                     : `area-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
                 const colorHex = AREA_PALETTE[areas.length % AREA_PALETTE.length]
-                const newArea: ProjectArea = { id, name, colorHex }
+                const newArea: ProjectArea = {
+                  id,
+                  name,
+                  colorHex,
+                  footingLevelMm,
+                }
                 setAreas((prev) => [...prev, newArea])
                 // Seed one baseline wall type per trade so the new area
                 // opens with a working starting wall instead of an
@@ -10188,9 +10209,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     : 'Starting fresh — draw walls to fill it in.',
                 })
               }}
-              onRename={(areaId, newName) => {
+              onRename={(areaId, newName, footingLevelMm) => {
                 setAreas((prev) =>
-                  prev.map((a) => (a.id === areaId ? { ...a, name: newName } : a))
+                  prev.map((a) =>
+                    a.id === areaId
+                      ? { ...a, name: newName, footingLevelMm }
+                      : a,
+                  ),
                 )
               }}
               onReorder={(orderedIds) => {
