@@ -790,7 +790,18 @@ export function convertMakeupToBands(
 } {
   const opts: ResolveByRoleOptions = settings ? { settings } : {}
   const totalHeight = makeup.heightMm
-  const COURSE = 200
+  // Derive the standard course height from the actual body block,
+  // not a hardcoded 200 mm. Without this a wall type whose body
+  // block is, say, 240 mm tall (240 face + 10 mortar = 250 modular)
+  // would still get `stdCount = floor(2400 / 200) = 12` and the
+  // renderer would emit 12 × 250 = 3000 mm worth of courses on a
+  // 2400 mm wall — rendering taller than the wall is meant to be.
+  // Falls back to the AU SEQ 200 mm modular when the body block
+  // isn't in the library yet (defensive on stale codes).
+  const DEFAULT_MORTAR_MM = 10
+  const bodyBlockHeightMm =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm ?? 190
+  const COURSE = bodyBlockHeightMm + DEFAULT_MORTAR_MM
   const HEIGHT_71 = 100
   const HEIGHT_140 = 150
   const skipHeightMakeup = options?.skipHeightMakeup ?? false

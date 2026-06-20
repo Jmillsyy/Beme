@@ -299,15 +299,27 @@ export function resolveWallCourses(
         ? courseBlock.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
         : bandModuleMm
       const courseHeightM = courseModuleMm / 1000
+      // Hard ceiling: the wall is heightMm tall, so no course is
+      // allowed to extend above that. Without this, a wall type whose
+      // body block height doesn't divide the wall height cleanly
+      // (e.g. 2400 mm wall with a 240 mm body block) would render
+      // taller than the wall is meant to be — the band loop iterates
+      // the convertMakeupToBands count and each course adds the
+      // block's actual face + mortar, which sums past totalHeightM.
+      // Cap each course's top at totalHeightM, and break the loop
+      // once we've reached it so we don't push zero-height tail
+      // courses.
+      if (y >= totalHeightM - 0.001) break
+      const courseY1 = Math.min(y + courseHeightM, totalHeightM)
       courses.push({
         courseNumber: courseNum,
         y0: y,
-        y1: y + courseHeightM,
+        y1: courseY1,
         bodyCode,
         cornerCode: curveCorner,
         halfCode: curveHalf,
       })
-      y += courseHeightM
+      y = courseY1
       courseNum++
     }
   }
