@@ -1046,15 +1046,31 @@ export function segmentsForStraightWall(
         : 0
     const leftHasCornerJunction = leftPhase !== null
     const rightHasCornerJunction = rightPhase !== null
+    // Stack bond: every course's corner ownership must be the SAME so
+    // body cells stack vertically. cornerOwnership() alternates per
+    // courseNumber for stretcher dedup — for stack we pin it to
+    // course 1 so all courses get course-1's ownership decision.
+    // Without this, stack-bond walls at shared corners showed body
+    // bricks shifting between courses (corner-cube alternation
+    // produced a stretcher-like offset even though the bond is
+    // configured as stack).
+    const stackBondCourseNumber =
+      bondType === 'stack' ? 1 : course.courseNumber
     const ownsLeftThisCourse =
       leftHasCornerJunction &&
       (cornerOwnership
-        ? cornerOwnership({ wallEnd: 'start', courseNumber: course.courseNumber })
+        ? cornerOwnership({
+            wallEnd: 'start',
+            courseNumber: stackBondCourseNumber,
+          })
         : ownsCornerThisCourse(leftPhase, course.courseNumber))
     const ownsRightThisCourse =
       rightHasCornerJunction &&
       (cornerOwnership
-        ? cornerOwnership({ wallEnd: 'end', courseNumber: course.courseNumber })
+        ? cornerOwnership({
+            wallEnd: 'end',
+            courseNumber: stackBondCourseNumber,
+          })
         : ownsCornerThisCourse(rightPhase, course.courseNumber))
 
     const leftEndCode = useHalfLeft ? course.halfCode : course.cornerCode

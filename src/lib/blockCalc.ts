@@ -2067,16 +2067,30 @@ export function planWallLayout(
     // computed for that course, otherwise we plan for the wrong amount
     // of body-grid room and the layout falls short (extra filler) or
     // overshoots (clamped body).
+    // Stack bond: pin courseNumber to 1 when querying ownership so
+    // EVERY course gets the same decision. cornerOwnership alternates
+    // per-course for stretcher dedup; under stack bond that
+    // alternation produced cube-width swaps between courses → body
+    // grid offset → walls didn't stack vertically. Render and tally
+    // are now both bond-aware here.
+    const ownershipCourseNumber =
+      makeup.bondType === 'stack' ? 1 : courseNumber
     const startIsSharedCorner = wall.startJunction.type === 'corner'
     const ownsStartCorner =
       !cornerOwnership || !startIsSharedCorner
         ? true
-        : cornerOwnership({ wallEnd: 'start', courseNumber })
+        : cornerOwnership({
+            wallEnd: 'start',
+            courseNumber: ownershipCourseNumber,
+          })
     const endIsSharedCorner = wall.endJunction.type === 'corner'
     const ownsEndCorner =
       !cornerOwnership || !endIsSharedCorner
         ? true
-        : cornerOwnership({ wallEnd: 'end', courseNumber })
+        : cornerOwnership({
+            wallEnd: 'end',
+            courseNumber: ownershipCourseNumber,
+          })
     // Perpendicular wall's thickness = corner cube depth on this wall's
     // axis. Falls back to this wall's MAX-depth across the makeup (via
     // getEffectiveWallThicknessMm) so cube depth never under-counts a
