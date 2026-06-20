@@ -294,23 +294,27 @@ export function resolveWallCourses(
       // Falls back to the band module when the resolved bodyCode isn't
       // in the library (defensive: matches the legacy uniform-course
       // behaviour rather than zeroing out a course).
+      // Course Y convention matches the straight-wall planWallLayout
+      // path: course occupies y0 → y0 + FACE height (the visible
+      // block), then the cursor advances by FACE + mortar (the
+      // modular pitch). The 10 mm gap between consecutive courses
+      // shows as a mortar joint in 3D. Previously this loop set
+      // y1 = y0 + module (200 mm for a 200-series block), with no
+      // gap — curved walls rendered their blocks 10 mm TALLER than
+      // straight walls of the same makeup. Same total wall height,
+      // visibly different per-block look.
       const courseBlock = library[bodyCode]
-      const courseModuleMm = courseBlock
-        ? courseBlock.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
-        : bandModuleMm
-      const courseHeightM = courseModuleMm / 1000
-      // Hard ceiling: the wall is heightMm tall, so no course is
-      // allowed to extend above that. Without this, a wall type whose
-      // body block height doesn't divide the wall height cleanly
-      // (e.g. 2400 mm wall with a 240 mm body block) would render
-      // taller than the wall is meant to be — the band loop iterates
-      // the convertMakeupToBands count and each course adds the
-      // block's actual face + mortar, which sums past totalHeightM.
-      // Cap each course's top at totalHeightM, and break the loop
-      // once we've reached it so we don't push zero-height tail
-      // courses.
+      const faceHeightMm = courseBlock
+        ? courseBlock.dimensions.heightMm
+        : Math.max(1, bandModuleMm - DEFAULT_MORTAR_JOINT_MM)
+      const courseModuleMm = faceHeightMm + DEFAULT_MORTAR_JOINT_MM
+      const faceHeightM = faceHeightMm / 1000
+      const courseModuleM = courseModuleMm / 1000
+      // Hard ceiling: the wall is heightMm tall. Don't push courses
+      // whose top would exceed totalHeightM. Clamp the last course
+      // that straddles the wall top.
       if (y >= totalHeightM - 0.001) break
-      const courseY1 = Math.min(y + courseHeightM, totalHeightM)
+      const courseY1 = Math.min(y + faceHeightM, totalHeightM)
       courses.push({
         courseNumber: courseNum,
         y0: y,
@@ -319,7 +323,11 @@ export function resolveWallCourses(
         cornerCode: curveCorner,
         halfCode: curveHalf,
       })
-      y = courseY1
+      // Advance by the full module so the next course starts ABOVE the
+      // mortar joint; final course may have been clamped to wall top
+      // (courseY1 < y + face), in which case the next iteration's
+      // `y >= totalHeightM` check exits the loop.
+      y += courseModuleM
       courseNum++
     }
   }
