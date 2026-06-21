@@ -2291,31 +2291,65 @@ export function planWallLayout(
     const endModuleForFit = ownsEndCorner
       ? baseEndEndModular
       : endCubeDepth + MORTAR_MM
-    // Deep-block cut block: when the body's depth × 2 > body length
-    // (e.g. 300-series), the corner block leaves the body grid off
-    // stretcher by `halfBodyModular − (cornerW − cubeDepth)`. A small
-    // body-coded cut block of that width on each OWNING course right
-    // after the corner gets the grid back on bond. For 200-series
-    // the math gives ≤ 0 so no block is emitted.
+    // Bond-correction blocks at shared corners — symmetric in BOTH
+    // directions so the body grid lands on the half-block stretcher
+    // modular regardless of block series:
+    //
+    //   naturalOffset = naturalCornerW − cubeDepth
+    //   targetOffset  = halfBodyModular (= (bodyW + mortar) / 2)
+    //   correction    = targetOffset − naturalOffset
+    //
+    // - correction == 0 (200-series): natural offset IS half-modular,
+    //   nothing emitted.
+    // - correction > 0 (300-series, cubeDepth ≈ cornerW): natural
+    //   offset is SHORT by `correction`. Emit a body-coded cut block
+    //   of width (correction − mortar) on the OWNING course after the
+    //   corner block → pushes the owning body grid further right so
+    //   the offset between owning and non-owning courses lands at
+    //   half-modular.
+    // - correction < 0 (100-series, cubeDepth << cornerW): natural
+    //   offset is LONG by abs(correction). Emit a body-coded filler
+    //   block of the same width on the NON-OWNING course after the
+    //   cube → pushes the non-owning body grid further right so the
+    //   offset lands at half-modular.
+    //
+    // Together: ANY block series whose corner geometry doesn't
+    // naturally land on bond gets a body-coded fix block that brings
+    // the wall back onto the half-block stagger, no series-specific
+    // gating.
     const bodyBlockWidthMm =
       BLOCK_LIBRARY[courseSpec.bodyBlock]?.dimensions.widthMm ?? 0
     const bodyBlockDepthMm =
       BLOCK_LIBRARY[courseSpec.bodyBlock]?.dimensions.depthMm ?? 0
+    void bodyBlockDepthMm // retained for callers that read it
     const halfBodyModularMm = (bodyBlockWidthMm + MORTAR_MM) / 2
-    const wantsCutBlock = bodyBlockDepthMm * 2 > bodyBlockWidthMm
-    const startCornerW = ownsStartCorner ? baseStartEndModular - MORTAR_MM : 0
-    const endCornerW = ownsEndCorner ? baseEndEndModular - MORTAR_MM : 0
+    // Use the NATURAL full corner width (regardless of ownership) so
+    // the same formula applies to both sides of the corner.
+    const naturalStartCornerW = baseStartEndModular - MORTAR_MM
+    const naturalEndCornerW = baseEndEndModular - MORTAR_MM
+    const startCornerW = ownsStartCorner ? naturalStartCornerW : 0
+    const endCornerW = ownsEndCorner ? naturalEndCornerW : 0
+    const startBondCorrectionMm = startIsSharedCorner
+      ? halfBodyModularMm - (naturalStartCornerW - startCubeDepth) - MORTAR_MM
+      : 0
+    const endBondCorrectionMm = endIsSharedCorner
+      ? halfBodyModularMm - (naturalEndCornerW - endCubeDepth) - MORTAR_MM
+      : 0
+    // Positive correction → cut block on OWNING course after corner.
     const startCutWidthMm =
-      wantsCutBlock && ownsStartCorner && startIsSharedCorner
-        ? Math.max(0, halfBodyModularMm - (startCornerW - startCubeDepth) - MORTAR_MM)
-        : 0
+      startBondCorrectionMm > 0.005 && ownsStartCorner ? startBondCorrectionMm : 0
     const endCutWidthMm =
-      wantsCutBlock && ownsEndCorner && endIsSharedCorner
-        ? Math.max(0, halfBodyModularMm - (endCornerW - endCubeDepth) - MORTAR_MM)
-        : 0
+      endBondCorrectionMm > 0.005 && ownsEndCorner ? endBondCorrectionMm : 0
+    // Negative correction → filler block on NON-OWNING course after cube.
+    const startFillerWidthMm =
+      startBondCorrectionMm < -0.005 && !ownsStartCorner ? -startBondCorrectionMm : 0
+    const endFillerWidthMm =
+      endBondCorrectionMm < -0.005 && !ownsEndCorner ? -endBondCorrectionMm : 0
     const cutBlockModularTotal =
       (startCutWidthMm > 1 ? startCutWidthMm + MORTAR_MM : 0) +
-      (endCutWidthMm > 1 ? endCutWidthMm + MORTAR_MM : 0)
+      (endCutWidthMm > 1 ? endCutWidthMm + MORTAR_MM : 0) +
+      (startFillerWidthMm > 1 ? startFillerWidthMm + MORTAR_MM : 0) +
+      (endFillerWidthMm > 1 ? endFillerWidthMm + MORTAR_MM : 0)
     const needsRefit =
       leadInModularTotal > 0 ||
       !ownsStartCorner ||
@@ -2618,6 +2652,21 @@ export function planWallLayout(
         renderOnly: true,
       })
       s += actualStartWidth + MORTAR_MM
+      // Bond-correction filler on NON-OWNING side for thin-block
+      // series (e.g. 100-series) where naturalCornerW − cubeDepth
+      // exceeds halfBodyModular. Pushes the body grid further right
+      // so the offset between owning and non-owning courses lands at
+      // half-modular and stretcher bond reads cleanly across corners.
+      if (startFillerWidthMm > 1) {
+        layout.blocks.push({
+          code: courseSpec.bodyBlock,
+          role: 'body',
+          s0Mm: s,
+          widthMm: startFillerWidthMm,
+          courseIdx: i,
+        })
+        s += startFillerWidthMm + MORTAR_MM
+      }
     }
 
     // Start lead-ins.
@@ -2758,7 +2807,21 @@ export function planWallLayout(
       // Non-owning end: emit a render-only cube filler at
       // s∈[length - cubeDepth, length] so the cube exterior is
       // visually continuous on every course (same reasoning as the
-      // start cube filler above).
+      // start cube filler above). Plus a thin-block bond-correction
+      // filler BEFORE the cube on series where the natural offset
+      // overshoots half-modular (mirrors the start-side filler).
+      if (endFillerWidthMm > 1) {
+        const fillerS = lengthMm - actualEndWidth - MORTAR_MM - endFillerWidthMm
+        if (fillerS > s - 0.001) {
+          layout.blocks.push({
+            code: courseSpec.bodyBlock,
+            role: 'body',
+            s0Mm: fillerS,
+            widthMm: endFillerWidthMm,
+            courseIdx: i,
+          })
+        }
+      }
       layout.blocks.push({
         code: endBlock,
         role: 'corner',
