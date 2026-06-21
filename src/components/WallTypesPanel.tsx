@@ -1664,6 +1664,7 @@ export function WallTypeEditorModal({
                 capBlockCode={capBlockCode}
                 setCapBlockCode={setCapBlockCode}
                 selectableBlocks={selectableBlocks}
+                library={library}
               />
             )}
 
@@ -1995,6 +1996,9 @@ interface CompositionTabProps {
   capBlockCode: BlockCode | ''
   setCapBlockCode: (v: BlockCode | '') => void
   selectableBlocks: BlockCode[]
+  /** Live library — used to read per-block depths for series-locking
+   *  the non-body slot dropdowns to the body block's depth. */
+  library: Record<BlockCode, { dimensions: { depthMm: number } }>
 }
 
 function CompositionTab(props: CompositionTabProps) {
@@ -2021,7 +2025,24 @@ function CompositionTab(props: CompositionTabProps) {
     capBlockCode,
     setCapBlockCode,
     selectableBlocks,
+    library,
   } = props
+
+  // Series-lock: every non-body slot (base, top, cap, corner, half) is
+  // filtered down to only blocks whose depth matches the body block's
+  // depth. Real masonry can't mix series in one wall — a 100-series
+  // corner on a 200-series body produces a stepped wall face — so the
+  // UI mirrors the rule instead of trusting the user to enforce it.
+  // Body picker stays unfiltered because it's the depth REFERENCE; if
+  // the user picks a 300-series body, the dropdowns below
+  // automatically re-scope to 300-series options.
+  const bodyDepthMm = library[bodyBlockCode]?.dimensions.depthMm
+  const slotSelectableBlocks = useMemo<BlockCode[]>(() => {
+    if (bodyDepthMm === undefined) return selectableBlocks
+    return selectableBlocks.filter(
+      (code) => library[code]?.dimensions.depthMm === bodyDepthMm,
+    )
+  }, [selectableBlocks, bodyDepthMm, library])
 
   return (
     <div className="max-w-3xl space-y-5">
@@ -2124,7 +2145,7 @@ function CompositionTab(props: CompositionTabProps) {
           label="Base course block"
           value={baseCourseBlockCode}
           onChange={setBaseCourseBlockCode}
-          options={selectableBlocks}
+          options={slotSelectableBlocks}
         />
         {/* Base course tile picker removed — pairing now lives on the
             BLOCK in the material library (Block.pairedWith /
@@ -2143,14 +2164,14 @@ function CompositionTab(props: CompositionTabProps) {
           label="Top course block"
           value={topCourseBlockCode}
           onChange={setTopCourseBlockCode}
-          options={selectableBlocks}
+          options={slotSelectableBlocks}
         />
         <div>
           <BlockSelect
             label="Cap tile (optional)"
             value={capBlockCode}
             onChange={setCapBlockCode}
-            options={selectableBlocks}
+            options={slotSelectableBlocks}
             allowEmpty
           />
           <p className="text-[11px] text-ink-500 mt-1">
@@ -2164,7 +2185,7 @@ function CompositionTab(props: CompositionTabProps) {
             label="Full end termination"
             value={cornerBlockCode}
             onChange={setCornerBlockCode}
-            options={selectableBlocks}
+            options={slotSelectableBlocks}
           />
           <p className="text-[11px] text-ink-500 mt-1">
             Used at corners + odd courses of stretcher bond at free ends.
@@ -2175,12 +2196,26 @@ function CompositionTab(props: CompositionTabProps) {
             label="Half end termination"
             value={halfBlockCode}
             onChange={setHalfBlockCode}
-            options={selectableBlocks}
+            options={slotSelectableBlocks}
           />
           <p className="text-[11px] text-ink-500 mt-1">
             Alternates with the full end block on even courses of stretcher bond.
           </p>
         </div>
+        {bodyDepthMm !== undefined && (
+          <p className="text-[11px] text-ink-500 col-span-full -mt-2">
+            Pickers above show only {bodyDepthMm}mm-depth blocks so the wall
+            stays in one series.{' '}
+            <Link
+              to="/library"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-beme-400 hover:text-beme-300 underline"
+            >
+              Manage other depths in the library ↗
+            </Link>
+          </p>
+        )}
       </section>
 
       {/* Block-library shortcut. The workspace no longer carries a
