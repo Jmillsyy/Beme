@@ -95,6 +95,22 @@ export default function BlockLibraryPanel({
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BlockCode | 'new' | null>(null)
   const [filter, setFilter] = useState<'all' | BlockRole>('all')
+  // Collapsed depth buckets — by default every group is expanded so a
+  // first-time user sees all their blocks. Clicking a group's header
+  // toggles its entry in this set; the persistence is per-session
+  // (component state) which is enough for a "fold while I focus on
+  // one series" workflow without leaking opinions across page loads.
+  const [collapsedDepths, setCollapsedDepths] = useState<Set<number>>(
+    () => new Set(),
+  )
+  const toggleDepth = (depthMm: number) => {
+    setCollapsedDepths((prev) => {
+      const next = new Set(prev)
+      if (next.has(depthMm)) next.delete(depthMm)
+      else next.add(depthMm)
+      return next
+    })
+  }
 
   const blocks = useMemo(() => {
     const all = Object.values(library)
@@ -318,42 +334,53 @@ export default function BlockLibraryPanel({
                   ))}
                 </div>
               )
-              : groupedBlocks.map(({ depthMm, blocks: groupBlocks }) => (
-                <div key={depthMm} className="flex flex-col gap-1">
-                  <div className="flex items-baseline gap-2 px-1 pb-1 border-b border-ink-700">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-200">
-                      {labelForDepth(depthMm)}
-                    </h4>
-                    <span className="text-[11px] text-ink-500">
-                      {groupBlocks.length} block{groupBlocks.length === 1 ? '' : 's'}
-                    </span>
+              : groupedBlocks.map(({ depthMm, blocks: groupBlocks }) => {
+                const isCollapsed = collapsedDepths.has(depthMm)
+                return (
+                  <div key={depthMm} className="flex flex-col gap-1">
+                    <button
+                      onClick={() => toggleDepth(depthMm)}
+                      className="flex items-baseline gap-2 px-1 pb-1 border-b border-ink-700 text-left group hover:border-ink-500 transition-colors"
+                      aria-expanded={!isCollapsed}
+                    >
+                      <span className="text-ink-400 group-hover:text-ink-200 text-xs">
+                        {isCollapsed ? '▸' : '▾'}
+                      </span>
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-200 group-hover:text-beme-300 transition-colors">
+                        {labelForDepth(depthMm)}
+                      </h4>
+                      <span className="text-[11px] text-ink-500">
+                        {groupBlocks.length} block{groupBlocks.length === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                    {!isCollapsed &&
+                      groupBlocks.map((block) => (
+                        <BlockRow
+                          key={block.code}
+                          block={block}
+                          readOnly={readOnly}
+                          onEdit={() => setEditingCode(block.code)}
+                          onDelete={async () => {
+                            // PROTECTED_BLOCK_CODES is empty — every
+                            // block in the library is deletable. The
+                            // calc engine resolves every slot via role
+                            // tags + body-block fallback, so there's
+                            // no code-specific guard to honour.
+                            const ok = await confirm({
+                              title: `Delete block "${block.code} — ${block.name}"?`,
+                              message:
+                                'The block is removed from your library. Wall ' +
+                                'types referencing it will need to be updated.',
+                              confirmLabel: 'Delete',
+                              variant: 'destructive',
+                            })
+                            if (ok) removeBlock(block.code)
+                          }}
+                        />
+                      ))}
                   </div>
-                  {groupBlocks.map((block) => (
-                    <BlockRow
-                      key={block.code}
-                      block={block}
-                      readOnly={readOnly}
-                      onEdit={() => setEditingCode(block.code)}
-                      onDelete={async () => {
-                        // PROTECTED_BLOCK_CODES is empty — every block
-                        // in the library is deletable. The calc engine
-                        // resolves every slot via role tags + body-
-                        // block fallback, so there's no code-specific
-                        // guard to honour.
-                        const ok = await confirm({
-                          title: `Delete block "${block.code} — ${block.name}"?`,
-                          message:
-                            'The block is removed from your library. Wall ' +
-                            'types referencing it will need to be updated.',
-                          confirmLabel: 'Delete',
-                          variant: 'destructive',
-                        })
-                        if (ok) removeBlock(block.code)
-                      }}
-                    />
-                  ))}
-                </div>
-              ))}
+                )
+              })}
           </div>
 
           {/* Reset to defaults — admins only. */}
