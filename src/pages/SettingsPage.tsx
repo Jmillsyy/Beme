@@ -38,10 +38,8 @@ import {
 } from '../lib/invitations'
 import type { OrgMember, OrgRole } from '../types/organisations'
 import { orgRoleLabel } from '../types/organisations'
-import {
-  bricksPerSquareMetreOf,
-  type BrickType,
-} from '../types/bricks'
+// Brick-type defaults dropped from Settings — the per-project picker
+// is the source of truth now, no app-wide default needed.
 import type {
   BusinessProfile,
   DateFormat,
@@ -934,14 +932,6 @@ function DefaultsTab({
   // app.
   const { settings: liveSettings } = useUserSettings()
   const unitsPref = liveSettings.preferences.units
-  const { library: brickLibrary } = useBrickLibrary()
-  const brickOptions = Object.values(brickLibrary)
-    .sort((a: BrickType, b: BrickType) => a.heightMm - b.heightMm)
-    .map((b: BrickType) => ({
-      value: b.code,
-      label: `${b.name} · ${bricksPerSquareMetreOf(b)}/m²`,
-    }))
-
   // Block library options — all blocks, sorted by code so a user scanning
   // the dropdown sees a stable order. The label includes the roles the
   // block is tagged for so the user knows whether their pick makes sense
@@ -1034,16 +1024,6 @@ function DefaultsTab({
               </Field>
             )
           })()}
-          <Field
-            label="Default brick type"
-            hint="Used when starting a new brick estimate."
-          >
-            <Select<string>
-              value={defaults.defaultBrickTypeCode}
-              onChange={(v) => set({ defaultBrickTypeCode: v })}
-              options={brickOptions}
-            />
-          </Field>
           <Field
             label="Match exact wall length"
             hint="When on, the calc absorbs leftover length using fraction-tagged blocks (e.g. AU 20.02 / 20.22), or tallies cut blocks if your library has none. When off, walls round up to whole body blocks and the gap is ignored."
