@@ -1466,17 +1466,32 @@ export function segmentsForStraightWall(
       .sort((a, b) => a.start - b.start)
     if (openingsFull.length === 0) continue
 
-    // Per-course jamb code + width — alternates corner/half on
-    // stretcher bond, just like wall end caps. Stack bond always
-    // uses corner. This is what stops jamb columns at openings from
-    // rendering as stack bond (the user-visible 'no stack bond
-    // unless the wall type is stack' rule).
+    // Per-course jamb codes — alternate WHICH SIDE of the opening
+    // gets the half block so the body grid between jambs offsets by
+    // exactly half a body block between consecutive courses (the
+    // running-bond stagger). Same rule a real mason follows: one
+    // full + one half per course at each opening, with the half
+    // jumping sides every course.
+    //
+    // Course 1 (odd):  left jamb = corner, right jamb = half
+    // Course 2 (even): left jamb = half,   right jamb = corner
+    //
+    // Stack bond ignores the alternation — every course uses the
+    // corner block on both sides so the bond reads stacked.
     const isEvenStretcher =
       bondType === 'stretcher' && course.courseNumber % 2 === 0
-    const jambCode = isEvenStretcher ? course.halfCode : course.cornerCode
-    const jambColor = colorOf(jambCode)
-    const jambW =
-      widthOf(jambCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
+    const isOddStretcher =
+      bondType === 'stretcher' && course.courseNumber % 2 === 1
+    const leftJambIsHalf = isEvenStretcher
+    const rightJambIsHalf = isOddStretcher
+    const leftJambCode = leftJambIsHalf ? course.halfCode : course.cornerCode
+    const rightJambCode = rightJambIsHalf ? course.halfCode : course.cornerCode
+    const leftJambColor = colorOf(leftJambCode)
+    const rightJambColor = colorOf(rightJambCode)
+    const leftJambW =
+      widthOf(leftJambCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
+    const rightJambW =
+      widthOf(rightJambCode, library, FALLBACK_CORNER_WIDTH_MM) / 1000
 
     // End-block boundaries on this course. Jambs must stay inside the
     // body region — without these clamps a jamb stamped right at a
@@ -1490,53 +1505,41 @@ export function segmentsForStraightWall(
       const prevOp = i > 0 ? openingsFull[i - 1] : null
       const nextOp = i < openingsFull.length - 1 ? openingsFull[i + 1] : null
 
-      // Left jamb of this opening — at [start, op.start].
-      // Start is the LARGEST of: wall body start (leftEndWidth),
-      // ideal jambW back from op, OR midpoint of the pier between
-      // prev opening and this one (so paired inner jambs meet rather
-      // than overlap). Clamping at leftBodyStart prevents the jamb
-      // from overlapping the corner / end block at the wall start.
-      const leftIdeal = op.start - jambW
+      // Left jamb of this opening — uses the LEFT side's per-course
+      // pick (corner on odd courses, half on even — the side that
+      // shifts the body grid by half a block to break the joint
+      // pattern with the course below).
+      const leftIdeal = op.start - leftJambW
       const leftFloor = prevOp ? (prevOp.end + op.start) / 2 : leftBodyStart
       const leftJambStart = Math.max(leftBodyStart, leftIdeal, leftFloor)
-      // Also clamp the END of the left jamb — if the opening's edge
-      // is inside the end-block region (very near corner), there's
-      // no space for a jamb at all and we skip it.
       const leftJambEnd = Math.min(op.start, rightBodyEnd)
       if (leftJambEnd - leftJambStart > 0.02) {
         stampZone(cells, leftJambStart, leftJambEnd, {
           role: 'JAMB',
-          code: jambCode,
-          color: jambColor,
+          code: leftJambCode,
+          color: leftJambColor,
           s0: leftJambStart,
           s1: leftJambEnd,
-          // Carry the corner/half flag onto the cell so the 3D
-          // renderer paints it with the right role colour — JAMB
-          // cells alternate corner / half across courses in stretcher
-          // bond just like the wall-end terminations, and the user
-          // needs to see that alternation in the wall view (the tally
-          // already counts them as alternating blocks).
-          endKind: isEvenStretcher ? 'half' : 'corner',
+          endKind: leftJambIsHalf ? 'half' : 'corner',
         })
       }
 
-      // Right jamb of this opening — at [op.end, end]. End is
-      // the SMALLEST of: wall body end (length-rightEndWidth), ideal
-      // jambW forward from op, OR midpoint of the pier with next
-      // opening. Clamping at rightBodyEnd prevents the jamb from
-      // overlapping the corner / end block at the wall end.
-      const rightIdeal = op.end + jambW
+      // Right jamb of this opening — uses the RIGHT side's per-
+      // course pick (opposite of the left so each course has exactly
+      // one full + one half at the opening, producing the half-block
+      // running-bond stagger from one course to the next).
+      const rightIdeal = op.end + rightJambW
       const rightCeil = nextOp ? (op.end + nextOp.start) / 2 : rightBodyEnd
       const rightJambEnd = Math.min(rightBodyEnd, rightIdeal, rightCeil)
       const rightJambStart = Math.max(op.end, leftBodyStart)
       if (rightJambEnd - rightJambStart > 0.02) {
         stampZone(cells, rightJambStart, rightJambEnd, {
           role: 'JAMB',
-          code: jambCode,
-          color: jambColor,
+          code: rightJambCode,
+          color: rightJambColor,
           s0: rightJambStart,
           s1: rightJambEnd,
-          endKind: isEvenStretcher ? 'half' : 'corner',
+          endKind: rightJambIsHalf ? 'half' : 'corner',
         })
       }
     }
