@@ -4815,15 +4815,37 @@ function Scene({
         sizeMax: Math.max(maxX - minX, maxZ - minZ, planExtentM, 4),
       }
     }
-    // Gather every code → colour pair that actually ends up rendered
-    // (includes makeup-declared codes, per-course resolved fractions
-    // and lintels via the block colorMap, plus per-makeup brick TYPE
-    // codes for brick walls — synthetic placeholders like __brick__
-    // are skipped because they're not meaningful in a legend).
-    const codes = new Map<string, string>()
+    // Gather every code → colour pair that actually ends up rendered.
+    // Built in two passes:
+    //   1. Walk every emitted geometry (boxes, wedges → via colour
+    //      reverse-lookup) and collect the codes that PHYSICALLY made
+    //      it into the scene. This is what stops the legend from
+    //      listing half-blocks on a stack-bond wall (the half code is
+    //      named in the makeup but never emitted, so without this
+    //      filter it showed up in the legend with no matching block
+    //      in 3D — the bug the user reported).
+    //   2. Map those codes to their colours via the existing colorMap.
+    // Wedges don't carry a code (curved walls strip it during the
+    // box → wedge transform); we reverse-lookup the colour against
+    // colorMap so a wedge contributes its source code to the set.
+    const usedCodes = new Set<string>()
+    for (const box of out) {
+      if (box.code && !box.code.startsWith('__')) {
+        usedCodes.add(box.code)
+      }
+    }
+    const colorToCode = new Map<string, string>()
     for (const [code, color] of colorMap) {
-      if (code.startsWith('__')) continue
-      codes.set(code, color)
+      if (!colorToCode.has(color)) colorToCode.set(color, code)
+    }
+    for (const wedge of outWedges) {
+      const code = colorToCode.get(wedge.color)
+      if (code && !code.startsWith('__')) usedCodes.add(code)
+    }
+    const codes = new Map<string, string>()
+    for (const code of usedCodes) {
+      const color = colorMap.get(code)
+      if (color) codes.set(code, color)
     }
     for (const wall of walls) {
       if (wall.trade !== 'brick') continue
