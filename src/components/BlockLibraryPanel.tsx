@@ -21,6 +21,38 @@ import {
  * (wall types, pier types, block tally) via the useBlockLibrary subscription.
  */
 
+/**
+ * Friendly label for a depth bucket. Pure depth → string mapping —
+ * region presets just supply the names users in that region recognise.
+ *
+ * Tolerance windows (185–199 = 200-series, etc) catch slight regional
+ * variants of the same nominal block: AU 200-series is 190mm, US 8" CMU
+ * is 194mm — different bucket numbers, same conceptual category. Labels
+ * group both names into one line so a US user sees "8-inch CMU (194mm)"
+ * and an AU user sees "200-series (190mm)" but the underlying bucket is
+ * just "depth = 194" or "depth = 190" with no preset state.
+ *
+ * Any depth outside the standard ranges falls back to "Custom 250mm"
+ * style — keeps non-standard blocks visible without forcing them into
+ * the wrong group.
+ */
+function labelForDepth(depthMm: number): string {
+  // 90mm AU 100-series / 4" US — same conceptual block, different
+  // regional name. The depth alone tells us which row of the catalogue
+  // it belongs in; the label puts the regional names side-by-side.
+  if (depthMm >= 85 && depthMm <= 99) return `100-series / 4-inch CMU (${depthMm}mm)`
+  if (depthMm >= 140 && depthMm <= 154) return `150-series / 6-inch CMU (${depthMm}mm)`
+  if (depthMm >= 185 && depthMm <= 199) return `200-series / 8-inch CMU (${depthMm}mm)`
+  if (depthMm >= 240 && depthMm <= 254) return `250-series / 10-inch CMU (${depthMm}mm)`
+  if (depthMm >= 285 && depthMm <= 299) return `300-series / 12-inch CMU (${depthMm}mm)`
+  if (depthMm >= 385 && depthMm <= 399) return `400-series / 16-inch CMU (${depthMm}mm)`
+  // Sub-standard depths (capping tiles, paired cleanout tiles) get
+  // their own bucket — they're typically thin units that bond to a
+  // face rather than form a wall on their own.
+  if (depthMm < 50) return `Tile / paired insert (${depthMm}mm)`
+  return `Custom (${depthMm}mm)`
+}
+
 const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
   { value: 'body', label: 'Body (main course)' },
   { value: 'end-termination', label: 'End termination' },
@@ -87,6 +119,31 @@ export default function BlockLibraryPanel({
     return all.filter((b) => b.roles.includes(filter)).sort((a, b) => a.code.localeCompare(b.code))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [library, libraryVersion, filter])
+
+  // Depth-grouped view of the filtered block list. Blocks in masonry
+  // catalogues are partitioned by the wall thickness they build —
+  // 90mm-deep blocks form 100-series walls, 190mm-deep form 200-series,
+  // etc. Two blocks at different depths can never lay together (the wall
+  // face would step), so it's the only field that really matters for
+  // grouping. Width and height vary freely within a depth group
+  // (body / corner / half / bond beam all share the same depth).
+  //
+  // Auto-derived from depthMm with no new field on Block. Any non-
+  // standard depth (custom block, specialty unit) lands in its own
+  // bucket — the user sees exactly the depths that exist in their
+  // library, no preset assumption baked in.
+  const groupedBlocks = useMemo(() => {
+    const buckets = new Map<number, Block[]>()
+    for (const b of blocks) {
+      const d = b.dimensions.depthMm
+      const list = buckets.get(d)
+      if (list) list.push(b)
+      else buckets.set(d, [b])
+    }
+    return Array.from(buckets.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([depthMm, list]) => ({ depthMm, blocks: list }))
+  }, [blocks])
 
   const showAddButton = expanded && !readOnly
 
@@ -248,31 +305,72 @@ export default function BlockLibraryPanel({
             </div>
           )}
 
-          {/* List */}
-          <div className="flex flex-col gap-1">
-            {blocks.map((block) => (
-              <BlockRow
-                key={block.code}
-                block={block}
-                readOnly={readOnly}
-                onEdit={() => setEditingCode(block.code)}
-                onDelete={async () => {
-                  // PROTECTED_BLOCK_CODES is empty — every block in
-                  // the library is deletable. The calc engine resolves
-                  // every slot via role tags + body-block fallback, so
-                  // there's no code-specific guard to honour.
-                  const ok = await confirm({
-                    title: `Delete block "${block.code} — ${block.name}"?`,
-                    message:
-                      'The block is removed from your library. Wall types ' +
-                      'referencing it will need to be updated.',
-                    confirmLabel: 'Delete',
-                    variant: 'destructive',
-                  })
-                  if (ok) removeBlock(block.code)
-                }}
-              />
-            ))}
+          {/* List — grouped by depth (= masonry series). Auto-derived
+              from depthMm so any block added to the library lands in
+              its depth bucket without manual categorisation. Collapses
+              to a flat list when only one bucket exists (keeps small
+              libraries from showing a header for no reason). */}
+          <div className="flex flex-col gap-3">
+            {groupedBlocks.length === 1
+              ? (
+                <div className="flex flex-col gap-1">
+                  {groupedBlocks[0].blocks.map((block) => (
+                    <BlockRow
+                      key={block.code}
+                      block={block}
+                      readOnly={readOnly}
+                      onEdit={() => setEditingCode(block.code)}
+                      onDelete={async () => {
+                        const ok = await confirm({
+                          title: `Delete block "${block.code} — ${block.name}"?`,
+                          message:
+                            'The block is removed from your library. Wall ' +
+                            'types referencing it will need to be updated.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) removeBlock(block.code)
+                      }}
+                    />
+                  ))}
+                </div>
+              )
+              : groupedBlocks.map(({ depthMm, blocks: groupBlocks }) => (
+                <div key={depthMm} className="flex flex-col gap-1">
+                  <div className="flex items-baseline gap-2 px-1 pb-1 border-b border-ink-700">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-200">
+                      {labelForDepth(depthMm)}
+                    </h4>
+                    <span className="text-[11px] text-ink-500">
+                      {groupBlocks.length} block{groupBlocks.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  {groupBlocks.map((block) => (
+                    <BlockRow
+                      key={block.code}
+                      block={block}
+                      readOnly={readOnly}
+                      onEdit={() => setEditingCode(block.code)}
+                      onDelete={async () => {
+                        // PROTECTED_BLOCK_CODES is empty — every block
+                        // in the library is deletable. The calc engine
+                        // resolves every slot via role tags + body-
+                        // block fallback, so there's no code-specific
+                        // guard to honour.
+                        const ok = await confirm({
+                          title: `Delete block "${block.code} — ${block.name}"?`,
+                          message:
+                            'The block is removed from your library. Wall ' +
+                            'types referencing it will need to be updated.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) removeBlock(block.code)
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
           </div>
 
           {/* Reset to defaults — admins only. */}

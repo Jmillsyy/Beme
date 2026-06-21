@@ -9,6 +9,7 @@ import {
   pickBaseCourse,
   pickBodyDefault,
   pickCornerBlock,
+  pickDepthScopedSlotBlock,
   pickHalfBlock,
   pickHeightMakeupBlock,
   pickPierBlock,
@@ -331,27 +332,35 @@ export function resolveCourseBlocks(
   // Body block is required on every makeup, so it's the safest fallback
   // for an unfilled half / height-makeup slot — same trick a mason
   // uses: cut a body block to fit when there's no dedicated unit.
-  const bodyFallback = range?.bodyBlockCode ?? makeup.bodyBlockCode
+  const bodyCode = range?.bodyBlockCode ?? makeup.bodyBlockCode
+  const bodyFallback = bodyCode
+  // Depth-scoped healing for corner / half / base. The makeup's saved
+  // code wins when its depth matches the body's (user's pick is
+  // trusted). When the saved code doesn't match the body depth — e.g.
+  // a preset switch left a 100-series corner pointing at a 200-series
+  // body — fall through to a same-depth role pick so the wall stays in
+  // one series. Same rule that already protected the top course; the
+  // user wanted it on every slot so 'mixed series' can only happen via
+  // an explicit override, not by accident.
+  const cornerRaw = range?.cornerBlockCode ?? makeup.cornerBlockCode
+  const halfRaw =
+    range?.halfBlockCode ??
+    makeup.halfBlockCode ??
+    defaults?.halfBlockCode ??
+    pickHalfBlock()?.code
+  const baseRaw = range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode
   return {
-    bodyBlockCode: range?.bodyBlockCode ?? makeup.bodyBlockCode,
-    cornerBlockCode: range?.cornerBlockCode ?? makeup.cornerBlockCode,
+    bodyBlockCode: bodyCode,
+    cornerBlockCode: pickDepthScopedSlotBlock(cornerRaw, 'corner', bodyCode),
     // Half-block resolution chain: range override → makeup override →
     // explicit default (when passed) → library role pick (e.g. any
     // block tagged 'end-termination' with fraction 0.5) → body block.
-    //
-    // The library role pick matters for walls predating the
-    // halfBlockCode field, walls loaded from legacy templates, or any
-    // case where the makeup never explicitly named a half. Without it,
-    // the resolver falls straight to the body block — so the renderer
-    // emits the body code at half WIDTH on even free-end courses,
-    // producing a "cut corner" look instead of a proper half block.
-    halfBlockCode:
-      range?.halfBlockCode ??
-      makeup.halfBlockCode ??
-      defaults?.halfBlockCode ??
-      pickHalfBlock()?.code ??
-      bodyFallback,
-    baseCourseBlockCode: range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode,
+    // The chain runs FIRST, then the result is depth-scoped against
+    // the body so a cross-series saved code falls through to a same-
+    // depth half (or the body cut down) rather than rendering as a
+    // narrower-series block at the wall's free ends.
+    halfBlockCode: pickDepthScopedSlotBlock(halfRaw, 'end-termination', bodyCode),
+    baseCourseBlockCode: pickDepthScopedSlotBlock(baseRaw, 'base-course', bodyCode),
     heightMakeup71BlockCode:
       range?.heightMakeup71BlockCode ??
       defaults?.heightMakeup71BlockCode ??
