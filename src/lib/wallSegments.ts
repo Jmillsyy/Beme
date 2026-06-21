@@ -298,11 +298,7 @@ export function resolveWallCourses(
       // path: course occupies y0 → y0 + FACE height (the visible
       // block), then the cursor advances by FACE + mortar (the
       // modular pitch). The 10 mm gap between consecutive courses
-      // shows as a mortar joint in 3D. Previously this loop set
-      // y1 = y0 + module (200 mm for a 200-series block), with no
-      // gap — curved walls rendered their blocks 10 mm TALLER than
-      // straight walls of the same makeup. Same total wall height,
-      // visibly different per-block look.
+      // shows as a mortar joint in 3D.
       const courseBlock = library[bodyCode]
       const faceHeightMm = courseBlock
         ? courseBlock.dimensions.heightMm
@@ -310,31 +306,41 @@ export function resolveWallCourses(
       const courseModuleMm = faceHeightMm + DEFAULT_MORTAR_JOINT_MM
       const faceHeightM = faceHeightMm / 1000
       const courseModuleM = courseModuleMm / 1000
-      // Hard ceiling: the wall is heightMm tall. Don't push courses
-      // whose top would exceed totalHeightM. Clamp the last course
-      // that straddles the wall top.
-      if (y >= totalHeightM - 0.001) break
-      const courseY1 = Math.min(y + faceHeightM, totalHeightM)
+      // No clamp — every course renders at the block's FULL face
+      // height so the wall is built out of consistent-sized blocks
+      // top to bottom. The user-set wall height is interpreted as a
+      // TARGET; the band-count picker upstream (convertMakeupToBands)
+      // already chooses the closest whole-course fit. If the chosen
+      // count's cumulative height differs from the target by mortar
+      // slop, the wall renders at the actual cumulative height —
+      // matching how a mason lays courses (you don't cut the top
+      // course down to hit an arbitrary 2400 mm number; you lay
+      // whole blocks and the wall ends at 11×204 or 12×204).
       courses.push({
         courseNumber: courseNum,
         y0: y,
-        y1: courseY1,
+        y1: y + faceHeightM,
         bodyCode,
         cornerCode: curveCorner,
         halfCode: curveHalf,
       })
-      // Advance by the full module so the next course starts ABOVE the
-      // mortar joint; final course may have been clamped to wall top
-      // (courseY1 < y + face), in which case the next iteration's
-      // `y >= totalHeightM` check exits the loop.
       y += courseModuleM
       courseNum++
     }
   }
-  // Pad shortfall (rare — happens when course heights don't tile evenly
-  // to the wall height) so the wall still reaches its target height.
-  if (y < totalHeightM - 0.001 && courses.length > 0) {
-    courses[courses.length - 1].y1 = totalHeightM
+  // Cumulative height after laying every course. This is the wall's
+  // ACTUAL render height — possibly different from the user-set
+  // heightMm when the block modular doesn't divide cleanly. The
+  // downstream renderer + cap-tile emission both use this so the
+  // cap sits on top of the LAST real course, not floating at a
+  // user-set height that doesn't match the block stack.
+  // Wall body height = top of the last course (the visible top
+  // face). The PREVIOUS implementation tried to make this hit the
+  // user-set heightMm exactly by either stretching or trimming the
+  // last course; both are wrong for real masonry. Whole blocks lay
+  // top-to-bottom and the wall ends where the last block lands.
+  if (courses.length > 0) {
+    totalHeightM = courses[courses.length - 1].y1
   } else if (courses.length === 0) {
     courses.push({
       courseNumber: 1,
