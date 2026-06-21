@@ -3529,9 +3529,13 @@ function WallDrawingLayerInner({
                     y={(startPx.y + endPx.y) / 2 - 20}
                     text={
                       hasTyped
-                        ? `${typedLengthMm} mm ⏎`
+                        ? __userSettings.preferences.units === 'imperial'
+                          ? `${typedLengthMm} ⏎`
+                          : `${typedLengthMm} mm ⏎`
                         : typedLengthMm.trim()
-                          ? `${typedLengthMm} mm …`
+                          ? __userSettings.preferences.units === 'imperial'
+                            ? `${typedLengthMm} …`
+                            : `${typedLengthMm} mm …`
                           : formatMm(previewLengthMm)
                     }
                     bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : hexToRgba(activeWallColor, 0.95)}
