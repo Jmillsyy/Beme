@@ -1510,6 +1510,13 @@ export function segmentsForStraightWall(
           color: jambColor,
           s0: leftJambStart,
           s1: leftJambEnd,
+          // Carry the corner/half flag onto the cell so the 3D
+          // renderer paints it with the right role colour — JAMB
+          // cells alternate corner / half across courses in stretcher
+          // bond just like the wall-end terminations, and the user
+          // needs to see that alternation in the wall view (the tally
+          // already counts them as alternating blocks).
+          endKind: isEvenStretcher ? 'half' : 'corner',
         })
       }
 
@@ -1529,6 +1536,7 @@ export function segmentsForStraightWall(
           color: jambColor,
           s0: rightJambStart,
           s1: rightJambEnd,
+          endKind: isEvenStretcher ? 'half' : 'corner',
         })
       }
     }
@@ -1735,15 +1743,14 @@ export function segmentsForStraightWall(
     courseNumber: number,
   ): { role: SlotR; color: string } => {
     let role: SlotR
-    if (cell.role === 'END') {
+    if (cell.role === 'END' || cell.role === 'JAMB') {
+      // Both wall-end terminations AND opening jambs are end blocks
+      // that alternate corner / half across courses under stretcher
+      // bond. endKind is set at cell-construction time on both kinds;
+      // use it directly so the renderer paints the right hue and the
+      // user can see the bond alternation at openings the same way
+      // they see it at wall ends.
       role = cell.endKind ?? 'corner'
-    } else if (cell.role === 'JAMB') {
-      // Jamb blocks at opening reveals are end terminations — they
-      // have a finished short face visible inside the opening (same
-      // job a corner block does at a wall end). Render them with the
-      // corner role so the user can see at a glance which blocks are
-      // the jamb reveals vs. the body grid.
-      role = 'corner'
     } else if (courseNumber === 1) {
       role = 'base'
     } else if (courseNumber === totalCourses) {
