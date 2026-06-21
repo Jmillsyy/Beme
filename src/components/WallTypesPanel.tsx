@@ -2761,9 +2761,12 @@ function CoursePatternPreview({
   const BLOCKS_ACROSS = 4
   const bodyWidthOf = (code: BlockCode) => widthOf(code)
 
-  // Per-course modular width: even (stretcher) rows = halfW + (n+1)·bodyW + halfW,
-  // odd / stack rows = cornerW + n·bodyW + cornerW. We take the max so
-  // the wall preview locks to the widest course's width.
+  // Per-course modular width:
+  //  - stretcher even = halfW + (n+1)·bodyW + halfW
+  //  - stack          = halfW + n·bodyW + cornerW (single half end on
+  //                     the left, full corner on the right)
+  //  - stretcher odd  = cornerW + n·bodyW + cornerW
+  // Max across all courses locks the wall preview to the widest row.
   const courseModularWidths = courses.map((code, idx) => {
     const courseNum = idx + 1
     const res = resolveForCourse(courseNum)
@@ -2772,6 +2775,11 @@ function CoursePatternPreview({
     if (bondType === 'stretcher' && isEven) {
       const halfW = widthOf(res.half)
       return halfW + (BLOCKS_ACROSS + 1) * bodyW + halfW
+    }
+    if (bondType === 'stack') {
+      const halfW = widthOf(res.half)
+      const cornerW = widthOf(res.corner)
+      return halfW + BLOCKS_ACROSS * bodyW + cornerW
     }
     const cornerW = widthOf(res.corner)
     return cornerW + BLOCKS_ACROSS * bodyW + cornerW
@@ -2878,24 +2886,30 @@ function CoursePatternPreview({
             label: string
           }[] = []
           if (useHalves) {
-            // Stretcher even: half end on the LEFT, then BLOCKS_ACROSS
-            // body, then full corner on the RIGHT. Real brick walls
-            // typically place a single half-block at one end of each
-            // offset course rather than mirroring halves on both ends
-            // — the half on one side is what shifts the body grid by
-            // half a block, producing the running-bond stagger; a
-            // second half on the other side would just absorb the same
-            // shift back. Visual width is ~half a block narrower than
-            // the odd row, which reads as 'this row is offset' to the
-            // eye. justify-center on the row keeps the offset
-            // symmetric within the wall envelope.
+            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body +
+            // half end. Same total as the odd-course row below — that's
+            // why the bond pattern reads as an offset rather than a
+            // width change.
+            cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
+            for (let i = 0; i < BLOCKS_ACROSS + 1; i++) {
+              cells.push({ widthPct: toPct(bodyW), role: bodyRole, label: bodyCode })
+            }
+            cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
+          } else if (bondType === 'stack') {
+            // Stack bond: every course identical, but with one half-
+            // block end termination on the LEFT to depict the
+            // length-makeup reality (walls rarely fit a whole number
+            // of full blocks, so one end uses a half to absorb the
+            // remainder). Full corner on the right, body cells in the
+            // middle. No alternation between courses — stack bond
+            // doesn't break joints, so every row reads the same.
             cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
             for (let i = 0; i < BLOCKS_ACROSS; i++) {
               cells.push({ widthPct: toPct(bodyW), role: bodyRole, label: bodyCode })
             }
             cells.push({ widthPct: toPct(cornerW), role: 'corner', label: cornerCode })
           } else {
-            // Stack bond OR stretcher odd: full end + N body + full end.
+            // Stretcher odd: full end + N body + full end.
             cells.push({ widthPct: toPct(cornerW), role: 'corner', label: cornerCode })
             for (let i = 0; i < BLOCKS_ACROSS; i++) {
               cells.push({ widthPct: toPct(bodyW), role: bodyRole, label: bodyCode })
