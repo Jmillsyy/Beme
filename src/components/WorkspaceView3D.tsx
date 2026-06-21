@@ -709,6 +709,13 @@ function segmentsFromWallLayout(
         yRotation,
         color: colorOf(w.block.code),
         highlight: isHighlightedBlock(w.block.code, library),
+        // Tag the box with its library block code so the legend pass
+        // (which walks emitted boxes to figure out which codes are
+        // physically in the scene) picks this block up. Without it
+        // every block emitted by planWallLayout / segmentsFromWallLayout
+        // was anonymous and the legend dropped them — the user saw
+        // only one row even when several block types were rendering.
+        code: w.block.code,
       })
     }
   }
@@ -755,6 +762,7 @@ function segmentsFromWallLayout(
         yRotation,
         color: colorOf(capCode),
         highlight: isHighlightedBlock(capCode, library),
+        code: capCode,
       })
     }
   }
@@ -4763,6 +4771,7 @@ function Scene({
           yRotation,
           color: bandColor(code, palette),
           highlight: false,
+          code,
         })
         yCursorM += blockHeightM + mortarM
       }
