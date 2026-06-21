@@ -1777,7 +1777,7 @@ export function WallTypeEditorModal({
               bands={previewBands}
               resolveForCourse={resolveForCourse}
               bondType={bondType}
-              colorMap={previewColorMap}
+              makeup={previewMakeup}
             />
           </aside>
         </div>
@@ -2572,7 +2572,7 @@ function PreviewLegend({
   bands,
   resolveForCourse,
   bondType,
-  colorMap,
+  makeup,
 }: {
   bands: CourseBand[]
   resolveForCourse: (courseNumber: number) => {
@@ -2581,34 +2581,43 @@ function PreviewLegend({
     half: BlockCode
   }
   bondType: BondType
-  /** Distinct-colour-per-code map. When provided, codes get unique
-   *  palette slots so the legend can't show two near-identical hues.
-   *  Falls back to the standalone `bandColor()` if a code isn't in
-   *  the map (shouldn't happen for the wall preview which collects
-   *  the same codes the legend lists). */
-  colorMap?: Map<string, string>
+  /** Makeup is the source of truth for base / top / cap codes (not
+   *  surfaced by resolveForCourse, which only returns the per-course
+   *  body / corner / half picks). */
+  makeup: WallMakeup
 }) {
-  // Walk every course in the preview, collect distinct body / corner /
-  // half codes via the resolver. Role labels reflect the first time a
-  // code appears (body wins over corner if the same code is used as
-  // both, since that's the more common usage on the wall).
-  const items: { code: BlockCode; role: string }[] = []
-  const seen = new Set<BlockCode>()
-  function push(code: BlockCode, role: string) {
-    if (!code || seen.has(code)) return
-    seen.add(code)
-    items.push({ code, role })
-  }
-  let courseNum = 0
-  for (const b of bands) {
-    if (b.count <= 0) continue
-    for (let i = 0; i < b.count; i++) {
-      courseNum++
-      const r = resolveForCourse(courseNum)
-      push(r.body, 'body')
-      push(r.corner, 'corner')
-      if (bondType === 'stretcher') push(r.half, 'half end')
+  // Walk the preview to figure out WHICH roles actually appear in
+  // this wall. Stack bond never uses the half role; stretcher does.
+  // Base is always course 1; Top is always the last course; Cap is
+  // only present when the makeup names one.
+  const totalCourses = bands.reduce(
+    (s, b) => (b.count > 0 ? s + b.count : s),
+    0,
+  )
+  const firstCourse = totalCourses > 0 ? resolveForCourse(1) : null
+  const lastCourse =
+    totalCourses > 0 ? resolveForCourse(totalCourses) : null
+
+  // Role → current code lookup. The legend lists every role that
+  // appears in the preview with its role colour (matching the cell
+  // tinting and the picker dot) and the block code currently filling
+  // that role. One row per role keeps the legend stable as the user
+  // switches codes — only the right-hand label changes, not the
+  // colour or order. Hidden when totalCourses is 0 (empty wall).
+  const items: { role: SlotRole; code: BlockCode | '' }[] = []
+  if (firstCourse) {
+    items.push({ role: 'base', code: firstCourse.body })
+    items.push({ role: 'body', code: firstCourse.body })
+    items.push({ role: 'corner', code: firstCourse.corner })
+    if (bondType === 'stretcher') {
+      items.push({ role: 'half', code: firstCourse.half })
     }
+  }
+  if (lastCourse && totalCourses > 1) {
+    items.push({ role: 'top', code: lastCourse.body })
+  }
+  if (makeup.capBlockCode) {
+    items.push({ role: 'cap', code: makeup.capBlockCode })
   }
 
   if (items.length === 0) return null
@@ -2623,16 +2632,20 @@ function PreviewLegend({
       <div className="flex flex-col gap-1">
         {items.map((it) => (
           <div
-            key={it.code}
+            key={it.role}
             className="flex items-center gap-2 text-[11px] min-w-0"
           >
             <span
               className="inline-block w-3.5 h-3.5 rounded-sm flex-shrink-0 ring-1 ring-black/40"
-              style={{ backgroundColor: colorMap?.get(it.code) ?? bandColor(it.code) }}
+              style={{ backgroundColor: ROLE_COLORS[it.role] }}
               aria-hidden
             />
-            <span className="text-ink-200 font-mono truncate">{it.code}</span>
-            <span className="text-ink-500 ml-auto text-[10px]">{it.role}</span>
+            <span className="text-ink-300 flex-shrink-0">
+              {ROLE_LABELS[it.role]}
+            </span>
+            <span className="text-ink-200 font-mono truncate ml-auto">
+              {it.code || '—'}
+            </span>
           </div>
         ))}
       </div>
