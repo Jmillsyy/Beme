@@ -2329,22 +2329,42 @@ export function planWallLayout(
     const naturalEndCornerW = baseEndEndModular - MORTAR_MM
     const startCornerW = ownsStartCorner ? naturalStartCornerW : 0
     const endCornerW = ownsEndCorner ? naturalEndCornerW : 0
-    const startBondCorrectionMm = startIsSharedCorner
+    // Each end has TWO independent widths — the cut block emitted on
+    // the OWNING course (when naturalCornerW − cubeDepth < halfMod, e.g.
+    // 300-series) and the filler block emitted on the NON-OWNING course
+    // (when naturalCornerW − cubeDepth > halfMod, e.g. 100-series).
+    //
+    // The two formulas are NOT negatives of each other — they differ
+    // by 2×mortar because the cut sits AFTER the owning corner (one
+    // mortar joint each side) while the filler sits AFTER the cube
+    // (also one mortar each side, but the geometric goal is the
+    // OPPOSITE direction).
+    //
+    //   cutW    = halfMod − (cornerW − cubeDepth) − M    [owning]
+    //   fillerW = (cornerW − cubeDepth) − halfMod − M    [non-owning]
+    //
+    // Sanity:
+    //   200-series: cornerW−cubeDepth = halfMod → both = −M → neither emitted.
+    //   300-series: cornerW−cubeDepth = 100, halfMod = 200 → cutW = 90,
+    //               fillerW = −110 (no filler). One cut on owning side.
+    //   100-series: cornerW−cubeDepth = 300, halfMod = 200 → cutW = −110
+    //               (no cut), fillerW = 90. One filler on non-owning side.
+    const startCutCalc = startIsSharedCorner
       ? halfBodyModularMm - (naturalStartCornerW - startCubeDepth) - MORTAR_MM
       : 0
-    const endBondCorrectionMm = endIsSharedCorner
+    const endCutCalc = endIsSharedCorner
       ? halfBodyModularMm - (naturalEndCornerW - endCubeDepth) - MORTAR_MM
       : 0
-    // Positive correction → cut block on OWNING course after corner.
-    const startCutWidthMm =
-      startBondCorrectionMm > 0.005 && ownsStartCorner ? startBondCorrectionMm : 0
-    const endCutWidthMm =
-      endBondCorrectionMm > 0.005 && ownsEndCorner ? endBondCorrectionMm : 0
-    // Negative correction → filler block on NON-OWNING course after cube.
-    const startFillerWidthMm =
-      startBondCorrectionMm < -0.005 && !ownsStartCorner ? -startBondCorrectionMm : 0
-    const endFillerWidthMm =
-      endBondCorrectionMm < -0.005 && !ownsEndCorner ? -endBondCorrectionMm : 0
+    const startFillerCalc = startIsSharedCorner
+      ? (naturalStartCornerW - startCubeDepth) - halfBodyModularMm - MORTAR_MM
+      : 0
+    const endFillerCalc = endIsSharedCorner
+      ? (naturalEndCornerW - endCubeDepth) - halfBodyModularMm - MORTAR_MM
+      : 0
+    const startCutWidthMm = startCutCalc > 0.005 && ownsStartCorner ? startCutCalc : 0
+    const endCutWidthMm = endCutCalc > 0.005 && ownsEndCorner ? endCutCalc : 0
+    const startFillerWidthMm = startFillerCalc > 0.005 && !ownsStartCorner ? startFillerCalc : 0
+    const endFillerWidthMm = endFillerCalc > 0.005 && !ownsEndCorner ? endFillerCalc : 0
     const cutBlockModularTotal =
       (startCutWidthMm > 1 ? startCutWidthMm + MORTAR_MM : 0) +
       (endCutWidthMm > 1 ? endCutWidthMm + MORTAR_MM : 0) +
