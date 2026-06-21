@@ -20,6 +20,7 @@ import { exportBlockEstimate } from '../lib/blockExport'
 import { exportBrickEstimate } from '../lib/brickExport'
 import { exportCombinedEstimate } from '../lib/combinedExport'
 import { useUserSettings } from '../lib/userSettings'
+import { formatLengthMm } from '../lib/units'
 import { useOrganisations } from '../lib/organisations'
 import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import { toast } from '../lib/toast'
@@ -2651,7 +2652,7 @@ function ExportEstimateModal({
                   <span className="inline-flex items-center gap-1.5">
                     <span className="text-ink-500">Run</span>
                     <span className="text-ink-100 font-semibold">
-                      {summaryStats.totalLengthM.toFixed(2)} m
+                      {formatLengthMm(summaryStats.totalLengthM * 1000, userSettings.preferences.units)}
                     </span>
                   </span>
                 )}

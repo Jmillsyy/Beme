@@ -3113,10 +3113,14 @@ function WallDrawingLayerInner({
                       y={(startPosPx.y + endPx.y) / 2 + 6}
                       text={
                         hasTyped
-                          ? `${typedOpeningWidthMm} mm ⏎`
+                          ? __userSettings.preferences.units === 'imperial'
+                            ? `${typedOpeningWidthMm} ⏎`
+                            : `${typedOpeningWidthMm} mm ⏎`
                           : typedOpeningWidthMm.trim()
-                            ? `${typedOpeningWidthMm} mm …`
-                            : `${Math.round(previewWidth)} mm wide`
+                            ? __userSettings.preferences.units === 'imperial'
+                              ? `${typedOpeningWidthMm} …`
+                              : `${typedOpeningWidthMm} mm …`
+                            : `${formatMm(previewWidth)} wide`
                       }
                       bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : 'rgba(146, 64, 14, 0.95)'}
                     />
@@ -3621,7 +3625,7 @@ function WallDrawingLayerInner({
                   <Text
                     x={mmToPx(B.x) + 10}
                     y={mmToPx(B.y) - 22}
-                    text={`R ${Math.round(geom.radiusMm)} · arc ${Math.round(geom.arcLengthMm)}mm`}
+                    text={`R ${formatMm(Math.round(geom.radiusMm))} · arc ${formatMm(Math.round(geom.arcLengthMm))}`}
                     fontSize={13}
                     fill="#6d28d9"
                     fontStyle="bold"

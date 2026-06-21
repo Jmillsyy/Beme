@@ -9,6 +9,8 @@ import {
   useBlockLibrary,
 } from '../data/blockLibrary'
 import LengthInput from './LengthInput'
+import { formatLengthShort } from '../lib/units'
+import { useUserSettings } from '../lib/userSettings'
 
 /**
  * The user's editable block library. Add, edit, or delete blocks.
@@ -33,8 +35,11 @@ import LengthInput from './LengthInput'
  * in. Users who want pretty names can rename a block (the name shows
  * on the row) without affecting how the catalogue is grouped.
  */
-function labelForDepth(depthMm: number): string {
-  return `${depthMm}mm`
+function labelForDepth(
+  depthMm: number,
+  units: 'metric' | 'imperial' = 'metric',
+): string {
+  return formatLengthShort(depthMm, units)
 }
 
 const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
@@ -93,6 +98,8 @@ export default function BlockLibraryPanel({
   // disappear" bug — the BLOCK_LIBRARY had the new value, but the
   // rendered list was reading from a stale memo.
   const { library, version: libraryVersion } = useBlockLibrary()
+  const { settings: panelSettings } = useUserSettings()
+  const panelUnits = panelSettings.preferences.units
   const [expanded, setExpanded] = useState(defaultExpanded)
   const [editingCode, setEditingCode] = useState<BlockCode | 'new' | null>(null)
   const [filter, setFilter] = useState<'all' | BlockRole>('all')
@@ -348,7 +355,7 @@ export default function BlockLibraryPanel({
                         {isCollapsed ? '▸' : '▾'}
                       </span>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-200 group-hover:text-beme-300 transition-colors">
-                        {labelForDepth(depthMm)}
+                        {labelForDepth(depthMm, panelUnits)}
                       </h4>
                       <span className="text-[11px] text-ink-500">
                         {groupBlocks.length} block{groupBlocks.length === 1 ? '' : 's'}
@@ -439,10 +446,16 @@ function BlockRow({
   onDelete: () => void
   readOnly?: boolean
 }) {
+  const { settings } = useUserSettings()
+  const units = settings.preferences.units
   // Reserved for callers that still want to call out seed-shipped
   // codes, but the engine no longer treats any block as protected.
   const protectedBlock = false
-  const dims = `${block.dimensions.widthMm}×${block.dimensions.heightMm}×${block.dimensions.depthMm}mm`
+  // Dimensions line — formatted per the user's units preference so a
+  // US user reads 8x4x8" and an AU user reads 194x194x194mm for the
+  // same block.
+  const fmt = (mm: number) => formatLengthShort(mm, units)
+  const dims = `${fmt(block.dimensions.widthMm)}×${fmt(block.dimensions.heightMm)}×${fmt(block.dimensions.depthMm)}`
   return (
     <div className="flex items-center gap-2 py-1.5 px-2 rounded-md border border-ink-600/40 hover:border-ink-600 hover:bg-ink-700/40 group">
       <div className="flex-1 min-w-0">
@@ -790,25 +803,19 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
                     </p>
                     <div className="grid grid-cols-3 gap-3">
                       <label className="block">
-                        <span className="block text-ink-300 text-xs mb-1">Bearing each side (mm)</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={50}
-                          value={lintelOverhangMm}
-                          onChange={(e) => {
-                            const v = e.target.value
-                            setLintelOverhangMm(v === '' ? '' : parseInt(v, 10))
-                          }}
+                        <span className="block text-ink-300 text-xs mb-1">Bearing each side</span>
+                        <LengthInput
+                          valueMm={typeof lintelOverhangMm === 'number' ? lintelOverhangMm : 0}
+                          onChangeMm={(v) => setLintelOverhangMm(Math.max(0, v))}
+                          minMm={0}
                           placeholder="200"
-                          className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                          className="w-full"
                         />
                       </label>
                     </div>
                     <p className="text-[11px] text-ink-500 mt-2 leading-relaxed">
                       Lintel span used in the tally =
                       {' '}<code className="text-ink-300">opening width + 2 × bearing</code>.
-                      A 1500mm opening with a 200mm bearing needs a lintel spanning 1900mm.
                     </p>
                   </fieldset>
                 )}

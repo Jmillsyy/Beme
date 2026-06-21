@@ -628,7 +628,7 @@ export default function WallTypesPanel({
                         {t.name}
                       </div>
                       <div className="text-[11px] text-ink-400 font-mono">
-                        {wallTypeSpec(t)} · {t.bodyBlockCode}
+                        {wallTypeSpec(t, panelUnits)} · {t.bodyBlockCode}
                       </div>
                     </div>
                   </div>
@@ -1962,7 +1962,7 @@ function BasicsTab({
           </div>
           <div className="text-sm text-ink-200">
             Centreline radius:{' '}
-            <span className="font-mono">R{Math.round(curveRadiusMm!)}mm</span>
+            <span className="font-mono">R{formatLengthMm(Math.round(curveRadiusMm!), units)}</span>
             <span className="text-ink-400 ml-2">
               ·{' '}
               {curveZone === 'standard'
@@ -1977,7 +1977,7 @@ function BasicsTab({
           {curveZone === 'custom' && (
             <p className="mt-2 text-[11px] text-amber-400">
               This radius is below the wedge feasibility threshold (
-              {CURVED_WALL_MIN_FEASIBLE_RADIUS_MM}mm). 20.03CW is the closest stock block
+              {formatLengthMm(CURVED_WALL_MIN_FEASIBLE_RADIUS_MM, units)}). 20.03CW is the closest stock block
               but custom-cut blocks will be flagged in the estimate.
             </p>
           )}
@@ -2023,6 +2023,8 @@ interface CompositionTabProps {
 }
 
 function CompositionTab(props: CompositionTabProps) {
+  const { settings: compSettings } = useUserSettings()
+  const compUnits = compSettings.preferences.units
   const {
     isCurveMakeup,
     curveRadiusMm,
@@ -2135,9 +2137,9 @@ function CompositionTab(props: CompositionTabProps) {
               <p className="mt-2 text-[11px] text-ink-400 leading-snug">
                 {wedgeRequired
                   ? wedgeFeasible
-                    ? `Required for R < ${CURVED_WALL_WEDGE_RADIUS_MM}mm — wedge taper absorbs the curve.`
+                    ? `Required for R < ${formatLengthMm(CURVED_WALL_WEDGE_RADIUS_MM, compUnits)} — wedge taper absorbs the curve.`
                     : 'R is below the wedge feasibility floor — closest stock block selected; custom cuts will be flagged.'
-                  : `Not applicable at R${Math.round(curveRadiusMm!)}mm — normal blocks fit.`}
+                  : `Not applicable at R${formatLengthMm(Math.round(curveRadiusMm!), compUnits)} — normal blocks fit.`}
               </p>
             </div>
             <div
@@ -2169,9 +2171,9 @@ function CompositionTab(props: CompositionTabProps) {
               <p className="mt-2 text-[11px] text-ink-400 leading-snug">
                 {!wedgeRequired
                   ? curveZone === 'cut'
-                    ? `Active at R${Math.round(curveRadiusMm!)}mm — cut at the back of each block (called out in assumptions).`
-                    : `Active at R${Math.round(curveRadiusMm!)}mm — stock blocks fit without cuts.`
-                  : `Not applicable below R${CURVED_WALL_WEDGE_RADIUS_MM}mm — wedge required.`}
+                    ? `Active at R${formatLengthMm(Math.round(curveRadiusMm!), compUnits)} — cut at the back of each block (called out in assumptions).`
+                    : `Active at R${formatLengthMm(Math.round(curveRadiusMm!), compUnits)} — stock blocks fit without cuts.`
+                  : `Not applicable below R${formatLengthMm(CURVED_WALL_WEDGE_RADIUS_MM, compUnits)} — wedge required.`}
               </p>
             </div>
           </div>
@@ -2677,6 +2679,8 @@ function CoursePatternPreview({
   colorMap,
   highlightedSlot,
 }: CoursePatternPreviewProps) {
+  const { settings: previewSettings } = useUserSettings()
+  const previewUnits = previewSettings.preferences.units
   // colorMap is no longer used for cell tinting — every cell now
   // takes its hue from its ROLE (body / corner / half / base / top /
   // cap) so the user can trace slot picker → role colour → preview
@@ -2951,7 +2955,7 @@ function CoursePatternPreview({
               transform: 'translateY(50%)',
             }}
           >
-            {mm}mm
+            {formatLengthMm(mm, previewUnits)}
           </div>
         ))}
       </div>
@@ -3822,8 +3826,11 @@ function WallTypeStackPreview({
 }
 
 /** One-line spec summary for a wall type card. */
-function wallTypeSpec(m: WallMakeup): string {
-  return `${m.heightMm} mm · ${m.bondType}`
+function wallTypeSpec(
+  m: WallMakeup,
+  units: 'metric' | 'imperial' = 'metric',
+): string {
+  return `${formatLengthMm(m.heightMm, units)} · ${m.bondType}`
 }
 
 /** The distinct block codes a wall type uses (for the code chips). */
@@ -3851,6 +3858,8 @@ export function WallTypeTemplatesSection({
 }: {
   readOnly?: boolean
 }) {
+  const { settings: templateSettings } = useUserSettings()
+  const templateUnits = templateSettings.preferences.units
   // Synced per-user via Supabase when signed in (templates follow your
   // login across devices); local IndexedDB fallback when offline.
   const { templates } = useUserWallTypeTemplates()
@@ -3879,7 +3888,7 @@ export function WallTypeTemplatesSection({
                     {t.name}
                   </div>
                   <div className="text-[11px] text-ink-400 mt-0.5">
-                    {wallTypeSpec(t)}
+                    {wallTypeSpec(t, templateUnits)}
                   </div>
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {wallTypeCodes(t)

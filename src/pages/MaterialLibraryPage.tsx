@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
+import LengthInput from '../components/LengthInput'
 import { WallTypeTemplatesSection } from '../components/WallTypesPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
 import LibraryTemplateControls from '../components/LibraryTemplateControls'
@@ -856,35 +857,21 @@ function SupplyItemForm({
             </p>
             <div className="grid grid-cols-2 gap-3">
               <label className="text-xs">
-                <span className="block text-ink-400 mb-1">Min width (mm)</span>
-                <input
-                  type="number"
-                  value={openingWidthMin}
-                  min="0"
-                  step="50"
-                  onChange={(e) =>
-                    setOpeningWidthMin(
-                      e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10))
-                    )
-                  }
+                <span className="block text-ink-400 mb-1">Min width</span>
+                <LengthInput
+                  valueMm={typeof openingWidthMin === 'number' ? openingWidthMin : 0}
+                  onChangeMm={(v) => setOpeningWidthMin(Math.max(0, v))}
+                  minMm={0}
                   placeholder="any"
-                  className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50"
                 />
               </label>
               <label className="text-xs">
-                <span className="block text-ink-400 mb-1">Max width (mm)</span>
-                <input
-                  type="number"
-                  value={openingWidthMax}
-                  min="0"
-                  step="50"
-                  onChange={(e) =>
-                    setOpeningWidthMax(
-                      e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10))
-                    )
-                  }
+                <span className="block text-ink-400 mb-1">Max width</span>
+                <LengthInput
+                  valueMm={typeof openingWidthMax === 'number' ? openingWidthMax : 0}
+                  onChangeMm={(v) => setOpeningWidthMax(Math.max(0, v))}
+                  minMm={0}
                   placeholder="any"
-                  className="w-full px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50"
                 />
               </label>
             </div>

@@ -111,6 +111,7 @@ import { resolveBlockByRole } from '../lib/blockRoles'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
 import { getUserSettings, useUserSettings } from '../lib/userSettings'
 import {
+  formatLengthMm,
   lengthInputPlaceholder,
   lengthInputSuffix,
   parseLengthInput,
@@ -9590,14 +9591,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                         ariaLabel="Wall height override"
                         className="text-xs"
                       />
-                      <span className="text-ink-400">mm</span>
                       {selWall.heightMmOverride !== undefined && (
                         <button
                           onClick={() =>
                             handleSetWallHeightOverride(selWall.id, undefined)
                           }
                           className="text-[10px] text-ink-400 hover:text-ink-200 underline"
-                          title={`Reset to wall type default (${makeupHeightMm} mm)`}
+                          title={`Reset to wall type default (${formatLengthMm(makeupHeightMm, userSettings.preferences.units)})`}
                         >
                           reset
                         </button>

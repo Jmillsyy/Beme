@@ -13,6 +13,8 @@ import { useTheme } from '../lib/theme'
 import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
+import LengthInput from '../components/LengthInput'
+import { formatLengthMm } from '../lib/units'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { getLibraryTemplate } from '../data/libraryTemplates'
 import { computeAutoWallLengthSnapMm } from '../lib/wallLengthSnap'
@@ -926,6 +928,12 @@ function DefaultsTab({
   defaultsByRole: DefaultsByRole | undefined
   setDefaultsByRole: (p: Partial<DefaultsByRole>) => void
 }) {
+  // User's units pref drives the labels + hints below. Reads the live
+  // (saved) settings — not the draft from the edit form — so the
+  // measurements format the same way they do everywhere else in the
+  // app.
+  const { settings: liveSettings } = useUserSettings()
+  const unitsPref = liveSettings.preferences.units
   const { library: brickLibrary } = useBrickLibrary()
   const brickOptions = Object.values(brickLibrary)
     .sort((a: BrickType, b: BrickType) => a.heightMm - b.heightMm)
@@ -962,12 +970,10 @@ function DefaultsTab({
       >
         <FieldGroup>
           <Field label="Default wall height">
-            <NumberInput
-              value={defaults.defaultWallHeightMm}
-              onChange={(v) => set({ defaultWallHeightMm: v })}
-              min={200}
-              step={50}
-              suffix="mm"
+            <LengthInput
+              valueMm={defaults.defaultWallHeightMm}
+              onChangeMm={(v) => set({ defaultWallHeightMm: v })}
+              minMm={200}
             />
           </Field>
           <Field label="Default bond type">
@@ -981,12 +987,10 @@ function DefaultsTab({
             />
           </Field>
           <Field label="Default mortar joint">
-            <NumberInput
-              value={defaults.defaultMortarJointMm}
-              onChange={(v) => set({ defaultMortarJointMm: v })}
-              min={0}
-              step={1}
-              suffix="mm"
+            <LengthInput
+              valueMm={defaults.defaultMortarJointMm}
+              onChangeMm={(v) => set({ defaultMortarJointMm: v })}
+              minMm={0}
             />
           </Field>
           {(() => {
@@ -998,20 +1002,19 @@ function DefaultsTab({
               defaults.defaultMortarJointMm ?? DEFAULT_MORTAR_JOINT_MM
             )
             const isAuto = defaults.wallLengthSnapMm === undefined
+            const autoSnapDisplay = formatLengthMm(autoSnap, unitsPref)
             return (
               <Field
                 label="Wall length snap"
-                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library — currently ${autoSnap} mm. Set a custom value (e.g. 100 mm to limit to full + half only) to override.`}
+                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library — currently ${autoSnapDisplay}. Set a custom value to override.`}
               >
                 <div className="flex items-center gap-2">
-                  <NumberInput
-                    value={defaults.wallLengthSnapMm ?? autoSnap}
-                    onChange={(v) =>
+                  <LengthInput
+                    valueMm={defaults.wallLengthSnapMm ?? autoSnap}
+                    onChangeMm={(v) =>
                       set({ wallLengthSnapMm: Math.max(1, v) })
                     }
-                    min={1}
-                    step={5}
-                    suffix="mm"
+                    minMm={1}
                   />
                   {isAuto ? (
                     <span className="text-[11px] px-2 py-0.5 rounded bg-beme-500/20 text-beme-300 font-medium border border-beme-500/30">
@@ -1022,7 +1025,7 @@ function DefaultsTab({
                       type="button"
                       onClick={() => set({ wallLengthSnapMm: undefined })}
                       className="text-[11px] px-2 py-0.5 rounded border border-ink-600 text-ink-300 hover:bg-ink-700 transition-colors"
-                      title={`Reset to auto-derived (${autoSnap} mm)`}
+                      title={`Reset to auto-derived (${autoSnapDisplay})`}
                     >
                       Use auto
                     </button>

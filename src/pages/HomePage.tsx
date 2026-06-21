@@ -16,6 +16,7 @@ import {
 } from '../lib/projectStorage'
 import { accountTypeOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
+import { formatLengthMm } from '../lib/units'
 import { LIBRARY_TEMPLATES } from '../data/libraryTemplates'
 import { analyseLibraryHealth, useBlockLibrary } from '../data/blockLibrary'
 import { confirm } from '../lib/confirm'
@@ -1024,6 +1025,8 @@ function ProjectInProgressRow({
   members: OrgMember[]
   currentUserId: string | null
 }) {
+  const { settings: rowSettings } = useUserSettings()
+  const rowUnits = rowSettings.preferences.units
   const name =
     project.projectDetails.projectName.trim() ||
     project.projectDetails.siteAddress.trim() ||
@@ -1051,7 +1054,7 @@ function ProjectInProgressRow({
   const metrics = projectMetrics(project)
   const sizeLine =
     metrics.wallCount > 0
-      ? `${metrics.wallCount} wall${metrics.wallCount === 1 ? '' : 's'} · ${metrics.runMetres.toFixed(1)} m run`
+      ? `${metrics.wallCount} wall${metrics.wallCount === 1 ? '' : 's'} · ${formatLengthMm(metrics.runMetres * 1000, rowUnits)} run`
       : 'No walls drawn yet'
 
   return (

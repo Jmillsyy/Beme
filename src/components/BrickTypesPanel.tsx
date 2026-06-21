@@ -9,6 +9,8 @@ import { toast } from '../lib/toast'
 import { wallTypeColor } from '../lib/wallTypeColors'
 import LengthInput from './LengthInput'
 import LibraryGuidance from './LibraryGuidance'
+import { formatLengthMm } from '../lib/units'
+import { useUserSettings } from '../lib/userSettings'
 
 interface BrickTypesPanelProps {
   makeups: BrickMakeup[]
@@ -78,6 +80,8 @@ export default function BrickTypesPanel({
   void brickLibraryVersion
   const brickLibraryEmpty = Object.keys(brickLibrary).length === 0
   const visibleMakeups = brickLibraryEmpty ? [] : makeups
+  const { settings: panelSettings } = useUserSettings()
+  const panelUnits = panelSettings.preferences.units
   const [editingId, setEditingId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(true)
   const editingMakeup =
@@ -169,7 +173,7 @@ export default function BrickTypesPanel({
                   </div>
                 </div>
                 <div className="text-xs text-ink-400 mt-1 leading-tight">
-                  {m.heightMm}mm · {wallCount} wall{wallCount === 1 ? '' : 's'}
+                  {formatLengthMm(m.heightMm, panelUnits)} · {wallCount} wall{wallCount === 1 ? '' : 's'}
                 </div>
                 {/* Edit / Duplicate / Delete — hidden by default to keep
                     the card compact; revealed on hover or when active so
@@ -340,6 +344,8 @@ function BrickTypeEditorModal({
   onCancel,
   curvedAvailable,
 }: BrickTypeEditorModalProps) {
+  const { settings: modalSettings } = useUserSettings()
+  const modalUnits = modalSettings.preferences.units
   const { library } = useBrickLibrary()
   const brickTypes = useMemo(
     () => Object.values(library).sort((a, b) => a.heightMm - b.heightMm),
@@ -475,8 +481,8 @@ function BrickTypeEditorModal({
             </h2>
             <p className="text-[11px] text-ink-500 mt-0.5">
               {courseRanges.length > 0
-                ? `Pattern-driven · ${courseRanges.length} band${courseRanges.length === 1 ? '' : 's'} · ${heightMm} mm`
-                : `${heightMm} mm`}
+                ? `Pattern-driven · ${courseRanges.length} band${courseRanges.length === 1 ? '' : 's'} · ${formatLengthMm(heightMm, modalUnits)}`
+                : formatLengthMm(heightMm, modalUnits)}
             </p>
           </div>
           <button
@@ -626,7 +632,7 @@ function BrickTypeEditorModal({
                 <option value="">— none (absorbed in body) —</option>
                 {brickTypes.map((t) => (
                   <option key={t.code} value={t.code}>
-                    {t.name} ({t.heightMm}mm tall)
+                    {t.name} ({formatLengthMm(t.heightMm, modalUnits)} tall)
                   </option>
                 ))}
               </select>
@@ -693,7 +699,7 @@ function BrickTypeEditorModal({
                 <option value="">— none (absorbed in body) —</option>
                 {brickTypes.map((t) => (
                   <option key={t.code} value={t.code}>
-                    {t.name} ({t.heightMm}mm tall)
+                    {t.name} ({formatLengthMm(t.heightMm, modalUnits)} tall)
                   </option>
                 ))}
               </select>
