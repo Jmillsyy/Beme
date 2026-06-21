@@ -104,6 +104,7 @@ import {
   createDefaultWallMakeup,
   getEffectiveWallThicknessMm,
   getMakeupHeightMm,
+  remapMakeupsForLibrary,
 } from '../lib/makeups'
 import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
 import type { BlockCode } from '../types/blocks'
@@ -3389,6 +3390,33 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // brick type's depth in the library panel.
   const { version: blockLibraryVersion } = useBlockLibrary()
   const { version: brickLibraryVersion } = useBrickLibrary()
+
+  /**
+   * Auto-migrate the in-memory project's wall makeups whenever the
+   * block library changes (region swap, manual edit, IndexedDB sync).
+   * RegionPicker already walks SAVED projects asynchronously after a
+   * swap, but the project currently loaded in this workspace lives in
+   * setMakeups state and would otherwise keep its stale codes until
+   * the user re-opened it. Effect: re-runs whenever the library
+   * version bumps; remapMakeupsForLibrary leaves valid codes alone
+   * and only rewrites codes that don't exist in the new library
+   * (looking up the original code's role to pick a replacement).
+   * Setter is a no-op when nothing changed (string-compare guard) so
+   * the effect doesn't loop on unrelated library edits.
+   */
+  useEffect(() => {
+    void blockLibraryVersion // dependency: re-run when library changes
+    setMakeups((prev) => {
+      const next = remapMakeupsForLibrary(prev, undefined, BLOCK_LIBRARY)
+      // Only commit when the migration actually changed something —
+      // a deep-equal check via JSON.stringify is cheap enough at the
+      // makeup-list scale (a handful of makeups per project) and
+      // avoids re-rendering every consumer when the swap was a no-op.
+      if (JSON.stringify(next) === JSON.stringify(prev)) return prev
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blockLibraryVersion])
 
   /**
    * Reasons drawing might be blocked. Independent of saveBlockedReason
