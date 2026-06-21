@@ -396,16 +396,30 @@ export function calculateCourseStack(
   }
   let bestUnder: Candidate | null = null
   let bestOver: Candidate | null = null
+  // Suppress hm71/hm140 module params from the dead-arg lint —
+  // the picker no longer considers HM courses (see below).
+  void hm140ModuleMm
+  void hm71ModuleMm
   for (let N = 0; N <= maxN; N++) {
-    for (const has71 of [false, true]) {
-      for (const has140 of [false, true]) {
+    // Height-makeup courses produce library-specific visual + tally
+    // behaviour: AU's 200mm modular needs none, US's CMU8-HH lands
+    // one short course, UK's CB-65 needs two coursing bricks. That
+    // inconsistency surprised users — same wall height, totally
+    // different stacks. Skip HM enumeration entirely so every
+    // library uses the same rule: pick the closest std-only stack,
+    // let joint scaling absorb the remainder. has71 / has140 stay
+    // FALSE on every candidate.
+    const has71 = false
+    const has140 = false
+    {
+      {
         const total =
           N * courseModuleMm +
-          (has71 ? hm71ModuleMm : 0) +
-          (has140 ? hm140ModuleMm : 0)
+          (has71 ? 0 : 0) +
+          (has140 ? 0 : 0)
         if (total <= 0) continue
         const dist = Math.abs(total - heightMm)
-        const nCourses = N + (has71 ? 1 : 0) + (has140 ? 1 : 0)
+        const nCourses = N
         const cand: Candidate = { N, has71, has140, total, dist, nCourses }
         if (total <= heightMm) {
           if (

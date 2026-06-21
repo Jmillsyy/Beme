@@ -902,16 +902,25 @@ export function convertMakeupToBands(
     type Cand = { N: number; has71: boolean; has140: boolean; total: number; dist: number; nCourses: number }
     let bestUnder: Cand | null = null
     let bestOver: Cand | null = null
+    // Height-makeup courses produce library-specific stacks that
+    // surprised users on multi-library projects (AU needs none, US
+    // one short course, UK two coursing bricks). Skip HM entirely so
+    // every library picks the closest std-only stack and lets joint
+    // scaling absorb the remainder; matches calculateCourseStack.
+    void HEIGHT_71
+    void HEIGHT_140
     for (let N = 0; N <= maxN; N++) {
-      for (const h71 of [false, true]) {
-        for (const h140 of [false, true]) {
+      const h71 = false
+      const h140 = false
+      {
+        {
           const total =
             N * COURSE +
-            (h71 ? HEIGHT_71 : 0) +
-            (h140 ? HEIGHT_140 : 0)
+            (h71 ? 0 : 0) +
+            (h140 ? 0 : 0)
           if (total <= 0) continue
           const dist = Math.abs(total - totalHeight)
-          const nCourses = N + (h71 ? 1 : 0) + (h140 ? 1 : 0)
+          const nCourses = N
           const cand: Cand = { N, has71: h71, has140: h140, total, dist, nCourses }
           if (total <= totalHeight) {
             if (!bestUnder || dist < bestUnder.dist || (dist === bestUnder.dist && nCourses < bestUnder.nCourses)) {
