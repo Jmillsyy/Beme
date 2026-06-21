@@ -2042,17 +2042,15 @@ export function planWallLayout(
   // values they tag their own height-makeup blocks and pickHeight-
   // MakeupBlock returns those instead — same as the rest of the
   // role-based resolution.
-  const courseFaceHeightMm = (type: CourseType, bodyBlockCode: BlockCode): number => {
-    switch (type) {
-      case 'height-71':
-        return 90
-      case 'height-140':
-        return 140
-      default: {
-        const block = BLOCK_LIBRARY[bodyBlockCode]
-        return block?.dimensions.heightMm ?? 190
-      }
-    }
+  // Course face height = the ACTUAL library block's face height,
+  // regardless of course type. Previously height-71 / height-140 courses
+  // hardcoded 90 / 140 mm — which forced a 92mm US CMU8-HH block to
+  // either stretch or leave a gap. Reading the library directly means
+  // the course slot matches the block that fills it; the wall height
+  // sums correctly from the actual block faces.
+  const courseFaceHeightMm = (_type: CourseType, bodyBlockCode: BlockCode): number => {
+    const block = BLOCK_LIBRARY[bodyBlockCode]
+    return block?.dimensions.heightMm ?? 190
   }
 
   const layout: WallLayout = {
@@ -2067,6 +2065,32 @@ export function planWallLayout(
   // Build courses metadata first (yBottom positions), then walk
   // again to lay blocks. Two passes keeps the per-course placement
   // logic from having to know about whatever course came before.
+  //
+  // Wall-height landing: when the stack picker's chosen combination
+  // lays to a total that doesn't match the user's requested heightMm
+  // exactly (the common case — block heights rarely divide cleanly
+  // into a round wall height), distribute the remainder across the
+  // mortar joints so the wall renders to heightMm exactly. Real
+  // masons do this with slightly thicker / thinner bed joints; the
+  // tally is unchanged (same whole blocks) so the calc / export
+  // numbers don't move. Without this, the renderer either overshoots
+  // (extra blocks) or undershoots (gap above the top course) — both
+  // of which surprise users who type "2400 mm" and expect 2400 mm.
+  const naturalFaceTotal = courses.reduce(
+    (sum, cs) => sum + courseFaceHeightMm(cs.type, cs.bodyBlock),
+    0,
+  )
+  // Mortar joints: one between each pair of courses (N courses → N-1
+  // joints between them). Adding the joints to the natural face
+  // total gives the wall's natural top-of-last-course height.
+  const naturalJointTotal = Math.max(0, courses.length - 1) * MORTAR_MM
+  const naturalWallHeight = naturalFaceTotal + naturalJointTotal
+  // Mortar-joint adjustment to absorb the gap. When the natural total
+  // is short of heightMm, joints widen; when over, joints thin (but
+  // we clamp to a minimum of 2mm so adjacent block faces don't fuse).
+  const jointCount = Math.max(1, courses.length - 1)
+  const jointDeltaMm = (heightMm - naturalWallHeight) / jointCount
+  const adjustedJointMm = Math.max(2, MORTAR_MM + jointDeltaMm)
   let yCursor = 0
   for (let i = 0; i < courses.length; i++) {
     const courseSpec = courses[i]
@@ -2078,9 +2102,20 @@ export function planWallLayout(
       yBottomMm: yCursor,
       heightMm: faceH,
     })
-    // Next course sits on a 10mm mortar bed above this one.
-    yCursor += faceH + MORTAR_MM
+    // Next course sits on an adjusted mortar bed above this one so
+    // the wall stack lands exactly on the user's heightMm. The LAST
+    // course doesn't carry a trailing joint (the wall stops at the
+    // top of the top block, not at a phantom joint above it).
+    if (i < courses.length - 1) {
+      yCursor += faceH + adjustedJointMm
+    } else {
+      yCursor += faceH
+    }
   }
+  // Update layout.heightMm to the actual rendered total (which now
+  // equals heightMm modulo float rounding) so downstream consumers
+  // size mortar shells / camera bounds to the visible wall.
+  layout.heightMm = yCursor
 
   // The wall-length re-fit machinery in calculateWallTally: when a
   // course carries a corner lead-in, the ends consume extra modular

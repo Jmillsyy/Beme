@@ -200,7 +200,6 @@ export function resolveWallCourses(
   )
 
   const courses: ResolvedCourse[] = []
-  let y = 0
   let courseNum = 1
   // Standard course module (block face + mortar) is 200 mm. Any band
   // whose modular height differs is a HEIGHT-MAKEUP band (20.71 at
@@ -209,6 +208,18 @@ export function resolveWallCourses(
   // 3D renders them with their own colour. The series-range body
   // override only applies to standard body courses.
   const STD_COURSE_MODULE_MM = 200
+  // Two-pass placement so we can size the joint mortar to land the
+  // wall exactly on heightMm. First pass: resolve every course's
+  // body code + face height into a flat list. Second pass: emit with
+  // adjusted joint mortar.
+  interface ResolvedCourseDraft {
+    courseNum: number
+    bodyCode: BlockCode
+    cornerCode: BlockCode
+    halfCode: BlockCode
+    faceHeightM: number
+  }
+  const drafts: ResolvedCourseDraft[] = []
   for (const band of bands) {
     if (band.count <= 0) continue
     // Pass the full CourseBand (not band.blockCode). BlockCode is
@@ -304,29 +315,53 @@ export function resolveWallCourses(
       const faceHeightMm = courseBlock
         ? courseBlock.dimensions.heightMm
         : Math.max(1, bandModuleMm - DEFAULT_MORTAR_JOINT_MM)
-      const courseModuleMm = faceHeightMm + DEFAULT_MORTAR_JOINT_MM
-      const faceHeightM = faceHeightMm / 1000
-      const courseModuleM = courseModuleMm / 1000
-      // No clamp — every course renders at the block's FULL face
-      // height so the wall is built out of consistent-sized blocks
-      // top to bottom. The user-set wall height is interpreted as a
-      // TARGET; the band-count picker upstream (convertMakeupToBands)
-      // already chooses the closest whole-course fit. If the chosen
-      // count's cumulative height differs from the target by mortar
-      // slop, the wall renders at the actual cumulative height —
-      // matching how a mason lays courses (you don't cut the top
-      // course down to hit an arbitrary 2400 mm number; you lay
-      // whole blocks and the wall ends at 11×204 or 12×204).
-      courses.push({
-        courseNumber: courseNum,
-        y0: y,
-        y1: y + faceHeightM,
+      drafts.push({
+        courseNum,
         bodyCode,
         cornerCode: curveCorner,
         halfCode: curveHalf,
+        faceHeightM: faceHeightMm / 1000,
       })
-      y += courseModuleM
       courseNum++
+    }
+  }
+  // Place drafts with a joint mortar tuned so the wall lands on the
+  // user's heightMm exactly. Each block face renders at its natural
+  // height (mason cuts to fit are unrealistic for full CMU); the
+  // remainder gets absorbed into slightly thicker / thinner mortar
+  // beds. Tally is unchanged — we're counting whole blocks regardless
+  // of joint thickness. Without this, a 2400mm wall with US CMU8
+  // (no clean fit) would render at the closest stack — 2346 or 2448
+  // depending on the picker — and the user would type 2400 and see
+  // something else.
+  const naturalFaceM = drafts.reduce((s, d) => s + d.faceHeightM, 0)
+  const jointCount = Math.max(0, drafts.length - 1)
+  const naturalJointM = jointCount * (DEFAULT_MORTAR_JOINT_MM / 1000)
+  const naturalTotalM = naturalFaceM + naturalJointM
+  const targetTotalM = heightMm / 1000
+  const standardJointM = DEFAULT_MORTAR_JOINT_MM / 1000
+  const minJointM = 0.002
+  const adjustedJointM =
+    jointCount > 0
+      ? Math.max(minJointM, standardJointM + (targetTotalM - naturalTotalM) / jointCount)
+      : standardJointM
+  let y = 0
+  for (let i = 0; i < drafts.length; i++) {
+    const d = drafts[i]
+    courses.push({
+      courseNumber: d.courseNum,
+      y0: y,
+      y1: y + d.faceHeightM,
+      bodyCode: d.bodyCode,
+      cornerCode: d.cornerCode,
+      halfCode: d.halfCode,
+    })
+    // Top of this block + joint mortar above it. Last course gets no
+    // trailing joint (the wall stops at the top of the top block).
+    if (i < drafts.length - 1) {
+      y += d.faceHeightM + adjustedJointM
+    } else {
+      y += d.faceHeightM
     }
   }
   // Cumulative height after laying every course. This is the wall's
