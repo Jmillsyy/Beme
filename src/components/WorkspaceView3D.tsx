@@ -2855,14 +2855,51 @@ function Scene({
       // For each mortar band, find the thinnest block depth that
       // overlaps the band's y-range. Mortar uses that depth so it
       // never extends past the narrowest course in the band.
+      //
+      // Bands that fall in the GAP between two courses (no course
+      // overlaps strictly) used to fall through to the wall-level
+      // default — which equals the MAX depth across the whole makeup.
+      // For a wall mixing 90mm body blocks with 190mm corner blocks,
+      // those gap bands got sized for 190mm depth and poked past the
+      // 90mm body face. Now: when no course overlaps, look at the
+      // nearest course on either side (the courses we sit BETWEEN)
+      // and use the thinner of the two. Falls through to the wall-
+      // level default only when the band genuinely sits outside every
+      // course (e.g. above the top course, below course 1).
       const minDepthForBand = (bandY0: number, bandY1: number): number => {
         if (!courses || courses.length === 0) return defaultMortarThick
         let minDepthMm: number | null = null
+        // First pass: any course that OVERLAPS this band.
         for (const c of courses) {
           if (c.y1 <= bandY0 + 0.001 || c.y0 >= bandY1 - 0.001) continue
           const d = library[c.bodyCode]?.dimensions.depthMm
           if (typeof d === 'number') {
             if (minDepthMm === null || d < minDepthMm) minDepthMm = d
+          }
+        }
+        // Second pass — gap bands (10mm mortar joint between courses)
+        // have no overlapping course. Find the course immediately
+        // BELOW (largest y1 still ≤ bandY0) and immediately ABOVE
+        // (smallest y0 still ≥ bandY1); use the thinner depth so the
+        // mortar joint tucks behind the narrower of the two
+        // sandwiching courses.
+        if (minDepthMm === null) {
+          let below: number | null = null
+          let above: number | null = null
+          for (const c of courses) {
+            const d = library[c.bodyCode]?.dimensions.depthMm
+            if (typeof d !== 'number') continue
+            if (c.y1 <= bandY0 + 0.001) {
+              if (below === null || d < below) below = d
+            } else if (c.y0 >= bandY1 - 0.001) {
+              if (above === null || d < above) above = d
+            }
+          }
+          if (below !== null || above !== null) {
+            minDepthMm = Math.min(
+              below ?? Number.POSITIVE_INFINITY,
+              above ?? Number.POSITIVE_INFINITY,
+            )
           }
         }
         return minDepthMm !== null
