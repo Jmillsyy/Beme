@@ -2666,7 +2666,14 @@ function Scene({
       try {
         const wallHeightMm =
           wall.heightMmOverride ?? getMakeupHeightMm(makeup)
-        const stack = calculateCourseStack(wallHeightMm)
+        const bodyHeightMm =
+          library[makeup.bodyBlockCode]?.dimensions.heightMm
+        const stack = calculateCourseStack(
+          wallHeightMm,
+          typeof bodyHeightMm === 'number'
+            ? bodyHeightMm + DEFAULT_MORTAR_JOINT_MM
+            : undefined,
+        )
         const courses = buildCourses(stack, makeup)
         for (const c of courses) {
           if (c.type === 'height-71' || c.type === 'height-140') {

@@ -347,19 +347,33 @@ export interface CourseStack {
  *   2850mm → 13 standard + 1× 20.71 + 1× 20.140 (exact, 2850)
  *   3050mm → 14 standard + 1× 20.71 + 1× 20.140 = 3050 (exact)
  */
-export function calculateCourseStack(heightMm: number): CourseStack {
+export function calculateCourseStack(
+  heightMm: number,
+  /**
+   * Optional standard course modular (face + mortar). When provided,
+   * replaces the hardcoded 200mm (AU 20.48: 190 + 10) so the stack
+   * counts courses for the actual block-in-use. Critical for libraries
+   * whose body block isn't 190mm tall — e.g. US CMU8 (194 + 10 = 204)
+   * needs N=11 + a height-makeup to land 2400 mm, not the N=12 the
+   * default would compute. Without this override, the 3D renderer
+   * emits one extra course beyond what the mortar shell covers (the
+   * mortar uses convertMakeupToBands which already body-derives its
+   * modular), producing a visible mortar gap at the wall top.
+   */
+  courseModuleMm: number = COURSE_MODULE_MM,
+): CourseStack {
   // Enumerate every reasonable combination and pick the smallest total
   // that's >= requested. Upper bound on N comes from a sanity-check
   // ceiling of the requested height plus enough headroom for both
   // makeup blocks; in practice all combinations fit inside a handful
   // of iterations.
-  const maxN = Math.ceil(heightMm / COURSE_MODULE_MM) + 2
+  const maxN = Math.ceil(heightMm / courseModuleMm) + 2
   let best: { N: number; has71: boolean; has140: boolean; total: number } | null = null
   for (let N = 0; N <= maxN; N++) {
     for (const has71 of [false, true]) {
       for (const has140 of [false, true]) {
         const total =
-          N * COURSE_MODULE_MM +
+          N * courseModuleMm +
           (has71 ? HEIGHT_MAKEUP_71_MM : 0) +
           (has140 ? HEIGHT_MAKEUP_140_MM : 0)
         if (total < heightMm) continue
@@ -374,7 +388,7 @@ export function calculateCourseStack(heightMm: number): CourseStack {
   // best is non-null because N=maxN with both makeup blocks comfortably
   // exceeds heightMm. Belt-and-braces fallback for paranoia:
   if (!best) {
-    const fallbackN = Math.ceil(heightMm / COURSE_MODULE_MM)
+    const fallbackN = Math.ceil(heightMm / courseModuleMm)
     return {
       standardCount: fallbackN,
       has71: false,
@@ -382,8 +396,8 @@ export function calculateCourseStack(heightMm: number): CourseStack {
       totalCourses: fallbackN,
       valid: false,
       requestedHeightMm: heightMm,
-      actualHeightMm: fallbackN * COURSE_MODULE_MM,
-      overageMm: fallbackN * COURSE_MODULE_MM - heightMm,
+      actualHeightMm: fallbackN * courseModuleMm,
+      overageMm: fallbackN * courseModuleMm - heightMm,
     }
   }
   return {
@@ -1935,7 +1949,17 @@ export function planWallLayout(
   }
 
   const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
-  const stack = calculateCourseStack(heightMm)
+  // Body-block-aware modular so the stack's course count matches the
+  // mortar shell's (which already body-derives via convertMakeupToBands).
+  // Without this, a non-AU body block produces a renderer/mortar offset
+  // — visible as missing mortar above the top course.
+  const bodyHeightForStack =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+  const courseModuleForStack =
+    typeof bodyHeightForStack === 'number'
+      ? bodyHeightForStack + MORTAR_MM
+      : undefined
+  const stack = calculateCourseStack(heightMm, courseModuleForStack)
   const plan = planWall(wall, makeup, thicknessByWallId, wallsById)
   const courses = buildCourses(stack, makeup)
   const lengthMm = wallLengthMm(wall, thicknessByWallId, wallsById)
@@ -2862,7 +2886,12 @@ export function calculateTiedPierTally(
   // (so a wall with 4×20.48 + 2×20.71 pattern reports 6 courses regardless
   // of what stack.totalCourses would say from the legacy 200mm-modular path).
   const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
-  const stack = calculateCourseStack(heightMm)
+  const bodyHeightMm =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+  const stack = calculateCourseStack(
+    heightMm,
+    typeof bodyHeightMm === 'number' ? bodyHeightMm + MORTAR_MM : undefined,
+  )
   const N =
     makeup.coursePattern && makeup.coursePattern.length > 0
       ? getCourseCount(makeup)
@@ -2997,7 +3026,14 @@ export function calculateProjectTally(
     // course, regardless of whether the wall course is a base, body, top, or height-makeup
     // row. Base-course tiles + cleanout layout around the pier are unaffected.
     const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
-    const stack = calculateCourseStack(heightMm)
+    const bodyHeightForStack =
+      BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+    const stack = calculateCourseStack(
+      heightMm,
+      typeof bodyHeightForStack === 'number'
+        ? bodyHeightForStack + MORTAR_MM
+        : undefined,
+    )
     const totalCourses =
       makeup.coursePattern && makeup.coursePattern.length > 0
         ? getCourseCount(makeup)
@@ -3076,7 +3112,14 @@ export function calculateCornerAdjustment(
     //    block IS the corner column — there's no separate corner column at
     //    that row. Subtract the height-makeup block itself.
     const heightMm = firstWall.heightMmOverride ?? getMakeupHeightMm(makeup)
-    const stack = calculateCourseStack(heightMm)
+    const bodyHeightForStack =
+      BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+    const stack = calculateCourseStack(
+      heightMm,
+      typeof bodyHeightForStack === 'number'
+        ? bodyHeightForStack + MORTAR_MM
+        : undefined,
+    )
     const courses = buildCourses(stack, makeup)
     if (courses.length <= 0) continue
 
