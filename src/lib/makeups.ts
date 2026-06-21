@@ -9,6 +9,7 @@ import {
   pickBaseCourse,
   pickBodyDefault,
   pickCornerBlock,
+  pickHalfBlock,
   pickHeightMakeupBlock,
   pickPierBlock,
   pickTopCourse,
@@ -335,11 +336,20 @@ export function resolveCourseBlocks(
     bodyBlockCode: range?.bodyBlockCode ?? makeup.bodyBlockCode,
     cornerBlockCode: range?.cornerBlockCode ?? makeup.cornerBlockCode,
     // Half-block resolution chain: range override → makeup override →
-    // explicit default (when passed) → body block.
+    // explicit default (when passed) → library role pick (e.g. any
+    // block tagged 'end-termination' with fraction 0.5) → body block.
+    //
+    // The library role pick matters for walls predating the
+    // halfBlockCode field, walls loaded from legacy templates, or any
+    // case where the makeup never explicitly named a half. Without it,
+    // the resolver falls straight to the body block — so the renderer
+    // emits the body code at half WIDTH on even free-end courses,
+    // producing a "cut corner" look instead of a proper half block.
     halfBlockCode:
       range?.halfBlockCode ??
       makeup.halfBlockCode ??
       defaults?.halfBlockCode ??
+      pickHalfBlock()?.code ??
       bodyFallback,
     baseCourseBlockCode: range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode,
     heightMakeup71BlockCode:
