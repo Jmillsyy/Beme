@@ -198,6 +198,48 @@ export function parseLengthInput(
     if (inches !== null) return inches * MM_PER_INCH
   }
 
+  // ── Imperial shorthand: space-separated values (no quote markers)
+  // When the user's units pref is imperial, accept ergonomic shorthand
+  // for feet-and-inches WITHOUT requiring the shift-heavy ' and "
+  // markers. Examples:
+  //   "8 6"         → 8 feet 6 inches      = 2590.8 mm
+  //   "8 6 1/2"     → 8 feet 6½ inches     = 2603.5 mm
+  //   "8 6.5"       → 8 feet 6.5 inches    = 2603.5 mm
+  //   "8 1/2"       → 8 feet ½ inch        = 2451.1 mm  (special case
+  //                   only when feet > 0 — without that guard "1/2"
+  //                   alone would be ambiguous with the inches-only
+  //                   path above)
+  //
+  // The shorthand only fires in imperial mode and only when there are
+  // multiple numeric tokens — single-number strings stay on the
+  // plain-number path below (where they're interpreted as inches).
+  if (units === 'imperial') {
+    // Feet + whole inches + fraction:  "8 6 1/2"
+    const feetInchFrac = s.match(/^(\d+)\s+(\d+)\s+(\d+)\/(\d+)$/)
+    if (feetInchFrac) {
+      const feet = parseInt(feetInchFrac[1], 10)
+      const inches = parseInt(feetInchFrac[2], 10)
+      const n = parseInt(feetInchFrac[3], 10)
+      const d = parseInt(feetInchFrac[4], 10)
+      if (d > 0) return (feet * 12 + inches + n / d) * MM_PER_INCH
+    }
+    // Feet + fraction-only inches:     "8 1/2"
+    const feetFrac = s.match(/^(\d+)\s+(\d+)\/(\d+)$/)
+    if (feetFrac) {
+      const feet = parseInt(feetFrac[1], 10)
+      const n = parseInt(feetFrac[2], 10)
+      const d = parseInt(feetFrac[3], 10)
+      if (d > 0) return (feet * 12 + n / d) * MM_PER_INCH
+    }
+    // Feet + whole-or-decimal inches:  "8 6"  or  "8 6.5"
+    const feetIn = s.match(/^(\d+)\s+(\d+(?:\.\d+)?)$/)
+    if (feetIn) {
+      const feet = parseInt(feetIn[1], 10)
+      const inches = parseFloat(feetIn[2])
+      return (feet * 12 + inches) * MM_PER_INCH
+    }
+  }
+
   // ── Plain number ────────────────────────────────────────────────
   // Interpreted per the units argument: mm in metric mode, inches in
   // imperial mode. This is the path most everyday inputs hit — the
