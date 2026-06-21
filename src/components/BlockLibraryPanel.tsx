@@ -22,35 +22,18 @@ import {
  */
 
 /**
- * Friendly label for a depth bucket. Pure depth → string mapping —
- * region presets just supply the names users in that region recognise.
- *
- * Tolerance windows (185–199 = 200-series, etc) catch slight regional
- * variants of the same nominal block: AU 200-series is 190mm, US 8" CMU
- * is 194mm — different bucket numbers, same conceptual category. Labels
- * group both names into one line so a US user sees "8-inch CMU (194mm)"
- * and an AU user sees "200-series (190mm)" but the underlying bucket is
- * just "depth = 194" or "depth = 190" with no preset state.
- *
- * Any depth outside the standard ranges falls back to "Custom 250mm"
- * style — keeps non-standard blocks visible without forcing them into
- * the wrong group.
+ * Label for a depth bucket. Pure depth → string mapping with no
+ * hardcoded series names or regional terminology. Whatever depth a
+ * block carries gets its own category; the label is just the depth
+ * value formatted as "190mm". A 194mm block makes a "194mm" group, a
+ * 220mm custom block makes a "220mm" group. The library reorganises
+ * itself any time a block is added or has its depth edited — no
+ * lookup table to maintain, no preset state, no naming opinions baked
+ * in. Users who want pretty names can rename a block (the name shows
+ * on the row) without affecting how the catalogue is grouped.
  */
 function labelForDepth(depthMm: number): string {
-  // 90mm AU 100-series / 4" US — same conceptual block, different
-  // regional name. The depth alone tells us which row of the catalogue
-  // it belongs in; the label puts the regional names side-by-side.
-  if (depthMm >= 85 && depthMm <= 99) return `100-series / 4-inch CMU (${depthMm}mm)`
-  if (depthMm >= 140 && depthMm <= 154) return `150-series / 6-inch CMU (${depthMm}mm)`
-  if (depthMm >= 185 && depthMm <= 199) return `200-series / 8-inch CMU (${depthMm}mm)`
-  if (depthMm >= 240 && depthMm <= 254) return `250-series / 10-inch CMU (${depthMm}mm)`
-  if (depthMm >= 285 && depthMm <= 299) return `300-series / 12-inch CMU (${depthMm}mm)`
-  if (depthMm >= 385 && depthMm <= 399) return `400-series / 16-inch CMU (${depthMm}mm)`
-  // Sub-standard depths (capping tiles, paired cleanout tiles) get
-  // their own bucket — they're typically thin units that bond to a
-  // face rather than form a wall on their own.
-  if (depthMm < 50) return `Tile / paired insert (${depthMm}mm)`
-  return `Custom (${depthMm}mm)`
+  return `${depthMm}mm`
 }
 
 const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
