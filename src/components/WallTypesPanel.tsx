@@ -2156,122 +2156,71 @@ function CompositionTab(props: CompositionTabProps) {
       )}
 
       <div
-        className={`space-y-6 ${
+        className={`space-y-4 ${
           isCurveMakeup && wedgeRequired
             ? 'opacity-40 pointer-events-none select-none'
             : ''
         }`}
       >
         {/* ── Wall depth ────────────────────────────────────────────
-            Sits at the very top because it sets the series for every
-            slot below. The body block's depth is the source of truth;
-            this picker just promotes that hidden side effect into an
-            explicit, named choice the user can make first. */}
+            Inline at the top — small dropdown + library link on one
+            line. Sets the series for every slot below. */}
         {!isCurveMakeup && availableDepths.length > 0 && (
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-2">
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="text-xs font-semibold uppercase tracking-wide text-ink-400">
               Wall depth
-            </h3>
-            <div className="max-w-xs">
-              <select
-                value={bodyDepthMm ?? ''}
-                onChange={(e) => handleWallDepthChange(Number(e.target.value))}
-                className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm"
-              >
-                {availableDepths.map((d) => (
-                  <option key={d} value={d}>
-                    {d}mm
-                  </option>
-                ))}
-              </select>
-              <p className="text-[11px] text-ink-500 mt-1.5 leading-snug">
-                Filters every block picker below to blocks at this depth
-                so the wall stays in one series. Add new depths in the{' '}
-                <Link
-                  to="/library"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-beme-400 hover:text-beme-300 underline"
-                >
-                  material library ↗
-                </Link>
-                .
-              </p>
-            </div>
-          </section>
+            </label>
+            <select
+              value={bodyDepthMm ?? ''}
+              onChange={(e) => handleWallDepthChange(Number(e.target.value))}
+              className="px-3 py-1.5 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm"
+            >
+              {availableDepths.map((d) => (
+                <option key={d} value={d}>
+                  {d}mm
+                </option>
+              ))}
+            </select>
+            <Link
+              to="/library"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] text-beme-400 hover:text-beme-300 underline ml-auto"
+            >
+              Manage depths ↗
+            </Link>
+          </div>
         )}
 
-        {/* ── Main course blocks ─────────────────────────────────────
-            Body is featured (full width) because it's the wall's heart
-            and the depth reference. Base and Top pair below — same
-            visual axis (vertical stack: bottom / middle / top). */}
+        {/* ── Block pickers ─────────────────────────────────────────
+            Single 2-column grid, ordered bottom → top of wall on the
+            left column, end terminations on the right. Reads as the
+            wall's actual structure:
+              Base    →   Full end
+              Body    →   Half end
+              Top     →   Cap (optional)
+            Bottom-to-top on the left mirrors how a mason lays the
+            courses; the right column groups the "horizontal" decisions
+            (how ends terminate, what trim caps the wall). No section
+            headers — labels carry the meaning, fewer rows to scroll. */}
         {!isCurveMakeup && (
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
-              Main course blocks
-            </h3>
-            <div className="space-y-3">
-              <BlockSelect
-                label="Body course block"
-                value={bodyBlockCode}
-                onChange={setBodyBlockCode}
-                options={slotSelectableBlocks}
-              />
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <BlockSelect
-                  label="Base course (bottom)"
-                  value={baseCourseBlockCode}
-                  onChange={setBaseCourseBlockCode}
-                  options={slotSelectableBlocks}
-                />
-                <BlockSelect
-                  label="Top course"
-                  value={topCourseBlockCode}
-                  onChange={setTopCourseBlockCode}
-                  options={slotSelectableBlocks}
-                />
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Curve makeup keeps Base / Top in their own row even though
-            Body is split into wedge/normal above. Same series-lock
-            applies. */}
-        {isCurveMakeup && (
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
-              Main course blocks
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <BlockSelect
-                label="Base course (bottom)"
-                value={baseCourseBlockCode}
-                onChange={setBaseCourseBlockCode}
-                options={slotSelectableBlocks}
-              />
-              <BlockSelect
-                label="Top course"
-                value={topCourseBlockCode}
-                onChange={setTopCourseBlockCode}
-                options={slotSelectableBlocks}
-              />
-            </div>
-          </section>
-        )}
-
-        {/* ── End terminations ───────────────────────────────────────
-            Paired because alternation between them IS the bond pattern
-            — picking them together makes the relationship obvious. */}
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
-            End terminations
-          </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <BlockSelect
+              label="Base course (bottom)"
+              value={baseCourseBlockCode}
+              onChange={setBaseCourseBlockCode}
+              options={slotSelectableBlocks}
+            />
             <BlockSelect
               label="Full end (corner)"
               value={cornerBlockCode}
               onChange={setCornerBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Body course"
+              value={bodyBlockCode}
+              onChange={setBodyBlockCode}
               options={slotSelectableBlocks}
             />
             <BlockSelect
@@ -2280,36 +2229,59 @@ function CompositionTab(props: CompositionTabProps) {
               onChange={setHalfBlockCode}
               options={slotSelectableBlocks}
             />
-          </div>
-          <p className="text-[11px] text-ink-500 mt-2 leading-snug">
-            Stretcher bond alternates between the two on consecutive
-            courses at free ends. Stack bond uses the full end on every
-            course.
-          </p>
-        </section>
-
-        {/* ── Optional cap tile ──────────────────────────────────────
-            Pulled below structural blocks because it's purely
-            decorative and not needed on most walls. */}
-        <section>
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
-            Optional
-          </h3>
-          <div className="max-w-xs">
             <BlockSelect
-              label="Cap tile"
+              label="Top course"
+              value={topCourseBlockCode}
+              onChange={setTopCourseBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Cap tile (optional)"
               value={capBlockCode}
               onChange={setCapBlockCode}
               options={slotSelectableBlocks}
               allowEmpty
             />
-            <p className="text-[11px] text-ink-500 mt-1.5 leading-snug">
-              Sits ON TOP of the top course — e.g. a 40mm capping tile.
-              Tallied at one tile per cap-width of wall length. Leave
-              "None" if the wall has no cap.
-            </p>
           </div>
-        </section>
+        )}
+
+        {/* Curve makeups split Body into wedge/normal pickers above,
+            so only Base / Top / Full end / Half end / Cap remain. */}
+        {isCurveMakeup && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <BlockSelect
+              label="Base course (bottom)"
+              value={baseCourseBlockCode}
+              onChange={setBaseCourseBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Full end (corner)"
+              value={cornerBlockCode}
+              onChange={setCornerBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Top course"
+              value={topCourseBlockCode}
+              onChange={setTopCourseBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Half end (free ends)"
+              value={halfBlockCode}
+              onChange={setHalfBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Cap tile (optional)"
+              value={capBlockCode}
+              onChange={setCapBlockCode}
+              options={slotSelectableBlocks}
+              allowEmpty
+            />
+          </div>
+        )}
       </div>
 
       {/* Block-library shortcut. The workspace no longer carries a
