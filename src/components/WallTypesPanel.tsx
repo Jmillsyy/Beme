@@ -924,6 +924,13 @@ export function WallTypeEditorModal({
   onSave,
   onCancel,
 }: WallTypeEditorModalProps) {
+  // User's units pref drives length formatting in the header summary
+  // (e.g. courses · 2400mm vs courses · 7'-10½"). Read here rather
+  // than via prop so the modal stays a leaf — it lifts the
+  // dependency from the parent WallTypesPanel only when actually
+  // needed.
+  const { settings: modalSettings } = useUserSettings()
+  const panelUnits = modalSettings.preferences.units
   // Field seeding: edits load the existing wall type; creates load the
   // chooser's template when one was picked. `existing` alone still
   // decides edit-vs-create semantics everywhere below.

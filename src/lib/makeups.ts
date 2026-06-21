@@ -335,6 +335,23 @@ export function resolveCourseBlocks(
   // uses: cut a body block to fit when there's no dedicated unit.
   const bodyCode = range?.bodyBlockCode ?? makeup.bodyBlockCode
   const bodyFallback = bodyCode
+  // Half slot needs a fraction-0.5 contract — corner blocks ALSO carry
+  // role 'end-termination' so a saved corner code would pass the
+  // generic depth-scoped check and end up rendering as a "half".
+  // halfRawHealed forces the saved code through pickHalfBlockIn (which
+  // filters by fraction === 0.5) before the depth-scoped fallback.
+  // Returns the saved code only if the block is a genuine half.
+  const resolveHalfStrict = (saved: BlockCode | undefined): BlockCode | undefined => {
+    if (!saved) return undefined
+    const block = BLOCK_LIBRARY[saved]
+    if (!block) return undefined
+    // The saved code is in the library — accept it only if it's
+    // tagged as fraction=0.5 (a proper half). Height-makeup blocks
+    // and corner blocks both fail this check, so they fall through
+    // to the library role pick below.
+    if (block.fraction === 0.5) return saved
+    return undefined
+  }
   // Depth-scoped healing for corner / half / base. The makeup's saved
   // code wins when its depth matches the body's (user's pick is
   // trusted). When the saved code doesn't match the body depth — e.g.
@@ -344,10 +361,14 @@ export function resolveCourseBlocks(
   // user wanted it on every slot so 'mixed series' can only happen via
   // an explicit override, not by accident.
   const cornerRaw = range?.cornerBlockCode ?? makeup.cornerBlockCode
+  // Strict half resolution: only trust a saved code if it has the
+  // half-block contract (fraction === 0.5). A saved code that's a
+  // corner or HM block falls through to pickHalfBlock(), which scans
+  // the library for the proper half.
   const halfRaw =
-    range?.halfBlockCode ??
-    makeup.halfBlockCode ??
-    defaults?.halfBlockCode ??
+    resolveHalfStrict(range?.halfBlockCode) ??
+    resolveHalfStrict(makeup.halfBlockCode) ??
+    resolveHalfStrict(defaults?.halfBlockCode) ??
     pickHalfBlock()?.code
   const baseRaw = range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode
   return {
@@ -468,19 +489,20 @@ export function remapMakeupForLibrary(
     makeup as WallMakeup & { baseCourseTileCode?: BlockCode }
   void _baseCourseTileCode
   // halfBlockCode needs a half-specific picker, NOT the generic
-  // 'end-termination' role lookup. Corner blocks ALSO have role
-  // 'end-termination' (so they qualify as ends at wall terminations),
-  // and in most libraries the corner block appears earlier in the
-  // iteration than the half. resolveBlockByRole returns the FIRST
-  // match → halves would be remapped to corner codes, and the 3D
-  // view would never emit any 'half' role boxes (the user's bug:
-  // 'why are half ends not rendering a different colour').
+  // 'end-termination' role lookup. Corner blocks AND height-makeup
+  // blocks can both end up satisfying 'end-termination' or share the
+  // body's depth — without enforcing the fraction === 0.5 contract,
+  // the migrated halfBlockCode lands on a corner code (CMU8-C) or a
+  // half-HEIGHT block (CMU8-HH), and the 3D view paints every "half"
+  // as a "Full end" because the role no longer reflects a real half.
   //
-  // pickHalfBlockIn enforces fraction === 0.5 so it skips corners
-  // and lands on the proper half block (CMU8-H in US, 20.03 in AU).
+  // remapHalf trusts the saved code ONLY if its block is fraction-0.5
+  // in the new library. Otherwise it falls through to pickHalfBlockIn
+  // which scans the library for the proper half.
   const remapHalf = (code: BlockCode | undefined): BlockCode | undefined => {
     if (!code) return code
-    if (newLibrary[code]) return code
+    const candidate = newLibrary[code]
+    if (candidate && candidate.fraction === 0.5) return code
     const halfPick = pickHalfBlockIn(newLibrary, settingsOpts ?? {})
     if (halfPick) return halfPick.code
     // Fall through to the generic remapper as a last resort.
