@@ -1609,7 +1609,25 @@ function WallDrawingLayerInner({
           e.key === ' '
         ) {
           e.preventDefault()
-          setTypedLengthMm((prev) => prev + e.key)
+          // Imperial space-promotion: while typing a wall length in
+          // imperial mode, SPACE on a bare number auto-inserts the
+          // feet marker (') so the user can lay out 12'-5 3/5 by
+          // tapping `12 5 3/5` instead of holding shift to reach '
+          // and ". Only fires when the current text is JUST digits +
+          // optional decimal — once any marker is present, fall
+          // through to a plain space.
+          const isImperial =
+            getUserSettings().preferences.units === 'imperial'
+          setTypedLengthMm((prev) => {
+            if (
+              e.key === ' ' &&
+              isImperial &&
+              /^\d+(?:\.\d+)?$/.test(prev.trimEnd())
+            ) {
+              return `${prev.trimEnd()}' `
+            }
+            return prev + e.key
+          })
           return
         }
         if (e.key === 'Backspace') {

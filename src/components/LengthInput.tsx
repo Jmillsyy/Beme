@@ -96,6 +96,38 @@ export default function LengthInput({
     onChangeMm(parsed)
   }
 
+  // Imperial space-promotion: in imperial mode, pressing SPACE while the
+  // input is just a number auto-inserts the feet marker (') so the user
+  // doesn't need shift-' to type 12 feet. Subsequent spaces between
+  // tokens (after feet, after inches, before fraction) pass through as
+  // plain delimiters because the parser already accepts the bare-space
+  // shorthand ("12 5 3/5" = 12 feet 5 5/3 inches).
+  //
+  // Examples (text shown after each keystroke):
+  //   Type 1            → "1"
+  //   Type 2            → "12"
+  //   Press space       → "12' "      ← apostrophe auto-inserted
+  //   Type 5            → "12' 5"
+  //   Press space       → "12' 5 "    ← next number is the fraction
+  //   Type 3, /, 5      → "12' 5 3/5"
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && onEnter) {
+      onEnter()
+      return
+    }
+    if (units !== 'imperial') return
+    if (e.key !== ' ') return
+    // Only auto-promote when the current text is JUST a number — that's
+    // the unambiguous "user is on the feet position" state. After
+    // markers are present, fall through to the default space behaviour.
+    const trimmed = text.trimEnd()
+    if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+      e.preventDefault()
+      const next = `${trimmed}' `
+      handleChange(next)
+    }
+  }
+
   return (
     <div className={`inline-flex items-stretch ${className ?? ''}`}>
       <input
@@ -115,11 +147,7 @@ export default function LengthInput({
           // a sloppy version ("8' 6.5").
           setText(formatLengthInputValue(valueMm, units))
         }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && onEnter) {
-            onEnter()
-          }
-        }}
+        onKeyDown={handleKeyDown}
         className="flex-1 min-w-0 px-3 py-2 border border-ink-600 rounded-l-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 disabled:bg-ink-800 disabled:text-ink-400 disabled:cursor-not-allowed"
       />
       <span className="inline-flex items-center px-2 border border-l-0 border-ink-600 rounded-r-lg text-xs text-ink-400 bg-ink-800 select-none">
