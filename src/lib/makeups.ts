@@ -815,22 +815,54 @@ export function convertMakeupToBands(
   const HEIGHT_71 = 100
   const HEIGHT_140 = 150
   const skipHeightMakeup = options?.skipHeightMakeup ?? false
-  // Mirror calculateCourseStack's logic without importing it (avoid the
-  // makeups → blockCalc dependency that doesn't exist today).
-  const stdCount = Math.floor(totalHeight / COURSE)
-  let remainder = totalHeight - stdCount * COURSE
+  // Mirror calculateCourseStack's enumeration (smallest total >= heightMm,
+  // tie-break by fewer total courses). The previous greedy pass —
+  // stdCount = floor(h/COURSE), then opportunistically add has140/has71
+  // — could land on a combination whose ACTUAL total height was BELOW
+  // requested (because the picked height-makeup block's real height
+  // didn't match the band's nominal HEIGHT_140/HEIGHT_71). When that
+  // happened, the mortar shell sized to this short total while
+  // planWallLayout (using calculateCourseStack) sized to the correct
+  // taller total — the visible 'mortar stops partway up the top course'
+  // gap.
+  let stdCount = 0
   let has140 = false
   let has71 = false
   if (!skipHeightMakeup) {
-    if (remainder >= HEIGHT_140) {
-      has140 = true
-      remainder -= HEIGHT_140
+    const maxN = Math.ceil(totalHeight / COURSE) + 2
+    let best:
+      | { N: number; has71: boolean; has140: boolean; total: number }
+      | null = null
+    for (let N = 0; N <= maxN; N++) {
+      for (const h71 of [false, true]) {
+        for (const h140 of [false, true]) {
+          const total =
+            N * COURSE +
+            (h71 ? HEIGHT_71 : 0) +
+            (h140 ? HEIGHT_140 : 0)
+          if (total < totalHeight) continue
+          if (!best || total < best.total) {
+            best = { N, has71: h71, has140: h140, total }
+          }
+        }
+      }
     }
-    if (remainder >= HEIGHT_71) {
-      has71 = true
-      remainder -= HEIGHT_71
+    if (best) {
+      stdCount = best.N
+      has140 = best.has140
+      has71 = best.has71
     }
+  } else {
+    // Preview-only path keeps the legacy greedy pass — preview rounding
+    // logic depends on `remainder` being separable from the body count.
+    stdCount = Math.floor(totalHeight / COURSE)
   }
+  let remainder =
+    totalHeight -
+    stdCount * COURSE -
+    (has140 ? HEIGHT_140 : 0) -
+    (has71 ? HEIGHT_71 : 0)
+  if (remainder < 0) remainder = 0
   // Resolve height-makeup blocks up-front so we know whether the active
   // library actually carries them. US / UK libraries typically DON'T
   // (height-makeup is an AU-specific construction practice — the rest
