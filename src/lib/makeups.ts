@@ -11,6 +11,7 @@ import {
   pickCornerBlock,
   pickDepthScopedSlotBlock,
   pickHalfBlock,
+  pickHalfBlockIn,
   pickHeightMakeupBlock,
   pickPierBlock,
   pickTopCourse,
@@ -466,13 +467,32 @@ export function remapMakeupForLibrary(
   const { baseCourseTileCode: _baseCourseTileCode, ...makeupWithoutTile } =
     makeup as WallMakeup & { baseCourseTileCode?: BlockCode }
   void _baseCourseTileCode
+  // halfBlockCode needs a half-specific picker, NOT the generic
+  // 'end-termination' role lookup. Corner blocks ALSO have role
+  // 'end-termination' (so they qualify as ends at wall terminations),
+  // and in most libraries the corner block appears earlier in the
+  // iteration than the half. resolveBlockByRole returns the FIRST
+  // match → halves would be remapped to corner codes, and the 3D
+  // view would never emit any 'half' role boxes (the user's bug:
+  // 'why are half ends not rendering a different colour').
+  //
+  // pickHalfBlockIn enforces fraction === 0.5 so it skips corners
+  // and lands on the proper half block (CMU8-H in US, 20.03 in AU).
+  const remapHalf = (code: BlockCode | undefined): BlockCode | undefined => {
+    if (!code) return code
+    if (newLibrary[code]) return code
+    const halfPick = pickHalfBlockIn(newLibrary, settingsOpts ?? {})
+    if (halfPick) return halfPick.code
+    // Fall through to the generic remapper as a last resort.
+    return r(code, 'end-termination')
+  }
   const next: WallMakeup = {
     ...makeupWithoutTile,
     baseCourseBlockCode: r(makeup.baseCourseBlockCode, 'base-course') ?? makeup.baseCourseBlockCode,
     bodyBlockCode: r(makeup.bodyBlockCode, 'body') ?? makeup.bodyBlockCode,
     topCourseBlockCode: r(makeup.topCourseBlockCode, 'top-course') ?? makeup.topCourseBlockCode,
     cornerBlockCode: r(makeup.cornerBlockCode, 'corner') ?? makeup.cornerBlockCode,
-    halfBlockCode: r(makeup.halfBlockCode, 'end-termination'),
+    halfBlockCode: remapHalf(makeup.halfBlockCode),
     capBlockCode: r(makeup.capBlockCode, 'cap'),
   }
 
