@@ -91,6 +91,7 @@ import {
   type ResolvedCourse,
   type WallSegmentBox,
 } from '../lib/wallSegments'
+import { ROLE_COLORS, ROLE_LABELS, type SlotRole } from '../lib/roleColors'
 
 // ---------- Constants ----------
 
@@ -699,6 +700,25 @@ function segmentsFromWallLayout(
       // the filler a touch so the owner's block always wins cleanly.
       const RENDER_ONLY_RECESS_M = 0.003
       const recess = w.block.renderOnly === true ? RENDER_ONLY_RECESS_M : 0
+      // Role classification: map the layout-block role + its course
+      // type onto our 6-role SlotRole vocabulary so the renderer can
+      // tint by role. Body blocks on the FIRST course inherit 'base';
+      // body blocks on the LAST course inherit 'top'; everything in
+      // between stays 'body'. End-half / corner pass through directly.
+      // Fraction / lead-in / paired-tile are visually body-like so
+      // they share the body hue.
+      let slotRole: SlotRole = 'body'
+      if (w.block.role === 'corner') {
+        slotRole = 'corner'
+      } else if (w.block.role === 'end-half') {
+        slotRole = 'half'
+      } else if (course.type === 'base') {
+        slotRole = 'base'
+      } else if (course.type === 'top') {
+        slotRole = 'top'
+      } else {
+        slotRole = 'body'
+      }
       boxes.push({
         cx: sx + dirX * localCx,
         cy: (aY0 + aY1) / 2 - (recess > 0 && aY1 > totalHeightM - 0.001 ? recess / 2 : 0),
@@ -707,7 +727,7 @@ function segmentsFromWallLayout(
         heightM: Math.max(0.01, aY1 - aY0 - (aY1 > totalHeightM - 0.001 ? recess : 0)),
         thickness: Math.max(0.01, perBlockThickness - recess * 2),
         yRotation,
-        color: colorOf(w.block.code),
+        color: ROLE_COLORS[slotRole],
         highlight: isHighlightedBlock(w.block.code, library),
         // Tag the box with its library block code so the legend pass
         // (which walks emitted boxes to figure out which codes are
@@ -716,7 +736,12 @@ function segmentsFromWallLayout(
         // was anonymous and the legend dropped them — the user saw
         // only one row even when several block types were rendering.
         code: w.block.code,
+        role: slotRole,
       })
+      // colorOf still in scope for fallbacks elsewhere; reference it
+      // so the unused-import linter doesn't complain when this path
+      // stops calling it directly.
+      void colorOf
     }
   }
 
@@ -760,9 +785,10 @@ function segmentsFromWallLayout(
         heightM: capHeightM - 0.001,
         thickness: thickness - 0.001,
         yRotation,
-        color: colorOf(capCode),
+        color: ROLE_COLORS.cap,
         highlight: isHighlightedBlock(capCode, library),
         code: capCode,
+        role: 'cap',
       })
     }
   }
@@ -4844,10 +4870,30 @@ function Scene({
     // Wedges don't carry a code (curved walls strip it during the
     // box → wedge transform); we reverse-lookup the colour against
     // colorMap so a wedge contributes its source code to the set.
+    // Role-keyed legend collection: for each emitted box, take the
+    // (role, code) pair and add a legend entry with the role's hue
+    // and the code as the label. Multiple codes in the same role
+    // (different wall types using different body blocks) each get
+    // their own row so the user can tell which code is filling
+    // which role on which wall type. Boxes without a role tag
+    // (legacy emitters, mortar, etc.) fall back to a code-keyed
+    // entry under the body hue.
     const usedCodes = new Set<string>()
+    const codes = new Map<string, string>()
     for (const box of out) {
-      if (box.code && !box.code.startsWith('__')) {
+      if (!box.code || box.code.startsWith('__')) continue
+      if (box.role) {
+        // Combine role + code into a unique key so the same code can
+        // appear under different roles (rare but possible) without
+        // overwriting.
+        const key = `${box.role}:${box.code}`
+        if (!codes.has(key)) codes.set(key, ROLE_COLORS[box.role])
         usedCodes.add(box.code)
+      } else {
+        usedCodes.add(box.code)
+        // Fall back to per-code palette colour for legacy paths.
+        const color = colorMap.get(box.code)
+        if (color && !codes.has(box.code)) codes.set(box.code, color)
       }
     }
     const colorToCode = new Map<string, string>()
@@ -4856,12 +4902,10 @@ function Scene({
     }
     for (const wedge of outWedges) {
       const code = colorToCode.get(wedge.color)
-      if (code && !code.startsWith('__')) usedCodes.add(code)
-    }
-    const codes = new Map<string, string>()
-    for (const code of usedCodes) {
-      const color = colorMap.get(code)
-      if (color) codes.set(code, color)
+      if (code && !code.startsWith('__') && !usedCodes.has(code)) {
+        usedCodes.add(code)
+        if (!codes.has(code)) codes.set(code, wedge.color)
+      }
     }
     for (const wall of walls) {
       if (wall.trade !== 'brick') continue
@@ -5194,29 +5238,67 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const [resolvedCodes, setResolvedCodes] = useState<Map<string, string>>(
     () => new Map()
   )
+  // Stable ordering for role-keyed legend entries: bottom-of-wall
+  // up, matching how a mason would build the wall. Codes within the
+  // same role keep their alphabetical order so two body codes from
+  // different wall types group together visibly.
+  const roleSortOrder: Record<string, number> = {
+    base: 0,
+    body: 1,
+    top: 2,
+    corner: 3,
+    half: 4,
+    cap: 5,
+  }
   const legendItems = useMemo(() => {
     return Array.from(resolvedCodes.entries())
-      .map(([code, color]) => {
+      .map(([key, color]) => {
         // Wall-type entries (prefix `wt:<makeupId>`) resolve their
         // label off the brick makeups list — display the user-facing
         // wall type name, not the synthetic id. Falls back to a
         // generic 'Wall' label when the makeup has been deleted but
         // a render is still using its colour mid-state-update.
-        if (code.startsWith('wt:')) {
-          const makeupId = code.slice(3)
+        if (key.startsWith('wt:')) {
+          const makeupId = key.slice(3)
           const name = props.brickMakeupsById[makeupId]?.name
-          return { code, label: name ?? 'Wall type', color }
+          return { code: key, label: name ?? 'Wall type', color, sortKey: `z:${name ?? key}` }
         }
+        // Role-keyed entries (`role:code`) — show the role label +
+        // the code so the user can tell which block is filling which
+        // slot. Single colour per role (matches the 3D tint and the
+        // 2D preview hue).
+        if (
+          key.startsWith('body:') ||
+          key.startsWith('corner:') ||
+          key.startsWith('half:') ||
+          key.startsWith('base:') ||
+          key.startsWith('top:') ||
+          key.startsWith('cap:')
+        ) {
+          const [role, ...rest] = key.split(':')
+          const code = rest.join(':')
+          const codeLabel =
+            props.library[code]?.name ?? BRICK_LIBRARY[code]?.name ?? code
+          const roleLabel = ROLE_LABELS[role as SlotRole]
+          return {
+            code: key,
+            label: `${roleLabel} · ${codeLabel}`,
+            color,
+            sortKey: `${roleSortOrder[role] ?? 9}:${codeLabel}`,
+          }
+        }
+        const codeLabel =
+          props.library[key]?.name ?? BRICK_LIBRARY[key]?.name ?? key
         return {
-          code,
-          label:
-            props.library[code]?.name ??
-            BRICK_LIBRARY[code]?.name ??
-            code,
+          code: key,
+          label: codeLabel,
           color,
+          sortKey: `y:${codeLabel}`,
         }
       })
-      .sort((a, b) => a.label.localeCompare(b.label))
+      .sort((a, b) => a.sortKey.localeCompare(b.sortKey))
+      .map(({ code, label, color }) => ({ code, label, color }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedCodes, props.library, props.brickMakeupsById])
 
   // Snapshots: captured 3D viewport PNGs the user queued for the

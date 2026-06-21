@@ -43,36 +43,9 @@ import {
   resolveCourseBlocks,
 } from '../lib/makeups'
 import { bandColor } from '../lib/blockColors'
+import { ROLE_COLORS, ROLE_LABELS, type SlotRole } from '../lib/roleColors'
 import LengthInput from './LengthInput'
 import LibraryGuidance from './LibraryGuidance'
-
-// ─── Role colours ────────────────────────────────────────────────────
-// Stable role → colour mapping used by the wall preview, the slot
-// picker dots, and the legend. Role identity is fixed; whatever block
-// CODE the user picks for that slot inherits the role's colour in the
-// preview. Lets a user glance at the preview and know "the red blocks
-// are corners" regardless of which code they put in the corner slot.
-//
-// Distinct vivid hues — each ~60° apart on the wheel so they read as
-// six clearly different roles even at a glance. Pulled from Tailwind's
-// 500-ish range so they sit well on the dark ink background.
-type SlotRole = 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
-const ROLE_COLORS: Record<SlotRole, string> = {
-  body: '#3B82F6',   // blue-500
-  corner: '#EF4444', // red-500
-  half: '#10B981',   // emerald-500
-  base: '#F59E0B',   // amber-500
-  top: '#8B5CF6',    // violet-500
-  cap: '#EC4899',    // pink-500
-}
-const ROLE_LABELS: Record<SlotRole, string> = {
-  body: 'Body',
-  corner: 'Full end',
-  half: 'Half end',
-  base: 'Base',
-  top: 'Top',
-  cap: 'Cap',
-}
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]

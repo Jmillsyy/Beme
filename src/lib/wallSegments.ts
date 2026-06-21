@@ -19,6 +19,7 @@ import { pickDepthScopedSlotBlockIn } from '../data/blockLibrary'
 import { selectBlockLintel } from './lintels'
 import { outerEdgeEndpoints } from './wallGeom'
 import type { CornerOwnership } from './blockCalc'
+import { ROLE_COLORS } from './roleColors'
 
 /** Head gap (mm) used by the renderer's window auto-anchoring. */
 export const RENDER_HEAD_GAP_FROM_TOP_MM = 300
@@ -410,6 +411,13 @@ export interface WallSegmentBox {
   /** 1-based wall course this box belongs to. Block cells only —
    *  lintel / gap-fill boxes span courses and leave it undefined. */
   courseNumber?: number
+  /** Masonry role this box plays — drives the role-based colour
+   *  scheme in the 3D view (body/corner/half/base/top/cap each get
+   *  their own fixed hue). Optional: mortar-fill / cap-tile producers
+   *  and any pre-existing emitter that hasn't been updated leave it
+   *  unset, in which case the renderer falls back to `bandColor(code)`
+   *  for that specific box. */
+  role?: 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
 }
 
 /**
@@ -597,7 +605,8 @@ export function segmentsForStraightWall(
     y1: number,
     color: string,
     code: BlockCode,
-    courseNumber?: number
+    courseNumber?: number,
+    role?: WallSegmentBox['role'],
   ): WallSegmentBox => {
     const halfGap = MORTAR_GAP_M / 2
     // Clamp to effective wall extent (= wall length minus any control-
@@ -645,6 +654,7 @@ export function segmentsForStraightWall(
       highlight: isHighlightedBlock(code, library),
       code,
       courseNumber,
+      role,
     }
   }
 
@@ -826,6 +836,12 @@ export function segmentsForStraightWall(
     color: string
     s0: number
     s1: number
+    /** For END cells, whether it's a corner block or a half block —
+     *  the bond rule decides per-side per-course (stretcher even
+     *  free-ends use halves; everything else corners). Drives the 3D
+     *  role-colour assignment so half blocks render emerald-green
+     *  and corner blocks red. */
+    endKind?: 'corner' | 'half'
   }
   interface CourseEntry {
     course: ResolvedCourse
@@ -1188,6 +1204,7 @@ export function segmentsForStraightWall(
             color: leftEndColor,
             s0: 0,
             s1: rightStart,
+            endKind: useHalfLeft ? 'half' : 'corner',
           })
         } else if (!renderLeftEnd && rightStart > leftEndWidth + 0.02) {
           // Non-owning cube: perpendicular wall covers [0, leftEndWidth].
@@ -1207,6 +1224,7 @@ export function segmentsForStraightWall(
             color: rightEndColor,
             s0: rightStart,
             s1: length,
+            endKind: useHalfRight ? 'half' : 'corner',
           })
         }
       } else if (rightHasCornerJunction && !leftHasCornerJunction) {
@@ -1224,6 +1242,7 @@ export function segmentsForStraightWall(
             color: leftEndColor,
             s0: 0,
             s1: leftEnd,
+            endKind: useHalfLeft ? 'half' : 'corner',
           })
         }
         const rightCellStart = leftEnd
@@ -1234,6 +1253,7 @@ export function segmentsForStraightWall(
             color: rightEndColor,
             s0: rightCellStart,
             s1: length,
+            endKind: useHalfRight ? 'half' : 'corner',
           })
         } else if (!renderRightEnd && (length - rightEndWidth) - leftEnd > 0.02) {
           // Non-owning right cube: perpendicular wall covers [length-rightEndWidth, length].
@@ -1256,6 +1276,7 @@ export function segmentsForStraightWall(
             color: leftEndColor,
             s0: 0,
             s1: leftEndWidth,
+            endKind: useHalfLeft ? 'half' : 'corner',
           })
         }
         if (length - leftEndWidth > 0.02) {
@@ -1276,6 +1297,7 @@ export function segmentsForStraightWall(
           color: leftEndColor,
           s0: 0,
           s1: leftEndWidth,
+          endKind: useHalfLeft ? 'half' : 'corner',
         })
       }
       // Cut block after the corner on owning courses — gets the body
@@ -1339,6 +1361,7 @@ export function segmentsForStraightWall(
           color: rightEndColor,
           s0: length - rightEndWidth,
           s1: length,
+          endKind: useHalfRight ? 'half' : 'corner',
         })
       }
       // Suppress unused-var lint for bodyDepthM (kept for future use).
@@ -1699,9 +1722,34 @@ export function segmentsForStraightWall(
   // full-height cell. Each sub-band box still carries the cell's code
   // and course, so the tally counts the cut blocks like any others.
   const MIN_BAND_M = 0.03
+  const totalCourses = courses.length
+  // Map a cell's role (END/BODY/JAMB) + its course position onto the
+  // 3D SlotRole. END cells already carry endKind (corner/half); body /
+  // jamb cells take their colour from the course's vertical position
+  // — base on course 1, top on the last course, body everywhere else.
+  // Returns the role + the role-colour override so every box gets a
+  // hue that matches the 2D preview and the picker dots.
+  type SlotR = 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
+  const roleForCell = (
+    cell: Cell,
+    courseNumber: number,
+  ): { role: SlotR; color: string } => {
+    let role: SlotR
+    if (cell.role === 'END') {
+      role = cell.endKind ?? 'corner'
+    } else if (courseNumber === 1) {
+      role = 'base'
+    } else if (courseNumber === totalCourses) {
+      role = 'top'
+    } else {
+      role = 'body'
+    }
+    return { role, color: ROLE_COLORS[role] }
+  }
   for (const { course, cells } of grid) {
     for (const cell of cells) {
       if (cell.role === 'REMOVED') continue
+      const { role, color } = roleForCell(cell, course.courseNumber)
       // Partial-overlap openings crossing this cell's x-range.
       const partials = wallOpenings.filter(
         (op) =>
@@ -1716,8 +1764,8 @@ export function segmentsForStraightWall(
       if (partials.length === 0) {
         boxes.push(
           buildBox(
-            cell.s0, cell.s1, course.y0, course.y1, cell.color, cell.code,
-            course.courseNumber
+            cell.s0, cell.s1, course.y0, course.y1, color, cell.code,
+            course.courseNumber, role
           )
         )
         continue
@@ -1740,8 +1788,8 @@ export function segmentsForStraightWall(
         if (!inOpening) {
           boxes.push(
             buildBox(
-              x0, x1, course.y0, course.y1, cell.color, cell.code,
-              course.courseNumber
+              x0, x1, course.y0, course.y1, color, cell.code,
+              course.courseNumber, role
             )
           )
           continue
@@ -1751,8 +1799,8 @@ export function segmentsForStraightWall(
         if (lowTop - course.y0 >= MIN_BAND_M) {
           boxes.push(
             buildBox(
-              x0, x1, course.y0, lowTop, cell.color, cell.code,
-              course.courseNumber
+              x0, x1, course.y0, lowTop, color, cell.code,
+              course.courseNumber, role
             )
           )
         }
@@ -1761,8 +1809,8 @@ export function segmentsForStraightWall(
         if (course.y1 - highBottom >= MIN_BAND_M) {
           boxes.push(
             buildBox(
-              x0, x1, highBottom, course.y1, cell.color, cell.code,
-              course.courseNumber
+              x0, x1, highBottom, course.y1, color, cell.code,
+              course.courseNumber, role
             )
           )
         }
