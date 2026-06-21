@@ -1737,6 +1737,13 @@ export function segmentsForStraightWall(
     let role: SlotR
     if (cell.role === 'END') {
       role = cell.endKind ?? 'corner'
+    } else if (cell.role === 'JAMB') {
+      // Jamb blocks at opening reveals are end terminations — they
+      // have a finished short face visible inside the opening (same
+      // job a corner block does at a wall end). Render them with the
+      // corner role so the user can see at a glance which blocks are
+      // the jamb reveals vs. the body grid.
+      role = 'corner'
     } else if (courseNumber === 1) {
       role = 'base'
     } else if (courseNumber === totalCourses) {
