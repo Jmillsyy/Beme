@@ -91,7 +91,7 @@ import {
   type ResolvedCourse,
   type WallSegmentBox,
 } from '../lib/wallSegments'
-import { ROLE_COLORS, type SlotRole } from '../lib/roleColors'
+import { ROLE_COLORS, ROLE_LABELS, type SlotRole } from '../lib/roleColors'
 
 // ---------- Constants ----------
 
@@ -2549,9 +2549,9 @@ function Scene({
   planTexture: { texture: THREE.Texture; widthM: number; heightM: number } | null
   theme: Theme
   palette: PaletteName
-  onResolvedCodes: (codes: Map<string, string>) => void
+  onResolvedCodes: (codes: Map<string, string>, roles?: Map<string, SlotRole>) => void
 }) {
-  const { segments, wedges, mortarShells, capMeshes, brickWallFaces, segmentBounds, resolvedCodes } = useMemo(() => {
+  const { segments, wedges, mortarShells, capMeshes, brickWallFaces, segmentBounds, resolvedCodes, resolvedRoles } = useMemo(() => {
     // First pass: resolve each wall's per-course composition so we know
     // every block code (body + corner + half) that'll appear in the 3D
     // view. Codes are coloured via the pure-hash `bandColor`, so the
@@ -4870,18 +4870,23 @@ function Scene({
     // Wedges don't carry a code (curved walls strip it during the
     // box → wedge transform); we reverse-lookup the colour against
     // colorMap so a wedge contributes its source code to the set.
-    // Legend collection: one entry per unique block CODE — the role
-    // colouring lives on the 3D cells, but the legend shows the user's
-    // library blocks by name so they can map "what is this orange
-    // block" → "that's the base course block 20.45". When a code
-    // appears in multiple roles (e.g. CMU8-C used as both body AND
-    // corner), the legend shows the first role's colour seen — the
-    // user can scan the actual wall to see the role assignment.
+    // Legend collection: one entry per unique block CODE. The role
+    // colouring lives on the 3D cells, and the legend now ALSO carries
+    // each code's role so the swatch + role label make the colour
+    // scheme self-explanatory ("the blue blocks are body blocks, the
+    // red ones are full ends, etc"). When a code appears in multiple
+    // roles (e.g. CMU8-C used as both body AND corner), we keep the
+    // first role we saw — the user can scan the actual wall to see
+    // the role mapping at every position.
     const usedCodes = new Set<string>()
     const codes = new Map<string, string>()
+    const rolesByCode = new Map<string, SlotRole>()
     for (const box of out) {
       if (!box.code || box.code.startsWith('__')) continue
       usedCodes.add(box.code)
+      if (!rolesByCode.has(box.code) && box.role) {
+        rolesByCode.set(box.code, box.role as SlotRole)
+      }
       if (codes.has(box.code)) continue
       const color = box.role
         ? ROLE_COLORS[box.role]
@@ -4938,6 +4943,7 @@ function Scene({
       brickWallFaces: outBrickWallFaces,
       segmentBounds: bounds,
       resolvedCodes: codes,
+      resolvedRoles: rolesByCode,
     }
   }, [
     walls,
@@ -4956,9 +4962,11 @@ function Scene({
 
   // Bubble the resolved code/colour map up to the parent so it can
   // render the legend overlay matching exactly what's in the scene.
+  // Roles tag-along so the legend can show 'body / corner / half'
+  // beside each code without re-deriving them from box geometry.
   useEffect(() => {
-    onResolvedCodes(resolvedCodes)
-  }, [resolvedCodes, onResolvedCodes])
+    onResolvedCodes(resolvedCodes, resolvedRoles)
+  }, [resolvedCodes, resolvedRoles, onResolvedCodes])
 
   return (
     <>
@@ -5230,6 +5238,9 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
   const [resolvedCodes, setResolvedCodes] = useState<Map<string, string>>(
     () => new Map()
   )
+  const [resolvedRoles, setResolvedRoles] = useState<Map<string, SlotRole>>(
+    () => new Map()
+  )
   const legendItems = useMemo(() => {
     return Array.from(resolvedCodes.entries())
       .map(([code, color]) => {
@@ -5241,8 +5252,9 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
         if (code.startsWith('wt:')) {
           const makeupId = code.slice(3)
           const name = props.brickMakeupsById[makeupId]?.name
-          return { code, label: name ?? 'Wall type', color }
+          return { code, label: name ?? 'Wall type', color, role: undefined as SlotRole | undefined }
         }
+        const role = resolvedRoles.get(code)
         return {
           code,
           label:
@@ -5250,10 +5262,11 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
             BRICK_LIBRARY[code]?.name ??
             code,
           color,
+          role,
         }
       })
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [resolvedCodes, props.library, props.brickMakeupsById])
+  }, [resolvedCodes, resolvedRoles, props.library, props.brickMakeupsById])
 
   // Snapshots: captured 3D viewport PNGs the user queued for the
   // export. STATE IS OWNED BY PdfWorkspace and threaded in through
@@ -5522,7 +5535,10 @@ export default function WorkspaceView3D(props: WorkspaceView3DProps) {
                 planTexture={planTexture}
                 theme={theme}
                 palette={palette}
-                onResolvedCodes={setResolvedCodes}
+                onResolvedCodes={(codes, roles) => {
+                  setResolvedCodes(codes)
+                  if (roles) setResolvedRoles(roles)
+                }}
               />
             </Suspense>
           </Canvas>
@@ -5800,7 +5816,7 @@ function NavStylePicker({
 function BlockLegend({
   items,
 }: {
-  items: Array<{ code: string; label: string; color: string }>
+  items: Array<{ code: string; label: string; color: string; role?: SlotRole }>
 }) {
   return (
     <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[60vh] overflow-y-auto min-w-[120px]">
@@ -5815,16 +5831,26 @@ function BlockLegend({
           // rows keep the secondary code so estimators can match a
           // colour to the underlying material code.
           const isWallTypeRow = it.code.startsWith('wt:')
+          // Role label — when set, sits between the swatch and the
+          // block name so the colour scheme self-documents: "the red
+          // blocks are full ends, the blue ones are body". Without
+          // it the user could only guess what each colour meant.
+          const roleLabel = it.role ? ROLE_LABELS[it.role] : null
           return (
             <li
               key={it.code}
               className="flex items-center gap-2 px-2 py-1 leading-tight"
-              title={isWallTypeRow ? it.label : it.code}
+              title={isWallTypeRow ? it.label : `${roleLabel ? `${roleLabel} · ` : ''}${it.code}`}
             >
               <span
                 className="inline-block w-3 h-3 rounded-sm border border-ink-600/60 flex-shrink-0"
                 style={{ backgroundColor: it.color }}
               />
+              {roleLabel && (
+                <span className="text-ink-300 text-[10px] flex-shrink-0">
+                  {roleLabel}
+                </span>
+              )}
               <span className="text-ink-100 truncate">{it.label}</span>
               {!isWallTypeRow && (
                 <span className="text-ink-500 text-[10px] ml-auto pl-1 flex-shrink-0">
