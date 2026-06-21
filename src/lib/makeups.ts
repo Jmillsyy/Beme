@@ -821,27 +821,45 @@ export function convertMakeupToBands(
   const bodyBlockHeightMm =
     BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm ?? 190
   const COURSE = bodyBlockHeightMm + DEFAULT_MORTAR_MM
-  const HEIGHT_71 = 100
-  const HEIGHT_140 = 150
   const skipHeightMakeup = options?.skipHeightMakeup ?? false
-  // Mirror calculateCourseStack's enumeration (smallest total >= heightMm,
-  // tie-break by fewer total courses). The previous greedy pass —
-  // stdCount = floor(h/COURSE), then opportunistically add has140/has71
-  // — could land on a combination whose ACTUAL total height was BELOW
-  // requested (because the picked height-makeup block's real height
-  // didn't match the band's nominal HEIGHT_140/HEIGHT_71). When that
-  // happened, the mortar shell sized to this short total while
-  // planWallLayout (using calculateCourseStack) sized to the correct
-  // taller total — the visible 'mortar stops partway up the top course'
-  // gap.
+  // Library-aware HM heights — picked first so the stack scorer
+  // compares against what will really render, not nominal AU values.
+  // Falls through to the AU defaults (100 / 150) when the library has
+  // no HM blocks at all (the band ends up skipped downstream because
+  // heightMakeup150/100 stay undefined).
+  const bodyDepthMm = BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+  const matchExactHeight = makeup.matchExactHeight ?? true
+  const hm140Block =
+    !skipHeightMakeup
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(150, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: 140 } }
+      : undefined
+  const hm71Block =
+    !skipHeightMakeup
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(100, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: 90 } }
+      : undefined
+  const HEIGHT_140 = hm140Block
+    ? hm140Block.dimensions.heightMm + DEFAULT_MORTAR_MM
+    : 150
+  const HEIGHT_71 = hm71Block
+    ? hm71Block.dimensions.heightMm + DEFAULT_MORTAR_MM
+    : 100
+  // Closest-fit-under-target scoring, matching calculateCourseStack.
+  // Picks the combo whose total is closest to but not above totalHeight
+  // — undershooting with a height-makeup band beats overshooting with
+  // an extra standard course. Falls back to smallest overshoot if no
+  // combo fits under.
   let stdCount = 0
   let has140 = false
   let has71 = false
   if (!skipHeightMakeup) {
     const maxN = Math.ceil(totalHeight / COURSE) + 2
-    let best:
-      | { N: number; has71: boolean; has140: boolean; total: number }
-      | null = null
+    type Cand = { N: number; has71: boolean; has140: boolean; total: number; dist: number; nCourses: number }
+    let bestUnder: Cand | null = null
+    let bestOver: Cand | null = null
     for (let N = 0; N <= maxN; N++) {
       for (const h71 of [false, true]) {
         for (const h140 of [false, true]) {
@@ -849,13 +867,23 @@ export function convertMakeupToBands(
             N * COURSE +
             (h71 ? HEIGHT_71 : 0) +
             (h140 ? HEIGHT_140 : 0)
-          if (total < totalHeight) continue
-          if (!best || total < best.total) {
-            best = { N, has71: h71, has140: h140, total }
+          if (total <= 0) continue
+          const dist = Math.abs(total - totalHeight)
+          const nCourses = N + (h71 ? 1 : 0) + (h140 ? 1 : 0)
+          const cand: Cand = { N, has71: h71, has140: h140, total, dist, nCourses }
+          if (total <= totalHeight) {
+            if (!bestUnder || dist < bestUnder.dist || (dist === bestUnder.dist && nCourses < bestUnder.nCourses)) {
+              bestUnder = cand
+            }
+          } else {
+            if (!bestOver || dist < bestOver.dist || (dist === bestOver.dist && nCourses < bestOver.nCourses)) {
+              bestOver = cand
+            }
           }
         }
       }
     }
+    const best = bestUnder ?? bestOver
     if (best) {
       stdCount = best.N
       has140 = best.has140
@@ -872,40 +900,11 @@ export function convertMakeupToBands(
     (has140 ? HEIGHT_140 : 0) -
     (has71 ? HEIGHT_71 : 0)
   if (remainder < 0) remainder = 0
-  // Resolve height-makeup blocks up-front so we know whether the active
-  // library actually carries them. US / UK libraries typically DON'T
-  // (height-makeup is an AU-specific construction practice — the rest
-  // of the world bedts in extra mortar to make up oddments). If a
-  // height-makeup band isn't available, skip the corresponding course
-  // entirely rather than emit a code that doesn't exist in the library.
-  // skipHeightMakeup short-circuits these picks entirely.
-  // Body block's depth — used to scope the height-makeup pick so the
-  // 200-series 20.140 doesn't get picked on a 300-series wall (and
-  // vice versa). Optional / undefined-default so libraries that only
-  // carry one depth of height-makeup blocks still get a result.
-  const bodyDepthMm = BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
-  // matchExactHeight=false swaps the dedicated height-makeup block for
-  // a cut-down body block in the 71 / 140 slot. We mirror that here so
-  // convertMakeupToBands surfaces the actual code that gets rendered
-  // (body block) instead of the height-makeup code that would have
-  // been used under the legacy default. Without this, the legend +
-  // 3D renderer pull the ghost height-makeup code via this band list
-  // even though buildCourses emits a body-block course at calc time.
-  // Defaults to true so callers that don't know about the flag (and
-  // legacy makeups with `undefined`) keep the existing behaviour.
-  const matchExactHeight = makeup.matchExactHeight ?? true
-  const heightMakeup150 =
-    !skipHeightMakeup && has140
-      ? matchExactHeight
-        ? pickHeightMakeupBlock(HEIGHT_140, bodyDepthMm)
-        : { code: makeup.bodyBlockCode, dimensions: { heightMm: HEIGHT_140 } }
-      : undefined
-  const heightMakeup100 =
-    !skipHeightMakeup && has71
-      ? matchExactHeight
-        ? pickHeightMakeupBlock(HEIGHT_71, bodyDepthMm)
-        : { code: makeup.bodyBlockCode, dimensions: { heightMm: HEIGHT_71 } }
-      : undefined
+  // Reuse the hm140Block / hm71Block picks resolved earlier for the
+  // stack scorer — same library, same depth scoping, so the bands
+  // emit exactly the blocks the picker scored against.
+  const heightMakeup150 = has140 ? hm140Block : undefined
+  const heightMakeup100 = has71 ? hm71Block : undefined
   const effectiveHas140 = has140 && !!heightMakeup150
   const effectiveHas71 = has71 && !!heightMakeup100
   // In preview-only mode, if there's leftover height after the std-count

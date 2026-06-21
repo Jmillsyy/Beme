@@ -353,40 +353,81 @@ export function calculateCourseStack(
    * Optional standard course modular (face + mortar). When provided,
    * replaces the hardcoded 200mm (AU 20.48: 190 + 10) so the stack
    * counts courses for the actual block-in-use. Critical for libraries
-   * whose body block isn't 190mm tall — e.g. US CMU8 (194 + 10 = 204)
-   * needs N=11 + a height-makeup to land 2400 mm, not the N=12 the
-   * default would compute. Without this override, the 3D renderer
-   * emits one extra course beyond what the mortar shell covers (the
-   * mortar uses convertMakeupToBands which already body-derives its
-   * modular), producing a visible mortar gap at the wall top.
+   * whose body block isn't 190mm tall — e.g. US CMU8 (194 + 10 = 204).
    */
   courseModuleMm: number = COURSE_MODULE_MM,
+  /**
+   * Optional ACTUAL height-makeup-band modulars (face + mortar) so
+   * the stack picker scores combinations against what will really
+   * render, not nominal AU values. Without this, a US library (e.g.
+   * CMU8-HH at 92mm face) gets the nominal 150mm budgeted but only
+   * 102mm actually emitted, leaving the wall ~48mm shorter than the
+   * picker thought it would be. Defaults preserve legacy AU values
+   * for callers that don't yet thread library-specific heights.
+   */
+  hm140ModuleMm: number = HEIGHT_MAKEUP_140_MM,
+  hm71ModuleMm: number = HEIGHT_MAKEUP_71_MM,
 ): CourseStack {
-  // Enumerate every reasonable combination and pick the smallest total
-  // that's >= requested. Upper bound on N comes from a sanity-check
-  // ceiling of the requested height plus enough headroom for both
-  // makeup blocks; in practice all combinations fit inside a handful
-  // of iterations.
+  // Enumerate every reasonable (N, has71, has140) combination and
+  // pick the one that lands the wall closest to the user's target,
+  // PREFERRING combinations that don't overshoot. Real masons would
+  // rather have a wall a few mm short of nominal (which the top of
+  // an adjacent slab or a strip flashing absorbs) than overshoot it
+  // and have to cut the top course. Height-makeup blocks (a 90 / 140
+  // mm block instead of a full course) are what make under-target
+  // landings possible — for a 2400 mm wall with US CMU8 (204 mm
+  // modular), 11 std + 1 × 92 mm HM = 2346 mm, beating 12 × 204 =
+  // 2448 mm (48 mm over).
+  //
+  // Algorithm:
+  //   1. Among combinations whose total ≤ heightMm, pick the one
+  //      with the smallest undershoot (highest total).
+  //   2. If no combination fits under (e.g. heightMm smaller than
+  //      one course), fall back to the smallest overshoot.
+  //   3. Tie-break by fewer total courses.
   const maxN = Math.ceil(heightMm / courseModuleMm) + 2
-  let best: { N: number; has71: boolean; has140: boolean; total: number } | null = null
+  type Candidate = {
+    N: number
+    has71: boolean
+    has140: boolean
+    total: number
+    dist: number
+    nCourses: number
+  }
+  let bestUnder: Candidate | null = null
+  let bestOver: Candidate | null = null
   for (let N = 0; N <= maxN; N++) {
     for (const has71 of [false, true]) {
       for (const has140 of [false, true]) {
         const total =
           N * courseModuleMm +
-          (has71 ? HEIGHT_MAKEUP_71_MM : 0) +
-          (has140 ? HEIGHT_MAKEUP_140_MM : 0)
-        if (total < heightMm) continue
-        // Prefer smaller total. Tie-break by fewer total courses so e.g.
-        // 14 standards (2800) wins over 13 + 20.71 + 20.140 (2830).
-        if (!best || total < best.total) {
-          best = { N, has71, has140, total }
+          (has71 ? hm71ModuleMm : 0) +
+          (has140 ? hm140ModuleMm : 0)
+        if (total <= 0) continue
+        const dist = Math.abs(total - heightMm)
+        const nCourses = N + (has71 ? 1 : 0) + (has140 ? 1 : 0)
+        const cand: Candidate = { N, has71, has140, total, dist, nCourses }
+        if (total <= heightMm) {
+          if (
+            !bestUnder ||
+            dist < bestUnder.dist ||
+            (dist === bestUnder.dist && nCourses < bestUnder.nCourses)
+          ) {
+            bestUnder = cand
+          }
+        } else {
+          if (
+            !bestOver ||
+            dist < bestOver.dist ||
+            (dist === bestOver.dist && nCourses < bestOver.nCourses)
+          ) {
+            bestOver = cand
+          }
         }
       }
     }
   }
-  // best is non-null because N=maxN with both makeup blocks comfortably
-  // exceeds heightMm. Belt-and-braces fallback for paranoia:
+  const best = bestUnder ?? bestOver
   if (!best) {
     const fallbackN = Math.ceil(heightMm / courseModuleMm)
     return {
@@ -1951,15 +1992,33 @@ export function planWallLayout(
   const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
   // Body-block-aware modular so the stack's course count matches the
   // mortar shell's (which already body-derives via convertMakeupToBands).
-  // Without this, a non-AU body block produces a renderer/mortar offset
-  // — visible as missing mortar above the top course.
+  // Also pass the ACTUAL height-makeup band heights from this
+  // library's HM blocks so the stack scorer compares against what
+  // will really render. Without it the picker uses nominal AU values
+  // (150 / 100) and picks a HM combo that overshoots / undershoots
+  // once the actual library block (e.g. US CMU8-HH = 92mm) emits.
   const bodyHeightForStack =
     BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
   const courseModuleForStack =
     typeof bodyHeightForStack === 'number'
       ? bodyHeightForStack + MORTAR_MM
       : undefined
-  const stack = calculateCourseStack(heightMm, courseModuleForStack)
+  const bodyDepthForHm =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+  const hm140Block = pickHeightMakeupBlock(140, bodyDepthForHm)
+  const hm71Block = pickHeightMakeupBlock(71, bodyDepthForHm)
+  const hm140Module = hm140Block
+    ? hm140Block.dimensions.heightMm + MORTAR_MM
+    : undefined
+  const hm71Module = hm71Block
+    ? hm71Block.dimensions.heightMm + MORTAR_MM
+    : undefined
+  const stack = calculateCourseStack(
+    heightMm,
+    courseModuleForStack,
+    hm140Module,
+    hm71Module,
+  )
   const plan = planWall(wall, makeup, thicknessByWallId, wallsById)
   const courses = buildCourses(stack, makeup)
   const lengthMm = wallLengthMm(wall, thicknessByWallId, wallsById)
