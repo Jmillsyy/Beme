@@ -934,7 +934,18 @@ export function convertMakeupToBands(
         }
       }
     }
-    const best = bestUnder ?? bestOver
+    // Closest fit — over OR under. No HM means undershoots can be
+    // big (UK 2400mm vs 225mm modular: 10 std = 2250, 11 std = 2475
+    // → 11 std is closer). Tie-break prefers OVER (less likely to
+    // leave a visible gap between top course and slab).
+    const best =
+      bestUnder && bestOver
+        ? bestOver.dist < bestUnder.dist
+          ? bestOver
+          : bestOver.dist === bestUnder.dist
+            ? bestOver
+            : bestUnder
+        : bestUnder ?? bestOver
     if (best) {
       stdCount = best.N
       has140 = best.has140

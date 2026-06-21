@@ -441,7 +441,20 @@ export function calculateCourseStack(
       }
     }
   }
-  const best = bestUnder ?? bestOver
+  // Pick whichever side is closer to the target. The earlier 'always
+  // prefer undershoot' rule made sense when HM courses could fill
+  // the gap; without HM, undershooting by ~half a course leaves the
+  // wall noticeably short. Now: simple smallest absolute distance.
+  // Tie-break by picking the OVER stack (more masonry beats less for
+  // a fixed height target).
+  const best =
+    bestUnder && bestOver
+      ? bestOver.dist < bestUnder.dist
+        ? bestOver
+        : bestOver.dist === bestUnder.dist
+          ? bestOver
+          : bestUnder
+      : bestUnder ?? bestOver
   if (!best) {
     const fallbackN = Math.ceil(heightMm / courseModuleMm)
     return {
