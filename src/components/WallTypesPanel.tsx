@@ -2028,21 +2028,45 @@ function CompositionTab(props: CompositionTabProps) {
     library,
   } = props
 
-  // Series-lock: every non-body slot (base, top, cap, corner, half) is
-  // filtered down to only blocks whose depth matches the body block's
-  // depth. Real masonry can't mix series in one wall — a 100-series
-  // corner on a 200-series body produces a stepped wall face — so the
-  // UI mirrors the rule instead of trusting the user to enforce it.
-  // Body picker stays unfiltered because it's the depth REFERENCE; if
-  // the user picks a 300-series body, the dropdowns below
-  // automatically re-scope to 300-series options.
+  // Series-lock: every slot (body included) is filtered to blocks
+  // matching the active "wall depth". The body's depth IS the source
+  // of truth — the explicit "Wall depth" picker just lets the user
+  // change it without having to know that the body block secretly
+  // controls the series of every other slot.
   const bodyDepthMm = library[bodyBlockCode]?.dimensions.depthMm
+  const availableDepths = useMemo<number[]>(() => {
+    const set = new Set<number>()
+    for (const code of selectableBlocks) {
+      const d = library[code]?.dimensions.depthMm
+      if (typeof d === 'number') set.add(d)
+    }
+    return Array.from(set).sort((a, b) => a - b)
+  }, [selectableBlocks, library])
   const slotSelectableBlocks = useMemo<BlockCode[]>(() => {
     if (bodyDepthMm === undefined) return selectableBlocks
     return selectableBlocks.filter(
       (code) => library[code]?.dimensions.depthMm === bodyDepthMm,
     )
   }, [selectableBlocks, bodyDepthMm, library])
+
+  // Changing the wall depth: swap the body block to one at the new
+  // depth. Prefers a block tagged with the 'body' role at that depth;
+  // falls back to the first block at that depth. The downstream slot
+  // pickers refilter automatically; the resolveCourseBlocks healer
+  // depth-scopes any saved corner/half/base codes that no longer
+  // match. Net effect: the user picks a depth, the wall composition
+  // re-anchors to that series without manual fixups.
+  const handleWallDepthChange = (depthMm: number) => {
+    if (depthMm === bodyDepthMm) return
+    const candidates = selectableBlocks.filter(
+      (code) => library[code]?.dimensions.depthMm === depthMm,
+    )
+    if (candidates.length === 0) return
+    // Anything in the library with a 'body' role at this depth is the
+    // ideal pick; without a role-aware lookup at this layer we use the
+    // first match, which is alphabetical-by-code (deterministic).
+    setBodyBlockCode(candidates[0])
+  }
 
   return (
     <div className="max-w-3xl space-y-5">
@@ -2131,92 +2155,162 @@ function CompositionTab(props: CompositionTabProps) {
         </div>
       )}
 
-      <section
-        className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${
+      <div
+        className={`space-y-6 ${
           isCurveMakeup && wedgeRequired
             ? 'opacity-40 pointer-events-none select-none'
             : ''
         }`}
       >
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 -mb-2 col-span-full">
-          Course block roles
-        </h3>
-        <BlockSelect
-          label="Base course block"
-          value={baseCourseBlockCode}
-          onChange={setBaseCourseBlockCode}
-          options={slotSelectableBlocks}
-        />
-        {/* Base course tile picker removed — pairing now lives on the
-            BLOCK in the material library (Block.pairedWith /
-            Block.pairedPer). Picking 20.45 as the base course
-            automatically tallies 50.45 tiles at the configured 1:1
-            ratio; no makeup-level field required. */}
+        {/* ── Wall depth ────────────────────────────────────────────
+            Sits at the very top because it sets the series for every
+            slot below. The body block's depth is the source of truth;
+            this picker just promotes that hidden side effect into an
+            explicit, named choice the user can make first. */}
+        {!isCurveMakeup && availableDepths.length > 0 && (
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-2">
+              Wall depth
+            </h3>
+            <div className="max-w-xs">
+              <select
+                value={bodyDepthMm ?? ''}
+                onChange={(e) => handleWallDepthChange(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm"
+              >
+                {availableDepths.map((d) => (
+                  <option key={d} value={d}>
+                    {d}mm
+                  </option>
+                ))}
+              </select>
+              <p className="text-[11px] text-ink-500 mt-1.5 leading-snug">
+                Filters every block picker below to blocks at this depth
+                so the wall stays in one series. Add new depths in the{' '}
+                <Link
+                  to="/library"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-beme-400 hover:text-beme-300 underline"
+                >
+                  material library ↗
+                </Link>
+                .
+              </p>
+            </div>
+          </section>
+        )}
+
+        {/* ── Main course blocks ─────────────────────────────────────
+            Body is featured (full width) because it's the wall's heart
+            and the depth reference. Base and Top pair below — same
+            visual axis (vertical stack: bottom / middle / top). */}
         {!isCurveMakeup && (
-          <BlockSelect
-            label="Body course block"
-            value={bodyBlockCode}
-            onChange={setBodyBlockCode}
-            options={selectableBlocks}
-          />
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
+              Main course blocks
+            </h3>
+            <div className="space-y-3">
+              <BlockSelect
+                label="Body course block"
+                value={bodyBlockCode}
+                onChange={setBodyBlockCode}
+                options={slotSelectableBlocks}
+              />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <BlockSelect
+                  label="Base course (bottom)"
+                  value={baseCourseBlockCode}
+                  onChange={setBaseCourseBlockCode}
+                  options={slotSelectableBlocks}
+                />
+                <BlockSelect
+                  label="Top course"
+                  value={topCourseBlockCode}
+                  onChange={setTopCourseBlockCode}
+                  options={slotSelectableBlocks}
+                />
+              </div>
+            </div>
+          </section>
         )}
-        <BlockSelect
-          label="Top course block"
-          value={topCourseBlockCode}
-          onChange={setTopCourseBlockCode}
-          options={slotSelectableBlocks}
-        />
-        <div>
-          <BlockSelect
-            label="Cap tile (optional)"
-            value={capBlockCode}
-            onChange={setCapBlockCode}
-            options={slotSelectableBlocks}
-            allowEmpty
-          />
-          <p className="text-[11px] text-ink-500 mt-1">
-            Sits ON TOP of the top course — e.g. a 40mm capping tile.
-            Counted at one tile per cap-width of wall length. Leave as
-            "None" if the wall has no cap.
-          </p>
-        </div>
-        <div>
-          <BlockSelect
-            label="Full end termination"
-            value={cornerBlockCode}
-            onChange={setCornerBlockCode}
-            options={slotSelectableBlocks}
-          />
-          <p className="text-[11px] text-ink-500 mt-1">
-            Used at corners + odd courses of stretcher bond at free ends.
-          </p>
-        </div>
-        <div>
-          <BlockSelect
-            label="Half end termination"
-            value={halfBlockCode}
-            onChange={setHalfBlockCode}
-            options={slotSelectableBlocks}
-          />
-          <p className="text-[11px] text-ink-500 mt-1">
-            Alternates with the full end block on even courses of stretcher bond.
-          </p>
-        </div>
-        {bodyDepthMm !== undefined && (
-          <p className="text-[11px] text-ink-500 col-span-full -mt-2">
-            Pickers above show only {bodyDepthMm}mm-depth blocks so the wall
-            stays in one series.{' '}
-            <Link
-              to="/library"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-beme-400 hover:text-beme-300 underline"
-            >
-              Manage other depths in the library ↗
-            </Link>
-          </p>
+
+        {/* Curve makeup keeps Base / Top in their own row even though
+            Body is split into wedge/normal above. Same series-lock
+            applies. */}
+        {isCurveMakeup && (
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
+              Main course blocks
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <BlockSelect
+                label="Base course (bottom)"
+                value={baseCourseBlockCode}
+                onChange={setBaseCourseBlockCode}
+                options={slotSelectableBlocks}
+              />
+              <BlockSelect
+                label="Top course"
+                value={topCourseBlockCode}
+                onChange={setTopCourseBlockCode}
+                options={slotSelectableBlocks}
+              />
+            </div>
+          </section>
         )}
-      </section>
+
+        {/* ── End terminations ───────────────────────────────────────
+            Paired because alternation between them IS the bond pattern
+            — picking them together makes the relationship obvious. */}
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
+            End terminations
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <BlockSelect
+              label="Full end (corner)"
+              value={cornerBlockCode}
+              onChange={setCornerBlockCode}
+              options={slotSelectableBlocks}
+            />
+            <BlockSelect
+              label="Half end (free ends)"
+              value={halfBlockCode}
+              onChange={setHalfBlockCode}
+              options={slotSelectableBlocks}
+            />
+          </div>
+          <p className="text-[11px] text-ink-500 mt-2 leading-snug">
+            Stretcher bond alternates between the two on consecutive
+            courses at free ends. Stack bond uses the full end on every
+            course.
+          </p>
+        </section>
+
+        {/* ── Optional cap tile ──────────────────────────────────────
+            Pulled below structural blocks because it's purely
+            decorative and not needed on most walls. */}
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-400 mb-3">
+            Optional
+          </h3>
+          <div className="max-w-xs">
+            <BlockSelect
+              label="Cap tile"
+              value={capBlockCode}
+              onChange={setCapBlockCode}
+              options={slotSelectableBlocks}
+              allowEmpty
+            />
+            <p className="text-[11px] text-ink-500 mt-1.5 leading-snug">
+              Sits ON TOP of the top course — e.g. a 40mm capping tile.
+              Tallied at one tile per cap-width of wall length. Leave
+              "None" if the wall has no cap.
+            </p>
+          </div>
+        </section>
+      </div>
 
       {/* Block-library shortcut. The workspace no longer carries a
           BlockLibraryPanel in the right rail; anyone who needs a block
