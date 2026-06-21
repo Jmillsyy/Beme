@@ -239,169 +239,34 @@ export const US_CMU_LIBRARY: Record<BlockCode, Block> = {
   },
 }
 
-// ─── UK — Concrete block (dense aggregate) ─────────────────────────────────
-// UK standard: 440mm × 215mm × 100mm dense aggregate block with 10mm
-// mortar joints. 215mm tall block + 10mm joint = 225mm modular course
-// height. Half block = 215mm × 215mm × 100mm.
+// ─── UK — Concrete block (single solid unit) ───────────────────────────────
+// UK practice: blockwork is laid like brickwork using ONE solid 100mm
+// block. Corners, halves, base, top — all the same unit, cut on site
+// where a partial block is needed. Estimators order by total block count
+// (and sq-m run) rather than tracking corner / half / cap rows separately.
 //
-// Lintels in UK are typically pre-stressed concrete sourced separately
-// from the block stack (Naylor, Concrete Lintels Ltd, etc.) — modelled
-// here as three depth buckets to match Beme's existing head-height
-// bucket selection. Real distributors carry many sizes; users add the
-// rest from the library page.
+// So the UK preset library is intentionally minimal: BLK-100 only.
+// Tagged with every wall role so the calc engine picks it for every
+// slot — body, corner, end termination, base course, top course, pier.
+// Half-end positions (stretcher-bond alternation on even courses)
+// resolve to BLK-100 too, rendered at half-width to show the cut.
+// Tally counts every emitted block as BLK-100 — one row, one number.
+//
+// Users who need lintels, coping or a different block depth add them
+// to the library themselves; the seed deliberately ships with just
+// the one block.
 
 export const UK_BLOCK_LIBRARY: Record<BlockCode, Block> = {
   'BLK-100': {
     code: 'BLK-100',
-    name: '100mm Block (body)',
+    name: '100mm Block',
     description:
-      'Standard 440 × 215 × 100mm dense aggregate concrete block. Main ' +
-      'body course block — also doubles as the pier block and the base- ' +
-      'course block. UK construction uses the same body unit at the ' +
-      'wall base (bedded on a damp-proof course) rather than a dedicated ' +
-      'cleanout / starter block.',
+      'Standard 440 × 215 × 100mm dense aggregate concrete block — the ' +
+      'single unit used everywhere in UK blockwork. Cut on site for ' +
+      'corners, halves and finishes. Tagged with every wall role so the ' +
+      'estimate tallies the whole wall as one block code.',
     dimensions: { widthMm: 440, heightMm: 215, depthMm: 100 },
-    roles: ['body', 'pier', 'base-course'],
-  },
-  'BLK-100-C': {
-    code: 'BLK-100-C',
-    name: '100mm Corner Block',
-    description:
-      'Full-size 100mm block used at wall corners and at the ends of ' +
-      'stretcher-bond walls on odd courses.',
-    dimensions: { widthMm: 440, heightMm: 215, depthMm: 100 },
-    roles: ['end-termination', 'corner'],
-  },
-  'BLK-100-H': {
-    code: 'BLK-100-H',
-    name: '100mm Half Block',
-    description:
-      'Half-length (215mm face) block. Alternates with the full block ' +
-      "at wall ends on even courses to maintain stretcher bond's " +
-      'half-block offset.',
-    dimensions: { widthMm: 215, heightMm: 215, depthMm: 100 },
-    roles: ['end-termination', 'fraction'],
-    fraction: 0.5,
-  },
-  'LIN-100-150': {
-    code: 'LIN-100-150',
-    name: 'Pre-stressed Lintel (100×150)',
-    description:
-      'Pre-stressed concrete lintel, 100mm wide × 150mm tall. For small ' +
-      'openings with head heights below 200mm.',
-    dimensions: { widthMm: 600, heightMm: 140, depthMm: 100 },
-    roles: ['lintel'],
-    lintelMinHeadHeightMm: 0,
-    lintelMaxHeadHeightMm: 200,
-  },
-  'LIN-100-215': {
-    code: 'LIN-100-215',
-    name: 'Pre-stressed Lintel (100×215)',
-    description:
-      'Pre-stressed concrete lintel, 100mm wide × 215mm tall — matches a ' +
-      'full course height. For head heights 200–399mm.',
-    dimensions: { widthMm: 600, heightMm: 215, depthMm: 100 },
-    roles: ['lintel'],
-    lintelMinHeadHeightMm: 200,
-    lintelMaxHeadHeightMm: 400,
-  },
-  'LIN-100-430': {
-    code: 'LIN-100-430',
-    name: 'Pre-stressed Lintel (100×430)',
-    description:
-      'Pre-stressed concrete lintel, 100mm wide × 430mm tall — two-course ' +
-      'depth. For wider openings with head heights 400mm and above.',
-    dimensions: { widthMm: 600, heightMm: 430, depthMm: 100 },
-    roles: ['lintel'],
-    lintelMinHeadHeightMm: 400,
-  },
-  'CB-65': {
-    code: 'CB-65',
-    name: 'Coursing Brick 215×65',
-    description:
-      'Concrete coursing brick (215 × 65 × 100mm) — the height-makeup ' +
-      'unit for wall heights off the 225mm course module, and for ' +
-      'levelling up to lintel bearings.',
-    dimensions: { widthMm: 215, heightMm: 65, depthMm: 100 },
-    roles: ['height-makeup'],
-  },
-  'BLK-140': {
-    code: 'BLK-140',
-    name: '140mm Block (body)',
-    description:
-      'Dense aggregate block, 440 × 215 × 140mm — party walls and ' +
-      'heavier loadbearing leaves.',
-    dimensions: { widthMm: 440, heightMm: 215, depthMm: 140 },
-    roles: ['body'],
-  },
-  'BLK-140-C': {
-    code: 'BLK-140-C',
-    name: '140mm Corner Block',
-    description: 'Full-size 140mm unit for corners and odd-course ends.',
-    dimensions: { widthMm: 440, heightMm: 215, depthMm: 140 },
-    roles: ['corner', 'end-termination'],
-  },
-  'BLK-140-H': {
-    code: 'BLK-140-H',
-    name: '140mm Half Block',
-    description: 'Half-length closure (215 × 215 × 140mm).',
-    dimensions: { widthMm: 215, heightMm: 215, depthMm: 140 },
-    roles: ['end-termination', 'fraction'],
-    fraction: 0.5,
-  },
-  'BLK-215': {
-    code: 'BLK-215',
-    name: '215mm Block (body)',
-    description:
-      'Full-width dense aggregate block, 440 × 215 × 215mm — solid ' +
-      'single-leaf walls and below-DPC work.',
-    dimensions: { widthMm: 440, heightMm: 215, depthMm: 215 },
-    roles: ['body'],
-  },
-  'BLK-215-H': {
-    code: 'BLK-215-H',
-    name: '215mm Half Block',
-    description: 'Half-length closure (215 × 215 × 215mm).',
-    dimensions: { widthMm: 215, heightMm: 215, depthMm: 215 },
-    roles: ['end-termination', 'fraction'],
-    fraction: 0.5,
-  },
-  'AIR-100': {
-    code: 'AIR-100',
-    name: '100mm Aircrete Block',
-    description:
-      'Aerated (aircrete) block, 440 × 215 × 100mm — inner leaves where ' +
-      'thermal performance drives the spec. Tally-identical to dense ' +
-      '100mm; kept as a separate line so the schedule splits the order.',
-    dimensions: { widthMm: 440, heightMm: 215, depthMm: 100 },
-    roles: ['body'],
-  },
-  'AIR-140': {
-    code: 'AIR-140',
-    name: '140mm Aircrete Block',
-    description: 'Aerated block at 140mm thickness (440 × 215 × 140mm).',
-    dimensions: { widthMm: 440, heightMm: 215, depthMm: 140 },
-    roles: ['body'],
-  },
-  'LIN-140-215': {
-    code: 'LIN-140-215',
-    name: 'Pre-stressed Lintel (140×215)',
-    description:
-      'Pre-stressed concrete lintel for 140mm walls, full course height. ' +
-      'Head heights 200–399mm.',
-    dimensions: { widthMm: 600, heightMm: 215, depthMm: 140 },
-    roles: ['lintel'],
-    lintelMinHeadHeightMm: 200,
-    lintelMaxHeadHeightMm: 400,
-  },
-  'COP-150': {
-    code: 'COP-150',
-    name: 'Once-Weathered Coping',
-    description:
-      'Concrete coping, 600 × 75 × 150mm — caps freestanding and garden ' +
-      'walls.',
-    dimensions: { widthMm: 600, heightMm: 75, depthMm: 150 },
-    roles: ['cap'],
+    roles: ['body', 'corner', 'end-termination', 'base-course', 'top-course', 'pier'],
   },
 }
 
