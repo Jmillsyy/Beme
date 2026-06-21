@@ -8,6 +8,7 @@ import {
   upsertBlock,
   useBlockLibrary,
 } from '../data/blockLibrary'
+import LengthInput from './LengthInput'
 
 /**
  * The user's editable block library. Add, edit, or delete blocks.
@@ -669,36 +670,30 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
             </h4>
             <div className="grid grid-cols-3 gap-3">
               <label className="block">
-                <span className="block text-ink-300 text-xs mb-1">Width (mm)</span>
-                <input
-                  type="number"
-                  min={50}
-                  step={10}
-                  value={widthMm}
-                  onChange={(e) => setWidthMm(parseInt(e.target.value || '0', 10))}
-                  className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                <span className="block text-ink-300 text-xs mb-1">Width</span>
+                <LengthInput
+                  valueMm={widthMm}
+                  onChangeMm={setWidthMm}
+                  minMm={50}
+                  className="w-full"
                 />
               </label>
               <label className="block">
-                <span className="block text-ink-300 text-xs mb-1">Height (mm)</span>
-                <input
-                  type="number"
-                  min={30}
-                  step={10}
-                  value={heightMm}
-                  onChange={(e) => setHeightMm(parseInt(e.target.value || '0', 10))}
-                  className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                <span className="block text-ink-300 text-xs mb-1">Height</span>
+                <LengthInput
+                  valueMm={heightMm}
+                  onChangeMm={setHeightMm}
+                  minMm={30}
+                  className="w-full"
                 />
               </label>
               <label className="block">
-                <span className="block text-ink-300 text-xs mb-1">Depth (mm)</span>
-                <input
-                  type="number"
-                  min={50}
-                  step={10}
-                  value={depthMm}
-                  onChange={(e) => setDepthMm(parseInt(e.target.value || '0', 10))}
-                  className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                <span className="block text-ink-300 text-xs mb-1">Depth</span>
+                <LengthInput
+                  valueMm={depthMm}
+                  onChangeMm={setDepthMm}
+                  minMm={50}
+                  className="w-full"
                 />
               </label>
             </div>
@@ -770,21 +765,15 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
                     <legend className="px-1 text-ink-300 text-xs">Tapered face</legend>
                     <label className="block">
                       <span className="block text-[11px] text-ink-400 mb-1">
-                        Rear width of the block (mm) for a tapered / wedge face.
+                        Rear width of the block for a tapered / wedge face.
                         The front Width above is the wide end; this is the narrow
                         end. Leave blank for non-tapered curve blocks.
                       </span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={10}
-                        value={rearWidthMm}
-                        onChange={(e) => {
-                          const v = e.target.value
-                          setRearWidthMm(v === '' ? '' : parseInt(v, 10))
-                        }}
-                        placeholder="e.g. 150"
-                        className="w-32 px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      <LengthInput
+                        valueMm={typeof rearWidthMm === 'number' ? rearWidthMm : 0}
+                        onChangeMm={(mm) => setRearWidthMm(mm)}
+                        minMm={0}
+                        className="w-40"
                       />
                     </label>
                   </fieldset>

@@ -8226,19 +8226,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </span>
                 <label className="inline-flex items-center gap-1.5 text-xs">
                   <span className="text-ink-400">Height</span>
-                  <input
-                    type="number"
-                    min={200}
-                    step={200}
-                    value={newCurveHeightMm}
-                    onChange={(e) => {
-                      const n = Number(e.target.value)
-                      if (Number.isFinite(n) && n > 0) setNewCurveHeightMm(n)
-                    }}
-                    title="Height for newly-created curved-wall types. Existing types keep their own height."
-                    className="w-20 px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-50 text-xs font-mono"
+                  <LengthInput
+                    valueMm={newCurveHeightMm}
+                    onChangeMm={(mm) => setNewCurveHeightMm(Math.round(mm))}
+                    minMm={200}
+                    ariaLabel="New curved wall type height"
+                    className="text-xs"
                   />
-                  <span className="text-ink-400">mm</span>
                 </label>
                 <span>
                   Press{' '}
@@ -9498,20 +9492,18 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   {selectedPier.type === 'freestanding' && (
                     <label className="flex items-center gap-1.5 text-xs">
                       <span className="text-ink-300">Height</span>
-                      <input
-                        type="number"
-                        min="200"
-                        step="200"
-                        value={selectedPier.heightMm}
-                        onChange={(e) =>
+                      <LengthInput
+                        valueMm={selectedPier.heightMm}
+                        onChangeMm={(mm) =>
                           handleUpdateFreestandingPierHeight(
                             selectedPier.id,
-                            Math.max(200, parseInt(e.target.value || '0', 10))
+                            Math.round(Math.max(200, mm)),
                           )
                         }
-                        className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                        minMm={200}
+                        ariaLabel="Freestanding pier height"
+                        className="text-xs"
                       />
-                      <span className="text-ink-400">mm</span>
                     </label>
                   )}
                 </div>
@@ -9581,26 +9573,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     </div>
                     <label className="flex items-center gap-1.5 text-xs">
                       <span className="text-ink-300">Height</span>
-                      <input
-                        type="number"
-                        min="200"
-                        step="200"
-                        value={Math.round(effectiveHeightMm)}
-                        onChange={(e) => {
-                          const next = Math.max(
-                            200,
-                            parseInt(e.target.value || '0', 10),
-                          )
+                      <LengthInput
+                        valueMm={Math.round(effectiveHeightMm)}
+                        onChangeMm={(mm) => {
+                          const next = Math.round(Math.max(200, mm))
                           // Only stamp an override when the value differs
-                          // from the makeup default — otherwise clear it so
-                          // future makeup edits propagate.
+                          // from the makeup default — otherwise clear it
+                          // so future makeup edits propagate.
                           if (next === makeupHeightMm) {
                             handleSetWallHeightOverride(selWall.id, undefined)
                           } else {
                             handleSetWallHeightOverride(selWall.id, next)
                           }
                         }}
-                        className="w-24 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                        minMm={200}
+                        ariaLabel="Wall height override"
+                        className="text-xs"
                       />
                       <span className="text-ink-400">mm</span>
                       {selWall.heightMmOverride !== undefined && (

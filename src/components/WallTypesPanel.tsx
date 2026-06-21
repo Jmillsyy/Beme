@@ -46,6 +46,7 @@ import { bandColor } from '../lib/blockColors'
 import { ROLE_COLORS, ROLE_LABELS, type SlotRole } from '../lib/roleColors'
 import LengthInput from './LengthInput'
 import LibraryGuidance from './LibraryGuidance'
+import { formatLengthMm } from '../lib/units'
 
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
@@ -168,6 +169,11 @@ export default function WallTypesPanel({
   const { library: blockLibrary, version: blockLibraryVersion } = useBlockLibrary()
   void blockLibraryVersion
   const blockLibraryEmpty = Object.keys(blockLibrary).length === 0
+  // User's units preference — drives how lengths render in the panel
+  // (wall heights on cards, modal header summary, etc.). Inputs already
+  // route through LengthInput so they handle units themselves.
+  const { settings: panelSettings } = useUserSettings()
+  const panelUnits = panelSettings.preferences.units
   // Saved wall type templates — synced per-user via Supabase when signed
   // in, local IndexedDB fallback otherwise. Subscribed so the add-chooser
   // re-renders when the cloud fetch lands.
@@ -319,7 +325,7 @@ export default function WallTypesPanel({
                   </div>
                 </div>
                 <div className="text-xs text-ink-400 mt-1 leading-tight">
-                  {m.bondType} bond · {getMakeupHeightMm(m)}mm · {wallCount} wall{wallCount === 1 ? '' : 's'}
+                  {m.bondType} bond · {formatLengthMm(getMakeupHeightMm(m), panelUnits)} · {wallCount} wall{wallCount === 1 ? '' : 's'}
                 </div>
                 {m.coursePattern && m.coursePattern.length > 0 && (
                   <div className="text-xs text-beme-300 mt-1 font-mono leading-tight truncate">
@@ -1560,8 +1566,8 @@ export function WallTypeEditorModal({
             </h2>
             <p className="text-[11px] text-ink-500 mt-0.5">
               {hasCoursePattern
-                ? `Pattern-driven · ${patternTotalCourses} courses · ${patternTotalHeight} mm`
-                : `${Math.round(heightMm / 200)} courses · ${heightMm} mm`}
+                ? `Pattern-driven · ${patternTotalCourses} courses · ${formatLengthMm(patternTotalHeight, panelUnits)}`
+                : `${Math.round(heightMm / 200)} courses · ${formatLengthMm(heightMm, panelUnits)}`}
             </p>
           </div>
           <button
@@ -1825,6 +1831,8 @@ function BasicsTab({
   curveZone,
   onJumpToPattern,
 }: BasicsTabProps) {
+  const { settings } = useUserSettings()
+  const units = settings.preferences.units
   return (
     <div className="max-w-2xl space-y-5">
       <label className="text-sm block">
@@ -1839,10 +1847,10 @@ function BasicsTab({
 
       <label className="text-sm block">
         <span className="flex items-center justify-between text-ink-300 mb-1.5">
-          <span>Height (mm)</span>
+          <span>Height</span>
           {hasCoursePattern && (
             <span className="text-[11px] text-beme-300">
-              Driven by course pattern · {patternTotalHeight} mm
+              Driven by course pattern · {formatLengthMm(patternTotalHeight, units)}
             </span>
           )}
         </span>
@@ -3597,17 +3605,13 @@ function PierTypeEditorModal({
 
             {placement === 'freestanding' && (
               <label className="text-sm block">
-                <span className="block text-ink-300 mb-1.5">Height (mm)</span>
-                <input
-                  type="number"
-                  min={200}
-                  step={200}
-                  value={heightMm}
-                  onChange={(e) => {
-                    const n = parseInt(e.target.value || '0', 10)
-                    if (Number.isFinite(n)) setHeightMm(Math.max(200, n))
-                  }}
-                  className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 font-mono"
+                <span className="block text-ink-300 mb-1.5">Height</span>
+                <LengthInput
+                  valueMm={heightMm}
+                  onChangeMm={(mm) => setHeightMm(Math.round(Math.max(200, mm)))}
+                  minMm={200}
+                  ariaLabel="Freestanding pier height"
+                  className="w-full"
                 />
                 <p className="text-[11px] text-ink-500 mt-1.5">
                   Applies to every freestanding pier of this type. Tied piers
