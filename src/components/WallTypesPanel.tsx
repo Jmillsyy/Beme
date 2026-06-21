@@ -2878,15 +2878,22 @@ function CoursePatternPreview({
             label: string
           }[] = []
           if (useHalves) {
-            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body +
-            // half end. Same total as the odd-course row — that's why
-            // the bond pattern reads as an offset rather than a width
-            // change.
+            // Stretcher even: half end on the LEFT, then BLOCKS_ACROSS
+            // body, then full corner on the RIGHT. Real brick walls
+            // typically place a single half-block at one end of each
+            // offset course rather than mirroring halves on both ends
+            // — the half on one side is what shifts the body grid by
+            // half a block, producing the running-bond stagger; a
+            // second half on the other side would just absorb the same
+            // shift back. Visual width is ~half a block narrower than
+            // the odd row, which reads as 'this row is offset' to the
+            // eye. justify-center on the row keeps the offset
+            // symmetric within the wall envelope.
             cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
-            for (let i = 0; i < BLOCKS_ACROSS + 1; i++) {
+            for (let i = 0; i < BLOCKS_ACROSS; i++) {
               cells.push({ widthPct: toPct(bodyW), role: bodyRole, label: bodyCode })
             }
-            cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
+            cells.push({ widthPct: toPct(cornerW), role: 'corner', label: cornerCode })
           } else {
             // Stack bond OR stretcher odd: full end + N body + full end.
             cells.push({ widthPct: toPct(cornerW), role: 'corner', label: cornerCode })
