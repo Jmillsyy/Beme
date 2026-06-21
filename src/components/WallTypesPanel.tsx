@@ -46,6 +46,34 @@ import { bandColor } from '../lib/blockColors'
 import LengthInput from './LengthInput'
 import LibraryGuidance from './LibraryGuidance'
 
+// ─── Role colours ────────────────────────────────────────────────────
+// Stable role → colour mapping used by the wall preview, the slot
+// picker dots, and the legend. Role identity is fixed; whatever block
+// CODE the user picks for that slot inherits the role's colour in the
+// preview. Lets a user glance at the preview and know "the red blocks
+// are corners" regardless of which code they put in the corner slot.
+//
+// Distinct vivid hues — each ~60° apart on the wheel so they read as
+// six clearly different roles even at a glance. Pulled from Tailwind's
+// 500-ish range so they sit well on the dark ink background.
+type SlotRole = 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
+const ROLE_COLORS: Record<SlotRole, string> = {
+  body: '#3B82F6',   // blue-500
+  corner: '#EF4444', // red-500
+  half: '#10B981',   // emerald-500
+  base: '#F59E0B',   // amber-500
+  top: '#8B5CF6',    // violet-500
+  cap: '#EC4899',    // pink-500
+}
+const ROLE_LABELS: Record<SlotRole, string> = {
+  body: 'Body',
+  corner: 'Full end',
+  half: 'Half end',
+  base: 'Base',
+  top: 'Top',
+  cap: 'Cap',
+}
+
 interface WallTypesPanelProps {
   makeups: WallMakeup[]
   /**
@@ -943,6 +971,12 @@ export function WallTypeEditorModal({
   )
 
   const [activeTab, setActiveTab] = useState<TabKey>('basics')
+  // Slot under the user's pointer / keyboard focus — drives the wall
+  // preview's "highlight matching cells" effect. null when nothing is
+  // active. Lives at the modal level because the preview is in the
+  // right rail (sibling to the form), so the form's mouse/focus
+  // signals have to reach across through a common ancestor.
+  const [highlightedSlot, setHighlightedSlot] = useState<SlotRole | null>(null)
   // User-level defaults — when creating a NEW wall type, seed match-
   // exact-length and its scope from the user's Settings preferences so
   // the user only sets them once globally. Existing makeups keep their
@@ -1665,6 +1699,7 @@ export function WallTypeEditorModal({
                 setCapBlockCode={setCapBlockCode}
                 selectableBlocks={selectableBlocks}
                 library={library}
+                onHighlightSlot={setHighlightedSlot}
               />
             )}
 
@@ -1731,6 +1766,7 @@ export function WallTypeEditorModal({
                 bondType={bondType}
                 resolveForCourse={resolveForCourse}
                 colorMap={previewColorMap}
+                highlightedSlot={highlightedSlot}
               />
             </div>
             {/* Tiny legend so the user can map cell colour → block code at
@@ -1999,6 +2035,10 @@ interface CompositionTabProps {
   /** Live library — used to read per-block depths for series-locking
    *  the non-body slot dropdowns to the body block's depth. */
   library: Record<BlockCode, { dimensions: { depthMm: number } }>
+  /** Raise a "preview should highlight cells of this role" signal up
+   *  to the modal so the right-rail preview can react. Pass null to
+   *  clear. */
+  onHighlightSlot?: (role: SlotRole | null) => void
 }
 
 function CompositionTab(props: CompositionTabProps) {
@@ -2026,7 +2066,16 @@ function CompositionTab(props: CompositionTabProps) {
     setCapBlockCode,
     selectableBlocks,
     library,
+    onHighlightSlot,
   } = props
+
+  // Convenience: build a pair of handlers that raise / clear the
+  // highlight signal for a given role. Each BlockSelect uses these to
+  // tell the preview which cells to glow while the user is on it.
+  const highlightHandlers = (role: SlotRole) => ({
+    onHighlight: () => onHighlightSlot?.(role),
+    onUnhighlight: () => onHighlightSlot?.(null),
+  })
 
   // Series-lock: every slot (body included) is filtered to blocks
   // matching the active "wall depth". The body's depth IS the source
@@ -2210,30 +2259,40 @@ function CompositionTab(props: CompositionTabProps) {
               value={baseCourseBlockCode}
               onChange={setBaseCourseBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.base}
+              {...highlightHandlers('base')}
             />
             <BlockSelect
               label="Full end (corner)"
               value={cornerBlockCode}
               onChange={setCornerBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.corner}
+              {...highlightHandlers('corner')}
             />
             <BlockSelect
               label="Body course"
               value={bodyBlockCode}
               onChange={setBodyBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.body}
+              {...highlightHandlers('body')}
             />
             <BlockSelect
               label="Half end (free ends)"
               value={halfBlockCode}
               onChange={setHalfBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.half}
+              {...highlightHandlers('half')}
             />
             <BlockSelect
               label="Top course"
               value={topCourseBlockCode}
               onChange={setTopCourseBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.top}
+              {...highlightHandlers('top')}
             />
             <BlockSelect
               label="Cap tile (optional)"
@@ -2241,6 +2300,8 @@ function CompositionTab(props: CompositionTabProps) {
               onChange={setCapBlockCode}
               options={slotSelectableBlocks}
               allowEmpty
+              roleColor={ROLE_COLORS.cap}
+              {...highlightHandlers('cap')}
             />
           </div>
         )}
@@ -2254,24 +2315,32 @@ function CompositionTab(props: CompositionTabProps) {
               value={baseCourseBlockCode}
               onChange={setBaseCourseBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.base}
+              {...highlightHandlers('base')}
             />
             <BlockSelect
               label="Full end (corner)"
               value={cornerBlockCode}
               onChange={setCornerBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.corner}
+              {...highlightHandlers('corner')}
             />
             <BlockSelect
               label="Top course"
               value={topCourseBlockCode}
               onChange={setTopCourseBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.top}
+              {...highlightHandlers('top')}
             />
             <BlockSelect
               label="Half end (free ends)"
               value={halfBlockCode}
               onChange={setHalfBlockCode}
               options={slotSelectableBlocks}
+              roleColor={ROLE_COLORS.half}
+              {...highlightHandlers('half')}
             />
             <BlockSelect
               label="Cap tile (optional)"
@@ -2279,6 +2348,8 @@ function CompositionTab(props: CompositionTabProps) {
               onChange={setCapBlockCode}
               options={slotSelectableBlocks}
               allowEmpty
+              roleColor={ROLE_COLORS.cap}
+              {...highlightHandlers('cap')}
             />
           </div>
         )}
@@ -2586,6 +2657,11 @@ interface CoursePatternPreviewProps {
    *  swatches match. Falls back to the standalone `bandColor()` if a
    *  code is missing from the map. */
   colorMap?: Map<string, string>
+  /** When set, cells whose role matches glow with a bright ring; cells
+   *  of other roles dim to ~40% opacity so the highlighted role pops
+   *  visually. Driven by the composition tab's slot-picker focus /
+   *  hover state. */
+  highlightedSlot?: SlotRole | null
 }
 
 /**
@@ -2605,15 +2681,35 @@ function CoursePatternPreview({
   bondType,
   resolveForCourse,
   colorMap,
+  highlightedSlot,
 }: CoursePatternPreviewProps) {
-  // Per-render distinct-colour resolver. colorMap is built once by the
-  // parent across all codes that could appear in this preview (bands +
-  // per-course resolved body/corner/half), guaranteeing each unique code
-  // gets a different palette slot so two visually similar codes (e.g.
-  // 20.45 and 20.48PF) never collide in the legend or wall section.
-  // Falls back to the per-code hash if no map is supplied or a stray code
-  // sneaks in that wasn't in the input set.
-  const colorFor = (code: BlockCode) => colorMap?.get(code) ?? bandColor(code)
+  // colorMap is no longer used for cell tinting — every cell now
+  // takes its hue from its ROLE (body / corner / half / base / top /
+  // cap) so the user can trace slot picker → role colour → preview
+  // region. Kept on the prop bag for backwards compatibility with the
+  // legend, which still maps code → swatch for code-by-code lookup.
+  void colorMap
+  void bandColor
+  // Per-cell colour comes from the cell's role; per-cell highlight is
+  // a brighter ring + full opacity when the user is focused on that
+  // role's picker (the rest dim). Builds a small helper used by every
+  // cell in the loop below.
+  const styleFor = (role: SlotRole) => {
+    const base = ROLE_COLORS[role]
+    const isFocused = highlightedSlot === role
+    const otherFocused = highlightedSlot !== null && !isFocused
+    return {
+      backgroundColor: base,
+      opacity: otherFocused ? 0.35 : 1,
+      // Ring sits inside the cell (boxShadow inset) so it never
+      // bleeds into neighbours. ~2px bright ring is visible against
+      // both light and dark cell hues.
+      boxShadow: isFocused
+        ? 'inset 0 0 0 2px #FDE68A, 0 0 8px rgba(253, 230, 138, 0.6)'
+        : undefined,
+      transition: 'opacity 120ms ease, box-shadow 120ms ease',
+    }
+  }
   const visible = bands.filter((b) => b.count > 0)
   // Expand the band list into a flat per-course block-code array so we
   // can lay out each course independently — needed because course N+1
@@ -2762,31 +2858,42 @@ function CoursePatternPreview({
           //     corner / half codes — so series-range overrides (e.g.
           //     30.01 corners on the base 5 courses) show up. [from the
           //     series-range / per-course-override resolver]
-          const bodyFill = colorFor(bodyCode)
-          const cornerFill = colorFor(cornerCode)
-          const halfFill = colorFor(halfCode)
           const bodyW = bodyWidthOf(bodyCode)
           const cornerW = widthOf(cornerCode)
           const halfW = widthOf(halfCode)
           const toPct = (w: number) => (w / REPRESENTATIVE_WIDTH_MM) * 100
-          const cells: { widthPct: number; color: string; label: string }[] = []
+          // Body cells get a per-course role: course 1 = 'base', last
+          // course = 'top', everything in between = 'body'. End cells
+          // are 'corner' or 'half' depending on the bond rule. Cap is
+          // emitted separately as a stripe above the wall body.
+          const bodyRole: SlotRole =
+            courseNum === 1
+              ? 'base'
+              : courseNum === courses.length
+                ? 'top'
+                : 'body'
+          const cells: {
+            widthPct: number
+            role: SlotRole
+            label: string
+          }[] = []
           if (useHalves) {
-            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body + half
-            // end. Same total as the odd-course row below — that's why
+            // Stretcher even: half end + (BLOCKS_ACROSS + 1) body +
+            // half end. Same total as the odd-course row — that's why
             // the bond pattern reads as an offset rather than a width
             // change.
-            cells.push({ widthPct: toPct(halfW), color: halfFill, label: halfCode })
+            cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
             for (let i = 0; i < BLOCKS_ACROSS + 1; i++) {
-              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: bodyCode })
+              cells.push({ widthPct: toPct(bodyW), role: bodyRole, label: bodyCode })
             }
-            cells.push({ widthPct: toPct(halfW), color: halfFill, label: halfCode })
+            cells.push({ widthPct: toPct(halfW), role: 'half', label: halfCode })
           } else {
             // Stack bond OR stretcher odd: full end + N body + full end.
-            cells.push({ widthPct: toPct(cornerW), color: cornerFill, label: cornerCode })
+            cells.push({ widthPct: toPct(cornerW), role: 'corner', label: cornerCode })
             for (let i = 0; i < BLOCKS_ACROSS; i++) {
-              cells.push({ widthPct: toPct(bodyW), color: bodyFill, label: bodyCode })
+              cells.push({ widthPct: toPct(bodyW), role: bodyRole, label: bodyCode })
             }
-            cells.push({ widthPct: toPct(cornerW), color: cornerFill, label: cornerCode })
+            cells.push({ widthPct: toPct(cornerW), role: 'corner', label: cornerCode })
           }
 
           return (
@@ -2805,9 +2912,9 @@ function CoursePatternPreview({
               {cells.map((c, i) => (
                 <div
                   key={i}
-                  style={{ width: `${c.widthPct}%`, backgroundColor: c.color }}
+                  style={{ width: `${c.widthPct}%`, ...styleFor(c.role) }}
                   className="border-r border-black/30 last:border-r-0"
-                  title={c.label}
+                  title={`${ROLE_LABELS[c.role]} — ${c.label}`}
                 />
               ))}
             </div>
@@ -3043,16 +3150,56 @@ interface BlockSelectProps {
   options: (BlockCode | '')[]
   disabled?: boolean
   allowEmpty?: boolean
+  /**
+   * Optional role colour. When provided, a small filled circle sits
+   * before the label in the matching colour — same hue used for that
+   * role's cells in the wall preview. Lets the user trace label →
+   * dot → preview region without reading any text.
+   */
+  roleColor?: string
+  /**
+   * Fires when the user focuses / hovers this picker. The parent
+   * raises a "highlight this role in the preview" signal so the
+   * matching cells get a glow ring while the user is deciding what
+   * block to put in this slot.
+   */
+  onHighlight?: () => void
+  onUnhighlight?: () => void
 }
 
-function BlockSelect({ label, value, onChange, options, disabled, allowEmpty }: BlockSelectProps) {
+function BlockSelect({
+  label,
+  value,
+  onChange,
+  options,
+  disabled,
+  allowEmpty,
+  roleColor,
+  onHighlight,
+  onUnhighlight,
+}: BlockSelectProps) {
   return (
-    <label className="text-sm block">
-      <span className="block text-ink-300 mb-1.5">{label}</span>
+    <label
+      className="text-sm block"
+      onMouseEnter={onHighlight}
+      onMouseLeave={onUnhighlight}
+    >
+      <span className="flex items-center gap-1.5 text-ink-300 mb-1.5">
+        {roleColor && (
+          <span
+            className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: roleColor }}
+            aria-hidden="true"
+          />
+        )}
+        <span className="min-w-0 truncate">{label}</span>
+      </span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as BlockCode | '')}
         disabled={disabled}
+        onFocus={onHighlight}
+        onBlur={onUnhighlight}
         className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 focus:outline-none focus:border-beme-400 disabled:cursor-not-allowed disabled:bg-ink-800 disabled:text-ink-400"
       >
         {allowEmpty && <option value="">None</option>}
