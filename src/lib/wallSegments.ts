@@ -1773,15 +1773,32 @@ export function segmentsForStraightWall(
   // 3D SlotRole. END cells already carry endKind (corner/half); body /
   // jamb cells take their colour from the course's vertical position
   // — base on course 1, top on the last course, body everywhere else.
+  // HEIGHT-MAKEUP courses (the short 90 / 140mm bands that absorb the
+  // wall-height remainder) get the 'hm' role for the whole course
+  // regardless of cell position — end cells on a HM course aren't
+  // "corners", they're just HM blocks cut to the corner slot.
   // Returns the role + the role-colour override so every box gets a
   // hue that matches the 2D preview and the picker dots.
-  type SlotR = 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
+  type SlotR =
+    | 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap' | 'hm'
+  // Detect HM courses by face height — standard courses run ~190–204mm
+  // (body block + mortar joint absorbs); HM bands are 92mm or 140mm
+  // tall (face only). Anything noticeably below the standard module
+  // counts. Tolerance picks up any sub-160mm course as a height-
+  // makeup band — well above the tallest possible HM and well below
+  // the shortest standard body.
+  const courseHeightM = (course: ResolvedCourse) => course.y1 - course.y0
+  const HM_FACE_THRESHOLD_M = 0.16
+  const isHmCourse = (course: ResolvedCourse) =>
+    courseHeightM(course) < HM_FACE_THRESHOLD_M
   const roleForCell = (
     cell: Cell,
-    courseNumber: number,
+    course: ResolvedCourse,
   ): { role: SlotR; color: string } => {
     let role: SlotR
-    if (cell.role === 'END' || cell.role === 'JAMB') {
+    if (isHmCourse(course)) {
+      role = 'hm'
+    } else if (cell.role === 'END' || cell.role === 'JAMB') {
       // Both wall-end terminations AND opening jambs are end blocks
       // that alternate corner / half across courses under stretcher
       // bond. endKind is set at cell-construction time on both kinds;
@@ -1789,9 +1806,9 @@ export function segmentsForStraightWall(
       // user can see the bond alternation at openings the same way
       // they see it at wall ends.
       role = cell.endKind ?? 'corner'
-    } else if (courseNumber === 1) {
+    } else if (course.courseNumber === 1) {
       role = 'base'
-    } else if (courseNumber === totalCourses) {
+    } else if (course.courseNumber === totalCourses) {
       role = 'top'
     } else {
       role = 'body'
@@ -1801,7 +1818,7 @@ export function segmentsForStraightWall(
   for (const { course, cells } of grid) {
     for (const cell of cells) {
       if (cell.role === 'REMOVED') continue
-      const { role, color } = roleForCell(cell, course.courseNumber)
+      const { role, color } = roleForCell(cell, course)
       // Partial-overlap openings crossing this cell's x-range.
       const partials = wallOpenings.filter(
         (op) =>

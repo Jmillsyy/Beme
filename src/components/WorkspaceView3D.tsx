@@ -701,14 +701,22 @@ function segmentsFromWallLayout(
       const RENDER_ONLY_RECESS_M = 0.003
       const recess = w.block.renderOnly === true ? RENDER_ONLY_RECESS_M : 0
       // Role classification: map the layout-block role + its course
-      // type onto our 6-role SlotRole vocabulary so the renderer can
-      // tint by role. Body blocks on the FIRST course inherit 'base';
-      // body blocks on the LAST course inherit 'top'; everything in
-      // between stays 'body'. End-half / corner pass through directly.
-      // Fraction / lead-in / paired-tile are visually body-like so
-      // they share the body hue.
+      // type onto our SlotRole vocabulary so the renderer can tint by
+      // role. Body blocks on the FIRST course inherit 'base'; body
+      // blocks on the LAST course inherit 'top'; height-makeup courses
+      // (the sub-modular 90/140mm bands that absorb wall-height
+      // remainders) inherit 'hm' so the whole short course reads as
+      // one cyan stripe instead of pretending its end blocks are
+      // corners.
       let slotRole: SlotRole = 'body'
-      if (w.block.role === 'corner') {
+      const isHmCourse =
+        course.type === 'height-71' || course.type === 'height-140'
+      if (isHmCourse) {
+        // Every cell in an HM course is just the HM block cut to fit
+        // — end positions aren't 'corners' in the usual sense, they're
+        // the same library code as the body cell of that course.
+        slotRole = 'hm'
+      } else if (w.block.role === 'corner') {
         slotRole = 'corner'
       } else if (w.block.role === 'end-half') {
         slotRole = 'half'

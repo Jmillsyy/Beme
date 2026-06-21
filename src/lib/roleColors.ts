@@ -18,7 +18,14 @@
  * the light cream (modal background).
  */
 
-export type SlotRole = 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
+export type SlotRole =
+  | 'body'
+  | 'corner'
+  | 'half'
+  | 'base'
+  | 'top'
+  | 'cap'
+  | 'hm'
 
 export const ROLE_COLORS: Record<SlotRole, string> = {
   body: '#3B82F6',   // blue-500
@@ -27,6 +34,12 @@ export const ROLE_COLORS: Record<SlotRole, string> = {
   base: '#F59E0B',   // amber-500
   top: '#8B5CF6',    // violet-500
   cap: '#EC4899',    // pink-500
+  // Height-makeup band — the short course (e.g. 92mm CMU8-HH or
+  // 140mm AU 20.140) that absorbs the wall's height remainder so the
+  // total lands on the user's heightMm. Cyan stands out from the
+  // body / corner / half stack so it reads as 'this course is a
+  // different unit' at a glance.
+  hm: '#06B6D4', // cyan-500
 }
 
 export const ROLE_LABELS: Record<SlotRole, string> = {
@@ -36,4 +49,5 @@ export const ROLE_LABELS: Record<SlotRole, string> = {
   base: 'Base',
   top: 'Top',
   cap: 'Cap',
+  hm: 'Height makeup',
 }
