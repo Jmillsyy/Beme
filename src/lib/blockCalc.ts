@@ -1950,15 +1950,25 @@ export function planWallLayout(
   }
   // Course height (face height) for the 3D y-axis. Course modular is
   // height + MORTAR_MM; we want the face height since blocks have
-  // visible mortar joints between courses.
-  const courseFaceHeightMm = (type: CourseType): number => {
+  // visible mortar joints between courses. Body height comes from
+  // the actual library block, not a hardcoded 190 — so US CMU8
+  // (194 mm), 300-series 30.48 (190 mm), or any custom block size
+  // renders at its real face height. Height-makeup blocks (71/140)
+  // stay as their canonical 90/140 mm faces because they ARE
+  // standard sub-modular AU pieces; if a region needs different
+  // values they tag their own height-makeup blocks and pickHeight-
+  // MakeupBlock returns those instead — same as the rest of the
+  // role-based resolution.
+  const courseFaceHeightMm = (type: CourseType, bodyBlockCode: BlockCode): number => {
     switch (type) {
       case 'height-71':
         return 90
       case 'height-140':
         return 140
-      default:
-        return 190
+      default: {
+        const block = BLOCK_LIBRARY[bodyBlockCode]
+        return block?.dimensions.heightMm ?? 190
+      }
     }
   }
 
@@ -1977,7 +1987,7 @@ export function planWallLayout(
   let yCursor = 0
   for (let i = 0; i < courses.length; i++) {
     const courseSpec = courses[i]
-    const faceH = courseFaceHeightMm(courseSpec.type)
+    const faceH = courseFaceHeightMm(courseSpec.type, courseSpec.bodyBlock)
     layout.courses.push({
       courseNumber: i + 1,
       type: courseSpec.type,
