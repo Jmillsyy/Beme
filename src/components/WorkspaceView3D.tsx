@@ -4929,6 +4929,28 @@ function Scene({
       )
       const totalPierHeightM = (courseCount * courseModuleMm) / 1000
 
+      // Side-snap offset: a tied pier straddles its wall and protrudes
+      // (pierDepth - wallDepth) on the chosen side. Shift the column centre
+      // perpendicular to the wall by half the protrusion so it ties in by
+      // the wall's depth - mirrors the 2D plan render. Legacy piers (no
+      // `side`) stay centred on the wall line.
+      if (pier.type === 'tied' && pier.side) {
+        const sideWall = wallsByIdForPiers.get(pier.wallId)
+        if (sideWall && !isCurvedWall(sideWall)) {
+          const wallMk = makeupsById[sideWall.makeupId]
+          const wallDepthMm =
+            library[wallMk?.bodyBlockCode ?? '']?.dimensions.depthMm ?? 190
+          const protrudeM =
+            Math.max(0, (firstBlockDepthMm - wallDepthMm) / 2) / 1000
+          const sdx = -(sideWall.endX - sideWall.startX) / 1000
+          const sdz = -(sideWall.endY - sideWall.startY) / 1000
+          const slen = Math.hypot(sdx, sdz) || 1
+          const sgn = pier.side === 'left' ? 1 : -1
+          cxM += (-sdz / slen) * protrudeM * sgn
+          czM += (sdx / slen) * protrudeM * sgn
+        }
+      }
+
       // Mortar column - sits behind the block faces, recessed inward
       // on both width + depth so it's hidden by the blocks where they
       // overlap, visible only through the joint gaps.

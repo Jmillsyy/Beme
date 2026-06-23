@@ -514,11 +514,9 @@ export default function WallTypesPanel({
                           colorPierMakeups
                         ),
                       }}
-                      title={`${
-                        pm.suggestedPlacement === 'tied' ? 'Tied' : 'Free'
-                      } pier`}
+                      title="Pier"
                     >
-                      {pm.suggestedPlacement === 'tied' ? 'Tied pier' : 'Free pier'}
+                      Pier
                     </span>
                     <div className="text-sm font-medium text-ink-100 break-words flex-1 min-w-0">
                       {pm.name}
@@ -830,8 +828,10 @@ function KindPicker({
   const options: { value: MakeupKind; label: string }[] = [
     { value: 'wall', label: 'Wall' },
     ...(!hideCurved ? [{ value: 'curved' as const, label: 'Curved' }] : []),
-    { value: 'tied-pier', label: 'Tied pier' },
-    { value: 'freestanding-pier', label: 'Freestanding pier' },
+    // One unified pier kind - whether a pier is freestanding or tied into a
+    // wall (and which side it sits) is decided when it's dropped, not per
+    // type. So the picker offers a single "Pier" rather than two flavours.
+    { value: 'freestanding-pier', label: 'Pier' },
   ]
   return (
     <div className="px-5 py-2.5 border-b border-ink-600 bg-ink-900/20">
@@ -2573,8 +2573,10 @@ function PreviewLegend({
   bondType: BondType
   /** Makeup is the source of truth for base / top / cap codes (not
    * surfaced by resolveForCourse, which only returns the per-course
-   * body / corner / half picks). */
-  makeup: WallMakeup
+   * body / corner / half picks). Optional: the pier legend reuses this
+   * component with a flat resolver and NO wall makeup (piers have no cap
+   * tile), so every access must be guarded. */
+  makeup?: WallMakeup
 }) {
   // Walk the preview to figure out WHICH roles actually appear in
   // this wall. Stack bond never uses the half role; stretcher does.
@@ -2606,7 +2608,7 @@ function PreviewLegend({
   if (lastCourse && totalCourses > 1) {
     items.push({ role: 'top', code: lastCourse.body })
   }
-  if (makeup.capBlockCode) {
+  if (makeup?.capBlockCode) {
     items.push({ role: 'cap', code: makeup.capBlockCode })
   }
 
@@ -3585,51 +3587,23 @@ function PierTypeEditorModal({
               />
             </label>
 
-            {/* Default placement radio - only shown when EDITING an
-                existing pier. When creating new, the kind picker at the
-                top of the modal already drives this choice (Tied pier
-                vs Freestanding pier), so showing the radio too would
-                be a redundant second surface for the same property. */}
-            {existing && (
-              <fieldset className="text-sm">
-                <legend className="text-ink-300 mb-1.5">Default placement</legend>
-                <div className="flex flex-col gap-1.5">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={placement === 'tied'}
-                      onChange={() => setPlacement('tied')}
-                    />
-                    <span>Tied (built into a wall)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={placement === 'freestanding'}
-                      onChange={() => setPlacement('freestanding')}
-                    />
-                    <span>Freestanding</span>
-                  </label>
-                </div>
-              </fieldset>
-            )}
-
-            {placement === 'freestanding' && (
-              <label className="text-sm block">
-                <span className="block text-ink-300 mb-1.5">Height</span>
-                <LengthInput
-                  valueMm={heightMm}
-                  onChangeMm={(mm) => setHeightMm(Math.round(Math.max(200, mm)))}
-                  minMm={200}
-                  ariaLabel="Freestanding pier height"
-                  className="w-full"
-                />
-                <p className="text-[11px] text-ink-500 mt-1.5">
-                  Applies to every freestanding pier of this type. Tied piers
-                  inherit the host wall's height instead.
-                </p>
-              </label>
-            )}
+            {/* Placement - freestanding vs tied to a wall, and which side it
+                sits - is chosen when the pier is dropped, not per type, so
+                there's no tied/freestanding switch here. */}
+            <label className="text-sm block">
+              <span className="block text-ink-300 mb-1.5">Height</span>
+              <LengthInput
+                valueMm={heightMm}
+                onChangeMm={(mm) => setHeightMm(Math.round(Math.max(200, mm)))}
+                minMm={200}
+                ariaLabel="Pier height"
+                className="w-full"
+              />
+              <p className="text-[11px] text-ink-500 mt-1.5">
+                Used when the pier is placed freestanding. A pier tied into a
+                wall inherits the wall's height instead.
+              </p>
+            </label>
 
             <section>
               <div className="flex items-baseline justify-between mb-2">

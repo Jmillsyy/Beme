@@ -290,14 +290,22 @@ export default function ProjectBar({
                   : null}
           </span>
         )}
-        <button
-          onClick={onSave}
-          disabled={!canSave || isSaving}
-          title={saveTitle}
-          className="px-3.5 py-2 rounded-md bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
-        >
-          {isSaving ? 'Saving…' : isSaved ? 'Save changes' : 'Save'}
-        </button>
+        {/* Wrapped in a span so the block reason still shows on hover when
+            the button is DISABLED - browsers suppress `title` (and all
+            pointer events) on disabled buttons, so without this the user
+            gets a not-allowed cursor and no explanation of WHY they can't
+            save. The span receives the hover instead and surfaces the
+            saveBlockedReason. */}
+        <span title={!canSave ? saveTitle : undefined} className="inline-flex">
+          <button
+            onClick={onSave}
+            disabled={!canSave || isSaving}
+            title={saveTitle}
+            className="px-3.5 py-2 rounded-md bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+          >
+            {isSaving ? 'Saving…' : isSaved ? 'Save changes' : 'Save'}
+          </button>
+        </span>
 
         {/* Top-level shortcut to flip the project status. Only shown once the
             project's actually been saved - there's nothing to mark complete

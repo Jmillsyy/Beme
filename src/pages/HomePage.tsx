@@ -998,7 +998,6 @@ function formatTurnaround(days: number): string {
 function PersonalDashboard() {
   const navigate = useNavigate()
   const [projects, setProjects] = useState<SavedProject[]>([])
-  const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const { signedIn, user } = useAuth()
 
@@ -1066,25 +1065,14 @@ function PersonalDashboard() {
 
   /**
    * Splits projects into Current (in-progress) and Completed for
-   * the side-by-side dashboard layout. Search applies to the
-   * Current column only - Completed is a historical archive that
-   * doesn't need to be hunted through; the user can flip a project
-   * back to in-progress if they need to re-touch it.
+   * the side-by-side dashboard layout. Name search now lives on the
+   * Projects page (the "View all" target) so the dashboard columns
+   * stay a clean at-a-glance summary rather than a search surface.
    */
-  const currentProjects = useMemo(() => {
-    const base = projects.filter((p) => p.status !== 'completed')
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return base
-    return base.filter((p) => {
-      const d = p.projectDetails
-      return (
-        d.projectName.toLowerCase().includes(q) ||
-        d.siteAddress.toLowerCase().includes(q) ||
-        d.clientName.toLowerCase().includes(q) ||
-        d.estimatorName.toLowerCase().includes(q)
-      )
-    })
-  }, [projects, searchQuery])
+  const currentProjects = useMemo(
+    () => projects.filter((p) => p.status !== 'completed'),
+    [projects],
+  )
   const completedProjects = useMemo(
     () => projects.filter((p) => p.status === 'completed'),
     [projects],
@@ -1267,12 +1255,9 @@ function PersonalDashboard() {
     month: 'long',
   })
 
-  // No-projects state drives the big invitation hero instead of
-  // showing two empty Current / Completed sections side by side.
-  // The screenshot complaint that the dashboard "feels unorganised"
-  // came from this case: skeleton rows + a quartet of dashed boxes
-  // looked like broken UI rather than intentional zero-state.
-  const hasAnyProjects = projects.length > 0
+  // The two-column project rail below renders in every non-loading state,
+  // including zero estimates - both panels show their filler grid so the
+  // dashboard stays consistent instead of swapping to a separate hero.
 
   return (
     // flex flex-col + flex-1 so PersonalDashboard fills the height
@@ -1394,187 +1379,86 @@ function PersonalDashboard() {
         </div>
       )}
 
-      {/* Zero-project state - single confident hero card with a
-          big CTA, instead of two separate dashed-border "Current"
-          and "Completed" placeholders. Reads as "you're here to
-          start something" rather than "the dashboard is broken /
-          empty". Only shows after the loading flip - keeps the
-          first paint from flashing two different empty states. */}
-      {!loading && !hasAnyProjects && (
-        <section className="mt-8 flex-1 flex items-center justify-center">
-          <div className="w-full border border-ink-600 rounded-2xl bg-ink-800/60 px-8 py-12 text-center">
-            <div className="mx-auto w-14 h-14 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-5">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="w-7 h-7 text-beme-400"
-                aria-hidden
-              >
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="12" y1="18" x2="12" y2="12" />
-                <line x1="9" y1="15" x2="15" y2="15" />
-              </svg>
-            </div>
-            <h3 className="text-xl font-bold text-ink-50 tracking-tight">
-              Start your first estimate
-            </h3>
-            <p className="text-sm text-ink-400 mt-2 leading-relaxed">
-              Upload a plan or start with a blank workspace. Block, brick,
-              or both - every project supports both trades.
-            </p>
-            <div className="mt-6 flex items-center justify-center gap-3 flex-wrap">
-              <Link
-                to="/project/block"
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-lg shadow-beme-500/20"
-              >
-                <span className="text-lg leading-none">+</span>
-                New estimate
-              </Link>
-              <Link
-                to="/guide"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-ink-300 text-sm hover:text-ink-100 hover:bg-ink-700/60 transition-colors"
-              >
-                View the guide
-                <span className="text-ink-500">→</span>
-              </Link>
-            </div>
-          </div>
-        </section>
-      )}
+      {/* Zero-project hero retired - the always-on two-column rail below
+          now covers the empty state (both panels show their filler grid),
+          so the dashboard layout is identical whether you have 0 or 50
+          estimates. The top-level "New estimate" button is the CTA. */}
 
-      {/* Project rail - only renders when the user has at least one
-          project. Splits into Current (in-progress) and Completed
-          stacked vertically. Completed hides entirely when empty
-          (the zero-project block above handles the all-empty case,
-          and showing a dashed "no completed" box on a project that's
-          still in progress is more noise than help).
-          Each section caps at 4 rows on the dashboard with a "View
-          all" affordance below. */}
-      {!loading && hasAnyProjects && (
-      <section className="mt-8 flex-1 grid grid-cols-1 gap-y-8 items-start">
+      {/* Project rail - two side-by-side panels (In progress · Completed).
+          Renders in every non-loading state, including zero estimates, so
+          the filler grids are always present. Each column caps at 4 rows
+          with a "View all" link to the Projects page. */}
+      {!loading && (
+      <section className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 items-stretch">
         {/* Current - single small-uppercase header matching the
             OrgDashboard ProjectsColumn pattern. No marketing-style
             eyebrow + large heading combo. The orange dot keeps a
             tiny brand touch without dominating. */}
-        <div className="flex flex-col">
+        <div className="flex flex-col min-h-[420px]">
           <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
               <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
-              Your projects
+              In progress
               <span className="text-ink-500 normal-case font-normal tracking-normal">
                 · {currentProjects.length}
               </span>
             </h3>
-            <div className="relative">
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search…"
-                className="pl-8 pr-3 py-1.5 w-44 rounded-lg border border-ink-600 bg-ink-800 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
-              />
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-500 pointer-events-none"
-              >
-                <circle cx="11" cy="11" r="8" />
-                <path d="m21 21-4.3-4.3" />
-              </svg>
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-500 hover:text-ink-200 text-xs"
-                  aria-label="Clear search"
-                  type="button"
-                >
-                  ×
-                </button>
-              )}
-            </div>
           </div>
 
-          {/* Search-miss / all-completed states. Loading + first-
-              project state are handled at the outer level so this
-              section only renders Current when there's something
-              to show OR when the user is actively searching and we
-              need to tell them no matches. */}
-          {currentProjects.length === 0 && (
-            <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 text-ink-400 px-6 py-8 text-center flex flex-col items-center justify-center gap-2">
-              <div className="text-sm">
-                {searchQuery ? (
-                  <>
-                    <div className="text-ink-200 font-medium">No matches.</div>
-                    <div className="text-xs text-ink-500 mt-1">
-                      Nothing matches <strong>"{searchQuery}"</strong>.
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="text-ink-200 font-medium">All caught up.</div>
-                    <div className="text-xs text-ink-500 mt-1">
-                      Every project is filed under Completed.
-                    </div>
-                  </>
-                )}
-              </div>
+          {currentProjects.length > 0 && (
+            <ul className="space-y-2 mb-2">
+              {currentProjectsVisible.map((p) => (
+                <ProjectRow
+                  key={p.id}
+                  project={p}
+                  onDelete={() => handleDelete(p.id)}
+                  onDuplicate={() => handleDuplicate(p)}
+                  onCycleOutcome={() => handleCycleOutcome(p)}
+                />
+              ))}
+            </ul>
+          )}
+          {currentHasMore && (
+            <div className="mb-2 flex justify-end">
+              <Link
+                to="/projects?status=in-progress"
+                className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+              >
+                View all
+                <span className="text-ink-500">
+                  · {currentProjects.length}
+                </span>
+              </Link>
             </div>
           )}
-
-          {currentProjects.length > 0 && (
-            <>
-              <ul className="space-y-2">
-                {currentProjectsVisible.map((p) => (
-                  <ProjectRow
-                    key={p.id}
-                    project={p}
-                    onDelete={() => handleDelete(p.id)}
-                    onDuplicate={() => handleDuplicate(p)}
-                    onCycleOutcome={() => handleCycleOutcome(p)}
-                  />
-                ))}
-              </ul>
-              {currentHasMore && (
-                <div className="mt-3 flex justify-end">
-                  <Link
-                    to="/projects?status=in-progress"
-                    className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
-                  >
-                    View all
-                    <span className="text-ink-500">
-                      · {currentProjects.length}
-                    </span>
-                  </Link>
+          {/* Filler grid - always present so the column reads as a
+              consistent panel whether or not it holds projects. flex-1
+              absorbs the leftover height with a faint graph-paper grid;
+              when the column is empty it also carries the empty-state
+              copy, centred. Replaces the old "Start another estimate"
+              CTA tile (the page already has a top-level New estimate
+              button). */}
+          <div
+            className="flex-1 rounded-xl border border-dashed border-ink-700 bg-ink-800/20 flex items-center justify-center p-6 text-center"
+            style={{
+              backgroundImage:
+                'linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px)',
+              backgroundSize: '22px 22px',
+            }}
+          >
+            {currentProjects.length === 0 ? (
+              <div className="text-sm">
+                <div className="text-ink-200 font-medium">Nothing in progress</div>
+                <div className="text-xs text-ink-500 mt-1">
+                  New estimates land here.
                 </div>
-              )}
-              {/* Filler - keeps the column visually full when it
-                  has fewer rows than the sidebar's height allows.
-                  Doubles as a soft "start another" affordance so
-                  the placeholder earns its space rather than just
-                  being a blank box. flex-1 absorbs the leftover
-                  vertical room; min-h sets a floor so it doesn't
-                  collapse on a busy column. */}
-              <Link
-                to="/project/block"
-                className="flex-1 mt-3 border border-dashed border-ink-600 hover:border-ink-500 rounded-xl bg-ink-800/30 hover:bg-ink-800/50 text-ink-400 hover:text-ink-200 transition-colors flex items-center justify-center min-h-[4rem] text-xs font-medium gap-1.5"
-              >
-                <span className="text-base">+</span>
-                Start another estimate
-              </Link>
-            </>
-          )}
+              </div>
+            ) : (
+              <div className="text-xs text-ink-500 leading-relaxed max-w-[15rem]">
+                Showing your most recent. The Projects page has the full list.
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Completed ── flex column so the empty state can
@@ -1588,18 +1472,23 @@ function PersonalDashboard() {
             in-progress project, which made the dashboard look like
             it was missing content. Hidden entirely now until at
             least one project is closed out. */}
-        {completedProjects.length > 0 && (
-          <div className="flex flex-col">
-            <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
-              <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
-                Completed projects
-                <span className="text-ink-500 normal-case font-normal tracking-normal">
-                  · {completedProjects.length}
-                </span>
-              </h3>
-            </div>
-            <ul className="space-y-2">
+        {/* Completed column - always rendered so it holds the right
+            half of the two-column grid even at zero. A calm dashed
+            empty state stands in until the user closes a job out, and
+            the emerald accent (dot, hover, empty-state icon) reads as
+            "done" against the orange "In progress" column on the left. */}
+        <div className="flex flex-col min-h-[420px]">
+          <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+            <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
+              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              Completed
+              <span className="text-ink-500 normal-case font-normal tracking-normal">
+                · {completedProjects.length}
+              </span>
+            </h3>
+          </div>
+          {completedProjects.length > 0 && (
+            <ul className="space-y-2 mb-2">
               {completedProjectsVisible.map((p) => (
                 <ProjectRow
                   key={p.id}
@@ -1610,21 +1499,61 @@ function PersonalDashboard() {
                 />
               ))}
             </ul>
-            {completedHasMore && (
-              <div className="mt-3 flex justify-end">
-                <Link
-                  to="/projects?status=completed"
-                  className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-beme-500/50 hover:text-beme-300 transition-colors"
+          )}
+          {completedHasMore && (
+            <div className="mb-2 flex justify-end">
+              <Link
+                to="/projects?status=completed"
+                className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md border border-ink-600 text-ink-300 hover:border-emerald-500/50 hover:text-emerald-300 transition-colors"
+              >
+                View all
+                <span className="text-ink-500">
+                  · {completedProjects.length}
+                </span>
+              </Link>
+            </div>
+          )}
+          <div
+            className="flex-1 min-h-[6rem] rounded-xl border border-dashed border-ink-700 bg-ink-800/20 flex items-center justify-center p-6 text-center"
+            style={{
+              backgroundImage:
+                'linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px)',
+              backgroundSize: '22px 22px',
+            }}
+          >
+            {completedProjects.length === 0 ? (
+              <div className="flex flex-col items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className="w-9 h-9 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400"
                 >
-                  View all
-                  <span className="text-ink-500">
-                    · {completedProjects.length}
-                  </span>
-                </Link>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="w-4 h-4"
+                  >
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                </span>
+                <div className="text-sm text-ink-200 font-medium">
+                  No completed projects yet
+                </div>
+                <div className="text-xs text-ink-500">
+                  Won and closed-out jobs collect here.
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-ink-500 leading-relaxed max-w-[15rem]">
+                Showing your most recent. The Projects page has the full list.
               </div>
             )}
           </div>
-        )}
+        </div>
       </section>
       )}
 

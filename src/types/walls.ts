@@ -484,6 +484,15 @@ export interface TiedPier {
   wallId: string
   /** Distance from the wall's start (mm) where the pier sits. */
   alongMm: number
+  /**
+   * Which side of the wall the pier sits on / protrudes from. The pier
+   * straddles the wall - it ties in by the wall's depth and protrudes the
+   * remainder (pierDepth - wallDepth) on this side. 'left'/'right' are
+   * relative to the wall's start→end direction (left = +90° / the wall's
+   * +normal, right = -normal). Missing on legacy piers placed before the
+   * side-snap model - those render centred on the wall line.
+   */
+  side?: 'left' | 'right'
   /** Which pier makeup defines the course pattern. */
   pierMakeupId?: string
 }

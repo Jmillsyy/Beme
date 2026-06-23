@@ -308,8 +308,9 @@ interface WallDrawingLayerProps {
   onOpeningSelect: (openingId: string | null) => void
   /** Called when a control-joint click on a wall is confirmed. The wall is split at alongMm. */
   onControlJointPlaced?: (wallId: string, alongMm: number) => void
-  /** Called when a tied pier is placed on a wall at alongMm. */
-  onTiedPierPlaced?: (wallId: string, alongMm: number) => void
+  /** Called when a tied pier is placed on a wall at alongMm. `side` is which
+   * side of the wall the cursor was on (the pier snaps to + protrudes from it). */
+  onTiedPierPlaced?: (wallId: string, alongMm: number, side?: 'left' | 'right') => void
   /** Called when a freestanding pier is placed at a real-world (x, y) in mm. */
   onFreestandingPierPlaced?: (xMm: number, yMm: number) => void
   onPierSelect?: (pierId: string | null) => void
@@ -1011,6 +1012,9 @@ function WallDrawingLayerInner({
   const [controlJointHover, setControlJointHover] = useState<WallProjection | null>(null)
   /** Live projection while placing a tied pier (hover preview). */
   const [tiedPierHover, setTiedPierHover] = useState<WallProjection | null>(null)
+  /** Which side the hovered tied-pier preview snaps to - drives the preview
+   * offset so it matches where the click will actually land. */
+  const [tiedPierHoverSide, setTiedPierHoverSide] = useState<'left' | 'right'>('left')
   /** Live cursor in mm while placing a freestanding pier. */
   const [freestandingPierHoverMm, setFreestandingPierHoverMm] = useState<Point | null>(null)
 
@@ -2170,9 +2174,17 @@ function WallDrawingLayerInner({
       if (!proj) return
       const wall = walls.find((w) => w.id === proj.wallId)
       if (!wall || isCurvedWall(wall)) return
+      const ddx = wall.endX - wall.startX
+      const ddy = wall.endY - wall.startY
+      const dlen = Math.hypot(ddx, ddy) || 1
+      const cMm = { x: pxToMm(raw.x), y: pxToMm(raw.y) }
+      const perpSigned =
+        (cMm.x - wall.startX) * (-ddy / dlen) +
+        (cMm.y - wall.startY) * (ddx / dlen)
       onTiedPierPlaced?.(
         proj.wallId,
-        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm
+        useGrid ? snapMmToGrid(proj.alongMm, wallSnapMm) : proj.alongMm,
+        perpSigned >= 0 ? 'left' : 'right'
       )
       setTiedPierHover(null)
       return
@@ -2188,22 +2200,44 @@ function WallDrawingLayerInner({
       // so a click on a curve falls through to freestanding.
       let tiedWallId: string | null = null
       let tiedAlongMm = 0
+      let tiedSide: 'left' | 'right' = 'left'
+      const cursorMm = { x: pxToMm(raw.x), y: pxToMm(raw.y) }
       for (const wall of walls) {
         if (isCurvedWall(wall)) continue
         const proj = projectOntoWall(raw, wall)
         if (!proj) continue
         const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
-        const halfThicknessPx = mmToPx(thicknessMm / 2)
-        if (proj.distFromLinePx <= halfThicknessPx) {
+        // Tie zone = within half the PIER's depth of the wall centreline,
+        // not just the thin wall body. That makes the side reliably pickable
+        // at any zoom: hover clearly above the wall to tie on top, below to
+        // tie underneath. Past this range the pier stays freestanding, so a
+        // pier can still be butted against a wall without tying in.
+        const pierDepthMm = pierFootprintDepthMm ?? pierFootprintMm ?? 390
+        const tieRangePx = Math.max(
+          mmToPx(thicknessMm / 2),
+          mmToPx(pierDepthMm / 2)
+        )
+        if (proj.distFromLinePx <= tieRangePx) {
           tiedWallId = wall.id
           tiedAlongMm = proj.alongMm
+          // Side = which side of the wall centreline the cursor sits on,
+          // measured along the wall's +normal (-uy, ux). The pier snaps to
+          // that side and protrudes from it.
+          const ddx = wall.endX - wall.startX
+          const ddy = wall.endY - wall.startY
+          const dlen = Math.hypot(ddx, ddy) || 1
+          const perpSigned =
+            (cursorMm.x - wall.startX) * (-ddy / dlen) +
+            (cursorMm.y - wall.startY) * (ddx / dlen)
+          tiedSide = perpSigned >= 0 ? 'left' : 'right'
           break
         }
       }
       if (tiedWallId !== null) {
         onTiedPierPlaced?.(
           tiedWallId,
-          useGrid ? snapMmToGrid(tiedAlongMm, wallSnapMm) : tiedAlongMm
+          useGrid ? snapMmToGrid(tiedAlongMm, wallSnapMm) : tiedAlongMm,
+          tiedSide
         )
       } else {
         const xMm = pxToMm(raw.x)
@@ -2366,19 +2400,33 @@ function WallDrawingLayerInner({
       // show the tied-pier hover when the cursor sits inside a straight wall's
       // body, otherwise the freestanding preview at the cursor position.
       let bodyHit: WallProjection | null = null
+      let hoverSide: 'left' | 'right' = 'left'
       for (const wall of walls) {
         if (isCurvedWall(wall)) continue
         const proj = projectOntoWall(raw, wall)
         if (!proj) continue
         const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
-        const halfThicknessPx = mmToPx(thicknessMm / 2)
-        if (proj.distFromLinePx <= halfThicknessPx) {
+        const pierDepthMm = pierFootprintDepthMm ?? pierFootprintMm ?? 390
+        const tieRangePx = Math.max(
+          mmToPx(thicknessMm / 2),
+          mmToPx(pierDepthMm / 2)
+        )
+        if (proj.distFromLinePx <= tieRangePx) {
           bodyHit = proj
+          const ddx = wall.endX - wall.startX
+          const ddy = wall.endY - wall.startY
+          const dlen = Math.hypot(ddx, ddy) || 1
+          const cMm = { x: pxToMm(raw.x), y: pxToMm(raw.y) }
+          const perpSigned =
+            (cMm.x - wall.startX) * (-ddy / dlen) +
+            (cMm.y - wall.startY) * (ddx / dlen)
+          hoverSide = perpSigned >= 0 ? 'left' : 'right'
           break
         }
       }
       if (bodyHit) {
         setTiedPierHover(bodyHit)
+        setTiedPierHoverSide(hoverSide)
         setFreestandingPierHoverMm(null)
       } else {
         setTiedPierHover(null)
@@ -3226,6 +3274,21 @@ function WallDrawingLayerInner({
             const dx = wall.endX - wall.startX
             const dy = wall.endY - wall.startY
             rotationDeg = (Math.atan2(dy, dx) * 180) / Math.PI
+            // Side-snap: the pier straddles the wall and protrudes
+            // (pierDepth - wallDepth) on the chosen side, tying in by the
+            // wall's depth. Shift the centre perpendicular to the wall by
+            // half the protrusion. Legacy piers (no `side`) stay centred.
+            if (pier.side) {
+              const wallDepthMm = wallThicknessByWallId[pier.wallId] ?? 190
+              const protrudeMm = Math.max(0, sizeDepthMm - wallDepthMm)
+              const len = Math.hypot(dx, dy) || 1
+              const ux = dx / len
+              const uy = dy / len
+              const sgn = pier.side === 'left' ? 1 : -1
+              const offPx = mmToPx(protrudeMm / 2)
+              cxPx += -uy * sgn * offPx
+              cyPx += ux * sgn * offPx
+            }
           } else {
             cxPx = mmToPx(pier.x)
             cyPx = mmToPx(pier.y)
@@ -3326,10 +3389,24 @@ function WallDrawingLayerInner({
           // misleading 390 square.
           const widthPx = mmToPx(pierFootprintMm)
           const depthPx = mmToPx(pierFootprintDepthMm ?? pierFootprintMm)
+          // Offset the preview to the hovered side so it shows where the
+          // pier will land (straddling the wall, protruding on that side).
+          let px = tiedPierHover.px.x
+          let py = tiedPierHover.px.y
+          const wallDepthMm = wallThicknessByWallId[tiedPierHover.wallId] ?? 190
+          const protrudeMm = Math.max(
+            0,
+            (pierFootprintDepthMm ?? pierFootprintMm) - wallDepthMm
+          )
+          const plen = Math.hypot(dx, dy) || 1
+          const psgn = tiedPierHoverSide === 'left' ? 1 : -1
+          const poff = mmToPx(protrudeMm / 2)
+          px += (-dy / plen) * psgn * poff
+          py += (dx / plen) * psgn * poff
           return (
             <Rect
-              x={tiedPierHover.px.x}
-              y={tiedPierHover.px.y}
+              x={px}
+              y={py}
               width={widthPx}
               height={depthPx}
               offsetX={widthPx / 2}

@@ -28,6 +28,12 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [members, setMembers] = useState<OrgMember[]>([])
   const [loading, setLoading] = useState(true)
+  // Local mirror of the `q` search param so the input stays responsive.
+  // A URL-param-controlled input drops characters under fast typing because
+  // every keystroke round-trips through setSearchParams before the value
+  // comes back. We hold the text locally (instant) and sync the URL (which
+  // drives the actual filtering) in the same handler.
+  const [searchInput, setSearchInput] = useState(() => searchParams.get('q') ?? '')
 
   // Filters read from URL with sensible fallbacks.
   const statusFilter: 'all' | ProjectStatus = (() => {
@@ -55,6 +61,9 @@ export default function ProjectsPage() {
     const raw = searchParams.get('ref') ?? ''
     return raw.replace(/^#/, '').replace(/\s+/g, '')
   })()
+
+  // Free-text search across project name / address / client / estimator.
+  const searchFilter: string = (searchParams.get('q') ?? '').trim()
 
   /** Update one filter without losing the others - keeps each onChange one-line. */
   function updateParam(key: string, value: string | null) {
@@ -131,6 +140,12 @@ export default function ProjectsPage() {
             : String(p.referenceNumber).padStart(6, '0')
         if (!padded.includes(refFilter)) return false
       }
+      if (searchFilter) {
+        const q = searchFilter.toLowerCase()
+        const d = p.projectDetails
+        const hay = `${d.projectName} ${d.siteAddress} ${d.clientName} ${d.estimatorName}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
       if (lowerBound !== null) {
         const iso =
           p.status === 'completed'
@@ -141,7 +156,7 @@ export default function ProjectsPage() {
       }
       return true
     })
-  }, [projects, statusFilter, typeFilter, ownerFilter, refFilter, period])
+  }, [projects, statusFilter, typeFilter, ownerFilter, refFilter, searchFilter, period])
 
   // Sort: completed by completedAt desc; in-progress + all by updatedAt desc.
   const sorted = useMemo(() => {
@@ -181,6 +196,12 @@ export default function ProjectsPage() {
             : String(p.referenceNumber).padStart(6, '0')
         if (!padded.includes(refFilter)) continue
       }
+      if (searchFilter) {
+        const q = searchFilter.toLowerCase()
+        const d = p.projectDetails
+        const hay = `${d.projectName} ${d.siteAddress} ${d.clientName} ${d.estimatorName}`.toLowerCase()
+        if (!hay.includes(q)) continue
+      }
       if (lowerBound !== null) {
         const iso =
           p.status === 'completed'
@@ -194,7 +215,7 @@ export default function ProjectsPage() {
       if (p.status === 'completed') acc.completed++
     }
     return acc
-  }, [projects, typeFilter, ownerFilter, refFilter, period])
+  }, [projects, typeFilter, ownerFilter, refFilter, searchFilter, period])
 
   return (
     <>
@@ -227,6 +248,37 @@ export default function ProjectsPage() {
         {/* Filter row */}
         <div className="border border-ink-600 rounded-xl bg-ink-800/60 p-4 mb-4">
           <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-400 mb-1.5">
+                Search
+              </div>
+              <div className="relative">
+                <input
+                  type="search"
+                  value={searchInput}
+                  onChange={(e) => {
+                    setSearchInput(e.target.value)
+                    updateParam('q', e.target.value)
+                  }}
+                  placeholder="Name, address, client…"
+                  className="pl-8 pr-3 py-1.5 w-56 rounded-md border border-ink-600 bg-ink-900 text-ink-50 text-sm placeholder:text-ink-500 focus:outline-none focus:border-beme-400"
+                />
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-500 pointer-events-none"
+                >
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="m21 21-4.3-4.3" />
+                </svg>
+              </div>
+            </div>
             <div>
               <div className="text-[10px] uppercase tracking-wider text-ink-400 mb-1.5">
                 Status
@@ -334,9 +386,13 @@ export default function ProjectsPage() {
               typeFilter !== 'all' ||
               ownerFilter !== 'any' ||
               period !== 'all' ||
-              refFilter !== '') && (
+              refFilter !== '' ||
+              searchFilter !== '') && (
               <button
-                onClick={() => setSearchParams({}, { replace: true })}
+                onClick={() => {
+                  setSearchInput('')
+                  setSearchParams({}, { replace: true })
+                }}
                 className="text-xs text-ink-400 hover:text-beme-300 ml-auto"
               >
                 Reset filters

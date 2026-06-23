@@ -668,6 +668,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // second run's id while leaving a second seed behind from the first
   // run. Setting the ref BEFORE doing any work means the replay
   // short-circuits.
+  // Bump to force the dirty-tracker effect to re-seed its baseline from the
+  // SETTLED state immediately after a load/bootstrap reseed, instead of
+  // lazily on the next dep change. In an empty workspace nothing else settles
+  // post-load (no PDF render, no reference-dim measurement), so without this
+  // the baseline stays null until the user's FIRST edit - and that edit then
+  // gets absorbed into the fresh baseline instead of marking the project
+  // dirty. Net effect was: draw a wall on a blank canvas and Save stayed
+  // greyed with "No unsaved changes". Bumping this inside the rAF reseeds
+  // forces an immediate re-seed so the next real edit registers as dirty.
+  const [reseedNonce, setReseedNonce] = useState(0)
   const didBootstrapRef = useRef(false)
   useEffect(() => {
     if (isProjectLoading) return
@@ -726,6 +736,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       requestAnimationFrame(() => {
         savedSnapshotRef.current = null
         setHasUnsavedChanges(false)
+        setReseedNonce((n) => n + 1)
       })
     })
   }, [areas.length, isProjectLoading])
@@ -2105,6 +2116,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
               if (cancelled) return
               savedSnapshotRef.current = null
               setHasUnsavedChanges(false)
+              setReseedNonce((n) => n + 1)
             })
           })
         }
@@ -2424,6 +2436,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     isEmptyWorkspace,
     hasUnsavedChanges,
     isProjectLoading,
+    reseedNonce,
   ])
 
   // Reasons save might be blocked, evaluated each render. A PDF is NO LONGER required -
@@ -5037,7 +5050,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // Pier placement handlers
 
   /** Place a tied pier on a wall at the click point along it. */
-  const handleTiedPierPlaced = useCallback(function handleTiedPierPlaced(wallId: string, alongMm: number) {
+  const handleTiedPierPlaced = useCallback(function handleTiedPierPlaced(wallId: string, alongMm: number, side?: 'left' | 'right') {
     if (mode !== 'block') return
     const wall = (wallsByPage[currentPage] ?? []).find((w) => w.id === wallId)
     if (!wall) return
@@ -5089,6 +5102,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       type: 'tied',
       wallId,
       alongMm: clamped,
+      ...(side ? { side } : {}),
       pierMakeupId: makeupId!,
     }
     setPiersByPage((prev) => ({
@@ -5980,6 +5994,40 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   useEffect(() => {
     hasAutoFitRef.current = false
   }, [pdfFile, isEmptyWorkspace])
+
+  // Empty-workspace scale guard. `currentScale` (px-per-mm) is derived from
+  // pagesData[currentPage]; on a blank canvas that entry holds the fixed
+  // page size + ratio. startEmptyWorkspace seeds it on CREATE, and the
+  // project loader restores it from proj.pagesData - but the loader's
+  // empty-workspace fallbacks (PDF download failed, `emptyWorkspace` flag on
+  // the row, walls-but-no-PDF recovery) flip isEmptyWorkspace=true WITHOUT
+  // re-seeding pagesData, trusting the saved project to have carried it.
+  // When it didn't (older saves, the async PDF-recovery race, or pagesData
+  // being excluded from dirty-tracking so a {} slipped through), the page
+  // entry is missing, currentScale is undefined, and the whole canvas locks:
+  // walls render at no scale (invisible) and every tool early-returns on
+  // `!currentScale` - including the ratio dropdown, which disables itself on
+  // `!pageData.pageWidthMm`, leaving no way to set a scale. This guard
+  // re-seeds the default blank-page entry whenever empty mode is active and
+  // the current page has no data, so currentScale always resolves no matter
+  // how the workspace was entered.
+  useEffect(() => {
+    if (!isEmptyWorkspace) return
+    if (pagesData[currentPage]) return
+    setPagesData((prev) =>
+      prev[currentPage]
+        ? prev
+        : {
+            ...prev,
+            [currentPage]: {
+              pageWidthMm: EMPTY_WORKSPACE_PAGE_WIDTH_MM,
+              pageHeightMm: EMPTY_WORKSPACE_PAGE_HEIGHT_MM,
+              pageScaleRatio: EMPTY_WORKSPACE_DEFAULT_RATIO,
+              scalePxPerMm: undefined,
+            },
+          },
+    )
+  }, [isEmptyWorkspace, currentPage, pagesData])
 
   // Auto-fit zoom on first render after page dimensions are known. We watch
   // aspectRatio (and the container ref's measured size via a microtask after
