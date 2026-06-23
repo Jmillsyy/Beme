@@ -1,5 +1,5 @@
 -- Seed the Galintel lintel range into a specific organisation's
--- supply items. One-shot — run once per org that wants the catalogue
+-- supply items. One-shot - run once per org that wants the catalogue
 -- pre-loaded.
 --
 -- Replace the org_name on line 13 if you want to seed a different

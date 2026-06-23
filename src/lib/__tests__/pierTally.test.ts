@@ -1,0 +1,60 @@
+/**
+ * Pier tally coverage - freestanding + tied piers and their contribution to
+ * the project tally. Pins the pier paths (previously untested) so course
+ * counting and the cycling course pattern can't silently regress.
+ */
+import { describe, it, expect } from 'vitest'
+import type { Wall, WallMakeup, FreestandingPier, TiedPier, PierMakeup } from '../../types/walls'
+import {
+  calculateFreestandingPierTally,
+  calculateTiedPierTally,
+  calculateProjectTally,
+} from '../blockCalc'
+
+const pmSingle: PierMakeup = { id: 'pm1', name: 'single', coursePattern: ['20.01'], suggestedPlacement: 'freestanding' }
+const pmAlt: PierMakeup = { id: 'pm2', name: 'alt', coursePattern: ['20.01', '20.48'], suggestedPlacement: 'freestanding' }
+
+const MK: WallMakeup = {
+  id: 'mk', name: 'std 200', bondType: 'stretcher', heightMm: 2400,
+  baseCourseBlockCode: '20.45', bodyBlockCode: '20.48', topCourseBlockCode: '20.48',
+  cornerBlockCode: '20.01', halfBlockCode: '20.03', useFractions: false,
+}
+const wall: Wall = {
+  id: 'w', makeupId: 'mk', startX: 0, startY: 0, endX: 4000, endY: 0,
+  startJunction: { type: 'free' }, endJunction: { type: 'free' },
+}
+
+describe('freestanding pier tally', () => {
+  it('lays floor(height / module) blocks from a single-block pattern', () => {
+    const p: FreestandingPier = { id: 'fp', type: 'freestanding', x: 0, y: 0, heightMm: 2400, pierMakeupId: 'pm1' }
+    expect(calculateFreestandingPierTally(p, pmSingle)).toEqual({ '20.01': 12 }) // floor(2400 / 200)
+  })
+
+  it('cycles a multi-block pattern course by course', () => {
+    const p: FreestandingPier = { id: 'fp', type: 'freestanding', x: 0, y: 0, heightMm: 2400, pierMakeupId: 'pm2' }
+    expect(calculateFreestandingPierTally(p, pmAlt)).toEqual({ '20.01': 6, '20.48': 6 })
+  })
+
+  it('falls back to the default pattern when no makeup is supplied', () => {
+    const p: FreestandingPier = { id: 'fp', type: 'freestanding', x: 0, y: 0, heightMm: 2400 }
+    expect(calculateFreestandingPierTally(p)).toEqual({ '40.925': 12 })
+  })
+})
+
+describe('tied pier tally', () => {
+  it('takes the host wall course count, not its own height', () => {
+    const tp: TiedPier = { id: 'tp', type: 'tied', wallId: 'w', alongMm: 2000, pierMakeupId: 'pm1' }
+    expect(calculateTiedPierTally(tp, wall, MK, pmSingle)).toEqual({ '20.01': 12 }) // wall = 12 courses
+  })
+})
+
+describe('project tally with piers', () => {
+  it('a tied pier adds one column per course; equal-depth pier displaces no body', () => {
+    const tp: TiedPier = { id: 'tp', type: 'tied', wallId: 'w', alongMm: 2000, pierMakeupId: 'pm1' }
+    const withPier = calculateProjectTally([wall], { mk: MK }, [], [tp], { pm1: pmSingle })
+    const noPier = calculateProjectTally([wall], { mk: MK }, [])
+    // Pier block is 20.01 (190 deep) == body 20.48 (190 deep): flush, no displacement.
+    expect((withPier['20.01'] ?? 0) - (noPier['20.01'] ?? 0)).toBe(12)
+    expect(withPier['20.48']).toBe(noPier['20.48'])
+  })
+})

@@ -5,27 +5,27 @@
 // dispatches to a handler per event type.
 //
 // Events handled:
-//   checkout.session.completed       — first checkout success; provisions
-//                                       the Supabase user, creates the
-//                                       subscriptions row, sends a magic
-//                                       link sign-in email.
-//   customer.subscription.updated    — plan change / status change /
-//                                       cancellation scheduled.
-//   customer.subscription.deleted    — full cancellation; access stops
-//                                       at current_period_end.
-//   invoice.payment_failed           — flag as past_due so the app shows
-//                                       a banner asking to update card.
+// checkout.session.completed       - first checkout success; provisions
+// the Supabase user, creates the
+// subscriptions row, sends a magic
+// link sign-in email.
+// customer.subscription.updated    - plan change / status change /
+// cancellation scheduled.
+// customer.subscription.deleted    - full cancellation; access stops
+// at current_period_end.
+// invoice.payment_failed           - flag as past_due so the app shows
+// a banner asking to update card.
 //
 // Env vars required:
-//   STRIPE_SECRET_KEY                — sk_test_... / sk_live_...
-//   STRIPE_WEBHOOK_SECRET            — whsec_... (from Stripe dashboard
-//                                       after registering the endpoint)
-//   SUPABASE_URL                     — auto-set by Supabase runtime
-//   SUPABASE_SERVICE_ROLE_KEY        — auto-set by Supabase runtime
+// STRIPE_SECRET_KEY                - sk_test_... / sk_live_...
+// STRIPE_WEBHOOK_SECRET            - whsec_... (from Stripe dashboard
+// after registering the endpoint)
+// SUPABASE_URL                     - auto-set by Supabase runtime
+// SUPABASE_SERVICE_ROLE_KEY        - auto-set by Supabase runtime
 //
 // Deploy: supabase functions deploy stripe-webhook --no-verify-jwt
-//   (--no-verify-jwt because Stripe authenticates via its own signature,
-//   not via a Supabase JWT.)
+// (--no-verify-jwt because Stripe authenticates via its own signature,
+// not via a Supabase JWT.)
 
 import Stripe from 'npm:stripe@17'
 import { createClient } from 'npm:@supabase/supabase-js@2'
@@ -47,7 +47,7 @@ const stripe = new Stripe(STRIPE_SECRET_KEY, {
   httpClient: Stripe.createFetchHttpClient(),
 })
 
-// Service-role client bypasses RLS — needed because the webhook is the
+// Service-role client bypasses RLS - needed because the webhook is the
 // only writer to the subscriptions table and creates auth.users records.
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
@@ -92,7 +92,7 @@ Deno.serve(async (req) => {
         await handlePaymentFailed(event.data.object as Stripe.Invoice)
         break
       default:
-        // Stripe sends a lot of event types — we only care about a few.
+        // Stripe sends a lot of event types - we only care about a few.
         // Silent ignore for everything else.
         console.log(`Ignoring event type: ${event.type}`)
     }
@@ -144,10 +144,10 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   }
   const resolvedPlan: 'individual' | 'organisation' = plan ?? 'individual'
 
-  // Step 1 — find or create the Supabase auth user.
+  // Step 1 - find or create the Supabase auth user.
   const userId = await findOrCreateUser(customerEmail)
 
-  // Step 2 — fetch the full subscription from Stripe so we have status,
+  // Step 2 - fetch the full subscription from Stripe so we have status,
   // trial end, current period end, etc.
   const subscription = await stripe.subscriptions.retrieve(
     typeof session.subscription === 'string'
@@ -155,7 +155,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
       : session.subscription.id
   )
 
-  // Step 3 — for Organisation plan, create the org and link the user
+  // Step 3 - for Organisation plan, create the org and link the user
   // as owner. For Individual, the subscription is linked directly to
   // the user (no org).
   let organisationId: string | null = null
@@ -163,7 +163,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     organisationId = await createOrganisationForUser(userId, customerEmail)
   }
 
-  // Step 4 — insert / upsert the subscriptions row.
+  // Step 4 - insert / upsert the subscriptions row.
   const stripeCustomerId =
     typeof session.customer === 'string' ? session.customer : session.customer.id
 
@@ -196,7 +196,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     throw new Error(`Subscription upsert failed: ${upsertError.message}`)
   }
 
-  // Step 5 — send the magic link so the customer can sign in.
+  // Step 5 - send the magic link so the customer can sign in.
   const { error: linkError } = await supabase.auth.admin.generateLink({
     type: 'magiclink',
     email: customerEmail,
@@ -207,7 +207,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
 
   if (linkError) {
     console.error('Magic link generation failed:', linkError)
-    // Don't throw — the subscription is provisioned. User can request
+    // Don't throw - the subscription is provisioned. User can request
     // a sign-in link from the app's login page using the same email.
   }
 
@@ -215,7 +215,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
 }
 
 /**
- * Subscription updated — plan change, trial ending, scheduled cancel,
+ * Subscription updated - plan change, trial ending, scheduled cancel,
  * etc. Mirror the new state into our table.
  */
 async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
@@ -243,7 +243,7 @@ async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
 }
 
 /**
- * Subscription fully cancelled — Stripe stops billing, we leave the
+ * Subscription fully cancelled - Stripe stops billing, we leave the
  * row in place so the user retains read-only access to their projects
  * until current_period_end, then the app gates them.
  */
@@ -265,7 +265,7 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
 }
 
 /**
- * Payment failed — flag as past_due so the app shows an "update card"
+ * Payment failed - flag as past_due so the app shows an "update card"
  * banner. Stripe retries automatically; if all retries fail Stripe
  * sends customer.subscription.deleted.
  */
@@ -294,7 +294,7 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
  * client) so it works without an existing session.
  */
 async function findOrCreateUser(email: string): Promise<string> {
-  // Search by email — admin.listUsers with a filter is the supported
+  // Search by email - admin.listUsers with a filter is the supported
   // way to look up by email in Supabase v2.
   const { data: existing, error: listError } = await supabase.auth.admin.listUsers()
   if (listError) {
@@ -321,7 +321,7 @@ async function findOrCreateUser(email: string): Promise<string> {
 /**
  * Create a new organisation owned by `userId`. Used when a user pays
  * for the Organisation plan. The organisation name defaults to the
- * email's domain (e.g. acmebricks.com.au → "acmebricks") — the user
+ * email's domain (e.g. acmebricks.com.au → "acmebricks") - the user
  * can rename it in settings later.
  */
 async function createOrganisationForUser(

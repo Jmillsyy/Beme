@@ -1,0 +1,75 @@
+/**
+ * Small warning band rendered above / below the tally to surface lintel
+ * coverage issues — openings without a matching lintel, overlapping
+ * ranges between lintel items. Same UI in both block + brick tally
+ * panels; the panel computes the warnings via the relevant per-mode
+ * helper in lib/lintelCoverage and passes them in.
+ *
+ * Auto-hides when there are no warnings (so the panel reads the same as
+ * before for users whose libraries are clean).
+ */
+
+import type { LintelWarning } from '../lib/lintelCoverage'
+
+interface Props {
+  warnings: LintelWarning[]
+}
+
+export default function LintelCoverageBand({ warnings }: Props) {
+  if (warnings.length === 0) return null
+  const uncovered = warnings.filter((w) => w.kind === 'uncovered').length
+  const overlaps = warnings.filter((w) => w.kind === 'overlap').length
+
+  return (
+    <div className="my-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-100 text-xs overflow-hidden">
+      <div className="px-3 py-2 bg-amber-500/15 border-b border-amber-500/30 flex items-center gap-2">
+        <span className="text-amber-300 text-base leading-none">⚠</span>
+        <span className="font-semibold text-amber-200">
+          Lintel coverage
+        </span>
+        <span className="text-amber-300/80 ml-auto">
+          {uncovered > 0 &&
+            `${uncovered} uncovered`}
+          {uncovered > 0 && overlaps > 0 && ' · '}
+          {overlaps > 0 &&
+            `${overlaps} overlap${overlaps === 1 ? '' : 's'}`}
+        </span>
+      </div>
+      <ul className="divide-y divide-amber-500/20">
+        {warnings.map((w, i) => (
+          <li key={i} className="px-3 py-2">
+            {w.kind === 'uncovered' ? (
+              <>
+                <div className="font-medium text-amber-200">
+                  {w.openingLabel}
+                </div>
+                <div className="text-amber-300/90 leading-snug mt-0.5">
+                  No lintel item matched the {w.dimensionLabel}.
+                </div>
+                {w.hint && (
+                  <div className="text-[11px] text-amber-300/70 leading-snug mt-1">
+                    {w.hint}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="font-medium text-amber-200">
+                  {w.a} ↔ {w.b}
+                </div>
+                <div className="text-amber-300/90 leading-snug mt-0.5">
+                  Ranges overlap on {w.overlapLabel}.
+                </div>
+                {w.hint && (
+                  <div className="text-[11px] text-amber-300/70 leading-snug mt-1">
+                    {w.hint}
+                  </div>
+                )}
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}

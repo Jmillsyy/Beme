@@ -1,0 +1,153 @@
+/**
+ * toast.ts — global, no-dependencies toast system.
+ *
+ * A single in-memory store of active toasts + a `useToasts()` hook that
+ * subscribes any component (typically `<ToastHost />`) to the store, plus
+ * a `toast` API anyone can call from anywhere — non-React code included
+ * (lib functions, async handlers, error catchers).
+ *
+ * Why a singleton instead of a React Context: it keeps the call sites
+ * dead simple (`toast.success('Saved')` from any file, no provider
+ * gymnastics, no prop-drilling, no hook-only-in-component restriction).
+ * The trade-off is one global store per page, which is the right
+ * trade-off for a UI affordance like toasts.
+ *
+ * Variants:
+ *   - success → green, auto-dismiss 3.5s
+ *   - error   → rose,  no auto-dismiss (user must close — errors matter)
+ *   - info    → ink,   auto-dismiss 3s
+ *
+ * Usage:
+ *   import { toast } from '../lib/toast'
+ *
+ *   await saveProject(project)
+ *   toast.success('Saved')
+ *
+ *   try { ... } catch (err) {
+ *     toast.error('Save failed', { description: (err as Error).message })
+ *   }
+ */
+import { useEffect, useState } from 'react'
+
+export type ToastVariant = 'success' | 'error' | 'info'
+
+export interface ToastAction {
+  /** Button label shown next to the toast — keep it to a word or two. */
+  label: string
+  /** Click handler. Toast is auto-dismissed after the click fires. */
+  onClick: () => void
+}
+
+export interface Toast {
+  id: string
+  variant: ToastVariant
+  /** Short headline shown in bold at the top of the toast. */
+  message: string
+  /** Optional longer secondary line (e.g. error details). */
+  description?: string
+  /** When this toast was created — for the optional "12s ago" hint. */
+  createdAt: number
+  /** Auto-dismiss after N ms; 0 / undefined = sticky until closed. */
+  durationMs?: number
+  /** Optional action — renders as a button inline with the toast. */
+  action?: ToastAction
+}
+
+export interface ShowToastOptions {
+  description?: string
+  /** Override the default auto-dismiss timeout (0 / null = sticky). */
+  durationMs?: number | null
+  /** Optional inline action button (e.g. Undo). */
+  action?: ToastAction
+}
+
+type Listener = (toasts: Toast[]) => void
+
+const listeners = new Set<Listener>()
+let toasts: Toast[] = []
+
+function nextId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function emit() {
+  for (const l of listeners) l(toasts)
+}
+
+function show(
+  variant: ToastVariant,
+  message: string,
+  opts: ShowToastOptions = {}
+): string {
+  // Default durations differ per variant: errors stay open until the user
+  // closes them; success / info self-dismiss so they don't pile up.
+  const defaultDuration =
+    variant === 'error' ? 0 : variant === 'success' ? 3500 : 3000
+  const durationMs =
+    opts.durationMs === null || opts.durationMs === 0
+      ? 0
+      : opts.durationMs ?? defaultDuration
+
+  const t: Toast = {
+    id: nextId(),
+    variant,
+    message,
+    description: opts.description,
+    createdAt: Date.now(),
+    durationMs,
+    action: opts.action,
+  }
+  // Newest at the bottom of the array; the host renders newest at the
+  // top of the stack so users see the latest toast first.
+  toasts = [...toasts, t]
+  emit()
+
+  if (durationMs > 0) {
+    window.setTimeout(() => dismiss(t.id), durationMs)
+  }
+  return t.id
+}
+
+export function dismiss(id: string) {
+  toasts = toasts.filter((t) => t.id !== id)
+  emit()
+}
+
+export function dismissAll() {
+  toasts = []
+  emit()
+}
+
+// Public API — bind variants as methods so call sites read like prose.
+export const toast = {
+  success: (message: string, opts?: ShowToastOptions) =>
+    show('success', message, opts),
+  error: (message: string, opts?: ShowToastOptions) =>
+    show('error', message, opts),
+  info: (message: string, opts?: ShowToastOptions) => show('info', message, opts),
+  dismiss,
+  dismissAll,
+}
+
+/**
+ * React hook for components that need to render the current toast list
+ * (i.e. `<ToastHost />`). Subscribes on mount, unsubscribes on unmount,
+ * returns the current list. The store is the source of truth — this
+ * hook is just a thin reactivity bridge.
+ */
+export function useToasts(): Toast[] {
+  const [current, setCurrent] = useState<Toast[]>(toasts)
+  useEffect(() => {
+    function onChange(next: Toast[]) {
+      setCurrent(next)
+    }
+    listeners.add(onChange)
+    return () => {
+      listeners.delete(onChange)
+    }
+  }, [])
+  return current
+}

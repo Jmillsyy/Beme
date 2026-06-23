@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
 import DonutChart from '../components/DonutChart'
 import LocalMigrationBanner from '../components/LocalMigrationBanner'
-import BemeLoader from '../components/BemeLoader'
+import LoadingScreen from '../components/LoadingScreen'
 import {
   type ProjectOutcome,
   type ProjectStatus,
   type SavedProject,
+  backfillMissingMetrics,
   deleteProject,
   duplicateProject,
-  findProjectByReferenceNumber,
   getProject,
   listProjects,
   saveProject,
@@ -17,19 +18,16 @@ import {
 import { accountTypeOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { formatLengthMm } from '../lib/units'
-import { LIBRARY_TEMPLATES } from '../data/libraryTemplates'
-import { analyseLibraryHealth, useBlockLibrary } from '../data/blockLibrary'
 import { confirm } from '../lib/confirm'
 import { toast } from '../lib/toast'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
 import type { OrgMember, Organisation } from '../types/organisations'
 
-type Filter = 'all' | 'in-progress' | 'completed' | 'won' | 'lost' | 'pending'
 
 /**
  * Which trades have content in this project. Wraps the post-migration
  * `trades` field with a fallback to the legacy `type` for any project
- * the migration somehow missed (defensive — shouldn't happen). If
+ * the migration somehow missed (defensive - shouldn't happen). If
  * neither is set the project is treated as block (the historical
  * default).
  */
@@ -41,7 +39,7 @@ function tradesOf(project: { type?: 'block' | 'brick'; trades?: ('block' | 'bric
 
 /**
  * Resolve the workspace URL for a project. With the unified workspace,
- * both block and brick projects open the same `PdfWorkspace` — the
+ * both block and brick projects open the same `PdfWorkspace` - the
  * route just picks the INITIAL trade. Users can switch trades inside the
  * workspace via the trade chip group. We pick the first trade in the
  * project's `trades` array as the initial.
@@ -53,9 +51,9 @@ function projectUrl(project: { id: string; type?: 'block' | 'brick'; trades?: ('
 
 /**
  * Render a single trade pill for a project row.
- *   - Single trade (just block OR just brick) → coloured pill with
- *     that trade's name.
- *   - Both trades → ONE neutral-colour pill labelled "Brick and Block".
+ * - Single trade (just block OR just brick) → coloured pill with
+ * that trade's name.
+ * - Both trades → ONE neutral-colour pill labelled "Brick and Block".
  *
  * Earlier this rendered two coloured pills side-by-side for unified
  * projects, which read as visual clutter. One combined label is
@@ -97,12 +95,13 @@ function formatRef(n: number): string {
 /**
  * Cheap roll-up of a project's wall count and total run-length in
  * metres. Used by the dashboard cards to give each tile a glanceable
- * "size" beyond name + date — a 200-block apartment job should look
+ * "size" beyond name + date - a 200-block apartment job should look
  * meaningfully different from a 12-block fence quote even before the
  * user opens it. Computed off `wallsByPage` (whatever's saved on the
  * project) without touching the calc engine.
  */
 function projectMetrics(project: {
+  metrics?: { wallCount: number; runMm: number }
   wallsByPage?: Record<number, Array<{
     startX: number
     startY: number
@@ -110,6 +109,17 @@ function projectMetrics(project: {
     endY: number
   }>>
 }): { wallCount: number; runMetres: number } {
+  // Prefer the precomputed summary stamped at save time - the dashboard's slim
+  // list returns this instead of the full wall geometry, which is what keeps
+  // the list fast as the project count grows. Fall back to computing from
+  // wallsByPage when it's present (local projects, a full getProject payload,
+  // or a project not yet covered by the one-time backfill).
+  if (project.metrics) {
+    return {
+      wallCount: project.metrics.wallCount,
+      runMetres: project.metrics.runMm / 1000,
+    }
+  }
   let wallCount = 0
   let totalMm = 0
   const pages = project.wallsByPage ?? {}
@@ -137,7 +147,7 @@ function tradeStripeClass(trades: ('block' | 'brick')[]): string {
 }
 
 /**
- * Compact owner-initial pip — round avatar with the user's display
+ * Compact owner-initial pip - round avatar with the user's display
  * name initials. Falls back to a single hyphen when no owner is
  * resolvable so the column alignment stays consistent.
  */
@@ -154,7 +164,7 @@ function OwnerPip({ name }: { name: string | null }) {
       className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-ink-700 border border-ink-500 text-[9px] font-semibold text-ink-200"
       title={name ? `Owner: ${name}` : 'Unowned'}
     >
-      {initials || '–'}
+      {initials || '-'}
     </span>
   )
 }
@@ -200,7 +210,7 @@ function nextOutcome(o: ProjectOutcome | undefined): ProjectOutcome | undefined 
  * (project lists across the org, team-wide stats); personal / single-user
  * accounts keep the win-rate donut + per-project drill-down.
  *
- * Splitting the two layouts at the component boundary keeps each one simple —
+ * Splitting the two layouts at the component boundary keeps each one simple -
  * trying to merge them led to a bunch of "this stat is only meaningful for
  * X" branches that obscured the actual UI.
  */
@@ -208,7 +218,7 @@ export default function HomePage() {
   const { signedIn, user, loading: authLoading } = useAuth()
   const { currentOrg, loading: orgsLoading } = useOrganisations()
   // Region picker used to auto-pop on the dashboard every signin when
-  // no libraryTemplateKey was set, which doubled as a "refresh nag" —
+  // no libraryTemplateKey was set, which doubled as a "refresh nag" -
   // the modal came back every reload until the user picked a template.
   // It's now only reachable via Settings → Switch template, so refresh
   // is silent and users opt in when they're ready.
@@ -220,7 +230,7 @@ export default function HomePage() {
   const stillResolving = authLoading || orgsLoading
 
   // 'org-invited' users (signed up via /accept-invite) never see the personal
-  // dashboard — even when they're temporarily not in any org (just removed,
+  // dashboard - even when they're temporarily not in any org (just removed,
   // or invited to a new org but haven't accepted yet). They live in a
   // different product space than self-served personal users. 'personal'
   // users (legacy admins who signed themselves up before the invite flow
@@ -231,7 +241,7 @@ export default function HomePage() {
 
   return (
     <>
-      {/* Main dashboard column — full width inside the AppShell now
+      {/* Main dashboard column - full width inside the AppShell now
           that the right-rail DashboardSidebar is gone. Navigation
           lives in LeftNav; quick actions and primary CTAs sit
           inline in the dashboard's own hero (see Personal/Org
@@ -241,7 +251,14 @@ export default function HomePage() {
         {signedIn && <LocalMigrationBanner />}
         {stillResolving ? (
           <div className="flex items-center justify-center py-24">
-            <BemeLoader />
+            <LoadingScreen
+              message="Your workspace is loading"
+              steps={[
+                'Loading your dashboard…',
+                'Fetching your projects…',
+                'Crunching the numbers…',
+              ]}
+            />
           </div>
         ) : (
           <div className="flex flex-col">
@@ -259,272 +276,10 @@ export default function HomePage() {
   )
 }
 
-/**
- * Right rail on the dashboard — quick links into the parts of Beme that
- * don't have a natural surfacing on the dashboard itself, plus the team /
- * help shortcuts. Sticky on lg+ so it stays visible while the main column
- * scrolls. Stacks under the main content on smaller viewports.
- */
-function DashboardSidebar({ isOrgUser }: { isOrgUser: boolean }) {
-  // isOrgUser is no longer branched on inside this sidebar (the
-  // org-only Start-a-new-estimate card moved to the dashboard's
-  // stats row), but the prop is kept on the signature so the call
-  // site doesn't need to change and so future org-gated rail content
-  // doesn't have to re-thread it.
-  void isOrgUser
-  // Library health nudge. Mirrors the LibraryHealthBanner that already
-  // surfaces on /library, but as a compact badge on the dashboard sidebar
-  // card so the user is alerted to issues without having to navigate
-  // there. Zero issues → no badge (card looks the same as before).
-  // Errors take colour priority over warnings.
-  const { library, version: libraryVersion } = useBlockLibrary()
-  const healthChecks = useMemo(
-    () => analyseLibraryHealth(library),
-    [library, libraryVersion],
-  )
-  const errorCount = healthChecks.filter((c) => c.severity === 'error').length
-  const warningCount = healthChecks.filter((c) => c.severity === 'warning').length
-  const healthSummary =
-    errorCount > 0
-      ? {
-          tone: 'error' as const,
-          label: `${errorCount} issue${errorCount === 1 ? '' : 's'}`,
-          tooltip: `Your block library has ${errorCount} unresolved issue${errorCount === 1 ? '' : 's'} that will affect the calc engine. Click to review.`,
-        }
-      : warningCount > 0
-        ? {
-            tone: 'warning' as const,
-            label: `${warningCount} to review`,
-            tooltip: `Your block library has ${warningCount} advisor${warningCount === 1 ? 'y' : 'ies'}. Click to review.`,
-          }
-        : null
-
-  // Sidebar bumped from 260px → 280px so cards have room for the
-  // new larger eyebrows + headings without text crowding the right
-  // edge. Same sticky behaviour. Card-to-card spacing bumped from
-  // 3 → 4 to match the marketing-page rhythm.
-  // Sidebar — back to the original detailed layout (Material library
-  // / Find by reference / Active template / Shortcuts / Tip), each
-  // card with its own coloured eyebrow + dot. User liked this layout;
-  // the issue was the BODY of the dashboard, not the rail.
-  return (
-    <aside className="w-full lg:w-[280px] lg:flex-shrink-0 lg:sticky lg:top-8 space-y-3">
-      {/* Material library */}
-      <Link
-        to="/library"
-        title={healthSummary?.tooltip}
-        className="block border border-ink-600 rounded-2xl bg-ink-800 p-4 hover:border-beme-500 transition-colors group"
-      >
-        <div className="text-xs uppercase tracking-wider text-beme-400 font-semibold mb-2 flex items-center gap-2">
-          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
-          Material library
-          {healthSummary && (
-            <span
-              className={`ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                healthSummary.tone === 'error'
-                  ? 'bg-rose-500/20 text-rose-200 border border-rose-500/40'
-                  : 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
-              }`}
-            >
-              {healthSummary.label}
-            </span>
-          )}
-        </div>
-        <div className="text-base font-bold text-ink-50 group-hover:text-beme-500 transition-colors leading-tight">
-          Open library →
-        </div>
-        <div className="text-xs text-ink-400 mt-1">Blocks, bricks, supply items</div>
-      </Link>
-
-      <FindByReferenceCard />
-      <ActiveTemplateCard />
-
-      {/* Shortcuts */}
-      <div className="border border-ink-600 rounded-2xl bg-ink-800 overflow-hidden">
-        <h3 className="text-xs uppercase tracking-wider text-ink-400 font-semibold px-4 pt-4 pb-3 flex items-center gap-2">
-          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-ink-500" />
-          Shortcuts
-        </h3>
-        <nav className="flex flex-col">
-          <SidebarLink to="/guide" title="Beme guide" desc="Full walkthrough + shortcuts" />
-          <SidebarLink to="/settings" title="Settings" desc="Defaults, regional features, theme" />
-        </nav>
-      </div>
-
-      <TipCard />
-    </aside>
-  )
-}
-
-/**
- * Sidebar lookup card — type a project's 6-digit reference number, hit
- * Enter, land on the project. The reference number is stamped on every
- * exported PDF + shown in the workspace project bar, so this is the
- * fastest path "customer quotes me a number on the phone → I'm in the
- * project."
- */
-function FindByReferenceCard() {
-  const navigate = useNavigate()
-  const [value, setValue] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    const cleaned = value.trim().replace(/^#/, '').replace(/\s+/g, '')
-    const n = Number(cleaned)
-    if (!Number.isInteger(n) || n <= 0) {
-      setError('Reference numbers are 6 digits, e.g. 100123.')
-      return
-    }
-    setBusy(true)
-    try {
-      const hit = await findProjectByReferenceNumber(n)
-      if (!hit) {
-        setError(`No project found with reference #${cleaned}.`)
-        return
-      }
-      const url = projectUrl(hit)
-      navigate(url)
-    } catch (err) {
-      setError((err as Error).message ?? 'Lookup failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="border border-ink-600 rounded-2xl bg-ink-800 p-4 space-y-3"
-    >
-      <h3 className="text-xs uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-2">
-        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
-        Find by reference
-      </h3>
-      <div className="flex items-stretch gap-2">
-        <div className="flex items-center px-2 rounded-l-md border border-ink-600 border-r-0 bg-ink-800 text-ink-400 text-sm">
-          #
-        </div>
-        <input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          inputMode="numeric"
-          placeholder="100123"
-          className="flex-1 min-w-0 px-2 py-1.5 rounded-r-md border border-ink-600 bg-ink-900 text-ink-50 text-sm tabular-nums focus:outline-none focus:border-beme-500"
-        />
-        <button
-          type="submit"
-          disabled={busy || value.trim().length === 0}
-          className="px-3 py-1.5 rounded-md bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {busy ? '…' : 'Open'}
-        </button>
-      </div>
-      {error ? (
-        <p className="text-xs text-rose-300">{error}</p>
-      ) : (
-        <p className="text-xs text-ink-400">
-          6-digit number from any Beme-exported PDF.
-        </p>
-      )}
-    </form>
-  )
-}
-
-/**
- * Active region template — surfaces which library seed the user picked
- * (AU-SEQ, US-CMU, UK-Block). Sky eyebrow + dot. Falls back to
- * Australia (SEQ) for legacy users.
- */
-function ActiveTemplateCard() {
-  const { settings } = useUserSettings()
-  const key = settings.preferences.libraryTemplateKey ?? 'au-seq'
-  const template = LIBRARY_TEMPLATES.find((t) => t.key === key)
-  const displayName = template?.displayName ?? 'Australia (SEQ)'
-  const region = template?.region ?? 'AU-SEQ'
-
-  return (
-    <div className="border border-ink-600 rounded-2xl bg-ink-800 p-4">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-xs uppercase tracking-wider text-ink-400 font-semibold flex items-center gap-2">
-          <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-ink-500" />
-          Active template
-        </h3>
-        <Link
-          to="/library"
-          className="text-xs text-beme-500 hover:text-beme-400 hover:underline"
-          title="Switch template in the Material library"
-        >
-          Switch
-        </Link>
-      </div>
-      <div className="text-base font-bold text-ink-50 truncate leading-tight">{displayName}</div>
-      <div className="text-xs text-ink-400 mt-1">{region}</div>
-    </div>
-  )
-}
-
-/**
- * One row in the dashboard sidebar's Shortcuts list. Borderless on top so
- * each row reads as a section in a list rather than a card of its own.
- */
-function SidebarLink({
-  to,
-  title,
-  desc,
-}: {
-  to: string
-  title: string
-  desc: string
-}) {
-  return (
-    <Link
-      to={to}
-      className="flex items-start gap-3 px-4 py-3 hover:bg-ink-700/60 border-t border-ink-700/60 first:border-t-0 transition-colors group"
-    >
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-bold text-ink-50 group-hover:text-beme-500 transition-colors leading-tight">
-          {title}
-        </div>
-        <div className="text-xs text-ink-400 mt-1">{desc}</div>
-      </div>
-      <span className="text-ink-500 group-hover:text-beme-500 transition-colors">→</span>
-    </Link>
-  )
-}
-
-/**
- * Tip of the day — rotating one-liner shortcut hint. Beme eyebrow + dot.
- */
-function TipCard() {
-  const tips = [
-    { title: 'Jump anywhere fast', body: 'Press Cmd+K (or Ctrl+K on Windows) to open the command palette — projects, library, settings, all searchable.' },
-    { title: 'See every shortcut', body: 'Press ? anywhere to open the keyboard shortcut reference.' },
-    { title: 'Type a wall length', body: 'While drawing a wall, just type the length and press Enter to drop it.' },
-    { title: 'Esc cancels anything', body: 'Pressing Esc clears the current tool — drawing, ruler, opening, pier, control joint.' },
-    { title: 'Delete to remove', body: 'Select a wall, opening, or pier and press Delete (or Backspace) to remove it.' },
-    { title: 'Snap to wall faces', body: 'New walls snap to the 4 faces of any nearby wall — corners and butt joints just work.' },
-    { title: 'Reference numbers', body: 'Every exported PDF stamps a 6-digit ref. Type it in the rail to jump straight back.' },
-    { title: 'Click a card to activate', body: 'In the workspace, click any wall or pier type card to make it the active type for the next thing you draw.' },
-  ]
-  const tip = useMemo(() => tips[Math.floor(Math.random() * tips.length)], [])
-  return (
-    <div className="border border-ink-600 rounded-2xl bg-ink-800 p-4">
-      <div className="text-xs uppercase tracking-wider text-beme-400 font-semibold mb-2 flex items-center gap-2">
-        <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
-        Tip
-      </div>
-      <div className="text-sm font-bold text-ink-50 leading-tight mb-1.5">{tip.title}</div>
-      <p className="text-xs text-ink-300 leading-relaxed">{tip.body}</p>
-    </div>
-  )
-}
 
 /**
  * Shown to an 'org-invited' user when they're not currently a member of any
- * organisation — either because they were removed, or their invitation to
+ * organisation - either because they were removed, or their invitation to
  * a new org is still pending. Deliberately doesn't fall through to the
  * personal-projects flow because that's a different product entirely
  * (separate billing track in the longer term).
@@ -533,9 +288,7 @@ function NoOrgEmptyState() {
   return (
     <div className="max-w-xl mx-auto py-12">
       <div className="border border-ink-600 rounded-2xl bg-ink-800 p-8 text-center">
-        <div className="mx-auto w-14 h-14 rounded-xl bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4">
-          <span className="text-2xl">📭</span>
-        </div>
+        <div className="mx-auto w-14 h-14 rounded-xl bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-4" />
         <h2 className="text-2xl font-extrabold tracking-tight text-ink-50 mb-2">
           You're not in any organisation
         </h2>
@@ -543,7 +296,7 @@ function NoOrgEmptyState() {
           Your account was set up via an invitation, so you'll see work
           here once an admin adds you to an organisation. If you were
           recently removed or expected to be a member already, reach out
-          to whoever runs your team — they can send a fresh invite link.
+          to whoever runs your team - they can send a fresh invite link.
         </p>
         <button
           type="button"
@@ -558,29 +311,29 @@ function NoOrgEmptyState() {
 }
 
 // ============================================================================
-// Org dashboard — what an ABC employee sees
+// Org dashboard - what an ABC employee sees
 // ============================================================================
 
 /**
  * Org-aware dashboard. Projects-led now that the estimate-request /
- * inbox flow has been removed — users share work by handing over a
+ * inbox flow has been removed - users share work by handing over a
  * 6-digit reference number, not by routing it through an inbox.
  *
  * Layout:
- *   - Title row + actions ("+ New estimate" is the primary action;
- *     no request-creation surface any more).
- *   - Stats row: in-progress + completed-this-week. Both sourced from
- *     PROJECTS.
- *   - "Your projects" — projects this user started.
- *   - "Team projects" — active projects belonging to other org members,
- *     so an admin can see the team's load at a glance.
- *   - "Completed" — every finished project across the team, most recent
- *     first. (Was windowed to the last 7 days, but the column went empty
- *     during slow weeks and made the dashboard feel barren.)
+ * - Title row + actions ("+ New estimate" is the primary action;
+ * no request-creation surface any more).
+ * - Stats row: in-progress + completed-this-week. Both sourced from
+ * PROJECTS.
+ * - "Your projects" - projects this user started.
+ * - "Team projects" - active projects belonging to other org members,
+ * so an admin can see the team's load at a glance.
+ * - "Completed" - every finished project across the team, most recent
+ * first. (Was windowed to the last 7 days, but the column went empty
+ * during slow weeks and made the dashboard feel barren.)
  */
 function OrgDashboard({ org, userId }: { org: Organisation; userId: string | null }) {
   const [members, setMembers] = useState<OrgMember[]>([])
-  // All projects visible to the user — both org-scoped (everyone on the team
+  // All projects visible to the user - both org-scoped (everyone on the team
   // sees them) and personal (their own).
   const [projects, setProjects] = useState<SavedProject[]>([])
   const [, setLoading] = useState(true)
@@ -593,7 +346,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     setLoading(true)
     // allSettled instead of all so a failed listOrgMembers fetch doesn't
     // tank the project list (and vice versa). The previous Promise.all
-    // had `.catch(() => setLoading(false))` with no logging — when one
+    // had `.catch(() => setLoading(false))` with no logging - when one
     // of the two fetches rejected (e.g. transient network blip on
     // navigation back to the dashboard), BOTH state updates were
     // skipped and the user saw an empty dashboard with no surfaced
@@ -614,6 +367,22 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         }
         if (projsResult.status === 'fulfilled') {
           setProjects(projsResult.value)
+          // One-time: projects saved before the metrics field carry no size
+          // line in the slim list. Backfill in the background and merge the
+          // numbers in so the cards fill without a reload (next load is then
+          // already fast). Guarded so it stops once every project has metrics.
+          if (projsResult.value.some((p) => !p.metrics)) {
+            void backfillMissingMetrics().then((patched) => {
+              if (cancelled || patched.length === 0) return
+              const byId = new Map(patched.map((p) => [p.id, p.metrics] as const))
+              setProjects((prev) =>
+                prev.map((p) => {
+                  const m = byId.get(p.id)
+                  return m ? { ...p, metrics: m } : p
+                }),
+              )
+            })
+          }
         } else {
           // eslint-disable-next-line no-console
           console.error('Failed to load projects', projsResult.reason)
@@ -633,12 +402,12 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   // Refresh whenever the window regains focus or the tab becomes
   // visible. Catches the common workflow where the user marks a
   // project complete in the workspace and navigates back to the
-  // dashboard — without this, the stats stayed stale until a hard
+  // dashboard - without this, the stats stayed stale until a hard
   // reload. Same handler covers the multi-device case: tab away to
   // a different machine, come back, see the up-to-date numbers.
   useEffect(() => {
     const refresh = () => {
-      // Skip when the tab is hidden — no point fetching if the user
+      // Skip when the tab is hidden - no point fetching if the user
       // isn't looking. The next visibility change will pick it up.
       if (document.visibilityState !== 'visible') return
       reloadDashboard()
@@ -651,15 +420,9 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     }
   }, [reloadDashboard])
 
-  // Member lookup for creator name display on project rows.
-  const memberById = useMemo(() => {
-    const m = new Map<string, OrgMember>()
-    for (const x of members) m.set(x.userId, x)
-    return m
-  }, [members])
 
   // Stats: in-progress + completed-this-week, both sourced from
-  // PROJECTS. Pending / inbox tiles are gone with the request system —
+  // PROJECTS. Pending / inbox tiles are gone with the request system -
   // projects are the only thing that exists now.
   const stats = useMemo(() => {
     const inProgress = projects.filter((p) => p.status === 'in-progress').length
@@ -670,7 +433,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
         p.completedAt &&
         new Date(p.completedAt).getTime() >= weekAgo
     ).length
-    // "Stale" — in-progress projects that haven't been touched in 5+
+    // "Stale" - in-progress projects that haven't been touched in 5+
     // days. Surfaces work that's drifting before it slips entirely.
     const staleCutoff = Date.now() - 5 * 24 * 60 * 60 * 1000
     const stale = projects.filter(
@@ -685,13 +448,13 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
   // the user's own work is the FIRST thing they see in the project list.
   //
   // 'mine' = projects where the user is the OWNER (i.e. they created the
-  //          underlying estimate request, or they started a direct '+ Brick /
-  //          + Block' project) OR they're the current assignee of the linked
-  //          estimate request (i.e. they were allocated to work on it,
-  //          regardless of who created it).
+  // underlying estimate request, or they started a direct '+ Brick /
+  // + Block' project) OR they're the current assignee of the linked
+  // estimate request (i.e. they were allocated to work on it,
+  // regardless of who created it).
   //
   // Split in-progress projects into 'mine' vs 'team'. With the inbox
-  // flow gone, ownership is solely creator/owner — no assignee
+  // flow gone, ownership is solely creator/owner - no assignee
   // augmentation. Most recent first within each bucket.
   const { myProjects, teamProjects } = useMemo(() => {
     const sortRecent = (a: SavedProject, b: SavedProject) =>
@@ -708,7 +471,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     return { myProjects: mine.sort(sortRecent), teamProjects: team.sort(sortRecent) }
   }, [projects, userId])
 
-  // Team-wide "shipped" feed — every completed project, most recent
+  // Team-wide "shipped" feed - every completed project, most recent
   // first. Previously windowed to the last 7 days, but the column
   // was empty most of the time when nothing had shipped that week,
   // which made the dashboard feel barren. Now the column always has
@@ -739,7 +502,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
     <>
       <div className="flex items-end justify-between flex-wrap gap-4 mb-2">
         <div className="relative">
-          {/* Orange accent bar to the left of the heading — gives the
+          {/* Orange accent bar to the left of the heading - gives the
               hero a confident brand anchor without the heading itself
               having to carry colour. Pairs with the AppShell's top
               gradient strip so the page reads as "branded". */}
@@ -792,11 +555,11 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
       {/* ── Your projects ──
           Two side-by-side columns: the user's own active projects on
           the left, the rest of the team's on the right. Capped at 4 each
-          so the row stays a clean glance — a "View all →" link surfaces
+          so the row stays a clean glance - a "View all →" link surfaces
           below the column when there's more. Stacks vertically on
           narrow viewports so the rows don't squash. Hidden entirely
           when neither column has any work. */}
-      {/* ── Project lists — three columns side by side ──
+      {/* ── Project lists - three columns side by side ──
           Your projects · Your team's projects · Completed.
           Each column is capped at 3 rows so the entire dashboard
           (header + stats row + this grid) fits a 13" MacBook Pro
@@ -824,7 +587,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               members={members}
               currentUserId={userId}
               slotCount={slotCount}
-              emptyCopy="No personal projects on the go — kick one off above."
+              emptyCopy="No personal projects on the go - kick one off above."
             />
             <ProjectsColumn
               title="Your team's projects"
@@ -833,7 +596,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
               members={members}
               currentUserId={userId}
               slotCount={slotCount}
-              emptyCopy="Quiet over here — your team's caught up."
+              emptyCopy="Quiet over here - your team's caught up."
             />
             <CompletedColumn
               title="Completed"
@@ -862,7 +625,7 @@ function OrgDashboard({ org, userId }: { org: Organisation; userId: string | nul
  * when there are more projects than visible slots.
  *
  * `slotCount` is computed by the caller off the busier column so both
- * sides render the same number of slots — empty slots become dashed-
+ * sides render the same number of slots - empty slots become dashed-
  * border placeholders so the grid stays visually balanced even when
  * one side is much quieter than the other. When the column has no
  * projects at all, the first placeholder carries an `emptyCopy`
@@ -921,11 +684,11 @@ function ProjectsColumn({
 
                 Border + background bumped a notch so the placeholder
                 reads as "an intentional empty slot" rather than
-                vanishing into the page background — was almost
+                vanishing into the page background - was almost
                 invisible at ink-700/60 + ink-800/20. */}
             <div className="border border-dashed border-ink-500/70 rounded-lg bg-ink-800/60 px-4 py-3 min-h-[124px] flex items-center justify-center text-center">
               <span className="text-xs text-ink-300">
-                {i === 0 && visible.length === 0 ? emptyCopy : '—'}
+                {i === 0 && visible.length === 0 ? emptyCopy : '-'}
               </span>
             </div>
           </li>
@@ -944,7 +707,7 @@ function ProjectsColumn({
 }
 
 /**
- * Recently-completed column — sister of {@link ProjectsColumn} that
+ * Recently-completed column - sister of {@link ProjectsColumn} that
  * renders {@link CompletedProjectCard} tiles instead of in-progress
  * rows. Same header + slot-count + filler + View-all flow so all
  * three dashboard columns read as one unified grid.
@@ -992,7 +755,7 @@ function CompletedColumn({
                 is quieter than the rest. */}
             <div className="border border-dashed border-ink-500/70 rounded-lg bg-ink-800/60 px-4 py-3 min-h-[124px] flex items-center justify-center text-center">
               <span className="text-xs text-ink-300">
-                {i === 0 && visible.length === 0 ? emptyCopy : '—'}
+                {i === 0 && visible.length === 0 ? emptyCopy : '-'}
               </span>
             </div>
           </li>
@@ -1012,7 +775,7 @@ function CompletedColumn({
 
 /**
  * Single row in the 'In-progress projects' dashboard section. Lighter than
- * a richer card because there's less status to convey — the project's just
+ * a richer card because there's less status to convey - the project's just
  * sitting there waiting to be worked on. Click anywhere on the row to open
  * the workspace; brick / block decides the URL path.
  */
@@ -1038,16 +801,17 @@ function ProjectInProgressRow({
       : ''
   const href = projectUrl(project)
 
-  // Resolve the owner's display name. Fallback chain: ownerUserId →
-  // createdByUserId → null. Suppresses the label when the project is the
-  // current user's (the section header above already says 'Your projects')
-  // so the row doesn't read "by Josh" to Josh.
+  // Resolve the owner ONLY to a real, named teammate (an org member we can
+  // actually look up). We deliberately do NOT fall back to a generic
+  // "a teammate" label for an unresolved ownerId: on a solo / individual
+  // account the owner IS the current user (just not present in a members
+  // list), and the row was wrongly reading "a teammate" for their own
+  // projects. No resolved member -> no pip. The pip is also suppressed when
+  // the project is the current user's (the column header already says
+  // "Your projects").
   const ownerId = project.ownerUserId ?? project.createdByUserId ?? null
   const ownerMember = ownerId ? members.find((m) => m.userId === ownerId) : null
-  const ownerName =
-    ownerMember?.displayName ||
-    ownerMember?.email ||
-    (ownerId ? 'a teammate' : null)
+  const ownerName = ownerMember?.displayName || ownerMember?.email || null
   const isMyProject = ownerId && currentUserId && ownerId === currentUserId
 
   const trades = tradesOf(project)
@@ -1084,7 +848,7 @@ function ProjectInProgressRow({
             {typeof project.referenceNumber === 'number' && (
               <span
                 className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-beme-500/10 border border-beme-500/20 text-[10px] tabular-nums font-semibold text-beme-300 flex-shrink-0"
-                title="Reference number — quote this when looking the project up."
+                title="Reference number - quote this when looking the project up."
               >
                 #{formatRef(project.referenceNumber)}
               </span>
@@ -1095,7 +859,7 @@ function ProjectInProgressRow({
           </div>
           {/* Subtitle slot always rendered so rows of varying content
               (with/without an address line) keep an identical height.
-              Empty when not present — gives the next line a stable
+              Empty when not present - gives the next line a stable
               Y position to slot into. */}
           <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
             {subtitle || ' '}
@@ -1107,7 +871,7 @@ function ProjectInProgressRow({
             {sizeLine}
           </div>
           {/* Footer row. Updated-relative on the left, owner pip on
-              the right (only when not the current user — owners of
+              the right (only when not the current user - owners of
               their own projects already see their column header). */}
           <div className="flex items-center justify-between gap-2 mt-1">
             <div className="text-xs text-ink-400">
@@ -1169,7 +933,7 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
           {typeof project.referenceNumber === 'number' && (
             <span
               className="text-[11px] tabular-nums font-semibold text-beme-500 flex-shrink-0"
-              title="Reference number — quote this when looking the project up."
+              title="Reference number - quote this when looking the project up."
             >
               #{formatRef(project.referenceNumber)}
             </span>
@@ -1184,12 +948,12 @@ function CompletedProjectCard({ project }: { project: SavedProject }) {
         <div className="text-sm text-ink-300 mt-0.5 truncate min-h-[20px]">
           {sub && sub !== title ? sub : ' '}
         </div>
-        {/* Size line — same line the in-progress sibling shows. */}
+        {/* Size line - same line the in-progress sibling shows. */}
         <div className="text-xs text-ink-300/80 mt-1 tabular-nums">
           {sizeLine}
         </div>
         {/* Footer row: completed-relative on the left, turnaround
-            chip on the right — same shape as the in-progress card's
+            chip on the right - same shape as the in-progress card's
             "Updated · owner pip" footer so all three columns end on
             the same row. */}
         <div className="flex items-center justify-between gap-2 mt-1">
@@ -1222,19 +986,18 @@ function formatTurnaround(days: number): string {
 }
 
 // ============================================================================
-// Personal dashboard — what a supply-and-lay bricklayer sees
+// Personal dashboard - what a supply-and-lay bricklayer sees
 // ============================================================================
 
 /**
  * Personal dashboard for users not signed in to any organisation. Same UI
- * we've had since the dashboard was first built — outcome donut, win-rate
+ * we've had since the dashboard was first built - outcome donut, win-rate
  * stats, full projects list with won/lost filters. The metaphor here is a
  * subcontractor quoting their own jobs, so win rate is the headline metric.
  */
 function PersonalDashboard() {
   const navigate = useNavigate()
   const [projects, setProjects] = useState<SavedProject[]>([])
-  const [filter, setFilter] = useState<Filter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const { signedIn, user } = useAuth()
@@ -1242,7 +1005,24 @@ function PersonalDashboard() {
   const refreshProjects = useCallback(() => {
     setLoading(true)
     listProjects()
-      .then((list) => setProjects(list))
+      .then((list) => {
+        setProjects(list)
+        // One-time backfill for projects saved before the metrics field (see
+        // the org loader for the rationale). Background + guarded so it stops
+        // once everything has metrics.
+        if (list.some((p) => !p.metrics)) {
+          void backfillMissingMetrics().then((patched) => {
+            if (patched.length === 0) return
+            const byId = new Map(patched.map((p) => [p.id, p.metrics] as const))
+            setProjects((prev) =>
+              prev.map((p) => {
+                const m = byId.get(p.id)
+                return m ? { ...p, metrics: m } : p
+              }),
+            )
+          })
+        }
+      })
       .catch((err) => console.error('Failed to list projects', err))
       .finally(() => setLoading(false))
   }, [])
@@ -1252,7 +1032,7 @@ function PersonalDashboard() {
   }, [refreshProjects, signedIn])
 
   // Refresh whenever the window regains focus or the tab becomes
-  // visible — mirrors OrgDashboard's behaviour so the personal
+  // visible - mirrors OrgDashboard's behaviour so the personal
   // dashboard also catches the workflow where the user marks a
   // project done in the workspace, hops to another tab, then
   // returns. Without it the dashboard sat stale until a hard
@@ -1283,35 +1063,11 @@ function PersonalDashboard() {
     return { total, inProgress, completed, won, lost, pending, winRate }
   }, [projects])
 
-  const filtered = useMemo(() => {
-    // Status / outcome filter first.
-    let base: SavedProject[]
-    if (filter === 'all') base = projects
-    else if (filter === 'in-progress' || filter === 'completed')
-      base = projects.filter((p) => p.status === filter)
-    else if (filter === 'won') base = projects.filter((p) => p.outcome === 'won')
-    else if (filter === 'lost') base = projects.filter((p) => p.outcome === 'lost')
-    else base = projects.filter((p) => !p.outcome)
-    // Then search — case-insensitive substring match against project name,
-    // site address, client name, and estimator name. The four fields cover
-    // every way an estimator typically remembers a job.
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return base
-    return base.filter((p) => {
-      const d = p.projectDetails
-      return (
-        d.projectName.toLowerCase().includes(q) ||
-        d.siteAddress.toLowerCase().includes(q) ||
-        d.clientName.toLowerCase().includes(q) ||
-        d.estimatorName.toLowerCase().includes(q)
-      )
-    })
-  }, [projects, filter, searchQuery])
 
   /**
    * Splits projects into Current (in-progress) and Completed for
    * the side-by-side dashboard layout. Search applies to the
-   * Current column only — Completed is a historical archive that
+   * Current column only - Completed is a historical archive that
    * doesn't need to be hunted through; the user can flip a project
    * back to in-progress if they need to re-touch it.
    */
@@ -1336,9 +1092,9 @@ function PersonalDashboard() {
   // Dashboard caps each column at 3 rows so the page stays scannable.
   // The "View all" link below routes to /projects with the matching
   // status filter pre-applied. Sorted most-recently-updated first so
-  // the three rows are the freshest work, not the first 3 the API
+  // the four rows are the freshest work, not the first 4 the API
   // returned.
-  const DASHBOARD_PROJECTS_PER_COLUMN = 3
+  const DASHBOARD_PROJECTS_PER_COLUMN = 4
   const currentProjectsVisible = useMemo(
     () =>
       [...currentProjects]
@@ -1368,7 +1124,7 @@ function PersonalDashboard() {
     if (!ok) return
     // Fetch the FULL project (with PDF blob + reference PDFs) before
     // deletion so Undo can resurrect it byte-for-byte. The row in
-    // `projects` state lacks the blob payloads — listProjects() returns
+    // `projects` state lacks the blob payloads - listProjects() returns
     // metadata only for performance.
     let cached: SavedProject | undefined
     try {
@@ -1408,11 +1164,11 @@ function PersonalDashboard() {
           },
         })
       } else {
-        // Couldn't snapshot — degraded UX (no Undo) but the delete still
+        // Couldn't snapshot - degraded UX (no Undo) but the delete still
         // works. Surface the situation in the description so the user
         // isn't surprised.
         toast.success('Project deleted', {
-          description: 'Undo not available — the project couldn\'t be snapshotted.',
+          description: 'Undo not available - the project couldn\'t be snapshotted.',
         })
       }
     } catch (err) {
@@ -1425,7 +1181,7 @@ function PersonalDashboard() {
 
   /**
    * Duplicate an existing project into a fresh in-progress one with the same
-   * wall types, brick settings, pier patterns etc. — but no walls, no PDFs.
+   * wall types, brick settings, pier patterns etc. - but no walls, no PDFs.
    * The whole point is "start a new job from my last similar one in one click",
    * so we route the user straight into the new workspace afterwards.
    */
@@ -1440,7 +1196,7 @@ function PersonalDashboard() {
       // confirming entry before the route change kicks in. Then navigate.
       const refreshed = await listProjects()
       setProjects(refreshed)
-      // Confirmation toast — the navigation that follows is fast enough
+      // Confirmation toast - the navigation that follows is fast enough
       // that the user sees this for a split second on the dashboard,
       // then it follows them into the new project. The "Stay here"
       // action lets a user who duplicated by accident bail out of the
@@ -1468,7 +1224,7 @@ function PersonalDashboard() {
         outcome: next,
         updatedAt: new Date().toISOString(),
       })
-      // Outcome cycling is a low-stakes label change — keep the toast
+      // Outcome cycling is a low-stakes label change - keep the toast
       // light (info, short) so it doesn't feel like a Major Event. The
       // colour ribbon on the project card moves immediately, which is
       // the main feedback; this toast just labels what changed for
@@ -1487,10 +1243,15 @@ function PersonalDashboard() {
     }
   }
 
-  // Derive a friendly name from the auth user — "joshmills03@hotmail.com"
-  // becomes "joshmills03". Falls through to undefined when not signed in
-  // so the hero greeting can degrade gracefully.
-  const personalName = user?.email ? user.email.split('@')[0] : null
+  // Name for the hero greeting. Prefer the display name the user set in
+  // Settings (read through the reactive settings hook so editing it updates
+  // the greeting live), then fall back to the email local-part
+  // ("joshmills03@hotmail.com" -> "joshmills03"), then null when signed out
+  // so the greeting degrades gracefully.
+  const { settings: dashboardSettings } = useUserSettings()
+  const personalName =
+    dashboardSettings.profile.displayName.trim() ||
+    (user?.email ? user.email.split('@')[0] : null)
 
   // Greeting + date for the hero meta strip on the top right. Compact
   // 2-line read: greeting (with name when known) on top, date below.
@@ -1523,7 +1284,7 @@ function PersonalDashboard() {
           it reads as metadata, not a competing headline. */}
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div className="min-w-0 relative">
-          {/* Brand accent bar to the left of the heading — pairs with
+          {/* Brand accent bar to the left of the heading - pairs with
               the AppShell's top gradient strip so the page anchors
               orange on two axes (top + left) without going overboard. */}
           <span
@@ -1553,7 +1314,7 @@ function PersonalDashboard() {
         </div>
       </div>
 
-      {/* Primary CTA row — big confident "+ New estimate" button as
+      {/* Primary CTA row - big confident "+ New estimate" button as
           the page's primary action, separated from the stats so the
           eye lands on it directly. Replaces the previous
           NewEstimateTile that sat awkwardly mixed in with the stat
@@ -1568,11 +1329,11 @@ function PersonalDashboard() {
           New estimate
         </Link>
         <span className="text-xs text-ink-400">
-          Block, brick, or both — switch trades inside.
+          Block, brick, or both - switch trades inside.
         </span>
       </div>
 
-      {/* Stat ribbon — 4 equal tiles. Total / In progress / Won /
+      {/* Stat ribbon - 4 equal tiles. Total / In progress / Won /
           Win rate. Win rate uses the WinRateTile (mini donut) so the
           row reads as a real metrics dashboard rather than four
           interchangeable cells. Keeps the same visual rhythm in any
@@ -1619,26 +1380,29 @@ function PersonalDashboard() {
         />
       </section>
 
-      {/* Loading state — first paint while listProjects resolves.
+      {/* Loading state - first paint while listProjects resolves.
           Single skeleton row + one helper line so the user sees
           motion without a full faux UI flickering on top of itself.
           Hidden once `loading` flips, regardless of how many
           projects came back. */}
       {loading && (
         <div className="mt-8 flex items-center justify-center py-8">
-          <BemeLoader caption="Loading your projects…" />
+          <LoadingScreen
+            message="Loading your projects"
+            steps={['Fetching your estimates…', 'Tallying it up…']}
+          />
         </div>
       )}
 
-      {/* Zero-project state — single confident hero card with a
+      {/* Zero-project state - single confident hero card with a
           big CTA, instead of two separate dashed-border "Current"
           and "Completed" placeholders. Reads as "you're here to
           start something" rather than "the dashboard is broken /
-          empty". Only shows after the loading flip — keeps the
+          empty". Only shows after the loading flip - keeps the
           first paint from flashing two different empty states. */}
       {!loading && !hasAnyProjects && (
         <section className="mt-8 flex-1 flex items-center justify-center">
-          <div className="w-full max-w-xl border border-ink-600 rounded-2xl bg-ink-800/60 px-8 py-12 text-center">
+          <div className="w-full border border-ink-600 rounded-2xl bg-ink-800/60 px-8 py-12 text-center">
             <div className="mx-auto w-14 h-14 rounded-full bg-beme-500/15 border border-beme-500/40 flex items-center justify-center mb-5">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1662,7 +1426,7 @@ function PersonalDashboard() {
             </h3>
             <p className="text-sm text-ink-400 mt-2 leading-relaxed">
               Upload a plan or start with a blank workspace. Block, brick,
-              or both — every project supports both trades.
+              or both - every project supports both trades.
             </p>
             <div className="mt-6 flex items-center justify-center gap-3 flex-wrap">
               <Link
@@ -1684,17 +1448,17 @@ function PersonalDashboard() {
         </section>
       )}
 
-      {/* Project rail — only renders when the user has at least one
+      {/* Project rail - only renders when the user has at least one
           project. Splits into Current (in-progress) and Completed
           stacked vertically. Completed hides entirely when empty
           (the zero-project block above handles the all-empty case,
           and showing a dashed "no completed" box on a project that's
           still in progress is more noise than help).
-          Each section caps at 3 rows on the dashboard with a "View
+          Each section caps at 4 rows on the dashboard with a "View
           all" affordance below. */}
       {!loading && hasAnyProjects && (
       <section className="mt-8 flex-1 grid grid-cols-1 gap-y-8 items-start">
-        {/* Current — single small-uppercase header matching the
+        {/* Current - single small-uppercase header matching the
             OrgDashboard ProjectsColumn pattern. No marketing-style
             eyebrow + large heading combo. The orange dot keeps a
             tiny brand touch without dominating. */}
@@ -1702,7 +1466,7 @@ function PersonalDashboard() {
           <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
             <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
               <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full bg-beme-500" />
-              Current projects
+              Your projects
               <span className="text-ink-500 normal-case font-normal tracking-normal">
                 · {currentProjects.length}
               </span>
@@ -1795,7 +1559,7 @@ function PersonalDashboard() {
                   </Link>
                 </div>
               )}
-              {/* Filler — keeps the column visually full when it
+              {/* Filler - keeps the column visually full when it
                   has fewer rows than the sidebar's height allows.
                   Doubles as a soft "start another" affordance so
                   the placeholder earns its space rather than just
@@ -1818,7 +1582,7 @@ function PersonalDashboard() {
             wide screens (items-stretch on the grid above gives the
             container the height; the inner flex grows the empty
             state into it). */}
-        {/* Completed column — only renders when the user actually
+        {/* Completed column - only renders when the user actually
             HAS completed projects. Empty completed state used to
             show a dashed-border "no completed" panel under every
             in-progress project, which made the dashboard look like
@@ -1865,230 +1629,11 @@ function PersonalDashboard() {
       )}
 
       {/* Material library and Beme guide tiles moved to the dashboard
-          sidebar (right rail) — see DashboardSidebar in HomePage. */}
+          sidebar (right rail) - see DashboardSidebar in HomePage. */}
     </div>
   )
 }
 
-/**
- * Right-hand insights column on the dashboard. Three surfaces:
- *   1. Recent activity — last 5 projects by updatedAt.
- *   2. Projects by trade — block / brick / both split as a mini bar.
- *   3. Quick actions — Resume last, Material library, Settings.
- *
- * All driven by the existing projects array + stats so there are no
- * new fetches or schema changes. Symmetric card pattern with the
- * stat tiles + new-estimate card so the dashboard reads as a single
- * cohesive surface.
- */
-function DashboardInsights({
-  projects,
-  stats,
-}: {
-  projects: SavedProject[]
-  stats: { total: number; inProgress: number; won: number; lost: number; pending: number; completed: number; winRate: number | null }
-}) {
-  // Last 5 most recently updated.
-  const recent = [...projects]
-    .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
-    .slice(0, 5)
-
-  // By-trade breakdown from each project's `trades` array (multi-trade)
-  // with `type` as fallback (legacy single-trade projects). Counted
-  // as block-only, brick-only, or both so the bar reads as three
-  // segments rather than overlapping totals.
-  const tradeCounts = projects.reduce(
-    (acc, p) => {
-      const trades = p.trades && p.trades.length > 0 ? p.trades : p.type ? [p.type] : []
-      const hasBlock = trades.includes('block')
-      const hasBrick = trades.includes('brick')
-      if (hasBlock && hasBrick) acc.both++
-      else if (hasBlock) acc.block++
-      else if (hasBrick) acc.brick++
-      else acc.none++
-      return acc
-    },
-    { block: 0, brick: 0, both: 0, none: 0 },
-  )
-  const tradeTotal = tradeCounts.block + tradeCounts.brick + tradeCounts.both
-  const pct = (n: number) => (tradeTotal === 0 ? 0 : (n / tradeTotal) * 100)
-
-  const lastProject = recent[0]
-  const lastProjectHref = lastProject
-    ? `/project/${(lastProject.trades?.[0] ?? lastProject.type ?? 'block')}?id=${lastProject.id}`
-    : null
-
-  return (
-    <section className="mt-10">
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-        Insights
-      </h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-      {/* Recent activity. Empty-state copy nudges the user toward
-          the "New estimate" card above. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800 overflow-hidden">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 px-4 pt-3 pb-2">
-          Recent activity
-        </h3>
-        {recent.length === 0 ? (
-          <p className="px-4 pb-4 text-xs text-ink-400 italic">
-            Nothing yet. Start an estimate to see activity here.
-          </p>
-        ) : (
-          <ul className="divide-y divide-ink-700/60">
-            {recent.map((p) => (
-              <li key={p.id}>
-                <Link
-                  to={`/project/${p.trades?.[0] ?? p.type ?? 'block'}?id=${p.id}`}
-                  className="flex items-center justify-between gap-3 px-4 py-2 text-sm hover:bg-ink-700/40 transition-colors"
-                >
-                  <span className="truncate text-ink-100">{p.name || 'Untitled'}</span>
-                  <span className="text-[10px] text-ink-500 flex-shrink-0">
-                    {p.updatedAt ? formatRelativeTime(p.updatedAt) : ''}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* Projects by trade — three-segment horizontal bar with a
-          legend below. Reads as a mini-chart without needing a real
-          charting lib. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-          By trade
-        </h3>
-        {tradeTotal === 0 ? (
-          <p className="text-xs text-ink-400 italic">No projects yet.</p>
-        ) : (
-          <>
-            <div className="flex h-2 rounded-full overflow-hidden bg-ink-700">
-              <div
-                className="bg-beme-500"
-                style={{ width: `${pct(tradeCounts.block)}%` }}
-                title={`Block: ${tradeCounts.block}`}
-              />
-              <div
-                className="bg-amber-500"
-                style={{ width: `${pct(tradeCounts.brick)}%` }}
-                title={`Brick: ${tradeCounts.brick}`}
-              />
-              <div
-                className="bg-sky-500"
-                style={{ width: `${pct(tradeCounts.both)}%` }}
-                title={`Both: ${tradeCounts.both}`}
-              />
-            </div>
-            <div className="mt-3 flex items-center gap-3 flex-wrap text-[11px] text-ink-300">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-sm bg-beme-500" />
-                Block <span className="text-ink-500">{tradeCounts.block}</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-sm bg-amber-500" />
-                Brick <span className="text-ink-500">{tradeCounts.brick}</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-sm bg-sky-500" />
-                Both <span className="text-ink-500">{tradeCounts.both}</span>
-              </span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Quick actions — three buttons for common workflows.
-          Resume-last is greyed out when there's no project yet so
-          the empty-state user gets a graceful affordance instead of
-          a dead link. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-          Quick actions
-        </h3>
-        <div className="grid grid-cols-1 gap-2">
-          {lastProjectHref ? (
-            <Link
-              to={lastProjectHref}
-              className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
-            >
-              Resume last project
-              <span className="block text-[11px] text-ink-500 mt-0.5 truncate">
-                {lastProject?.name || 'Untitled'}
-              </span>
-            </Link>
-          ) : (
-            <span className="px-3 py-2 rounded-lg border border-ink-700 bg-ink-900/20 text-sm text-ink-500 cursor-not-allowed">
-              Resume last project
-              <span className="block text-[11px] text-ink-600 mt-0.5">No projects yet</span>
-            </span>
-          )}
-          <Link
-            to="/library"
-            className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
-          >
-            Open material library
-            <span className="block text-[11px] text-ink-500 mt-0.5">Blocks, bricks, supply items</span>
-          </Link>
-          <Link
-            to="/settings"
-            className="px-3 py-2 rounded-lg border border-ink-600 bg-ink-900/40 text-sm text-ink-100 hover:border-beme-500/50 hover:bg-ink-700/40 transition-colors"
-          >
-            Settings
-            <span className="block text-[11px] text-ink-500 mt-0.5">Defaults, theme, region</span>
-          </Link>
-        </div>
-      </div>
-
-      {/* Win rate breakdown — restates the headline stat alongside
-          the raw won / lost / pending counts. Helps the dashboard
-          feel less empty when the user has only a handful of
-          projects but wants to see the shape of them. */}
-      <div className="border border-ink-600 rounded-xl bg-ink-800 p-4">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
-          Outcomes
-        </h3>
-        <div className="grid grid-cols-3 gap-2 text-center">
-          <div>
-            <div className="text-xl font-bold text-emerald-300">{stats.won}</div>
-            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Won</div>
-          </div>
-          <div>
-            <div className="text-xl font-bold text-rose-300">{stats.lost}</div>
-            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Lost</div>
-          </div>
-          <div>
-            <div className="text-xl font-bold text-amber-300">{stats.pending}</div>
-            <div className="text-[10px] uppercase tracking-wider text-ink-500 mt-0.5">Pending</div>
-          </div>
-        </div>
-      </div>
-      </div>
-    </section>
-  )
-}
-
-/**
- * "2 minutes ago", "3 hours ago", "yesterday", "5 Jan" — picks a
- * format based on how old the timestamp is. Falls back to ISO date
- * for older items so the column doesn't grow to "47 weeks ago".
- */
-function formatRelativeTime(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime()
-  const minutes = Math.floor(ms / 60_000)
-  if (minutes < 1) return 'just now'
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
-  // Older than a week — short date.
-  const d = new Date(iso)
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-}
-
-// ---------- Shared sub-components ----------
 
 /**
  * Personalised greeting block shown on the right of the dashboard title
@@ -2141,7 +1686,7 @@ function WelcomeStrip({
  * third of the action row and looked sparse until the user marked
  * something Won/Lost. Same data, far less real estate.
  *
- * Falls back to the standard "—" + sub-line treatment when no outcomes
+ * Falls back to the standard "-" + sub-line treatment when no outcomes
  * have been recorded yet, so the empty state is calm rather than a
  * grey ring.
  */
@@ -2160,7 +1705,7 @@ function WinRateTile({
     return (
       <StatTile
         label="Win rate"
-        value="—"
+        value="-"
         sub="No outcomes yet"
       />
     )
@@ -2203,7 +1748,7 @@ function StatTile({
   accent?: 'beme' | 'emerald' | 'amber' | 'sky'
 }) {
   // Accent colours follow the marketing site's tri-colour palette
-  // (beme / amber / sky) plus emerald for "won" — the dot next to the
+  // (beme / amber / sky) plus emerald for "won" - the dot next to the
   // eyebrow makes the row read like a real category strip rather
   // than a wall of numbers. Numbers tuned one step brighter than the
   // eyebrow so the value carries the brand colour strongly.
@@ -2227,12 +1772,12 @@ function StatTile({
           : accent === 'sky'
             ? 'bg-sky-400'
             : 'bg-ink-500'
-  // All tiles share the same flat panel chrome — plain bg, neutral
+  // All tiles share the same flat panel chrome - plain bg, neutral
   // border, no gradient washes or atmospheric blobs. The previous
   // beme/emerald/amber tinted gradients muddied the dashboard with
   // four different tile flavours; user wanted them dropped. Accent
   // colour is still conveyed by the dot in the eyebrow and the
-  // tinted number, which is the actual semantic signal — the rest
+  // tinted number, which is the actual semantic signal - the rest
   // of the card stays calm white.
   return (
     <div className="border border-ink-600 rounded-2xl bg-ink-800 px-5 py-4 lift">
@@ -2255,13 +1800,13 @@ function StatTile({
  * the read-only metrics. Matches StatTile's outer shape (border,
  * radius, padding) so the row reads as three equal cells, but the
  * whole thing is a Link with a beme-orange title + descriptive
- * sub-line — visually the primary CTA on the page.
+ * sub-line - visually the primary CTA on the page.
  */
 function NewEstimateTile() {
   return (
     <Link
       to="/project/block"
-      title="Start a new masonry estimate — block, brick, or both"
+      title="Start a new masonry estimate - block, brick, or both"
       className="block border border-beme-500/40 rounded-2xl bg-ink-800 px-5 py-4 hover:border-beme-500/70 hover:bg-beme-500/5 transition-colors group lift"
     >
       <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-beme-500 flex items-center justify-between gap-2">
@@ -2272,34 +1817,189 @@ function NewEstimateTile() {
         + New estimate
       </div>
       <div className="text-xs text-ink-400 mt-0.5">
-        Block, brick, or both — switch trades inside
+        Block, brick, or both - switch trades inside
       </div>
     </Link>
   )
 }
 
-function FilterTab({
-  label,
-  count,
-  active,
-  onClick,
+
+/**
+ * Per-row overflow menu. Secondary / destructive actions (Duplicate,
+ * Delete) live here so the row reads calm and Delete isn't a one-slip-
+ * away button. The dropdown is portaled to <body> so it escapes the
+ * row's `overflow-hidden` and never tucks behind the next row. Closes
+ * on outside-click, scroll, or resize.
+ */
+function RowActionsMenu({
+  onDuplicate,
+  onDelete,
 }: {
-  label: string
-  count: number
-  active: boolean
-  onClick: () => void
+  onDuplicate: () => void
+  onDelete: () => void
 }) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [pos, setPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 })
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    window.addEventListener('click', close)
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [open])
   return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1 rounded text-sm transition-colors ${
-        active
-          ? 'bg-beme-500 text-black font-medium'
-          : 'text-ink-300 hover:bg-ink-700 hover:text-ink-100'
-      }`}
-    >
-      {label} <span className={active ? 'opacity-70' : 'text-ink-400'}>{count}</span>
-    </button>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label="More actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (open) {
+            setOpen(false)
+            return
+          }
+          const r = btnRef.current?.getBoundingClientRect()
+          if (r) setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) })
+          setOpen(true)
+        }}
+        className="absolute top-2.5 right-2.5 w-7 h-7 flex items-center justify-center rounded-md text-ink-400 hover:text-ink-100 hover:bg-ink-700 transition-colors"
+      >
+        <span className="text-lg leading-none">⋯</span>
+      </button>
+      {open &&
+        createPortal(
+          <div
+            role="menu"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+            style={{ position: 'fixed', top: pos.top, right: pos.right }}
+            className="w-40 rounded-lg border border-ink-600 bg-ink-800 shadow-xl py-1 z-50"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                onDuplicate()
+              }}
+              className="w-full text-left px-3 py-2 text-sm text-ink-200 hover:bg-beme-500/10 hover:text-beme-300 transition-colors"
+            >
+              Duplicate
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                onDelete()
+              }}
+              className="w-full text-left px-3 py-2 text-sm text-rose-300 hover:bg-rose-500/10 transition-colors"
+            >
+              Delete
+            </button>
+          </div>,
+          document.body,
+        )}
+    </>
+  )
+}
+
+function ProjectRow({
+  project,
+  onDelete,
+  onDuplicate,
+  onCycleOutcome,
+}: {
+  project: SavedProject
+  onDelete: () => void
+  onDuplicate: () => void
+  onCycleOutcome: () => void
+}) {
+  const name =
+    project.projectDetails.projectName.trim() ||
+    project.projectDetails.siteAddress.trim() ||
+    'Untitled project'
+  const subtitle =
+    project.projectDetails.projectName.trim() && project.projectDetails.siteAddress.trim()
+      ? project.projectDetails.siteAddress
+      : ''
+  const { settings: rowSettings } = useUserSettings()
+  const rowUnits = rowSettings.preferences.units
+  // Trade(s) on this project drive the left-edge stripe AND the badge.
+  // Using `trades` (not the legacy single `type`) so a block+brick job
+  // reads "Brick and Block" and opens on its real first trade.
+  const trades = tradesOf(project)
+  // Glanceable job "size" - wall count + total run - so a 200-block
+  // apartment looks different from a 6-block fence before you open it.
+  // Reads off the saved wallsByPage (present in the slim list query).
+  const metrics = projectMetrics(project)
+  const sizeLine =
+    metrics.wallCount > 0
+      ? `${metrics.wallCount} wall${metrics.wallCount === 1 ? '' : 's'} · ${formatLengthMm(metrics.runMetres * 1000, rowUnits)} run`
+      : 'No walls drawn yet'
+
+  return (
+    <li className="relative border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500/50 hover:shadow-lg hover:shadow-beme-500/5 hover:-translate-y-px transition-all duration-150 overflow-hidden">
+      {/* Trade stripe - matches the org dashboard project rows so the
+          eye can pick block vs brick at a glance across both
+          dashboards without having to read the badge. */}
+      <span
+        aria-hidden="true"
+        className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
+      />
+      {/* The whole card opens the project - one obvious primary action,
+          no redundant "Open" button. The won/lost pill (inline) and the
+          ⋯ menu both stop propagation so they never trigger navigation.
+          pr-11 reserves room for the ⋯ button in the top-right corner. */}
+      <Link
+        to={projectUrl(project)}
+        className="block p-4 pl-5 pr-11 group"
+      >
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
+            {name}
+          </span>
+          {typeof project.referenceNumber === 'number' && (
+            <span
+              className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-beme-500/10 border border-beme-500/20 text-[10px] tabular-nums font-semibold text-beme-300"
+              title="Reference number - quote this when looking the project up."
+            >
+              #{formatRef(project.referenceNumber)}
+            </span>
+          )}
+          {statusBadge(project.status)}
+          <OutcomePill outcome={project.outcome} onClick={onCycleOutcome} />
+          <TradeBadges trades={trades} />
+        </div>
+        {subtitle && <div className="text-sm text-ink-300 mt-0.5">{subtitle}</div>}
+        {/* Size line - gives each row weight beyond name + date.
+            tabular-nums so counts don't shimmy the column alignment. */}
+        <div className="text-xs text-ink-300/80 mt-1 tabular-nums">{sizeLine}</div>
+        <div className="text-xs text-ink-400 mt-1">
+          Updated {formatRelative(project.updatedAt)}
+          {project.completedAt && (
+            <span> · Completed {formatRelative(project.completedAt)}</span>
+          )}
+        </div>
+      </Link>
+      <RowActionsMenu onDuplicate={onDuplicate} onDelete={onDelete} />
+    </li>
   )
 }
 
@@ -2332,101 +2032,5 @@ function OutcomePill({
     >
       {label}
     </button>
-  )
-}
-
-function ProjectRow({
-  project,
-  onDelete,
-  onDuplicate,
-  onCycleOutcome,
-}: {
-  project: SavedProject
-  onDelete: () => void
-  onDuplicate: () => void
-  onCycleOutcome: () => void
-}) {
-  const name =
-    project.projectDetails.projectName.trim() ||
-    project.projectDetails.siteAddress.trim() ||
-    'Untitled project'
-  const subtitle =
-    project.projectDetails.projectName.trim() && project.projectDetails.siteAddress.trim()
-      ? project.projectDetails.siteAddress
-      : ''
-  const typeLabel = project.type === 'block' ? 'Block' : 'Brick'
-  // Resolve the trade(s) used on this project so we can paint the
-  // left-edge stripe — same encoding as the OrgDashboard's
-  // ProjectInProgressRow / CompletedProjectCard: orange for block,
-  // amber for brick, vertical gradient for mixed.
-  const trades = tradesOf(project)
-
-  return (
-    <li className="relative border border-ink-600 rounded-xl bg-ink-800 hover:border-beme-500/50 hover:shadow-lg hover:shadow-beme-500/5 hover:-translate-y-px transition-all duration-150 overflow-hidden">
-      {/* Trade stripe — matches the org dashboard project rows so the
-          eye can pick block vs brick at a glance across both
-          dashboards without having to read the badge. */}
-      <span
-        aria-hidden="true"
-        className={`absolute left-0 top-0 bottom-0 w-1 ${tradeStripeClass(trades)}`}
-      />
-      <div className="flex items-center justify-between flex-wrap gap-3 p-4 pl-5">
-        <Link
-          to={`/project/${project.type}?id=${project.id}`}
-          className="flex-1 min-w-0 group"
-        >
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-base font-semibold text-ink-50 group-hover:text-beme-300 transition-colors">
-              {name}
-            </span>
-            {/* Reference number chip — proper bg-tinted chip with a
-                soft brand border so the 6-digit reference reads as
-                a structured artifact (something you'd quote on the
-                phone) rather than a stray brand-coloured digit. */}
-            {typeof project.referenceNumber === 'number' && (
-              <span
-                className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-beme-500/10 border border-beme-500/20 text-[10px] tabular-nums font-semibold text-beme-300"
-                title="Reference number — quote this when looking the project up."
-              >
-                #{formatRef(project.referenceNumber)}
-              </span>
-            )}
-            {statusBadge(project.status)}
-            <OutcomePill outcome={project.outcome} onClick={onCycleOutcome} />
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-ink-700 text-ink-200 border border-ink-600">
-              {typeLabel}
-            </span>
-          </div>
-          {subtitle && <div className="text-sm text-ink-300 mt-0.5">{subtitle}</div>}
-          <div className="text-xs text-ink-400 mt-1">
-            Updated {formatRelative(project.updatedAt)}
-            {project.completedAt && (
-              <span> · Completed {formatRelative(project.completedAt)}</span>
-            )}
-          </div>
-        </Link>
-        <div className="flex items-center gap-2">
-          <Link
-            to={`/project/${project.type}?id=${project.id}`}
-            className="px-3 py-1.5 rounded-lg bg-beme-500 text-black text-sm hover:bg-beme-400 transition-colors font-medium"
-          >
-            Open
-          </Link>
-          <button
-            onClick={onDuplicate}
-            title="Start a new project with the same wall types, brick settings, pier patterns — fresh canvas, no PDFs."
-            className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-300 text-sm hover:bg-beme-500/10 hover:border-beme-500/40 hover:text-beme-300 transition-colors"
-          >
-            Duplicate
-          </button>
-          <button
-            onClick={onDelete}
-            className="px-3 py-1.5 rounded-lg border border-ink-600 text-ink-300 text-sm hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 transition-colors"
-          >
-            Delete
-          </button>
-        </div>
-      </div>
-    </li>
   )
 }

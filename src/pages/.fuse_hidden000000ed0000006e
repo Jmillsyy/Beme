@@ -1,0 +1,143 @@
+import { useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import Header from '../components/Header'
+import { signInWithMagicLink } from '../lib/auth'
+import { isSupabaseConfigured } from '../lib/supabase'
+
+/**
+ * Welcome page — visitor lands here after completing Stripe Checkout.
+ *
+ *   beme.com.au → Start free → Stripe Checkout → app.beme.com.au/welcome?session_id=...
+ *
+ * The stripe-webhook Edge Function has already provisioned the user
+ * and queued a magic-link email by the time this page loads. This
+ * screen confirms the next step ("check your inbox") and offers a
+ * resend button if the email never arrives.
+ *
+ * The `session_id` query parameter is informational only — we don't
+ * verify it here. The webhook is the source of truth; this page is
+ * just the human-friendly receipt.
+ */
+export default function WelcomePage() {
+  const [params] = useSearchParams()
+  const sessionId = params.get('session_id')
+
+  const [email, setEmail] = useState('')
+  const [resending, setResending] = useState(false)
+  const [resent, setResent] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Light analytics — let us know in the console / logs that a checkout
+  // landed here. Useful when validating end-to-end test runs.
+  useEffect(() => {
+    if (sessionId) {
+      console.log('[welcome] arrived from Stripe session', sessionId)
+    }
+  }, [sessionId])
+
+  async function handleResend(e: React.FormEvent) {
+    e.preventDefault()
+    if (!email) {
+      setError('Enter the email you used at checkout.')
+      return
+    }
+    if (!isSupabaseConfigured) {
+      setError('Sign-in is not configured. Contact support.')
+      return
+    }
+    setResending(true)
+    setError(null)
+    const { error: signInError } = await signInWithMagicLink(email)
+    setResending(false)
+    if (signInError) {
+      setError(signInError.message)
+      return
+    }
+    setResent(true)
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col bg-ink-900">
+      <Header />
+
+      <main className="flex-1 flex items-center justify-center px-6 py-20">
+        <div className="max-w-lg w-full">
+          {/* Success badge */}
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-medium mb-6">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            Subscription started
+          </div>
+
+          <h1 className="text-3xl md:text-4xl font-bold text-ink-50 tracking-tight">
+            Check your inbox.
+          </h1>
+          <p className="text-base text-ink-300 mt-4 leading-relaxed">
+            We've sent a one-time sign-in link to the email you used at
+            checkout. Click it and you're in — no password to remember.
+          </p>
+          <p className="text-sm text-ink-400 mt-3">
+            Your 14-day free trial has started. Cancel anytime from
+            Settings → Billing.
+          </p>
+
+          {/* Resend form — only show if the link didn't arrive */}
+          <div className="mt-10 p-6 rounded-xl border border-ink-700 bg-ink-800/60">
+            <p className="text-sm font-medium text-ink-100">
+              Didn't get the email?
+            </p>
+            <p className="text-xs text-ink-400 mt-1">
+              Check spam, or enter your email and we'll send another link.
+            </p>
+
+            <form onSubmit={handleResend} className="mt-4 flex flex-col gap-3">
+              <input
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value)
+                  setResent(false)
+                  setError(null)
+                }}
+                required
+                className="w-full px-3 py-2 rounded-md border border-ink-600 bg-ink-900 text-ink-100 text-sm focus:outline-none focus:border-beme-500"
+              />
+              <button
+                type="submit"
+                disabled={resending || resent}
+                className="px-4 py-2 rounded-md bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-50 transition-colors"
+              >
+                {resent
+                  ? 'Sent — check your inbox'
+                  : resending
+                    ? 'Sending…'
+                    : 'Send sign-in link'}
+              </button>
+            </form>
+
+            {error && (
+              <p className="text-xs text-rose-400 mt-3" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+
+          <p className="text-xs text-ink-500 mt-8">
+            Need help? Email{' '}
+            <a
+              href="mailto:hello@beme.com.au"
+              className="text-beme-400 hover:text-beme-300 underline"
+            >
+              hello@beme.com.au
+            </a>
+            {' '}or head{' '}
+            <Link to="/" className="text-beme-400 hover:text-beme-300 underline">
+              back to the app
+            </Link>
+            .
+          </p>
+        </div>
+      </main>
+    </div>
+  )
+}

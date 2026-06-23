@@ -18,13 +18,13 @@ import ConfirmHost from './components/ConfirmHost'
 import KeyboardCheatSheet from './components/KeyboardCheatSheet'
 import CommandPalette from './components/CommandPalette'
 import HelpFloatingButton from './components/HelpFloatingButton'
-import BemeLoader from './components/BemeLoader'
+import LoadingScreen from './components/LoadingScreen'
 
 /**
  * Routes that are reachable WITHOUT being signed in. Accept-invite is
  * needed so brand-new users can land on a setup link before they have
  * an account. /welcome is where Stripe Checkout redirects after a
- * successful subscription — the user lands there before they've
+ * successful subscription - the user lands there before they've
  * clicked the magic-link email, so it must be public too.
  */
 const PUBLIC_PATHS = new Set(['/accept-invite', '/welcome'])
@@ -39,7 +39,10 @@ export default function App() {
   if (loading) {
     return (
       <div className="min-h-screen bg-ink-900 text-ink-300 flex items-center justify-center">
-        <BemeLoader />
+        <LoadingScreen
+          message="Loading your workspace"
+          steps={['Getting things ready…', 'Almost there…']}
+        />
       </div>
     )
   }
@@ -58,7 +61,7 @@ export default function App() {
     <>
       <ErrorBoundary>
         <Routes>
-          {/* Dashboard-style pages share a single AppShell mount —
+          {/* Dashboard-style pages share a single AppShell mount -
               LeftNav stays alive across nav clicks so they don't flash
               the whole chrome away and back. Each child page renders
               into AppShell's <Outlet />. */}
@@ -76,13 +79,13 @@ export default function App() {
           <Route path="/welcome" element={<WelcomePage />} />
         </Routes>
       </ErrorBoundary>
-      {/* Global toast host — single mount, floats over every page. */}
+      {/* Global toast host - single mount, floats over every page. */}
       <ToastHost />
-      {/* Global confirm dialog — single mount; confirm() opens it. */}
+      {/* Global confirm dialog - single mount; confirm() opens it. */}
       <ConfirmHost />
-      {/* Global keyboard cheat-sheet — opens with `?`, closes with Esc. */}
+      {/* Global keyboard cheat-sheet - opens with `?`, closes with Esc. */}
       <KeyboardCheatSheet />
-      {/* Command palette — Cmd/Ctrl+K to toggle from anywhere. */}
+      {/* Command palette - Cmd/Ctrl+K to toggle from anywhere. */}
       <CommandPalette />
       {/* Persistent ? button bottom-left so users can discover the
           keyboard shortcuts without hunting for the chord. */}

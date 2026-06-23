@@ -1,5 +1,5 @@
 <!--
-  Beme favicon — matches the BemeMark React component used in the app.
+  Beme favicon - matches the BemeMark React component used in the app.
   Orange rounded square with a square HOLE cut from the middle (true
   transparency, not a dark inset) so the favicon reads the same on any
   browser tab colour. Single path with fill-rule="evenodd" subtracts

@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import BemeLoader from '../components/BemeLoader'
+import LoadingScreen from '../components/LoadingScreen'
 import { useAuth } from '../lib/auth'
 import { listOrgMembers, useOrganisations } from '../lib/organisations'
 import { listProjects, type ProjectStatus, type SavedProject } from '../lib/projectStorage'
 import type { OrgMember } from '../types/organisations'
 
 /**
- * /projects — master list of every project the user can see. The
+ * /projects - master list of every project the user can see. The
  * dashboard's "View all →" links jump here with pre-filled URL filters.
  *
  * Filters:
- *   - status:  all / in-progress / completed
- *   - type:    all / block / brick
- *   - owner:   any / specific person (resolves to ownerUserId)
- *   - period:  all / today / this week / this month  (by updatedAt /
- *              completedAt depending on status)
+ * - status:  all / in-progress / completed
+ * - type:    all / block / brick
+ * - owner:   any / specific person (resolves to ownerUserId)
+ * - period:  all / today / this week / this month  (by updatedAt /
+ * completedAt depending on status)
  *
  * Filters are URL-encoded so the page is shareable + bookmarkable + linkable
  * from the dashboard.
@@ -56,7 +56,7 @@ export default function ProjectsPage() {
     return raw.replace(/^#/, '').replace(/\s+/g, '')
   })()
 
-  /** Update one filter without losing the others — keeps each onChange one-line. */
+  /** Update one filter without losing the others - keeps each onChange one-line. */
   function updateParam(key: string, value: string | null) {
     setSearchParams(
       (prev) => {
@@ -73,7 +73,7 @@ export default function ProjectsPage() {
   }
 
   // Load projects + members. Re-runs when org changes so a user switching
-  // orgs sees the right scope. We don't gate on the auth state explicitly —
+  // orgs sees the right scope. We don't gate on the auth state explicitly -
   // if user is null the page is still rendered (org membership is the gate
   // and listProjects bails locally for offline mode).
   useEffect(() => {
@@ -103,7 +103,7 @@ export default function ProjectsPage() {
     return m
   }, [members])
 
-  // Date predicate — picks updatedAt for in-progress, completedAt for
+  // Date predicate - picks updatedAt for in-progress, completedAt for
   // completed (falling back to updatedAt). 'all' means no bound.
   const filtered = useMemo(() => {
     const lowerBound = (() => {
@@ -121,7 +121,7 @@ export default function ProjectsPage() {
         if (owner !== ownerFilter) return false
       }
       if (refFilter.length > 0) {
-        // Substring contains. The ref column is a number — stringify with
+        // Substring contains. The ref column is a number - stringify with
         // 6-digit padding so "100" matches "100123" AND "000100", which
         // matches the formatting the user sees on PDFs + the project bar.
         if (typeof p.referenceNumber !== 'number') return false
@@ -213,7 +213,7 @@ export default function ProjectsPage() {
               Projects
             </h2>
             <p className="text-sm text-ink-400 mt-1">
-              Every estimate {currentOrg ? `for ${currentOrg.name}` : 'in your account'} — filter by status, type, person, or time.
+              Every estimate {currentOrg ? `for ${currentOrg.name}` : 'in your account'} - filter by status, type, person, or time.
             </p>
           </div>
           <Link
@@ -348,7 +348,10 @@ export default function ProjectsPage() {
         {/* List */}
         {loading || orgLoading ? (
           <div className="py-16 flex justify-center">
-            <BemeLoader caption="Loading projects…" />
+            <LoadingScreen
+              message="Loading your projects"
+              steps={['Fetching your estimates…', 'Tallying it up…']}
+            />
           </div>
         ) : sorted.length === 0 ? (
           <div className="border border-dashed border-ink-600 rounded-xl bg-ink-800/40 p-8 text-center">
@@ -360,7 +363,7 @@ export default function ProjectsPage() {
         ) : (
           <ul className="space-y-2">
             {sorted.map((p) => (
-              <ProjectRow key={p.id} project={p} memberById={memberById} />
+              <ProjectRow key={p.id} project={p} memberById={memberById} currentUserId={user?.id ?? null} />
             ))}
           </ul>
         )}
@@ -397,9 +400,11 @@ function StatusPill({
 function ProjectRow({
   project,
   memberById,
+  currentUserId,
 }: {
   project: SavedProject
   memberById: Map<string, OrgMember>
+  currentUserId: string | null
 }) {
   const name =
     project.projectDetails.projectName.trim() ||
@@ -416,7 +421,14 @@ function ProjectRow({
       : `/project/block?id=${project.id}`
   const ownerId = project.ownerUserId ?? project.createdByUserId ?? null
   const owner = ownerId ? memberById.get(ownerId) : null
-  const ownerName = owner?.displayName || owner?.email || (ownerId ? 'a teammate' : null)
+  // Only label a project with a REAL, named teammate. No generic "a teammate"
+  // fallback for an unresolved owner (on a solo / individual account that
+  // owner is the user themselves, just absent from a members list), and never
+  // label the current user's own projects "by ...".
+  const isMyProject = !!ownerId && !!currentUserId && ownerId === currentUserId
+  const ownerName = isMyProject
+    ? null
+    : owner?.displayName || owner?.email || null
   const refLabel =
     typeof project.referenceNumber === 'number'
       ? project.referenceNumber >= 100000

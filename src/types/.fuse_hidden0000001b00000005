@@ -1,0 +1,98 @@
+/**
+ * Brick-related types for the beme brick library.
+ *
+ * Unlike block masonry, brick estimating is dominated by face area × bricks/m².
+ * A "brick type" therefore captures the face dimensions of one brick plus its
+ * effective wall depth (single skin = 110mm, double skin = 230mm, etc.). The
+ * bricks-per-m² figure is auto-derived from `(faceWidth + mortar) × (faceHeight + mortar)`,
+ * but each type can override the auto figure if the user has a measured rate
+ * they prefer.
+ *
+ * Heights are the distinguishing dimension between types — single-height
+ * (76mm), double-height (162mm), maxi (90mm), etc.
+ *
+ * All measurements are in millimetres.
+ */
+
+/**
+ * Brick codes are user-editable strings (like BlockCode). See
+ * {@link BuiltInBrickCode} for the seed codes shipped with the app.
+ */
+export type BrickCode = string
+
+export type BuiltInBrickCode =
+  | 'standard' // 230×76×110, ~48 bricks/m²
+  | 'maxi' // 290×90×110, ~33 bricks/m²
+  | 'double-height' // 230×162×110, ~24 bricks/m²
+  | 'double-skin' // 230×76×230 (full brick depth, e.g. cavity inner skin)
+  | 'half-height' // 230×38×110 — rare but used for trim courses
+
+/**
+ * Common brick orientations. For estimating purposes "stretcher" (long face
+ * out) is by far the most common — bricks/m² assumes the face dimensions are
+ * exposed. Header courses (short face out) and soldier courses (rotated 90°)
+ * use a different effective face but those are usually trimmed in by hand;
+ * out of scope for the auto-derived bricks/m² for v1.
+ */
+export type BrickOrientation = 'stretcher'
+
+/**
+ * A brick type in the library.
+ */
+export interface BrickType {
+  /** Unique code (e.g. "standard", "maxi", or a custom "MY-90"). */
+  code: BrickCode
+  /** Human-readable name, e.g. "Standard 230×76". */
+  name: string
+  /** Optional description / region / use-case. */
+  description?: string
+
+  /** Face (long-side) width in mm — e.g. 230 for standard. */
+  widthMm: number
+  /** Face height in mm — 76 for standard, 162 for double-height, 90 for maxi. */
+  heightMm: number
+  /**
+   * Wall thickness contribution of this brick in mm — 110 for single skin,
+   * 230 for full-depth. Used for the rendered wall thickness in the canvas.
+   */
+  depthMm: number
+
+  /** Mortar joint thickness in mm. Defaults to 10. */
+  mortarJointMm?: number
+
+  /**
+   * Manual override for bricks per m². When set, this is the rate used in the
+   * tally. When unset, the rate is auto-derived from the face dimensions +
+   * mortar joints.
+   */
+  bricksPerSquareMetreOverride?: number
+
+  /** Orientation — only 'stretcher' for v1. */
+  orientation?: BrickOrientation
+}
+
+/**
+ * Default mortar joint thickness in mm — used when a brick type doesn't
+ * specify one. 10mm is the Australian standard for brickwork.
+ */
+export const DEFAULT_BRICK_MORTAR_MM = 10
+
+/**
+ * Compute the bricks-per-m² for a brick type. If the type sets a manual
+ * `bricksPerSquareMetreOverride`, that value is returned verbatim. Otherwise:
+ *
+ *   bricks/m² = 1 / ((width + mortar) × (height + mortar) / 1,000,000)
+ *
+ * — i.e. one brick covers (face + mortar joint on two sides) of m².
+ */
+export function bricksPerSquareMetreOf(type: BrickType): number {
+  if (type.bricksPerSquareMetreOverride !== undefined) {
+    return type.bricksPerSquareMetreOverride
+  }
+  const mortar = type.mortarJointMm ?? DEFAULT_BRICK_MORTAR_MM
+  const widthWithMortar = type.widthMm + mortar
+  const heightWithMortar = type.heightMm + mortar
+  const faceAreaSqM = (widthWithMortar * heightWithMortar) / 1_000_000
+  if (faceAreaSqM <= 0) return 0
+  return Math.round(1 / faceAreaSqM)
+}

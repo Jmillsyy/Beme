@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import BemeMark from './BemeMark'
 import { useTheme } from '../lib/theme'
-import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
+import { displayNameOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
 import { useOnlineStatus } from '../lib/useOnlineStatus'
@@ -11,12 +11,12 @@ import type { Organisation } from '../types/organisations'
 /**
  * Resolve the personalised name shown in the header, in order of preference:
  *
- *   1. Current organisation name — when the user is acting inside an org.
- *   2. Business / company name from settings (personal/single-user mode).
- *   3. User's display name from settings.
- *   4. User's signed-in name (from Microsoft OAuth metadata).
+ * 1. Current organisation name - when the user is acting inside an org.
+ * 2. Business / company name from settings (personal/single-user mode).
+ * 3. User's display name from settings.
+ * 4. User's signed-in name (from Microsoft OAuth metadata).
  *
- * Returns `null` when nothing's set — caller decides whether to render
+ * Returns `null` when nothing's set - caller decides whether to render
  * anything. We deliberately don't fall back to a placeholder string; the
  * header looks cleaner with nothing there until the user types their name.
  */
@@ -64,7 +64,7 @@ export default function Header() {
       {/* Full-width row at px-20 so the Beme logo + org/user pills sit at
           the same horizontal edges as the workspace canvas AND every
           dashboard page below. All page `<main>` containers now use
-          `px-20` (no max-w cap) for the same reason — so the header's
+          `px-20` (no max-w cap) for the same reason - so the header's
           left/right edges line up with every page's content edges on
           monitors of any width. */}
       <div className="px-20 py-6 flex items-center justify-between gap-6">
@@ -79,12 +79,12 @@ export default function Header() {
         </Link>
 
         <div className="flex items-center gap-3">
-          {/* Offline indicator — only renders when navigator.onLine is
+          {/* Offline indicator - only renders when navigator.onLine is
               false. Explains "why is my save failing" before the user has
               to discover it through a failed toast. */}
           <OfflinePill />
 
-          {/* Org switcher — appears only when the user is signed in and
+          {/* Org switcher - appears only when the user is signed in and
               belongs to at least one org. Single-org users see a static
               "ORG NAME" pill; multi-org users get a dropdown to switch. */}
           {signedIn && organisations.length > 0 && (
@@ -95,7 +95,7 @@ export default function Header() {
             />
           )}
 
-          {/* Personalised tag — only shown when the user is NOT inside an
+          {/* Personalised tag - only shown when the user is NOT inside an
               org context (the org switcher already labels the workspace for
               org users). For single-user / personal mode it shows the
               company / profile / OAuth name when any of those are set. */}
@@ -111,14 +111,17 @@ export default function Header() {
           {signedIn && user ? (
             <UserMenu user={user} />
           ) : (
-            // Cog icon for signed-out users — still need access to settings.
+            // Cog icon for signed-out users - still need access to settings.
             <Link
               to="/settings"
               title="Settings"
               aria-label="Settings"
               className="w-8 h-8 rounded-full border border-ink-600 text-ink-300 hover:bg-ink-700 hover:text-ink-100 transition-colors flex items-center justify-center text-sm"
             >
-              ⚙
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+              </svg>
             </Link>
           )}
 
@@ -141,7 +144,7 @@ function OfflinePill() {
   return (
     <span
       className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-rose-500/40 bg-rose-500/10 text-[11px] text-rose-300"
-      title="No internet connection — saves will retry once you're back online."
+      title="No internet connection - saves will retry once you're back online."
       role="status"
       aria-live="polite"
     >
@@ -281,8 +284,16 @@ function UserMenu({ user }: { user: import('@supabase/supabase-js').User }) {
     }
   }, [open])
 
-  const name = displayNameOf(user)
-  const initials = initialsOf(user)
+  // Prefer the name the user set in Settings (Profile > display name), read
+  // through the reactive settings hook so editing it updates the header
+  // live. Falls back to the OAuth / email-derived name when blank.
+  const { settings } = useUserSettings()
+  const name = settings.profile.displayName.trim() || displayNameOf(user)
+  const initials = (() => {
+    const parts = name.split(/\s+/).filter(Boolean)
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
+    return (parts[0]?.[0] ?? '?').toUpperCase()
+  })()
 
   return (
     <div className="relative" ref={ref}>
@@ -316,7 +327,7 @@ function UserMenu({ user }: { user: import('@supabase/supabase-js').User }) {
             }}
             className="w-full text-left px-4 py-2 text-ink-100 hover:bg-ink-700 transition-colors flex items-center gap-2"
           >
-            <span className="text-ink-400">⚙</span> Settings
+            Settings
           </button>
           <div className="border-t border-ink-600 my-1" />
           <button
@@ -355,16 +366,12 @@ function ThemeSwitch({
       title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
       className="relative inline-flex items-center h-8 w-[60px] rounded-full border border-ink-600 bg-ink-700/60 hover:bg-ink-700 transition-colors cursor-pointer"
     >
-      {/* Track icons */}
-      <span className="absolute left-1.5 text-[12px] text-ink-400">🌙</span>
-      <span className="absolute right-1.5 text-[12px] text-ink-400">☀️</span>
-      {/* Thumb */}
+      {/* Thumb (slides left for dark, right for light; the title attr and
+          position convey the state without an icon). */}
       <span
-        className="absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-beme-500 shadow-sm shadow-black/20 transition-transform duration-200 flex items-center justify-center text-[11px]"
+        className="absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-beme-500 shadow-sm shadow-black/20 transition-transform duration-200"
         style={{ transform: isLight ? 'translateX(28px)' : 'translateX(0)' }}
-      >
-        {isLight ? '☀️' : '🌙'}
-      </span>
+      />
     </button>
   )
 }

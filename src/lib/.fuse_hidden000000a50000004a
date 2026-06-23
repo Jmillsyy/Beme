@@ -1,0 +1,44 @@
+/**
+ * useOnlineStatus — React hook that returns true when the device has
+ * network connectivity, false when it's offline.
+ *
+ * Wraps `navigator.onLine` + the window 'online' / 'offline' events.
+ * The browser fires those events whenever the OS reports a network
+ * state transition (cable unplugged, Wi-Fi dropped, airplane mode on,
+ * etc.). Good enough for the "your saves won't reach the cloud" case
+ * we care about in Beme; it doesn't catch the rarer "your Wi-Fi works
+ * but Supabase is unreachable" case — failed saves already surface as
+ * toasts for that.
+ *
+ * SSR-safe: returns `true` (assumes online) when window doesn't exist,
+ * because pessimistically rendering an offline banner on every server
+ * render would be a worse default.
+ */
+import { useEffect, useState } from 'react'
+
+export function useOnlineStatus(): boolean {
+  const [online, setOnline] = useState<boolean>(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  )
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    function handleOnline() {
+      setOnline(true)
+    }
+    function handleOffline() {
+      setOnline(false)
+    }
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    // Sync once on mount in case the network state changed between SSR
+    // and hydration (or between hook calls).
+    setOnline(navigator.onLine)
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
+  return online
+}

@@ -1,0 +1,92 @@
+/**
+ * Any-block-size regression tests.
+ *
+ * The calc engine must read EVERY dimension off the block (library or
+ * user-defined) and apply the laying rules to it - never assume the AU
+ * 390 face / 190 half / 190 height. These tests pin that with synthetic
+ * blocks the default library doesn't carry:
+ * - 440mm face          → length module 450, half end cut to 215
+ * - 215mm height        → fewer courses for the same wall height
+ * - 600mm face × 300 deep → module 610, half 295, 300mm corner cube
+ *
+ * For an AU 390/190 block every derived value collapses back to the old
+ * 400 / 200 constants, so renderTallyParity.test.ts still guards that case.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import type { Wall, WallMakeup } from '../../types/walls'
+import { planWallLayout, cornerOwnershipFor } from '../blockCalc'
+import { getEffectiveWallThicknessMm } from '../makeups'
+import { BLOCK_LIBRARY } from '../../data/blockLibrary'
+
+const SYNTH: Record<string, unknown> = {
+  C440: { code: 'C440', name: 'Custom 440', description: 'test', dimensions: { widthMm: 440, heightMm: 190, depthMm: 100 }, roles: ['body', 'corner', 'end-termination'] },
+  H215: { code: 'H215', name: 'Tall 215', description: 'test', dimensions: { widthMm: 390, heightMm: 215, depthMm: 100 }, roles: ['body', 'corner', 'end-termination'] },
+  B600: { code: 'B600', name: '600 wide 300 deep', description: 'test', dimensions: { widthMm: 600, heightMm: 190, depthMm: 300 }, roles: ['body', 'corner', 'end-termination'] },
+}
+const LIB = BLOCK_LIBRARY as unknown as Record<string, unknown>
+beforeAll(() => { for (const [k, v] of Object.entries(SYNTH)) LIB[k] = v })
+afterAll(() => { for (const k of Object.keys(SYNTH)) delete LIB[k] })
+
+function mk(code: string, heightMm: number): WallMakeup {
+  return {
+    id: 'mk-' + code, name: code, bondType: 'stretcher', heightMm,
+    baseCourseBlockCode: code, bodyBlockCode: code, topCourseBlockCode: code,
+    cornerBlockCode: code, halfBlockCode: code, useFractions: false,
+  }
+}
+function free(makeupId: string, lengthMm: number): Wall {
+  return { id: 'w', makeupId, startX: 0, startY: 0, endX: lengthMm, endY: 0, startJunction: { type: 'free' }, endJunction: { type: 'free' } }
+}
+function courseBlocks(layout: ReturnType<typeof planWallLayout>, c: number) {
+  return layout.blocks.filter((b) => b.courseIdx === c && b.role !== 'paired-tile').sort((a, b) => a.s0Mm - b.s0Mm)
+}
+function realBodies(layout: ReturnType<typeof planWallLayout>, c: number, minW: number) {
+  return courseBlocks(layout, c).filter((b) => b.role === 'body' && !b.renderOnly && b.widthMm >= minW)
+}
+
+describe('any block size - the engine adapts to face / height / depth', () => {
+  it('440mm face: body grid pitches at 450 and the half slot cuts to 215', () => {
+    const m = mk('C440', 600)
+    const layout = planWallLayout(free(m.id, 3140), m)
+    const b = realBodies(layout, 1, 300)
+    expect(Math.round(b[2].s0Mm - b[1].s0Mm)).toBe(450) // bodyFace 440 + mortar 10
+    const even = courseBlocks(layout, 1)
+    expect(Math.round(even[0].widthMm)).toBe(215) // (440 - 10) / 2
+  })
+
+  it('215mm height: a 2400mm wall lays 11 courses (190-high would be 12)', () => {
+    const m = mk('H215', 2400)
+    expect(planWallLayout(free(m.id, 2800), m).courses.length).toBe(11) // round(2400 / 225)
+  })
+
+  it('600×300 free-standing: 610 pitch, 295 half face, clean 305 half-lap', () => {
+    const m = mk('B600', 600)
+    const layout = planWallLayout(free(m.id, 3650), m)
+    const b0 = realBodies(layout, 0, 305)
+    const b1 = realBodies(layout, 1, 305)
+    expect(Math.round(b0[1].s0Mm - b0[0].s0Mm)).toBe(610)
+    expect(Math.round(Math.abs(b0[0].s0Mm - b1[0].s0Mm))).toBe(305) // half module = (600 + 10) / 2
+    expect(Math.round(courseBlocks(layout, 1)[0].widthMm)).toBe(295) // (600 - 10) / 2
+  })
+
+  it('600×300 at a corner: 300mm cube, full 600 corners, no overhang', () => {
+    const j = (ids: string[]) => ({ type: 'corner' as const, connectedWallIds: ids })
+    const m = mk('B600', 600)
+    const walls: Wall[] = [
+      { id: 'w1', makeupId: m.id, startX: 150, startY: 0, endX: 4050, endY: 0, startJunction: j(['w2']), endJunction: { type: 'free' } },
+      { id: 'w2', makeupId: m.id, startX: 150, startY: 0, endX: 150, endY: 4000, startJunction: j(['w1']), endJunction: { type: 'free' } },
+    ]
+    const wallsById: Record<string, Wall> = {}
+    const thick: Record<string, number> = {}
+    const bodyDepth: Record<string, number> = {}
+    for (const w of walls) { wallsById[w.id] = w; thick[w.id] = getEffectiveWallThicknessMm(m, BLOCK_LIBRARY); bodyDepth[w.id] = 300 }
+    const layout = planWallLayout(walls[0], m, [], thick, wallsById, cornerOwnershipFor(walls[0], wallsById, thick), bodyDepth)
+    const owning = courseBlocks(layout, 0)
+    expect(Math.round(owning[0].widthMm)).toBe(600) // full corner on owning course
+    const nonOwning = courseBlocks(layout, 1)
+    expect(nonOwning[0].renderOnly).toBe(true) // partner cube
+    expect(Math.round(nonOwning[0].widthMm)).toBe(300) // = partner depth
+    const lastOwning = owning[owning.length - 1]
+    expect(Math.round(lastOwning.s0Mm + lastOwning.widthMm)).toBe(Math.round(layout.lengthMm)) // ends flush, no overhang
+  })
+})

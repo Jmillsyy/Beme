@@ -1,0 +1,114 @@
+/**
+ * ToastHost — the visual side of the toast system.
+ *
+ * Mounted ONCE near the root of the app (App.tsx). Subscribes to the
+ * global toast store via `useToasts()` and renders a stack of cards in
+ * the bottom-right of the viewport. Each toast renders newest at the
+ * top of the stack so the most recent notification is closest to the
+ * user's eye.
+ *
+ * Styling matches the rest of Beme: dark ink-800 base, variant-specific
+ * left accent + tiny icon dot, a close × that dismisses the toast on
+ * click. The container is fixed-positioned + pointer-events-none so it
+ * floats over everything but doesn't block clicks on the page below;
+ * each toast card re-enables pointer events on itself so its buttons
+ * stay clickable.
+ *
+ * Accessibility: each toast has role="status" (or role="alert" for
+ * errors) and aria-live so screen readers announce them.
+ */
+import { dismiss, useToasts, type Toast } from '../lib/toast'
+
+const VARIANT_STYLES: Record<
+  Toast['variant'],
+  { accent: string; dot: string; aria: 'status' | 'alert' }
+> = {
+  success: {
+    accent: 'border-l-emerald-500',
+    dot: 'bg-emerald-500',
+    aria: 'status',
+  },
+  error: {
+    accent: 'border-l-rose-500',
+    dot: 'bg-rose-500',
+    aria: 'alert',
+  },
+  info: {
+    accent: 'border-l-beme-500',
+    dot: 'bg-beme-500',
+    aria: 'status',
+  },
+}
+
+export default function ToastHost() {
+  const toasts = useToasts()
+  // Empty → render nothing (zero DOM weight when nothing's happening).
+  if (toasts.length === 0) return null
+
+  // Newest first in the stack — reverse so the most recent appears at
+  // the top of the column closest to the user's eye.
+  const ordered = [...toasts].reverse()
+
+  return (
+    <div
+      // Bottom-right floating column. pointer-events-none lets clicks
+      // pass through the gaps between toasts; individual cards re-enable
+      // pointer events so their close buttons work.
+      className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none max-w-sm w-[calc(100vw-2rem)]"
+      aria-label="Notifications"
+    >
+      {ordered.map((t) => {
+        const v = VARIANT_STYLES[t.variant]
+        return (
+          <div
+            key={t.id}
+            role={v.aria}
+            aria-live={v.aria === 'alert' ? 'assertive' : 'polite'}
+            className={`pointer-events-auto bg-ink-800 border border-ink-600 border-l-4 ${v.accent} rounded-lg shadow-lg shadow-black/40 px-3 py-2.5 flex items-start gap-2.5 animate-[fadeIn_0.15s_ease-out]`}
+          >
+            <span
+              className={`inline-block w-1.5 h-1.5 rounded-full mt-2 flex-shrink-0 ${v.dot}`}
+              aria-hidden
+            />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-ink-50 break-words">
+                {t.message}
+              </div>
+              {t.description && (
+                <div className="text-xs text-ink-300 mt-0.5 break-words leading-snug">
+                  {t.description}
+                </div>
+              )}
+            </div>
+            {t.action && (
+              <button
+                onClick={() => {
+                  // Fire the action then dismiss — common pattern (Undo etc.).
+                  // Wrap in try so a throwing handler doesn't leave the toast
+                  // sticky on screen.
+                  try {
+                    t.action!.onClick()
+                  } finally {
+                    dismiss(t.id)
+                  }
+                }}
+                className="flex-shrink-0 px-2 py-1 rounded border border-ink-600 text-[11px] text-beme-300 hover:bg-ink-700 hover:text-beme-200 transition-colors font-medium whitespace-nowrap"
+                type="button"
+              >
+                {t.action.label}
+              </button>
+            )}
+            <button
+              onClick={() => dismiss(t.id)}
+              className="text-ink-500 hover:text-ink-200 text-base leading-none flex-shrink-0 -mr-1 -mt-0.5 px-1"
+              aria-label="Dismiss notification"
+              type="button"
+            >
+              ×
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+}

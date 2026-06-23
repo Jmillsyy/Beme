@@ -1,4 +1,4 @@
--- Subscriptions table — links Supabase users / organisations to Stripe.
+-- Subscriptions table - links Supabase users / organisations to Stripe.
 --
 -- Every paying account (Individual or Organisation) gets a row here.
 -- The Stripe webhook (supabase/functions/stripe-webhook/) is the only
@@ -22,7 +22,7 @@ create table if not exists public.subscriptions (
   user_id uuid references auth.users(id) on delete cascade,
   organisation_id uuid references public.organisations(id) on delete cascade,
 
-  -- Stripe identifiers — populated by the webhook on
+  -- Stripe identifiers - populated by the webhook on
   -- checkout.session.completed.
   stripe_customer_id text not null unique,
   stripe_subscription_id text unique,
@@ -85,7 +85,7 @@ create trigger subscriptions_updated_at
 -- Users can read their own subscription. Org members can read their
 -- org's subscription (so the trial banner + plan info show up for
 -- everyone on the team). Writes go through the service-role webhook
--- only — no client-side writes allowed.
+-- only - no client-side writes allowed.
 alter table public.subscriptions enable row level security;
 
 drop policy if exists "users read own subscription" on public.subscriptions;

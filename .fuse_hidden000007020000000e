@@ -1,0 +1,190 @@
+# Deployment
+
+beme is hosted on **Vercel** (frontend) + **Supabase** (database, auth,
+storage). Vercel auto-deploys from GitHub; the production database lives
+in Supabase and is the same instance used by local dev. This doc is the
+one-page checklist for keeping it running and adding people.
+
+---
+
+## The shape
+
+- **Production frontend**: Vercel, deployed from the `main` branch of
+  `github.com/Jmillsyy/beme`. Every PR also gets its own preview URL
+  automatically.
+- **Database + auth + storage**: a single Supabase project. All
+  environments (local dev, PR previews, production) talk to the same
+  one. For a two-person team this is the right shape; if it ever
+  becomes too risky (destructive migrations etc.), the next step is a
+  separate staging Supabase project.
+- **Env vars**: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Stored
+  in Vercel's project settings (Production, Preview, Development scope)
+  and in `.env.local` for local dev. Two stores, no overlap.
+
+---
+
+## Day-to-day workflow
+
+Day-to-day after the initial setup is boring (the good kind).
+
+**Making a change:**
+
+```bash
+git checkout main
+git pull
+git checkout -b some-feature
+# work, commit, repeat
+git push -u origin some-feature
+```
+
+Open a PR on GitHub. Within ~60 seconds Vercel posts a comment in the
+PR with a preview URL — something like
+`beme-git-some-feature-yourname.vercel.app`. Click through, verify it
+works. The production URL is untouched the whole time.
+
+**Shipping:**
+
+1. Merge the PR on GitHub.
+2. Vercel auto-deploys `main` to production within ~1–3 minutes.
+3. Your teammate sees the change on next page load.
+
+**If something breaks in production:**
+
+Vercel keeps every previous deploy. Go to the project → **Deployments**
+tab → find the last good one → click **...** → **Promote to
+Production**. Site rolls back in seconds. No code change needed.
+
+---
+
+## Adding a new teammate
+
+Three parts. Roughly five minutes.
+
+### 1. Send the invite
+
+Supabase → **Authentication** → **Users** → top-right **Invite User** →
+type their work email → **Send invitation**. They get an email titled
+"You have been invited".
+
+### 2. They click the link
+
+The link in the email lands them on the production URL. They go through
+the magic-link / password flow. They sign in successfully.
+
+At this point they'll see a "you're not in any organisation" empty
+state. That's normal — they have an auth row but no org membership yet.
+
+### 3. Seed them into your org
+
+```sql
+-- Run in Supabase SQL Editor. Get the UUIDs first:
+--   • teammate: Authentication → Users → their row → User UID
+--   • org:     `select id, name from public.organisations;`
+
+insert into public.organisation_members (organisation_id, user_id, role)
+values (
+  'YOUR-ORG-UUID-HERE',
+  'TEAMMATES-USER-UUID-HERE',
+  'estimator'  -- or 'admin' or 'sales'
+);
+```
+
+Roles:
+
+| Role        | Can see requests | Can pick them up | Can invite others |
+|-------------|------------------|------------------|-------------------|
+| `sales`     | ✓                |                  |                   |
+| `estimator` | ✓                | ✓                |                   |
+| `admin`     | ✓                | ✓                | ✓                 |
+
+Have them refresh the page. They should now see your org name in the
+header and the estimator inbox layout on the dashboard.
+
+---
+
+## Supabase URL allow-list
+
+For magic-link sign-in to work from anywhere other than `localhost`, the
+URL you're trying to land back on has to be in Supabase's allow-list.
+
+Supabase → **Authentication** → **URL Configuration**:
+
+- **Site URL**: your production Vercel URL (`https://your-app.vercel.app`
+  or your custom domain).
+- **Redirect URLs** (add each as a separate entry):
+  - `https://your-app.vercel.app/**` — production
+  - `http://localhost:5173/**` — local dev
+  - `https://*.vercel.app/**` — PR preview URLs (Vercel generates a new
+    subdomain per PR; the wildcard catches them all)
+  - your custom domain `/**`, if you have one
+
+**Quick test**: open production in an incognito window, type your own
+email, click the link in the email. If you land back on production
+signed in, the allow-list is good.
+
+---
+
+## Custom domain (optional)
+
+If you want `app.yourdomain.com.au` instead of `beme-xxxxx.vercel.app`:
+
+1. Vercel project → **Settings** → **Domains** → **Add**.
+2. Type the domain → **Add**.
+3. Vercel shows you a `CNAME` DNS record to add. Add it in your
+   registrar (Cloudflare / GoDaddy / wherever).
+4. Wait 1–10 minutes for DNS to propagate. Vercel auto-provisions the
+   SSL cert.
+5. **Important**: add the new domain to Supabase's redirect allow-list
+   (see above). Otherwise magic links still go to the old URL.
+
+---
+
+## Schema migrations
+
+Schema changes (new columns, new tables) need to be applied to the
+production Supabase manually. Code that depends on a new column will
+fail with "column not found" errors until the migration runs.
+
+Process:
+
+1. Add the `alter table` / `create table` SQL to `SETUP.md` under the
+   relevant section, idempotent (`if not exists`, `or replace`, etc.).
+2. After merging the code change, run the SQL once in Supabase's SQL
+   Editor.
+3. Tell your teammate to refresh.
+
+For destructive changes (dropping columns, renaming tables, etc.) make
+sure you've coordinated with your teammate first — they might be
+mid-task. Best practice is to add the new shape, deploy code that works
+with both old + new, then drop the old shape in a follow-up after a few
+days.
+
+---
+
+## Reverting a bad deploy
+
+Vercel keeps every deployment. To roll back:
+
+1. Vercel → project → **Deployments**.
+2. Find the last known-good deploy (usually the one right before the
+   bad one).
+3. Click **...** → **Promote to Production**.
+4. Production URL is now serving the older build within seconds.
+5. Fix the bug on a branch, open a PR, merge → returns to forward
+   motion.
+
+---
+
+## Local dev
+
+Nothing about deployment changes how local dev works. Your `.env.local`
+points at the same Supabase project. `npm run dev` runs against
+production data, which is fine for two people but worth knowing —
+deleting a project locally deletes it in production too.
+
+```bash
+npm install
+npm run dev
+```
+
+Default Vite port is `5173`.

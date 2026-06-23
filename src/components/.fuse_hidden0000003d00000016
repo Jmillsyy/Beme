@@ -1,0 +1,367 @@
+/**
+ * CommandPalette — Cmd/Ctrl+K fuzzy launcher.
+ *
+ * Power-user shortcut to jump anywhere in the app — navigation
+ * destinations, quick actions, and the user's most-recent projects all
+ * in one searchable list. Modelled on the Cmd+K UX every modern app
+ * has (Linear, Notion, GitHub, Vercel…) so the muscle memory is free
+ * for the user.
+ *
+ * Mount once at the app root (`<App />`). The component self-installs a
+ * global keydown listener and renders nothing until the palette opens.
+ *
+ * UX notes:
+ *  - `Cmd+K` (Mac) / `Ctrl+K` (Win/Linux) toggles.
+ *  - `Esc` closes.
+ *  - `↑` / `↓` move the selection; `Enter` activates.
+ *  - The input autofocuses on open; clearing the input or hitting Esc
+ *    while it's empty closes the palette.
+ *  - Substring matching against label + keywords. Fuzzy ranking is a
+ *    follow-up — for the size of the static items list, substring is
+ *    already snappy.
+ *  - Recent projects are pulled live the first time the palette opens
+ *    per session and cached to avoid hammering the cloud on every
+ *    keypress.
+ *
+ * Items have one of three sources:
+ *
+ *   - **Navigation** — static routes wired into the app. Always shown.
+ *   - **Actions** — "+ New brick estimate" etc. Always shown.
+ *   - **Projects** — recent saved projects, fetched once per open.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { listProjects, type SavedProject } from '../lib/projectStorage'
+
+interface PaletteItem {
+  id: string
+  label: string
+  /** Smaller secondary line under the label. */
+  hint?: string
+  /** Hidden keywords for matching ("library" should match "blocks"). */
+  keywords?: string[]
+  /** Tiny coloured group dot — Nav / Action / Project. */
+  group: 'Navigation' | 'Action' | 'Projects'
+  /** Triggered when the item is activated (Enter or click). */
+  onSelect: () => void
+}
+
+/**
+ * Plain substring match against label + hint + keywords. Case-insensitive,
+ * tokenises by whitespace so multi-word queries narrow down naturally.
+ * Empty query → keep every item.
+ */
+function matches(item: PaletteItem, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const haystack = [
+    item.label,
+    item.hint ?? '',
+    ...(item.keywords ?? []),
+  ]
+    .join(' ')
+    .toLowerCase()
+  for (const tok of q.split(/\s+/)) {
+    if (!haystack.includes(tok)) return false
+  }
+  return true
+}
+
+/** Detect Mac vs other so the chord hint reads correctly. */
+function isMac(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /mac/i.test(navigator.platform) || /Mac/.test(navigator.userAgent)
+}
+
+export default function CommandPalette() {
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [projects, setProjects] = useState<SavedProject[]>([])
+  const [projectsLoaded, setProjectsLoaded] = useState(false)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  // Close + reset state on each close so the next open starts fresh.
+  const close = useCallback(() => {
+    setOpen(false)
+    setQuery('')
+    setActiveIdx(0)
+  }, [])
+
+  // Global toggle: Cmd+K (Mac) / Ctrl+K (Win/Linux). Ignores the press
+  // when an input is focused only if the user is mid-typing in a field
+  // that ALSO uses Cmd+K — none of ours do, so we always toggle.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const isToggle = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'
+      if (isToggle) {
+        e.preventDefault()
+        setOpen((v) => !v)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Lazy-load recent projects the first time the palette opens. Avoids
+  // making the cloud call on every page load.
+  useEffect(() => {
+    if (!open || projectsLoaded) return
+    let cancelled = false
+    listProjects()
+      .then((list) => {
+        if (cancelled) return
+        setProjects(list)
+        setProjectsLoaded(true)
+      })
+      .catch((err) => {
+        console.warn('[CommandPalette] Failed to load projects', err)
+        setProjectsLoaded(true) // give up silently; static items still work
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, projectsLoaded])
+
+  // Focus the input when the palette opens.
+  useEffect(() => {
+    if (open) {
+      // requestAnimationFrame so the input exists in the DOM before we
+      // focus it (the modal mounts in this same render cycle).
+      const raf = requestAnimationFrame(() => inputRef.current?.focus())
+      return () => cancelAnimationFrame(raf)
+    }
+  }, [open])
+
+  // Build the full item list. Recomputed each render but the inputs
+  // (projects, navigate) are stable so it's cheap.
+  const items = useMemo<PaletteItem[]>(() => {
+    const nav: PaletteItem[] = [
+      {
+        id: 'nav-dashboard',
+        label: 'Dashboard',
+        hint: 'Go to the dashboard',
+        keywords: ['home', 'projects'],
+        group: 'Navigation',
+        onSelect: () => navigate('/'),
+      },
+      {
+        id: 'nav-library',
+        label: 'Material library',
+        hint: 'Blocks, bricks, supply items',
+        keywords: ['blocks', 'bricks', 'supply items', 'catalogue'],
+        group: 'Navigation',
+        onSelect: () => navigate('/library'),
+      },
+      {
+        id: 'nav-settings',
+        label: 'Settings',
+        hint: 'Defaults, regional features, theme',
+        keywords: ['preferences', 'account'],
+        group: 'Navigation',
+        onSelect: () => navigate('/settings'),
+      },
+      {
+        id: 'nav-guide',
+        label: 'Beme guide',
+        hint: 'Walkthrough + shortcuts',
+        keywords: ['help', 'docs', 'documentation'],
+        group: 'Navigation',
+        onSelect: () => navigate('/guide'),
+      },
+    ]
+    const actions: PaletteItem[] = [
+      {
+        // One unified entry — the workspace handles both trades and the
+        // user switches inside via the trade chip group. Old "new block
+        // estimate" / "new brick estimate" search queries both still
+        // match thanks to the keywords list.
+        id: 'action-new-estimate',
+        label: 'New estimate',
+        hint: 'Open the workspace — block, brick, or both',
+        keywords: ['create', 'new', 'block', 'brick', 'estimate'],
+        group: 'Action',
+        onSelect: () => navigate('/project/block'),
+      },
+    ]
+    // Project items — limit to 8 most-recent so the palette stays scannable.
+    const projectItems: PaletteItem[] = projects.slice(0, 8).map((p) => {
+      // After multi-trade unification, a project can be 'block', 'brick',
+      // or both. Hint shows the trade(s) — single label when one, "Block ·
+      // Brick" when both. Route picks the first trade as the initial.
+      const tradeList = p.trades && p.trades.length > 0 ? p.trades : p.type ? [p.type] : ['block']
+      const tradeLabel = tradeList
+        .map((t) => (t === 'brick' ? 'Brick' : 'Block'))
+        .join(' · ')
+      return {
+        id: `project-${p.id}`,
+        label: p.projectDetails.projectName || '(Untitled project)',
+        hint: `${tradeLabel} · ${p.projectDetails.clientName || 'No client'}`,
+        keywords: [
+          p.projectDetails.siteAddress,
+          p.projectDetails.estimatorName,
+          ...tradeList,
+          p.referenceNumber ? `#${p.referenceNumber}` : '',
+        ].filter(Boolean) as string[],
+        group: 'Projects',
+        onSelect: () => navigate(`/project/${tradeList[0]}?id=${p.id}`),
+      }
+    })
+    return [...nav, ...actions, ...projectItems]
+  }, [navigate, projects])
+
+  // Filter against the current query.
+  const filtered = useMemo(() => items.filter((it) => matches(it, query)), [items, query])
+
+  // Clamp active selection in range whenever the filtered list changes.
+  useEffect(() => {
+    if (activeIdx >= filtered.length) setActiveIdx(0)
+  }, [filtered.length, activeIdx])
+
+  // Handle keyboard nav while open. We intentionally do NOT install this
+  // listener when closed so other ?-style shortcuts work normally.
+  useEffect(() => {
+    if (!open) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        close()
+        return
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveIdx((i) => Math.min(filtered.length - 1, i + 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveIdx((i) => Math.max(0, i - 1))
+        return
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        const it = filtered[activeIdx]
+        if (it) {
+          it.onSelect()
+          close()
+        }
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [open, filtered, activeIdx, close])
+
+  if (!open) return null
+
+  // Group items for visual section headings — preserve filtered order
+  // inside each group.
+  const grouped: Record<PaletteItem['group'], PaletteItem[]> = {
+    Navigation: [],
+    Action: [],
+    Projects: [],
+  }
+  for (const it of filtered) grouped[it.group].push(it)
+
+  // Build a flat-index map so each item's index in `filtered` maps to a
+  // stable selection cursor regardless of how we group it visually.
+  const flatIndex = new Map<string, number>()
+  filtered.forEach((it, i) => flatIndex.set(it.id, i))
+
+  return (
+    <div
+      className="fixed inset-0 z-[160] flex items-start justify-center bg-black/60 backdrop-blur-sm p-4 pt-[10vh]"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+      onClick={close}
+    >
+      <div
+        className="max-w-xl w-full bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Input header — chevron-style search icon + autofocused field. */}
+        <div className="px-3 py-2.5 border-b border-ink-600 flex items-center gap-2.5">
+          <span className="text-ink-500 text-sm pl-1" aria-hidden>
+            ⌕
+          </span>
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setActiveIdx(0)
+            }}
+            placeholder="Search…"
+            className="flex-1 bg-transparent text-sm text-ink-50 placeholder:text-ink-500 outline-none"
+            aria-label="Search the command palette"
+          />
+          <span className="text-[10px] text-ink-500 font-mono pr-1">Esc</span>
+        </div>
+
+        <div className="max-h-[60vh] overflow-y-auto p-1.5">
+          {filtered.length === 0 && (
+            <div className="px-3 py-6 text-center text-xs text-ink-500">
+              No matches for <span className="text-ink-200">"{query}"</span>.
+            </div>
+          )}
+          {(['Navigation', 'Action', 'Projects'] as const).map((group) => {
+            const groupItems = grouped[group]
+            if (groupItems.length === 0) return null
+            return (
+              <div key={group} className="mb-1.5">
+                <div className="px-2 py-1 text-[10px] uppercase tracking-[0.12em] text-ink-500">
+                  {group}
+                </div>
+                <ul>
+                  {groupItems.map((it) => {
+                    const idx = flatIndex.get(it.id) ?? 0
+                    const isActive = idx === activeIdx
+                    return (
+                      <li key={it.id}>
+                        <button
+                          type="button"
+                          onMouseEnter={() => setActiveIdx(idx)}
+                          onClick={() => {
+                            it.onSelect()
+                            close()
+                          }}
+                          className={`w-full text-left px-3 py-2 rounded-md flex items-center gap-2 text-sm transition-colors ${
+                            isActive
+                              ? 'bg-beme-500/15 text-ink-50'
+                              : 'text-ink-200 hover:bg-ink-700/60'
+                          }`}
+                        >
+                          <span className="flex-1 min-w-0">
+                            <span className="block truncate">{it.label}</span>
+                            {it.hint && (
+                              <span className="block text-[11px] text-ink-400 truncate">
+                                {it.hint}
+                              </span>
+                            )}
+                          </span>
+                          {isActive && (
+                            <span className="text-[10px] text-ink-400 font-mono">
+                              ↵
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Footer — chord hints. */}
+        <div className="px-3 py-2 border-t border-ink-600 bg-ink-900/40 flex items-center justify-between text-[10px] text-ink-500 font-mono">
+          <span>{isMac() ? '⌘K' : 'Ctrl+K'} to toggle</span>
+          <span>↑↓ to move · ↵ to open</span>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,104 @@
+/**
+ * Derive a sensible wall-length snap (mm) from the active block library.
+ *
+ * Until now the drawing layer's snap was a hardcoded 50 mm — a value
+ * that happens to fit the AU-SEQ library (full / 7-8 / 3-4 / half
+ * blocks all land on 50 mm) but is meaningless for libraries built
+ * around non-standard widths (250 mm units, US 8-inch CMU etc.).
+ *
+ * This module derives a default that auto-adapts:
+ *   1. Take every block in the library that can act as a wall BODY,
+ *      HALF, or FRACTION (the lengths the user actually places on a
+ *      course).
+ *   2. Compute each one's HALF-MODULAR width = (widthMm + mortarMm) / 2
+ *      — i.e. how far the bond pattern shifts per course.
+ *   3. Take the GCD across those half-modulars. That's the natural
+ *      "every bond-step is a multiple of this" grid.
+ *   4. Halve it once more so the user can also land on the midpoint
+ *      of a body block (matches the 50 mm AU default: GCD of 200/100
+ *      = 100, ÷2 = 50).
+ *   5. Round to the nearest 5 mm and clamp 5–100 mm — outside that
+ *      range the snap stops feeling like a snap.
+ *
+ * The user can still override via Settings → Wall length snap; this
+ * derivation is only the fallback when the field is undefined.
+ */
+
+import type { Block, BlockRole } from '../types/blocks'
+
+/** Block roles whose widths define the bond — body + corner blocks
+ *  are the "primary" lengths a wall composes from. Fraction blocks
+ *  (3/4, 7/8 cuts) and corner-lead-ins are deliberately excluded
+ *  because their widths are derived offsets that exist to absorb
+ *  whatever the snap LEFT OVER; folding them into the GCD would
+ *  crush the snap down to the offset granularity, defeating the
+ *  point. Roles like `cap`, `lintel`, `pier`, `top-course` aren't
+ *  laid along the wall length so they're also out. */
+const BOND_DEFINING_ROLES: ReadonlySet<BlockRole> = new Set([
+  'body',
+  'corner',
+])
+
+function gcdInt(a: number, b: number): number {
+  let x = Math.abs(Math.round(a))
+  let y = Math.abs(Math.round(b))
+  while (y > 0) {
+    const t = y
+    y = x % y
+    x = t
+  }
+  return x
+}
+
+function roundToStep(mm: number, step: number): number {
+  return Math.max(step, Math.round(mm / step) * step)
+}
+
+/** Hardcoded fallback when the library is empty or weird. Matches the
+ *  legacy 50 mm AU-SEQ default. */
+export const WALL_LENGTH_SNAP_FALLBACK_MM = 50
+
+/**
+ * Derive the natural wall-length snap (mm) for a library + mortar.
+ *
+ * Returns a value in [5, 100] mm, rounded to the nearest 5 mm.
+ * Returns {@link WALL_LENGTH_SNAP_FALLBACK_MM} when there's nothing
+ * to derive from.
+ */
+export function computeAutoWallLengthSnapMm(
+  library: Record<string, Block>,
+  mortarMm: number
+): number {
+  // Collect HALF-MODULAR widths of bond-defining blocks. Half-modular
+  // = (widthMm + mortarMm) / 2 — the natural "bond shift per course"
+  // for a stretcher pattern.
+  const halfModulars: number[] = []
+  for (const block of Object.values(library)) {
+    if (!block.roles.some((r) => BOND_DEFINING_ROLES.has(r))) continue
+    const w = block.dimensions.widthMm
+    if (!Number.isFinite(w) || w <= 0) continue
+    const halfModular = (w + mortarMm) / 2
+    if (halfModular > 0) halfModulars.push(halfModular)
+  }
+  if (halfModulars.length === 0) return WALL_LENGTH_SNAP_FALLBACK_MM
+
+  // GCD across bond-defining half-modulars. AU-SEQ → all 200 → 200.
+  // US CMU → all ≈ 203.2 → 203. Hybrid libraries with mixed widths
+  // collapse to a finer GCD which is exactly the right behaviour.
+  let g = Math.round(halfModulars[0])
+  for (let i = 1; i < halfModulars.length; i++) {
+    g = gcdInt(g, Math.round(halfModulars[i]))
+    if (g <= 1) break
+  }
+
+  // Divide by 4 to land at a "quarter-modular" feel — fine enough that
+  // 3/4 and 7/8 cuts (which are the typical length-makeup fractions)
+  // also land on this grid, but coarse enough that the snap is
+  // perceptible. AU-SEQ → 200/4 = 50, exactly the historical default.
+  const raw = g / 4
+
+  // Round to nearest 5 mm and clamp 5–100. Below 5 mm feels like no
+  // snap; above 100 mm is too coarse for libraries with finer widths.
+  const rounded = roundToStep(raw, 5)
+  return Math.min(100, Math.max(5, rounded))
+}

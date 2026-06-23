@@ -1,0 +1,1046 @@
+/**
+ * Factory helpers for creating WallMakeup objects with sensible defaults
+ * straight from the Project Brief.
+ */
+
+import type { BlockCode } from '../types/blocks'
+import {
+  BLOCK_LIBRARY,
+  pickBaseCourse,
+  pickBodyDefault,
+  pickCornerBlock,
+  pickDepthScopedSlotBlock,
+  pickHalfBlock,
+  pickHalfBlockIn,
+  pickHeightMakeupBlock,
+  pickPierBlock,
+  pickTopCourse,
+} from '../data/blockLibrary'
+import { resolveBlockByRole, type ResolveByRoleOptions } from './blockRoles'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
+import type {
+  BrickMakeup,
+  CourseBand,
+  CourseSeriesRange,
+  PierMakeup,
+  BondType,
+  WallMakeup,
+} from '../types/walls'
+
+/**
+ * Generates a unique id. Uses crypto.randomUUID when available (modern browsers),
+ * otherwise falls back to a timestamp-based id for tests / non-browser contexts.
+ */
+function uid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+export interface CreateMakeupOptions {
+  name?: string
+  bondType?: BondType
+  heightMm?: number
+  /** When true, the top course is a 20.20 bond beam (e.g. when a slab is poured above). */
+  bondBeamOnTop?: boolean
+  /**
+   * Use 20.21 knockout-corner blocks at corners (for additional corefill at corner cores)
+   * rather than the default 20.01.
+   */
+  knockoutCorners?: boolean
+  useFractions?: boolean
+  /**
+   * Optional user-settings slice. When supplied, the factory threads it
+   * into the role pickers so the user's DefaultsByRole map (e.g. "my
+   * preferred corner block is 30.01") drives the new makeup. When omitted
+   * the factory falls back to the library's role-tag scan — keeping older
+   * callers + tests working without ceremony.
+   */
+  settings?: ResolveByRoleOptions['settings']
+}
+
+/**
+ * Creates a new wall makeup with defaults from the brief:
+ *   - Bond: stretcher
+ *   - Height: 2400mm
+ *   - Base course: 20.45 cleanouts + 50.45 tiles
+ *   - Body: 20.48 H blocks
+ *   - Top: 20.48 (or 20.20 if bondBeamOnTop)
+ *   - Corner: 20.01 (or 20.21 if knockoutCorners)
+ *   - Fractions: ON
+ */
+export function createDefaultWallMakeup(options: CreateMakeupOptions = {}): WallMakeup {
+  const {
+    name = 'New wall type',
+    bondType = 'stretcher',
+    heightMm = 2400,
+    bondBeamOnTop = false,
+    knockoutCorners = false,
+    useFractions = true,
+    settings,
+  } = options
+  // knockoutCorners is part of the public API for callers that want to
+  // express the user's intent ("this wall type uses knockout-corner
+  // blocks"), but the default-corner pick currently routes through the
+  // generic corner role. Acknowledged here so TypeScript doesn't flag
+  // it as unused; a real 'knockout-corner' BlockRole + picker is a
+  // follow-up.
+  void knockoutCorners
+
+  // Resolve defaults from the live library by role so a US / UK user
+  // creating their first wall type gets THEIR library's body / corner /
+  // base / tile codes — not the AU SEQ ones.
+  //
+  // Resolution order, per picker:
+  //   1. User DefaultsByRole map (e.g. "my preferred corner block is 30.01")
+  //   2. Library role-tag scan (first block tagged with that role)
+  //   3. Body block (fallback so base/top/corner inherit a real code from
+  //      the library — keeps things working in libraries that don't tag
+  //      separate base/top/corner blocks)
+  //   4. First block in the library by any role (last-ditch — picks
+  //      *something real* from the user's catalogue rather than leaking
+  //      a hardcoded AU SEQ code into a US/UK/custom library)
+  //   5. Empty string (truly empty library — caller / user has to add
+  //      blocks before the wall type can be drawn)
+  //
+  // The empty-string path is INTENTIONAL: if the user has wiped their
+  // library to swap to a different catalogue, we mustn't silently insert
+  // 20.48 / 20.01 as defaults. Better to let the modal open with empty
+  // slots and force the user to assign blocks explicitly.
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  const firstInLibrary = Object.keys(BLOCK_LIBRARY)[0] ?? ''
+  const bodyDefault = pickBodyDefault(opts)?.code ?? firstInLibrary
+  // knockoutCorners is a stored hint on the wall type; it doesn't drive
+  // the default-corner pick (the type system has no 'knockout-corner'
+  // role yet — adding one is a follow-up). For now both branches pick
+  // through the same corner → body fallback chain, and the user can
+  // assign a specific knockout-corner block in the wall-type modal.
+  const cornerDefault = pickCornerBlock(opts)?.code ?? bodyDefault
+  const baseDefault = pickBaseCourse(opts)?.code ?? bodyDefault
+  const topDefault = bondBeamOnTop
+    ? pickTopCourse(opts)?.code ?? bodyDefault
+    : bodyDefault
+
+  return {
+    id: uid(),
+    name,
+    bondType,
+    heightMm,
+    baseCourseBlockCode: baseDefault,
+    bodyBlockCode: bodyDefault,
+    topCourseBlockCode: topDefault,
+    cornerBlockCode: cornerDefault,
+    useFractions,
+  }
+}
+
+// ---------- Pier makeups ----------
+
+/**
+ * Default tied-pier makeup — alternating pier block and corner block,
+ * resolved from the user's library (DefaultsByRole.pier / .corner). AU
+ * defaults to the 40.925 / 20.01 pair as the last-resort fallback; US,
+ * UK etc. land on whatever their library tags as pier + corner.
+ *
+ * Name is region-neutral by default — "Tied pier" — so a US user
+ * creating their first project doesn't see "40.925" in the wall type
+ * list. Caller can override the name for region-specific seeds.
+ */
+export function createDefaultTiedPierMakeup(
+  name = 'Tied pier',
+  settings?: ResolveByRoleOptions['settings'],
+): PierMakeup {
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  // Same fallback chain as the wall makeup factory: role-tag scan →
+  // first block in library → empty string (when the library is truly
+  // empty, the user has to add blocks before this makeup can be drawn).
+  // No hardcoded AU SEQ codes — the previous '40.925' / '20.01'
+  // fallbacks were leaking AU codes into US / UK / custom libraries.
+  const firstInLibrary = Object.keys(BLOCK_LIBRARY)[0] ?? ''
+  const pierCode = pickPierBlock(opts)?.code ?? firstInLibrary
+  const cornerCode = pickCornerBlock(opts)?.code ?? pierCode
+  return {
+    id: uid(),
+    name,
+    coursePattern: [pierCode, cornerCode],
+    suggestedPlacement: 'tied',
+  }
+}
+
+/**
+ * Default freestanding-pier makeup — pier block stacked every course.
+ * Region-neutral name by default; pier block resolves from the user's
+ * library.
+ */
+export function createDefaultFreestandingPierMakeup(
+  name = 'Freestanding pier',
+  settings?: ResolveByRoleOptions['settings'],
+): PierMakeup {
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  // Same library-first fallback chain as the tied-pier factory.
+  const firstInLibrary = Object.keys(BLOCK_LIBRARY)[0] ?? ''
+  const pierCode = pickPierBlock(opts)?.code ?? firstInLibrary
+  return {
+    id: uid(),
+    name,
+    coursePattern: [pierCode],
+    suggestedPlacement: 'freestanding',
+    heightMm: 2400,
+  }
+}
+
+/**
+ * Build the initial pair of pier makeups for a new project.
+ *
+ * Forwards `settings` so the pair picks up user defaults. Callers that
+ * don't have a settings handle (tests, fixtures) can omit it — the
+ * pickers then fall through to the library role-tag scan as before.
+ */
+export function createDefaultPierMakeups(
+  settings?: ResolveByRoleOptions['settings'],
+): PierMakeup[] {
+  return [
+    createDefaultTiedPierMakeup(undefined, settings),
+    createDefaultFreestandingPierMakeup(undefined, settings),
+  ]
+}
+
+// ---------- Brick wall makeups ----------
+
+/**
+ * Build a single brick makeup with sensible defaults.
+ *
+ * Brick wall types come pre-seeded for new projects so estimators don't
+ * have to set them up before drawing the first wall. The seeded
+ * `brickTypeCode` is intentionally blank — the user picks an actual brick
+ * type from the project's brick library when they review the makeup. Until
+ * they do, the wall falls back to the project-level `brickSettings.brickTypeCode`
+ * at calc time.
+ */
+export function createDefaultBrickMakeup(opts: {
+  name?: string
+  heightMm?: number
+  brickTypeCode?: string
+} = {}): BrickMakeup {
+  return {
+    id: uid(),
+    // Default name matches the block side ('New wall type') so the
+    // user picks their own meaningful name regardless of trade. We
+    // used to seed 'Facework' here but a generic placeholder reads
+    // less like an opinion the user has to undo.
+    name: opts.name ?? 'New wall type',
+    brickTypeCode: opts.brickTypeCode ?? '',
+    heightMm: opts.heightMm ?? 2400,
+  }
+}
+
+/**
+ * The default set of brick wall types for a new brick project. One
+ * neutral seed — "New wall type" — so the project lands with the
+ * minimum viable type list. Adding more (Facework vs Rendered, party
+ * walls, garden walls, etc.) is one click in the panel, and keeping
+ * the seed small avoids the user staring at a starter list they have
+ * to delete from before adding what they actually need.
+ *
+ * Name matches the block-mode seed convention ('New wall type') so
+ * the user picks a meaningful label regardless of trade.
+ */
+export function createDefaultBrickMakeups(): BrickMakeup[] {
+  return [createDefaultBrickMakeup({})]
+}
+
+// ---------- Course series ranges ----------
+
+/**
+ * The set of block codes that govern a single course's composition. The block
+ * calc engine consults these per course rather than reaching for makeup.* — so
+ * a course that lives inside a 300-series range gets 30.48 / 30.01 / 30.03 /
+ * 30.45 / 30.71 instead of the 200-series defaults.
+ *
+ * `heightMakeup140BlockCode` is intentionally not range-able: 20.140 is a
+ * 200-series-only height-makeup block, and the doc the user shared doesn't
+ * include a 30.140 equivalent. If they need it later it can be added without
+ * breaking the shape of this resolver.
+ */
+export interface ResolvedCourseBlocks {
+  bodyBlockCode: BlockCode
+  cornerBlockCode: BlockCode
+  /** Used on even courses in stretcher bond. 20.03 unless overridden. */
+  halfBlockCode: BlockCode
+  baseCourseBlockCode: BlockCode
+  heightMakeup71BlockCode: BlockCode
+  /**
+   * If set, this block is laid `cornerLeadInCount` times between the corner
+   * block and the regular body on every course at a CORNER end. Undefined
+   * means no lead-in (standard 200-series behaviour). See
+   * CourseSeriesRange.cornerLeadInBlockCode for the rationale.
+   */
+  cornerLeadInBlockCode?: BlockCode
+  /** Number of cornerLeadInBlockCode to place at each corner end. Defaults
+   *  to 2 when cornerLeadInBlockCode is set, 0 otherwise. */
+  cornerLeadInCount: number
+}
+
+/**
+ * Find the range that owns a given course number, or null if no range
+ * matches (in which case the calc engine should fall back to the makeup
+ * defaults for that course).
+ *
+ * Ranges are matched in declaration order — the first range whose
+ * [fromCourse, toCourse] window contains `courseNumber` wins. Ranges
+ * shouldn't overlap; the UI enforces non-overlap, but if a user hand-edits
+ * a saved project the calc engine is still deterministic.
+ */
+export function findSeriesRangeForCourse(
+  makeup: WallMakeup,
+  courseNumber: number
+): CourseSeriesRange | null {
+  if (!makeup.courseSeriesRanges?.length) return null
+  for (const range of makeup.courseSeriesRanges) {
+    if (courseNumber >= range.fromCourse && courseNumber <= range.toCourse) {
+      return range
+    }
+  }
+  return null
+}
+
+/**
+ * Resolve the per-course block picks for course `courseNumber` of `makeup`.
+ *
+ * Looks up the matching series range and overlays its overrides on top of the
+ * makeup defaults. A range without a given override leaves that role on the
+ * makeup default, so ranges are "additive" — a user can say "courses 1-5 use
+ * 300 series for the body and corner only" and the base course will still be
+ * makeup.baseCourseBlockCode.
+ *
+ * `defaults` is OPTIONAL — when omitted, unresolved slots fall back to
+ * the makeup's body block (anywhere a guess is needed: half, 71). This
+ * keeps the engine modular: any block name / size combination works,
+ * no AU SEQ code is assumed to exist in the user's library. Callers
+ * with explicit defaults (e.g. tests or migration helpers that know
+ * about a particular catalogue) can still pass them through.
+ */
+export function resolveCourseBlocks(
+  makeup: WallMakeup,
+  courseNumber: number,
+  defaults?: {
+    halfBlockCode?: BlockCode
+    heightMakeup71BlockCode?: BlockCode
+  },
+): ResolvedCourseBlocks {
+  const range = findSeriesRangeForCourse(makeup, courseNumber)
+  // Body block is required on every makeup, so it's the safest fallback
+  // for an unfilled half / height-makeup slot — same trick a mason
+  // uses: cut a body block to fit when there's no dedicated unit.
+  const bodyCode = range?.bodyBlockCode ?? makeup.bodyBlockCode
+  const bodyFallback = bodyCode
+  // Half slot needs a fraction-0.5 contract — corner blocks ALSO carry
+  // role 'end-termination' so a saved corner code would pass the
+  // generic depth-scoped check and end up rendering as a "half".
+  // halfRawHealed forces the saved code through pickHalfBlockIn (which
+  // filters by fraction === 0.5) before the depth-scoped fallback.
+  // Returns the saved code only if the block is a genuine half.
+  const resolveHalfStrict = (saved: BlockCode | undefined): BlockCode | undefined => {
+    if (!saved) return undefined
+    const block = BLOCK_LIBRARY[saved]
+    if (!block) return undefined
+    // The saved code is in the library — accept it only if it's
+    // tagged as fraction=0.5 (a proper half). Height-makeup blocks
+    // and corner blocks both fail this check, so they fall through
+    // to the library role pick below.
+    if (block.fraction === 0.5) return saved
+    return undefined
+  }
+  // Depth-scoped healing for corner / half / base. The makeup's saved
+  // code wins when its depth matches the body's (user's pick is
+  // trusted). When the saved code doesn't match the body depth — e.g.
+  // a preset switch left a 100-series corner pointing at a 200-series
+  // body — fall through to a same-depth role pick so the wall stays in
+  // one series. Same rule that already protected the top course; the
+  // user wanted it on every slot so 'mixed series' can only happen via
+  // an explicit override, not by accident.
+  const cornerRaw = range?.cornerBlockCode ?? makeup.cornerBlockCode
+  // Strict half resolution: only trust a saved code if it has the
+  // half-block contract (fraction === 0.5). A saved code that's a
+  // corner or HM block falls through to pickHalfBlock(), which scans
+  // the library for the proper half.
+  const halfRaw =
+    resolveHalfStrict(range?.halfBlockCode) ??
+    resolveHalfStrict(makeup.halfBlockCode) ??
+    resolveHalfStrict(defaults?.halfBlockCode) ??
+    pickHalfBlock()?.code
+  const baseRaw = range?.baseCourseBlockCode ?? makeup.baseCourseBlockCode
+  return {
+    bodyBlockCode: bodyCode,
+    cornerBlockCode: pickDepthScopedSlotBlock(cornerRaw, 'corner', bodyCode),
+    // Half-block resolution chain: range override → makeup override →
+    // explicit default (when passed) → library role pick (e.g. any
+    // block tagged 'end-termination' with fraction 0.5) → body block.
+    // The chain runs FIRST, then the result is depth-scoped against
+    // the body so a cross-series saved code falls through to a same-
+    // depth half (or the body cut down) rather than rendering as a
+    // narrower-series block at the wall's free ends.
+    halfBlockCode: pickDepthScopedSlotBlock(halfRaw, 'end-termination', bodyCode),
+    baseCourseBlockCode: pickDepthScopedSlotBlock(baseRaw, 'base-course', bodyCode),
+    heightMakeup71BlockCode:
+      range?.heightMakeup71BlockCode ??
+      defaults?.heightMakeup71BlockCode ??
+      bodyFallback,
+    // Lead-in blocks (e.g. 30.02 ×2 after 300-series corners) are
+    // permanently disabled — the cut block emission in planWallLayout
+    // (startCutWidthMm / endCutWidthMm) now handles getting the body
+    // grid back on bond after a deep-series corner, so we no longer
+    // need a dedicated lead-in block. Saved makeups may still have
+    // `cornerLeadInBlockCode` set in their ranges (the field is kept
+    // on the type so old projects don't break to load), but the
+    // resolver ignores it — every course returns 0 lead-ins.
+    cornerLeadInBlockCode: undefined,
+    cornerLeadInCount: 0,
+  }
+}
+
+/**
+ * Convenience: does this makeup mix more than one block series?
+ *
+ * Used by the export / UI to decide whether to surface the "mixed series" hint
+ * (e.g. show the wall's footprint at its widest course thickness in the wall
+ * layout diagram).
+ */
+export function hasMixedCourseSeries(makeup: WallMakeup): boolean {
+  return (makeup.courseSeriesRanges?.length ?? 0) > 0
+}
+
+// ─── Library-swap migration ────────────────────────────────────────────────
+//
+// When the user switches the global block library (e.g. AU → US), wall
+// makeups in every saved project still reference codes from the old
+// library. Without a migration step those codes either render with a
+// fallback colour, disappear silently from exports, or surface as broken
+// dropdown values in the wall-type editor.
+//
+// `remapMakeupForLibrary` walks every block-code field on a WallMakeup
+// and, when a code isn't present in the new library, finds a sensible
+// replacement using the new library's role tags + DefaultsByRole.
+
+import type { Block, BlockRole } from '../types/blocks'
+
+/**
+ * Find the best replacement code in the target library for an old code
+ * that no longer exists there. The strategy is:
+ *
+ *   1. If the old library has the original block, look at its `roles`
+ *      and pick the first role that has a matching block in the new
+ *      library.
+ *   2. Otherwise fall back to the role-hint passed in by the caller.
+ *   3. If nothing matches, return the original code unchanged — the
+ *      calc engine's `healCode` will pick something at render time.
+ *
+ * Returns the (possibly unchanged) code.
+ */
+function remapCode(
+  code: BlockCode | undefined,
+  oldLibrary: Record<BlockCode, Block> | undefined,
+  newLibrary: Record<BlockCode, Block>,
+  fallbackRole: BlockRole,
+  settingsOpts?: ResolveByRoleOptions
+): BlockCode | undefined {
+  if (!code) return code
+  // Already in the new library? Keep it.
+  if (newLibrary[code]) return code
+
+  // Look up the original block's roles in the old library.
+  const oldBlock = oldLibrary?.[code]
+  const rolesToTry: BlockRole[] = oldBlock?.roles?.length
+    ? [...oldBlock.roles, fallbackRole]
+    : [fallbackRole]
+
+  for (const role of rolesToTry) {
+    const replacement = resolveBlockByRole(role, newLibrary, settingsOpts ?? {})
+    if (replacement) return replacement.code
+  }
+  return code
+}
+
+/**
+ * Rewrite every block-code field on a WallMakeup so it points at codes
+ * that exist in the target (post-swap) library. Codes already valid are
+ * left alone; codes from the old library are replaced by role.
+ *
+ * Mutates a copy — the input makeup is not modified. Returns the new
+ * makeup. Pure / side-effect-free, so it's safe to use during a state
+ * reducer or a storage migration sweep.
+ */
+export function remapMakeupForLibrary(
+  makeup: WallMakeup,
+  oldLibrary: Record<BlockCode, Block> | undefined,
+  newLibrary: Record<BlockCode, Block>,
+  settingsOpts?: ResolveByRoleOptions
+): WallMakeup {
+  const r = (code: BlockCode | undefined, role: BlockRole) =>
+    remapCode(code, oldLibrary, newLibrary, role, settingsOpts)
+
+  // baseCourseTileCode is intentionally STRIPPED from the migrated
+  // makeup — the base-tile role and its slot have been removed. Library
+  // pairing (Block.pairedWith on the 20.45 → 50.45) handles the tile
+  // tally automatically. Any baseCourseTileCode in the source is left
+  // out of `next` by simply not copying it over.
+  const { baseCourseTileCode: _baseCourseTileCode, ...makeupWithoutTile } =
+    makeup as WallMakeup & { baseCourseTileCode?: BlockCode }
+  void _baseCourseTileCode
+  // halfBlockCode needs a half-specific picker, NOT the generic
+  // 'end-termination' role lookup. Corner blocks AND height-makeup
+  // blocks can both end up satisfying 'end-termination' or share the
+  // body's depth — without enforcing the fraction === 0.5 contract,
+  // the migrated halfBlockCode lands on a corner code (CMU8-C) or a
+  // half-HEIGHT block (CMU8-HH), and the 3D view paints every "half"
+  // as a "Full end" because the role no longer reflects a real half.
+  //
+  // remapHalf trusts the saved code ONLY if its block is fraction-0.5
+  // in the new library. Otherwise it falls through to pickHalfBlockIn
+  // which scans the library for the proper half.
+  const remapHalf = (code: BlockCode | undefined): BlockCode | undefined => {
+    if (!code) return code
+    const candidate = newLibrary[code]
+    if (candidate && candidate.fraction === 0.5) return code
+    const halfPick = pickHalfBlockIn(newLibrary, settingsOpts ?? {})
+    if (halfPick) return halfPick.code
+    // Fall through to the generic remapper as a last resort.
+    return r(code, 'end-termination')
+  }
+  const next: WallMakeup = {
+    ...makeupWithoutTile,
+    baseCourseBlockCode: r(makeup.baseCourseBlockCode, 'base-course') ?? makeup.baseCourseBlockCode,
+    bodyBlockCode: r(makeup.bodyBlockCode, 'body') ?? makeup.bodyBlockCode,
+    topCourseBlockCode: r(makeup.topCourseBlockCode, 'top-course') ?? makeup.topCourseBlockCode,
+    cornerBlockCode: r(makeup.cornerBlockCode, 'corner') ?? makeup.cornerBlockCode,
+    halfBlockCode: remapHalf(makeup.halfBlockCode),
+    capBlockCode: r(makeup.capBlockCode, 'cap'),
+  }
+
+  // CourseBand[] — each band carries its own blockCode. Role inferred
+  // from the band's modular height: 100mm → height-makeup, 150mm →
+  // height-makeup, anything else → body.
+  if (makeup.coursePattern && makeup.coursePattern.length > 0) {
+    next.coursePattern = makeup.coursePattern.map((band) => {
+      const oldBlock = oldLibrary?.[band.blockCode]
+      const inferredRole: BlockRole =
+        oldBlock?.roles?.includes('height-makeup')
+          ? 'height-makeup'
+          : oldBlock?.roles?.includes('base-course')
+            ? 'base-course'
+            : oldBlock?.roles?.includes('top-course')
+              ? 'top-course'
+              : 'body'
+      const newCode = r(band.blockCode, inferredRole) ?? band.blockCode
+      return { ...band, blockCode: newCode }
+    })
+  }
+
+  // CourseSeriesRange[] — every overrideable field on each range.
+  // baseCourseTileCode is intentionally dropped from each range (the
+  // base-tile concept has been removed; library pairing handles tile
+  // tally instead).
+  if (makeup.courseSeriesRanges && makeup.courseSeriesRanges.length > 0) {
+    next.courseSeriesRanges = makeup.courseSeriesRanges.map((range) => {
+      const { baseCourseTileCode: _t, ...rest } = range as CourseSeriesRange & {
+        baseCourseTileCode?: BlockCode
+      }
+      void _t
+      return {
+        ...rest,
+        bodyBlockCode: r(range.bodyBlockCode, 'body'),
+        cornerBlockCode: r(range.cornerBlockCode, 'corner'),
+        halfBlockCode: r(range.halfBlockCode, 'end-termination'),
+        baseCourseBlockCode: r(range.baseCourseBlockCode, 'base-course'),
+        heightMakeup71BlockCode: r(range.heightMakeup71BlockCode, 'height-makeup'),
+        cornerLeadInBlockCode: r(range.cornerLeadInBlockCode, 'corner-lead-in'),
+      }
+    })
+  }
+
+  // CourseOverride[] — each override carries a blockCode. Role inferred
+  // from the old library if possible.
+  if (makeup.courseOverrides && makeup.courseOverrides.length > 0) {
+    next.courseOverrides = makeup.courseOverrides.map((override) => {
+      const oldBlock = oldLibrary?.[override.blockCode]
+      const inferredRole: BlockRole =
+        oldBlock?.roles?.[0] ?? 'body'
+      const newCode = r(override.blockCode, inferredRole) ?? override.blockCode
+      return { ...override, blockCode: newCode }
+    })
+  }
+
+  return next
+}
+
+/**
+ * Apply `remapMakeupForLibrary` to a whole array of makeups — convenience
+ * wrapper for project-storage migration sweeps.
+ */
+export function remapMakeupsForLibrary(
+  makeups: WallMakeup[],
+  oldLibrary: Record<BlockCode, Block> | undefined,
+  newLibrary: Record<BlockCode, Block>,
+  settingsOpts?: ResolveByRoleOptions
+): WallMakeup[] {
+  return makeups.map((m) =>
+    remapMakeupForLibrary(m, oldLibrary, newLibrary, settingsOpts)
+  )
+}
+
+/**
+ * PierMakeup analogue: each pier carries a `coursePattern: BlockCode[]`
+ * (one code per course in the cycling pattern). Remap each entry by role
+ * 'pier' against the new library.
+ */
+export function remapPierMakeupForLibrary(
+  pier: PierMakeup,
+  oldLibrary: Record<BlockCode, Block> | undefined,
+  newLibrary: Record<BlockCode, Block>,
+  settingsOpts?: ResolveByRoleOptions
+): PierMakeup {
+  return {
+    ...pier,
+    coursePattern: pier.coursePattern.map(
+      (code) => remapCode(code, oldLibrary, newLibrary, 'pier', settingsOpts) ?? code
+    ),
+  }
+}
+
+export function remapPierMakeupsForLibrary(
+  piers: PierMakeup[],
+  oldLibrary: Record<BlockCode, Block> | undefined,
+  newLibrary: Record<BlockCode, Block>,
+  settingsOpts?: ResolveByRoleOptions
+): PierMakeup[] {
+  return piers.map((p) =>
+    remapPierMakeupForLibrary(p, oldLibrary, newLibrary, settingsOpts)
+  )
+}
+
+// ─── Brick-makeup library-swap migration ──────────────────────────────
+//
+// BrickMakeup carries brick TYPE codes (not block codes). The library
+// swap walks the user's BRICK library — different storage, different
+// type — so brick-makeup remapping uses its own helper that takes a
+// brick library shape and falls back to the makeup's main brickTypeCode
+// when an override doesn't resolve.
+
+/**
+ * Brick library subset that this remapper needs. Kept narrow so a
+ * caller can pass either the full BRICK_LIBRARY or a project-scoped
+ * subset for tests.
+ */
+type BrickLibrarySubset = Record<string, { code: string }>
+
+/**
+ * Find a replacement brick TYPE code for a missing one. Strategy:
+ *   1. If the original code is in the new library, keep it.
+ *   2. Otherwise fall back to the makeup's main brickTypeCode (which
+ *      is the "default" everything-else-on-this-wall code).
+ *   3. Otherwise return undefined.
+ */
+function remapBrickTypeCode(
+  code: string | undefined,
+  newLibrary: BrickLibrarySubset,
+  fallbackMain: string | undefined
+): string | undefined {
+  if (code === undefined) return code
+  if (newLibrary[code]) return code
+  if (fallbackMain && newLibrary[fallbackMain]) return fallbackMain
+  return code
+}
+
+/**
+ * Rewrite every brick-type-code field on a BrickMakeup so it points at
+ * codes in the new brick library. Codes already valid are left alone.
+ *
+ * Walks: brickTypeCode (main), courseRanges[].brickTypeCode,
+ * sillBrickCode, headBrickCode.
+ *
+ * If the makeup's MAIN brickTypeCode itself is missing from the new
+ * library, picks the first brick code in the new library as the
+ * fallback (so the makeup still has SOME valid main brick). Per-range
+ * / sill / head overrides fall back to the (possibly-rewritten) main
+ * code.
+ */
+export function remapBrickMakeupForLibrary(
+  makeup: BrickMakeup,
+  newBrickLibrary: BrickLibrarySubset
+): BrickMakeup {
+  const mainValid = makeup.brickTypeCode && newBrickLibrary[makeup.brickTypeCode]
+  const fallbackMain = mainValid
+    ? makeup.brickTypeCode
+    : Object.keys(newBrickLibrary)[0] ?? makeup.brickTypeCode
+
+  const next: BrickMakeup = {
+    ...makeup,
+    brickTypeCode: fallbackMain,
+    sillBrickCode: remapBrickTypeCode(
+      makeup.sillBrickCode,
+      newBrickLibrary,
+      fallbackMain
+    ),
+    headBrickCode: remapBrickTypeCode(
+      makeup.headBrickCode,
+      newBrickLibrary,
+      fallbackMain
+    ),
+  }
+
+  if (makeup.courseRanges && makeup.courseRanges.length > 0) {
+    next.courseRanges = makeup.courseRanges.map((range) => ({
+      ...range,
+      brickTypeCode:
+        remapBrickTypeCode(
+          range.brickTypeCode,
+          newBrickLibrary,
+          fallbackMain
+        ) ?? range.brickTypeCode,
+    }))
+  }
+
+  return next
+}
+
+export function remapBrickMakeupsForLibrary(
+  makeups: BrickMakeup[],
+  newBrickLibrary: BrickLibrarySubset
+): BrickMakeup[] {
+  return makeups.map((m) => remapBrickMakeupForLibrary(m, newBrickLibrary))
+}
+
+// ─── Course pattern helpers ─────────────────────────────────────────────────
+
+/**
+ * Resolve a band's modular course height (mm) — the block's height plus a
+ * mortar joint. Falls back to 200 mm when the block isn't in the library
+ * (defensive: matches the legacy default rather than zeroing out a course).
+ */
+export function moduleHeightForBand(
+  band: CourseBand,
+  library: Record<BlockCode, { dimensions: { heightMm: number } }> = BLOCK_LIBRARY
+): number {
+  const block = library[band.blockCode]
+  if (!block) return 200
+  return block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM
+}
+
+/**
+ * Derived wall height for a makeup. When `coursePattern` is set, the bands
+ * are authoritative — sum every band's (count × course-modular-height) and
+ * return that. Otherwise return `heightMm` (legacy uniform-200 path).
+ *
+ * Read this helper everywhere `makeup.heightMm` used to be read directly;
+ * keeps band-driven walls in lockstep with legacy walls across the UI and
+ * the export.
+ */
+export function getMakeupHeightMm(makeup: WallMakeup): number {
+  const bands = makeup.coursePattern
+  if (!bands || bands.length === 0) return makeup.heightMm
+  let sum = 0
+  for (const b of bands) {
+    if (b.count <= 0) continue
+    sum += b.count * moduleHeightForBand(b)
+  }
+  return sum
+}
+
+/**
+ * Effective wall thickness for a makeup — the MAX `depthMm` across every
+ * block referenced by the makeup. Previously this was just
+ * `bodyBlockCode.depthMm`, but a makeup with (say) a 250mm-deep body and
+ * a 290mm-deep corner block would render the corner 20mm proud of the
+ * wall envelope. Taking the max keeps the wall envelope wide enough to
+ * contain every face on every course.
+ *
+ * Walks: bodyBlockCode, cornerBlockCode, halfBlockCode, baseCourseBlockCode,
+ * topCourseBlockCode, capBlockCode, every coursePattern band, every
+ * courseSeriesRanges entry's
+ * {body, corner, half, base, heightMakeup71, cornerLeadIn}
+ * block. Falls back to 190 when nothing has a valid depth (shouldn't
+ * happen in practice but keeps the function total).
+ */
+export function getEffectiveWallThicknessMm(
+  makeup: WallMakeup,
+  library: Record<BlockCode, { dimensions: { depthMm: number } }> = BLOCK_LIBRARY
+): number {
+  let maxDepth = 0
+  const consider = (code: BlockCode | undefined) => {
+    if (!code) return
+    const block = library[code]
+    if (!block) return
+    if (block.dimensions.depthMm > maxDepth) {
+      maxDepth = block.dimensions.depthMm
+    }
+  }
+
+  consider(makeup.bodyBlockCode)
+  consider(makeup.cornerBlockCode)
+  consider(makeup.halfBlockCode)
+  consider(makeup.baseCourseBlockCode)
+  consider(makeup.topCourseBlockCode)
+  consider(makeup.capBlockCode)
+
+  if (makeup.coursePattern) {
+    for (const band of makeup.coursePattern) consider(band.blockCode)
+  }
+  if (makeup.courseSeriesRanges) {
+    for (const range of makeup.courseSeriesRanges) {
+      consider(range.bodyBlockCode)
+      consider(range.cornerBlockCode)
+      consider(range.halfBlockCode)
+      consider(range.baseCourseBlockCode)
+      consider(range.heightMakeup71BlockCode)
+      consider(range.cornerLeadInBlockCode)
+    }
+  }
+
+  return maxDepth > 0 ? maxDepth : 190
+}
+
+/**
+ * Total course count for a makeup. Bands → sum of counts; legacy → derived
+ * from heightMm / 200 (caller responsible for matching the existing
+ * calculateCourseStack behaviour).
+ */
+export function getCourseCount(makeup: WallMakeup): number {
+  const bands = makeup.coursePattern
+  if (!bands || bands.length === 0) {
+    // Course module = body block height + mortar (AU 190 → 200) so the
+    // no-coursePattern count is right for any block height.
+    const courseModuleMm =
+      (BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm ?? 190) +
+      DEFAULT_MORTAR_JOINT_MM
+    return Math.max(0, Math.round(makeup.heightMm / courseModuleMm))
+  }
+  return bands.reduce((s, b) => s + Math.max(0, b.count), 0)
+}
+
+/**
+ * Convert an existing legacy makeup into a starting bands list — used when
+ * the user clicks "Convert to course pattern" in the wall-type editor.
+ *
+ * Translates the current calc-engine output (base + N body + optional
+ * 100/150 mm height-makeup + top) into bands that produce the same
+ * physical wall. The user can then edit / repeat / add bands from there.
+ *
+ * Conservative: only handles makeups WITHOUT existing courseOverrides
+ * cleanly. If the user has overrides, we still seed the bands but flag
+ * the result as approximate via the returned `lossy` flag so the UI can
+ * tell them.
+ */
+export function convertMakeupToBands(
+  makeup: WallMakeup,
+  settings?: ResolveByRoleOptions['settings'],
+  options?: {
+    /**
+     * When true, never auto-insert height-makeup courses (20.71 /
+     * 20.140) pulled from the library's role-tagged blocks. Used by
+     * the wall-types preview to avoid surprising users with blocks
+     * their composition doesn't list — the preview becomes a faithful
+     * visualisation of the user-configured roles only. Body count
+     * rounds up to fit so the preview visually matches wall height
+     * even when the height isn't a clean 200 mm multiple.
+     *
+     * The calc engine path passes the default (undefined / false) so
+     * its tally still emits the AU height-makeup courses the brief
+     * calls for.
+     */
+    skipHeightMakeup?: boolean
+  },
+): {
+  bands: CourseBand[]
+  lossy: boolean
+} {
+  const opts: ResolveByRoleOptions = settings ? { settings } : {}
+  const totalHeight = makeup.heightMm
+  // Derive the standard course height from the actual body block,
+  // not a hardcoded 200 mm. Without this a wall type whose body
+  // block is, say, 240 mm tall (240 face + 10 mortar = 250 modular)
+  // would still get `stdCount = floor(2400 / 200) = 12` and the
+  // renderer would emit 12 × 250 = 3000 mm worth of courses on a
+  // 2400 mm wall — rendering taller than the wall is meant to be.
+  // Falls back to the AU SEQ 200 mm modular when the body block
+  // isn't in the library yet (defensive on stale codes).
+  const DEFAULT_MORTAR_MM = 10
+  const bodyBlockHeightMm =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm ?? 190
+  const COURSE = bodyBlockHeightMm + DEFAULT_MORTAR_MM
+  const skipHeightMakeup = options?.skipHeightMakeup ?? false
+  // Library-aware HM heights — picked first so the stack scorer
+  // compares against what will really render, not nominal AU values.
+  // Falls through to the AU defaults (100 / 150) when the library has
+  // no HM blocks at all (the band ends up skipped downstream because
+  // heightMakeup150/100 stay undefined).
+  const bodyDepthMm = BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
+  const matchExactHeight = makeup.matchExactHeight ?? true
+  const hm140Block =
+    !skipHeightMakeup
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(150, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: 140 } }
+      : undefined
+  const hm71Block =
+    !skipHeightMakeup
+      ? matchExactHeight
+        ? pickHeightMakeupBlock(100, bodyDepthMm)
+        : { code: makeup.bodyBlockCode, dimensions: { heightMm: 90 } }
+      : undefined
+  const HEIGHT_140 = hm140Block
+    ? hm140Block.dimensions.heightMm + DEFAULT_MORTAR_MM
+    : 150
+  const HEIGHT_71 = hm71Block
+    ? hm71Block.dimensions.heightMm + DEFAULT_MORTAR_MM
+    : 100
+  // Closest-fit-under-target scoring, matching calculateCourseStack.
+  // Picks the combo whose total is closest to but not above totalHeight
+  // — undershooting with a height-makeup band beats overshooting with
+  // an extra standard course. Falls back to smallest overshoot if no
+  // combo fits under.
+  let stdCount = 0
+  let has140 = false
+  let has71 = false
+  if (!skipHeightMakeup) {
+    const maxN = Math.ceil(totalHeight / COURSE) + 2
+    type Cand = { N: number; has71: boolean; has140: boolean; total: number; dist: number; nCourses: number }
+    let bestUnder: Cand | null = null
+    let bestOver: Cand | null = null
+    // Height-makeup courses produce library-specific stacks that
+    // surprised users on multi-library projects (AU needs none, US
+    // one short course, UK two coursing bricks). Skip HM entirely so
+    // every library picks the closest std-only stack and lets joint
+    // scaling absorb the remainder; matches calculateCourseStack.
+    void HEIGHT_71
+    void HEIGHT_140
+    for (let N = 0; N <= maxN; N++) {
+      const h71 = false
+      const h140 = false
+      {
+        {
+          const total =
+            N * COURSE +
+            (h71 ? 0 : 0) +
+            (h140 ? 0 : 0)
+          if (total <= 0) continue
+          const dist = Math.abs(total - totalHeight)
+          const nCourses = N
+          const cand: Cand = { N, has71: h71, has140: h140, total, dist, nCourses }
+          if (total <= totalHeight) {
+            if (!bestUnder || dist < bestUnder.dist || (dist === bestUnder.dist && nCourses < bestUnder.nCourses)) {
+              bestUnder = cand
+            }
+          } else {
+            if (!bestOver || dist < bestOver.dist || (dist === bestOver.dist && nCourses < bestOver.nCourses)) {
+              bestOver = cand
+            }
+          }
+        }
+      }
+    }
+    // Closest fit — over OR under. No HM means undershoots can be
+    // big (UK 2400mm vs 225mm modular: 10 std = 2250, 11 std = 2475
+    // → 11 std is closer). Tie-break prefers OVER (less likely to
+    // leave a visible gap between top course and slab).
+    const best =
+      bestUnder && bestOver
+        ? bestOver.dist < bestUnder.dist
+          ? bestOver
+          : bestOver.dist === bestUnder.dist
+            ? bestOver
+            : bestUnder
+        : bestUnder ?? bestOver
+    if (best) {
+      stdCount = best.N
+      has140 = best.has140
+      has71 = best.has71
+    }
+  } else {
+    // Preview-only path keeps the legacy greedy pass — preview rounding
+    // logic depends on `remainder` being separable from the body count.
+    stdCount = Math.floor(totalHeight / COURSE)
+  }
+  let remainder =
+    totalHeight -
+    stdCount * COURSE -
+    (has140 ? HEIGHT_140 : 0) -
+    (has71 ? HEIGHT_71 : 0)
+  if (remainder < 0) remainder = 0
+  // Reuse the hm140Block / hm71Block picks resolved earlier for the
+  // stack scorer — same library, same depth scoping, so the bands
+  // emit exactly the blocks the picker scored against.
+  const heightMakeup150 = has140 ? hm140Block : undefined
+  const heightMakeup100 = has71 ? hm71Block : undefined
+  const effectiveHas140 = has140 && !!heightMakeup150
+  const effectiveHas71 = has71 && !!heightMakeup100
+  // In preview-only mode, if there's leftover height after the std-count
+  // courses but we're not adding height-makeup, push the remainder back
+  // into the body count by rounding up. Keeps the preview ~visually
+  // matched to the wall height instead of running short by 50-150 mm.
+  const effectiveStdCount =
+    skipHeightMakeup && remainder > 0 ? stdCount + 1 : stdCount
+  const totalCourses =
+    effectiveStdCount + (effectiveHas140 ? 1 : 0) + (effectiveHas71 ? 1 : 0)
+  const bands: CourseBand[] = []
+  if (totalCourses === 0) {
+    return { bands, lossy: false }
+  }
+  // Course 1 = base; courses 2 .. (N-1) = body; height-makeup goes second-
+  // from-top; course N = top.
+  // We emit bands so each contiguous run of identical block codes collapses
+  // into a single { blockCode, count }.
+  // Stale-makeup guard: if the makeup carries codes that aren't in the
+  // active library (e.g. a US user opening a project saved under AU),
+  // heal each role through the picker so the synthesised bands point
+  // at real codes. Keeps the wall preview legible AND keeps the calc
+  // engine tied to library items.
+  // Heal each role through resolveBlockByRole so the user's DefaultsByRole
+  // map takes priority over the library-tag scan. Falls back to body when
+  // the more specific role has nothing — and finally to the makeup's own
+  // (potentially-stale) code as the ultimate safety net.
+  const healBase =
+    BLOCK_LIBRARY[makeup.baseCourseBlockCode]
+      ? makeup.baseCourseBlockCode
+      : (resolveBlockByRole('base-course', BLOCK_LIBRARY, opts)?.code ??
+          resolveBlockByRole('body', BLOCK_LIBRARY, opts)?.code ??
+          makeup.baseCourseBlockCode)
+  const healBody =
+    BLOCK_LIBRARY[makeup.bodyBlockCode]
+      ? makeup.bodyBlockCode
+      : (resolveBlockByRole('body', BLOCK_LIBRARY, opts)?.code ??
+          makeup.bodyBlockCode)
+  const healTop =
+    BLOCK_LIBRARY[makeup.topCourseBlockCode]
+      ? makeup.topCourseBlockCode
+      : (resolveBlockByRole('top-course', BLOCK_LIBRARY, opts)?.code ??
+          healBody)
+
+  const courses: BlockCode[] = []
+  courses.push(healBase)
+  // Body count subtracts 2 to leave room for the base and top courses
+  // we push separately. effectiveStdCount may include the rounded-up
+  // remainder when skipHeightMakeup is on so the preview's body
+  // courses fill out the wall height without a phantom height-makeup
+  // band.
+  const bodyCount = Math.max(0, effectiveStdCount - 2)
+  for (let i = 0; i < bodyCount; i++) courses.push(healBody)
+  if (effectiveHas140 && heightMakeup150) {
+    courses.push(heightMakeup150.code as BlockCode)
+  }
+  if (effectiveHas71 && heightMakeup100) {
+    courses.push(heightMakeup100.code as BlockCode)
+  }
+  if (totalCourses >= 2) courses.push(healTop)
+
+  for (const code of courses) {
+    const last = bands[bands.length - 1]
+    if (last && last.blockCode === code) last.count += 1
+    else bands.push({ blockCode: code, count: 1 })
+  }
+
+  return {
+    bands,
+    lossy: (makeup.courseOverrides?.length ?? 0) > 0,
+  }
+}

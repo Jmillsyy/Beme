@@ -1,0 +1,58 @@
+/**
+ * Curved-wall ENGINE tally model.
+ *
+ * The engine counts a curve as body-only blocks - no corner/half end
+ * columns (the curve butts into the adjoining walls' faces) - at
+ * ceil(centrelineArc / bodyModule) blocks per course.
+ *
+ * KNOWN GAP (not asserted here): the 3D renderer lays a bonded straight-
+ * wall layout along the OUTER arc, so it draws corner/half ends and a
+ * slightly higher count than this body-only centreline tally. Reconciling
+ * render == tally for curves needs the curve renderer routed through the
+ * same layout engine as straight walls; tracked as a separate task. This
+ * test pins ONLY the engine tally so that side can't regress meanwhile.
+ */
+import { describe, it, expect } from 'vitest'
+import type { Wall, WallMakeup } from '../../types/walls'
+import { calculateWallTally } from '../blockCalc'
+import { arcFromThreePoints } from '../curveGeom'
+import { BLOCK_LIBRARY } from '../../data/blockLibrary'
+
+const MK: WallMakeup = {
+  id: 'mk', name: 'std', bondType: 'stretcher', heightMm: 2400,
+  baseCourseBlockCode: '20.45', bodyBlockCode: '20.48', topCourseBlockCode: '20.48',
+  cornerBlockCode: '20.01', halfBlockCode: '20.03', useFractions: false,
+}
+
+describe('curved wall engine tally', () => {
+  it('is body-only with no corner/half end columns', () => {
+    const A = { x: 1000, y: 0 }, B = { x: 707, y: 707 }, C = { x: 0, y: 1000 }
+    const wall: Wall = {
+      id: 'c', makeupId: 'mk', kind: 'curved',
+      startX: A.x, startY: A.y, midX: B.x, midY: B.y, endX: C.x, endY: C.y,
+      startJunction: { type: 'free' }, endJunction: { type: 'free' },
+    }
+    const geom = arcFromThreePoints(A, B, C)!
+    const bodyModuleMm = BLOCK_LIBRARY['20.48'].dimensions.widthMm + 10
+    const courseCount = Math.round(2400 / (190 + 10))
+    const expectedBody = Math.ceil(geom.arcLengthMm / bodyModuleMm) * courseCount
+
+    const tally = calculateWallTally(wall, MK)
+    expect(tally).toEqual({ '20.48': expectedBody })
+    expect(tally['20.01']).toBeUndefined() // no corner ends
+    expect(tally['20.03']).toBeUndefined() // no half ends
+  })
+
+  it('scales the body count with arc length (bigger radius → more blocks)', () => {
+    const small = arcFromThreePoints({ x: 1000, y: 0 }, { x: 707, y: 707 }, { x: 0, y: 1000 })!
+    const big = arcFromThreePoints({ x: 1500, y: 0 }, { x: 1060, y: 1060 }, { x: 0, y: 1500 })!
+    const wallOf = (id: string, A: { x: number; y: number }, B: { x: number; y: number }, C: { x: number; y: number }): Wall => ({
+      id, makeupId: 'mk', kind: 'curved', startX: A.x, startY: A.y, midX: B.x, midY: B.y, endX: C.x, endY: C.y,
+      startJunction: { type: 'free' }, endJunction: { type: 'free' },
+    })
+    const tSmall = calculateWallTally(wallOf('s', { x: 1000, y: 0 }, { x: 707, y: 707 }, { x: 0, y: 1000 }), MK)
+    const tBig = calculateWallTally(wallOf('b', { x: 1500, y: 0 }, { x: 1060, y: 1060 }, { x: 0, y: 1500 }), MK)
+    expect(big.arcLengthMm).toBeGreaterThan(small.arcLengthMm)
+    expect(tBig['20.48']!).toBeGreaterThan(tSmall['20.48']!)
+  })
+})

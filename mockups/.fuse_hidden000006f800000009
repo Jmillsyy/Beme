@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Beme — Studio Black</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --orange: #FF7A2D;
+    --orange-dim: #C25411;
+    --orange-soft: rgba(255, 122, 45, 0.18);
+    --ink: #0E0E10;
+    --ink-2: #18181C;
+    --ink-3: #232328;
+    --line: #2A2A30;
+    --text: #ECECEE;
+    --text-mute: #9CA0A8;
+    --paper: #FAFAF7;
+    --paper-line: #E5E2DC;
+    --green: #34D399;
+    --rose: #FB7185;
+    --teal: #5EEAD4;
+    --violet: #C4B5FD;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; color: var(--text); background: var(--ink); font-size: 13.5px; }
+  body { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
+
+  /* Top toolbar */
+  .topbar { background: var(--ink-2); border-bottom: 1px solid var(--line); padding: 0 18px; display: flex; align-items: stretch; height: 52px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -0.01em; padding-right: 18px; border-right: 1px solid var(--line); }
+  .brand .mark { width: 22px; height: 22px; background: var(--orange); border-radius: 4px; position: relative; }
+  .brand .mark::after { content: ''; position: absolute; left: 4px; top: 4px; right: 4px; bottom: 4px; background: var(--ink); border-radius: 2px; }
+  .brand .name { font-size: 15px; }
+
+  .crumbs { display: flex; align-items: center; gap: 10px; padding: 0 18px; color: var(--text-mute); font-size: 13px; }
+  .crumbs .sep { opacity: 0.5; }
+  .crumbs .current { color: var(--text); font-weight: 500; }
+
+  .topbar .spacer { flex: 1; }
+  .topbar .actions { display: flex; align-items: center; gap: 8px; padding-left: 18px; border-left: 1px solid var(--line); }
+  .icon-btn { width: 32px; height: 32px; border-radius: 6px; background: transparent; border: 1px solid transparent; color: var(--text-mute); display: grid; place-items: center; cursor: pointer; }
+  .icon-btn:hover { background: var(--ink-3); color: var(--text); }
+  .tbtn { padding: 7px 12px; border-radius: 6px; font-weight: 500; font-size: 13px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; }
+  .tbtn.primary { background: var(--orange); border-color: var(--orange); color: var(--ink); font-weight: 600; }
+
+  /* Body layout */
+  .body { display: grid; grid-template-columns: 240px 1fr 340px; height: calc(100vh - 52px); }
+
+  /* Left rail — tool list */
+  .left-rail { background: var(--ink-2); border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .left-rail h4 { color: var(--text-mute); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; margin: 12px 8px 6px; }
+  .tool { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; color: var(--text); cursor: pointer; font-weight: 500; }
+  .tool:hover { background: var(--ink-3); }
+  .tool.active { background: var(--orange-soft); color: var(--orange); }
+  .tool .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-mute); }
+  .tool.active .dot { background: var(--orange); }
+  .tool .kbd { margin-left: auto; font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text-mute); font-size: 11px; padding: 2px 5px; border: 1px solid var(--line); border-radius: 3px; }
+  .project-meta { margin-top: auto; padding: 12px; border-radius: 6px; background: var(--ink-3); font-size: 12px; color: var(--text-mute); line-height: 1.5; }
+  .project-meta .pname { color: var(--text); font-weight: 600; margin-bottom: 4px; }
+
+  /* Centre canvas */
+  .canvas-wrap { background: #1B1B1F; padding: 28px; overflow: hidden; position: relative; }
+  .canvas-wrap::before { content: 'Workspace'; position: absolute; top: 12px; left: 28px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-mute); }
+  .canvas { background: var(--paper); margin: 24px auto 0; border-radius: 4px; box-shadow: 0 30px 60px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.05); max-width: 760px; min-height: 520px; padding: 30px; position: relative; }
+  .pdf {
+    background:
+      repeating-linear-gradient(0deg, var(--paper-line) 0 1px, transparent 1px 50px),
+      repeating-linear-gradient(90deg, var(--paper-line) 0 1px, transparent 1px 50px);
+    background-color: var(--paper);
+    height: 470px; position: relative;
+  }
+  .wall-h { position: absolute; height: 12px; background: rgba(255, 122, 45, 0.18); border-top: 2px solid var(--orange); border-bottom: 2px solid var(--orange); }
+  .wall-v { position: absolute; width: 12px; background: rgba(255, 122, 45, 0.18); border-left: 2px solid var(--orange); border-right: 2px solid var(--orange); }
+  .label { position: absolute; font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500; color: var(--orange-dim); }
+  .marker { position: absolute; width: 10px; height: 10px; border-radius: 50%; background: #10B981; border: 2px solid var(--paper); box-shadow: 0 0 0 1px #10B981; }
+  .marker.tjct { background: #8B5CF6; border-radius: 1px; transform: rotate(45deg); box-shadow: 0 0 0 1px #8B5CF6; }
+  .opening { position: absolute; height: 12px; background: #FEF3C7; border: 1.5px dashed #D97706; }
+  .pier { position: absolute; width: 32px; height: 32px; background: rgba(16, 185, 129, 0.35); border: 1px solid #065F46; display: grid; place-items: center; font-weight: 700; color: #065F46; font-size: 12px; }
+
+  /* Right inspector */
+  .inspector { background: var(--ink-2); border-left: 1px solid var(--line); overflow-y: auto; }
+  .insp-tabs { display: flex; padding: 12px 12px 0; gap: 4px; border-bottom: 1px solid var(--line); }
+  .insp-tab { padding: 8px 12px; font-size: 12px; font-weight: 500; color: var(--text-mute); border-bottom: 2px solid transparent; cursor: pointer; }
+  .insp-tab.active { color: var(--text); border-bottom-color: var(--orange); }
+  .insp-section { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .insp-section h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-mute); font-weight: 600; }
+  .stat { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; font-size: 13px; }
+  .stat .label { color: var(--text-mute); }
+  .stat .value { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: var(--text); }
+
+  .tally-row { display: grid; grid-template-columns: 60px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; font-size: 13px; }
+  .tally-row .code { font-family: 'JetBrains Mono', monospace; color: var(--orange); font-weight: 500; }
+  .tally-row .name { color: var(--text-mute); }
+  .tally-row .count { font-family: 'JetBrains Mono', monospace; color: var(--text); font-weight: 600; }
+
+  .total-card { background: linear-gradient(135deg, var(--orange) 0%, #FF9F58 100%); color: var(--ink); padding: 16px; border-radius: 8px; margin-bottom: 6px; }
+  .total-card .label { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.85; }
+  .total-card .value { font-size: 32px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; margin-top: 2px; }
+  .total-card .sub { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+
+  .makeup-row { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 6px; cursor: pointer; }
+  .makeup-row:hover { background: var(--ink-3); }
+  .makeup-row.active { background: var(--orange-soft); }
+  .makeup-row .swatch { width: 28px; height: 28px; border-radius: 4px; background: linear-gradient(135deg, var(--orange) 0%, #F4B084 100%); }
+  .makeup-row .info { flex: 1; min-width: 0; }
+  .makeup-row .info .n { font-weight: 600; font-size: 13px; }
+  .makeup-row .info .d { color: var(--text-mute); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="mark"></div>
+    <div class="name">Beme</div>
+  </div>
+  <div class="crumbs">
+    <span>Projects</span><span class="sep">/</span>
+    <span>Foster Residence</span><span class="sep">/</span>
+    <span class="current">Garage Extension</span>
+  </div>
+  <div class="spacer"></div>
+  <div class="actions">
+    <button class="icon-btn">⌘</button>
+    <button class="tbtn">Save</button>
+    <button class="tbtn primary">Export estimate</button>
+  </div>
+</header>
+
+<div class="body">
+
+  <aside class="left-rail">
+    <h4>Draw</h4>
+    <div class="tool active"><span class="dot"></span> Wall <span class="kbd">W</span></div>
+    <div class="tool"><span class="dot"></span> Curved wall <span class="kbd">C</span></div>
+    <h4>Place</h4>
+    <div class="tool"><span class="dot"></span> Opening <span class="kbd">O</span></div>
+    <div class="tool"><span class="dot"></span> Control joint <span class="kbd">J</span></div>
+    <div class="tool"><span class="dot"></span> Tied pier <span class="kbd">T</span></div>
+    <div class="tool"><span class="dot"></span> Freestanding pier <span class="kbd">P</span></div>
+
+    <div class="project-meta">
+      <div class="pname">Foster Residence</div>
+      Garage Extension · Page 1 of 2<br/>
+      Scale 1:50 · Saved 4 min ago
+    </div>
+  </aside>
+
+  <main class="canvas-wrap">
+    <div class="canvas">
+      <div class="pdf">
+        <div class="wall-h" style="left:60px; top:80px; width:340px;"></div>
+        <div class="wall-v" style="left:60px; top:80px; height:280px;"></div>
+        <div class="wall-h" style="left:60px; top:360px; width:340px;"></div>
+        <div class="wall-v" style="left:386px; top:80px; height:280px;"></div>
+        <div class="wall-h" style="left:200px; top:200px; width:120px;"></div>
+
+        <span class="label" style="left:200px; top:64px;">4250 mm</span>
+        <span class="label" style="left:32px; top:200px;">3100 mm</span>
+        <span class="label" style="left:200px; top:344px;">4250 mm</span>
+        <span class="label" style="left:430px; top:200px;">3100 mm</span>
+        <span class="label" style="left:240px; top:184px;">1450 mm</span>
+
+        <div class="marker" style="left:55px; top:75px;"></div>
+        <div class="marker" style="left:381px; top:75px;"></div>
+        <div class="marker" style="left:55px; top:355px;"></div>
+        <div class="marker" style="left:381px; top:355px;"></div>
+        <div class="marker tjct" style="left:194px; top:194px;"></div>
+
+        <div class="opening" style="left:200px; top:80px; width:120px;"></div>
+
+        <div class="pier" style="left:140px; top:70px;">T</div>
+        <div class="pier" style="left:300px; top:70px;">T</div>
+      </div>
+    </div>
+  </main>
+
+  <aside class="inspector">
+    <div class="insp-tabs">
+      <div class="insp-tab active">Tally</div>
+      <div class="insp-tab">Wall types</div>
+      <div class="insp-tab">Piers</div>
+    </div>
+
+    <div class="insp-section">
+      <div class="total-card">
+        <div class="label">Total blocks</div>
+        <div class="value">682</div>
+        <div class="sub">7 walls · 28.4m run · 19.6m² openings</div>
+      </div>
+    </div>
+
+    <div class="insp-section">
+      <h3>Schedule</h3>
+      <div class="tally-row"><span class="code">20.48</span><span class="name">H block</span><span class="count">418</span></div>
+      <div class="tally-row"><span class="code">20.01</span><span class="name">Full end</span><span class="count">112</span></div>
+      <div class="tally-row"><span class="code">20.03</span><span class="name">Half end</span><span class="count">56</span></div>
+      <div class="tally-row"><span class="code">20.02</span><span class="name">3/4 fraction</span><span class="count">22</span></div>
+      <div class="tally-row"><span class="code">20.45</span><span class="name">Cleanout</span><span class="count">30</span></div>
+      <div class="tally-row"><span class="code">50.45</span><span class="name">Tile</span><span class="count">30</span></div>
+      <div class="tally-row"><span class="code">40.925</span><span class="name">Pier</span><span class="count">12</span></div>
+      <div class="tally-row"><span class="code">20.20</span><span class="name">Bond beam</span><span class="count">2</span></div>
+    </div>
+
+    <div class="insp-section">
+      <h3>Active wall types</h3>
+      <div class="makeup-row active">
+        <div class="swatch"></div>
+        <div class="info">
+          <div class="n">External 3100mm Stretcher</div>
+          <div class="d">20.48 · 20.01 corner · fractions on</div>
+        </div>
+      </div>
+      <div class="makeup-row">
+        <div class="swatch" style="background: linear-gradient(135deg, #5EEAD4 0%, #0F766E 100%);"></div>
+        <div class="info">
+          <div class="n">Internal 2400mm Stretcher</div>
+          <div class="d">20.48 · 20.01 corner</div>
+        </div>
+      </div>
+      <div class="makeup-row">
+        <div class="swatch" style="background: linear-gradient(135deg, #C4B5FD 0%, #7C3AED 100%);"></div>
+        <div class="info">
+          <div class="n">Top course bond beam</div>
+          <div class="d">20.20 top · 20.48 body</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+</body>
+</html>

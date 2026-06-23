@@ -9,16 +9,16 @@
 // Currency: AUD.
 //
 // Env vars required:
-//   STRIPE_SECRET_KEY              — sk_test_... / sk_live_...
-//   STRIPE_PRICE_INDIVIDUAL        — price_... ($79/mo Individual)
-//   STRIPE_PRICE_ORG               — price_... ($299/mo Organisation, 5 seats)
-//   STRIPE_PRICE_EXTRA_SEAT        — price_... ($49/mo extra seat — used later
-//                                     for the org "Add seat" flow, not here)
-//   APP_URL                        — https://app.beme.com.au  (success/cancel base)
+// STRIPE_SECRET_KEY              - sk_test_... / sk_live_...
+// STRIPE_PRICE_INDIVIDUAL        - price_... ($79/mo Individual)
+// STRIPE_PRICE_ORG               - price_... ($299/mo Organisation, 5 seats)
+// STRIPE_PRICE_EXTRA_SEAT        - price_... ($49/mo extra seat - used later
+// for the org "Add seat" flow, not here)
+// APP_URL                        - https://app.beme.com.au  (success/cancel base)
 //
 // Deploy: supabase functions deploy create-checkout-session --no-verify-jwt
-//   (--no-verify-jwt because this is called from the marketing site by
-//   anonymous visitors who haven't signed in yet.)
+// (--no-verify-jwt because this is called from the marketing site by
+// anonymous visitors who haven't signed in yet.)
 
 import Stripe from 'npm:stripe@17'
 
@@ -45,7 +45,7 @@ const corsHeaders = {
 interface CheckoutRequest {
   /** Which plan the visitor picked on the marketing site. */
   plan: 'individual' | 'organisation'
-  /** Optional — pre-fills the Stripe Checkout email field. */
+  /** Optional - pre-fills the Stripe Checkout email field. */
   email?: string
   /** Where the visitor came from (e.g. 'hero', 'pricing-individual'). */
   source?: string
@@ -91,14 +91,14 @@ Deno.serve(async (req) => {
         },
       },
 
-      // Customer email pre-fill (skipped if not supplied — Stripe asks).
+      // Customer email pre-fill (skipped if not supplied - Stripe asks).
       customer_email: body.email,
 
       // Stripe Tax handles AU GST if enabled in dashboard. Safe to leave
-      // on always — Stripe no-ops if Tax is not configured.
+      // on always - Stripe no-ops if Tax is not configured.
       automatic_tax: { enabled: true },
 
-      // Allow promotion codes — useful for launch promos / friends-and-family.
+      // Allow promotion codes - useful for launch promos / friends-and-family.
       allow_promotion_codes: true,
 
       // Where Stripe sends the customer after success / cancel. /welcome

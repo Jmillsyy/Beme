@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Beme — Bold Orange</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --orange: #ED7D31;
+    --orange-strong: #C5530A;
+    --orange-soft: #FEF1E2;
+    --orange-edge: #F8B780;
+    --ink: #15171A;
+    --ink-soft: #2E3338;
+    --ink-mute: #6B7280;
+    --paper: #FFFFFF;
+    --canvas: #FAFAF7;
+    --line: #E5E7EB;
+    --line-strong: #1F2937;
+    --green: #10B981;
+    --rose: #E11D48;
+    --teal: #0F766E;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; font-family: 'Inter', system-ui, sans-serif; color: var(--ink); background: var(--canvas); font-size: 14px; }
+  body { min-height: 100vh; }
+
+  /* Top header */
+  .project-bar { background: var(--ink); color: white; padding: 10px 24px; display: flex; align-items: center; gap: 16px; }
+  .project-bar .brand { font-weight: 800; letter-spacing: -0.01em; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+  .project-bar .brand .dot { width: 10px; height: 10px; background: var(--orange); display: inline-block; border-radius: 2px; }
+  .project-bar .meta { color: #A1A6AD; font-size: 13px; }
+  .project-bar .spacer { flex: 1; }
+  .project-bar .pb-btn { background: transparent; color: white; border: 1px solid #374151; padding: 6px 12px; border-radius: 6px; font-weight: 500; font-size: 13px; cursor: pointer; }
+  .project-bar .pb-btn.primary { background: var(--orange); border-color: var(--orange); color: var(--ink); font-weight: 700; }
+
+  /* Title row */
+  .title-row { padding: 18px 24px 10px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .title-row h1 { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+  .title-row .sub { color: var(--ink-mute); margin-top: 2px; font-size: 13px; }
+  .title-row .right { display: flex; gap: 8px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--orange-soft); color: var(--orange-strong); font-weight: 600; font-size: 12px; }
+  .pill.ink { background: var(--ink); color: white; }
+
+  /* Mode tabs */
+  .modes { padding: 0 24px; border-bottom: 1px solid var(--line); display: flex; gap: 4px; }
+  .mode-tab { padding: 10px 14px; font-weight: 600; color: var(--ink-mute); border-bottom: 3px solid transparent; cursor: pointer; }
+  .mode-tab.active { color: var(--ink); border-bottom-color: var(--orange); }
+
+  /* Workspace toolbar */
+  .toolbar { padding: 14px 24px; background: white; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .status { color: var(--ink-mute); font-size: 13px; }
+  .status strong { color: var(--ink); font-weight: 700; }
+  .toolbar .spacer { flex: 1; }
+  .btn { padding: 7px 14px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: all 0.1s; }
+  .btn.primary { background: var(--orange); color: white; }
+  .btn.primary:hover { background: var(--orange-strong); }
+  .btn.ink { background: var(--ink); color: white; }
+  .btn.outline { background: white; border-color: var(--ink-soft); color: var(--ink); }
+  .btn.rose { background: var(--rose); color: white; }
+  .btn.green { background: var(--green); color: white; }
+  .btn.teal { background: var(--teal); color: white; }
+  .btn.ghost { background: transparent; color: var(--ink-mute); }
+  .btn.ghost:hover { color: var(--ink); }
+
+  /* Main */
+  .main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px 24px; }
+
+  /* Canvas */
+  .canvas-frame { background: white; border: 2px solid var(--ink); border-radius: 10px; overflow: hidden; box-shadow: 6px 6px 0 var(--ink); position: relative; min-height: 540px; }
+  .canvas-area { background: white; height: 100%; position: relative; padding: 18px; }
+  .pdf-page { background:
+    linear-gradient(white, white) padding-box,
+    repeating-linear-gradient(0deg, #F3F4F6 0 1px, transparent 1px 50px),
+    repeating-linear-gradient(90deg, #F3F4F6 0 1px, transparent 1px 50px);
+    background-size: 100% 100%, 100% 100%, 100% 100%;
+    background-color: white;
+    border: 1px solid var(--line);
+    height: 500px; position: relative;
+  }
+  .wall-h { position: absolute; height: 14px; background: rgba(237, 125, 49, 0.20); border: 2px solid var(--orange); }
+  .wall-v { position: absolute; width: 14px; background: rgba(237, 125, 49, 0.20); border: 2px solid var(--orange); }
+  .label { position: absolute; font-size: 11px; font-weight: 700; color: var(--orange-strong); background: white; padding: 1px 4px; border-radius: 3px; }
+  .marker { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--green); border: 2px solid white; box-shadow: 0 0 0 1px var(--green); }
+  .marker.tjct { background: #8B5CF6; box-shadow: 0 0 0 1px #8B5CF6; border-radius: 2px; transform: rotate(45deg); }
+  .opening { position: absolute; height: 14px; background: #FEF3C7; border: 2px dashed #D97706; }
+  .pier { position: absolute; width: 36px; height: 36px; background: rgba(16, 185, 129, 0.35); border: 1.5px solid #065F46; display: grid; place-items: center; font-weight: 800; color: #065F46; font-size: 14px; }
+
+  /* Side rail */
+  .rail { display: flex; flex-direction: column; gap: 12px; }
+  .panel { background: white; border: 2px solid var(--ink); border-radius: 10px; overflow: hidden; box-shadow: 4px 4px 0 var(--ink); }
+  .panel-head { padding: 10px 14px; background: var(--ink); color: white; display: flex; align-items: center; justify-content: space-between; }
+  .panel-head h3 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
+  .panel-head .count { background: var(--orange); color: var(--ink); padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 800; }
+  .panel-body { padding: 12px 14px; }
+  .panel-section { padding: 12px 14px; border-top: 1px dashed var(--line); }
+
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+  .row:last-child { border-bottom: none; }
+  .row .code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 600; }
+  .row .count { font-weight: 700; }
+  .makeup { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1.5px solid var(--ink); border-radius: 8px; margin-bottom: 8px; }
+  .makeup.active { border-color: var(--orange); background: var(--orange-soft); }
+  .makeup .mname { font-weight: 700; }
+  .makeup .mdesc { font-size: 12px; color: var(--ink-mute); }
+
+  .total-strip { background: var(--orange); color: var(--ink); padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; font-weight: 800; }
+  .total-strip .big { font-size: 22px; letter-spacing: -0.02em; }
+</style>
+</head>
+<body>
+
+<header class="project-bar">
+  <div class="brand"><span class="dot"></span> Beme</div>
+  <span class="meta">Brick &amp; block estimates made easy</span>
+  <div class="spacer"></div>
+  <button class="pb-btn">Save</button>
+  <button class="pb-btn primary">Export</button>
+</header>
+
+<section class="title-row">
+  <div>
+    <h1>Foster Residence — Garage Extension</h1>
+    <div class="sub">17 Banksia Street · 480m² · Stretcher bond · Saved 4 min ago</div>
+  </div>
+  <div class="right">
+    <span class="pill ink">In progress</span>
+    <span class="pill">7 walls · 3 wall types</span>
+  </div>
+</section>
+
+<nav class="modes">
+  <div class="mode-tab active">Block estimate</div>
+  <div class="mode-tab">Brick estimate</div>
+</nav>
+
+<div class="toolbar">
+  <div class="status"><strong>7 walls</strong> on this page · scale 1:50 set</div>
+  <div class="spacer"></div>
+  <button class="btn primary">Draw wall</button>
+  <button class="btn outline">↷ Curved wall</button>
+  <button class="btn outline">+ Add opening</button>
+  <button class="btn rose">+ Control joint</button>
+  <button class="btn green">+ Tied pier</button>
+  <button class="btn teal">+ Freestanding pier</button>
+  <button class="btn ghost">Clear all</button>
+</div>
+
+<div class="main">
+  <div class="canvas-frame">
+    <div class="canvas-area">
+      <div class="pdf-page">
+        <!-- Walls -->
+        <div class="wall-h" style="left:60px; top:80px; width:340px;"></div>
+        <div class="wall-v" style="left:60px; top:80px; height:280px;"></div>
+        <div class="wall-h" style="left:60px; top:360px; width:340px;"></div>
+        <div class="wall-v" style="left:386px; top:80px; height:280px;"></div>
+        <div class="wall-h" style="left:200px; top:200px; width:120px;"></div>
+
+        <!-- Labels -->
+        <span class="label" style="left:200px; top:60px;">4250 mm</span>
+        <span class="label" style="left:30px; top:200px;">3100 mm</span>
+        <span class="label" style="left:200px; top:340px;">4250 mm</span>
+        <span class="label" style="left:420px; top:200px;">3100 mm</span>
+        <span class="label" style="left:240px; top:180px;">1450 mm</span>
+
+        <!-- Corner markers -->
+        <div class="marker" style="left:55px; top:75px;"></div>
+        <div class="marker" style="left:381px; top:75px;"></div>
+        <div class="marker" style="left:55px; top:355px;"></div>
+        <div class="marker" style="left:381px; top:355px;"></div>
+
+        <!-- T-junction -->
+        <div class="marker tjct" style="left:194px; top:194px;"></div>
+
+        <!-- Opening (door) -->
+        <div class="opening" style="left:200px; top:80px; width:120px;"></div>
+        <span class="label" style="left:220px; top:100px;">900 × 2100</span>
+
+        <!-- Piers -->
+        <div class="pier" style="left:140px; top:69px;">T</div>
+        <div class="pier" style="left:300px; top:69px;">T</div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="rail">
+    <!-- Wall types panel -->
+    <div class="panel">
+      <div class="panel-head"><h3>Wall types</h3><span class="count">3</span></div>
+      <div class="panel-body">
+        <div class="makeup active">
+          <div class="mname">External 3100mm Stretcher</div>
+          <div class="mdesc">Stretcher · 20.48 H block · 20.01 corner</div>
+        </div>
+        <div class="makeup">
+          <div class="mname">Internal 2400mm Stretcher</div>
+          <div class="mdesc">Stretcher · 20.48 · 20.01</div>
+        </div>
+        <div class="makeup">
+          <div class="mname">Top course bond beam</div>
+          <div class="mdesc">Stretcher · 20.48 · 20.20 top</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tally panel -->
+    <div class="panel">
+      <div class="panel-head"><h3>Block tally</h3><span class="count">682</span></div>
+      <div class="total-strip">
+        <span>Total blocks</span>
+        <span class="big">682</span>
+      </div>
+      <div class="panel-section">
+        <div class="row"><span class="code">20.48</span><span>H block</span><span class="count">418</span></div>
+        <div class="row"><span class="code">20.01</span><span>Full end</span><span class="count">112</span></div>
+        <div class="row"><span class="code">20.03</span><span>Half end</span><span class="count">56</span></div>
+        <div class="row"><span class="code">20.02</span><span>3/4 fraction</span><span class="count">22</span></div>
+        <div class="row"><span class="code">20.45</span><span>Cleanout</span><span class="count">30</span></div>
+        <div class="row"><span class="code">50.45</span><span>Cleanout tile</span><span class="count">30</span></div>
+        <div class="row"><span class="code">40.925</span><span>Pier block</span><span class="count">12</span></div>
+        <div class="row"><span class="code">20.20</span><span>Bond beam top</span><span class="count">2</span></div>
+      </div>
+    </div>
+
+    <!-- Pier types panel -->
+    <div class="panel">
+      <div class="panel-head"><h3>Pier types</h3><span class="count">2</span></div>
+      <div class="panel-body">
+        <div class="makeup active">
+          <div class="mname">Tied pier (40.925 / 20.01)</div>
+          <div class="mdesc">Pattern: 40.925 → 20.01 (alternating)</div>
+        </div>
+        <div class="makeup">
+          <div class="mname">Freestanding pier (40.925)</div>
+          <div class="mdesc">Pattern: 40.925 (stack)</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+</body>
+</html>

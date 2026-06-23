@@ -1,0 +1,234 @@
+/**
+ * KeyboardCheatSheet - the canonical "what can I do without a mouse?"
+ * reference, surfaced as a modal triggered by pressing `?` anywhere
+ * outside a text input.
+ *
+ * Why this exists: the workspace has a growing set of shortcuts (typed
+ * wall lengths, Esc cancels every tool, Delete removes selections,
+ * Ctrl/Cmd+S saves, etc.) and they were previously only discoverable
+ * via the rotating Tip card on the dashboard or by stumbling onto
+ * them. One canonical list - opened from anywhere - is the polish
+ * step every "real" app has.
+ *
+ * Mount once at the app root (`<App />`). The component self-installs
+ * a global keydown listener and renders nothing until the modal opens.
+ *
+ * UX notes:
+ *  - `?` opens (only when focus isn't in an editable element).
+ *  - `Esc` / backdrop click / × button close.
+ *  - Sections grouped by context: Global, Drawing, Selection, Project.
+ *  - Keys rendered as kbd-style pills for visual consistency with the
+ *    in-banner kbd hints elsewhere in the app.
+ *  - aria-modal + role="dialog" so screen readers handle it correctly.
+ */
+import { useEffect, useState } from 'react'
+
+interface Shortcut {
+  /** Array so chord shortcuts can render as `Ctrl + S`. */
+  keys: string[]
+  /** Human-readable description of what the shortcut does. */
+  description: string
+}
+
+interface ShortcutSection {
+  title: string
+  shortcuts: Shortcut[]
+}
+
+const SECTIONS: ShortcutSection[] = [
+  {
+    title: 'Global',
+    shortcuts: [
+      {
+        keys: ['Cmd/Ctrl', 'K'],
+        description: 'Open the command palette - jump to any project, page, or action',
+      },
+      { keys: ['?'], description: 'Show this shortcut reference' },
+      { keys: ['Esc'], description: 'Close any open dialog / cancel the current tool' },
+    ],
+  },
+  {
+    title: 'Drawing',
+    shortcuts: [
+      {
+        keys: ['Type a number', 'Enter'],
+        description: 'While drawing a wall or opening, set its length / width in mm',
+      },
+      {
+        keys: ['Esc'],
+        description: 'Cancel the active tool (wall, curve, opening, pier, ruler, control joint)',
+      },
+      {
+        keys: ['Shift', 'click'],
+        description: 'Add to / remove from the current selection (walls, openings, piers)',
+      },
+    ],
+  },
+  {
+    title: 'Selection',
+    shortcuts: [
+      {
+        keys: ['Delete'],
+        description: 'Remove the selected wall, opening, pier, or ruler measurement',
+      },
+      {
+        keys: ['Backspace'],
+        description: 'Same as Delete - remove the current selection',
+      },
+      {
+        keys: ['Esc'],
+        description: 'Deselect everything and return to free-hand mode',
+      },
+    ],
+  },
+  {
+    title: 'Project',
+    shortcuts: [
+      {
+        keys: ['Cmd/Ctrl', 'S'],
+        description: 'Save the current estimate',
+      },
+      {
+        keys: ['Click a wall / pier type'],
+        description: 'Make it the active type for the next thing you draw',
+      },
+      {
+        keys: ['+ Add'],
+        description: 'Add a new wall, pier, or supply item - from the panel header in the right rail',
+      },
+    ],
+  },
+]
+
+/**
+ * Renders a single keyboard key as a kbd-style pill. Used inline in the
+ * shortcut rows; matches the kbd hints scattered through the workspace
+ * banners (Esc / Del / etc.) for consistency.
+ */
+function Key({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-[11px] font-mono whitespace-nowrap">
+      {children}
+    </kbd>
+  )
+}
+
+/**
+ * Decide whether the current focus target should swallow the `?`
+ * keypress (so users can actually type `?` into a project name without
+ * the modal popping). Inputs, textareas, contenteditable nodes, and
+ * select elements all count as "the user is typing."
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (target.isContentEditable) return true
+  return false
+}
+
+export default function KeyboardCheatSheet() {
+  const [open, setOpen] = useState(false)
+
+  // Global listener - `?` opens, `Esc` closes. Esc handling is bubble-
+  // phase so workspace tool-cancel handlers still fire first when the
+  // cheat-sheet isn't open.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      // Open: `?` (which on most layouts means Shift+/). Skip if the
+      // user is typing into an input - letting them put a literal ? in
+      // a project name.
+      if (e.key === '?' && !isEditableTarget(e.target)) {
+        e.preventDefault()
+        setOpen((v) => !v)
+        return
+      }
+      // Close: Esc, only when the modal is already open. We check via
+      // setOpen's callback form to avoid closing over a stale `open`.
+      if (e.key === 'Escape') {
+        setOpen((wasOpen) => {
+          if (!wasOpen) return false
+          e.preventDefault()
+          return false
+        })
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="cheatsheet-title"
+      onClick={() => setOpen(false)}
+    >
+      <div
+        className="max-w-2xl w-full max-h-[85vh] bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3 border-b border-ink-600 bg-ink-900/40 flex items-center justify-between">
+          <div>
+            <h2
+              id="cheatsheet-title"
+              className="text-base font-semibold text-ink-50"
+            >
+              Keyboard shortcuts
+            </h2>
+            <p className="text-[11px] text-ink-500 mt-0.5">
+              Press <Key>?</Key> anywhere to reopen this. Press{' '}
+              <Key>Esc</Key> to close.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="overflow-y-auto p-5 space-y-6">
+          {SECTIONS.map((section) => (
+            <section key={section.title}>
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                {section.title}
+              </h3>
+              <ul className="space-y-1.5">
+                {section.shortcuts.map((s, i) => (
+                  <li
+                    key={i}
+                    className="flex items-center gap-3 py-1 text-sm text-ink-200"
+                  >
+                    <span className="flex items-center gap-1 flex-shrink-0 w-44">
+                      {s.keys.map((k, ki) => (
+                        <span key={ki} className="flex items-center gap-1">
+                          {ki > 0 && <span className="text-ink-500">+</span>}
+                          <Key>{k}</Key>
+                        </span>
+                      ))}
+                    </span>
+                    <span className="text-ink-300 leading-snug">
+                      {s.description}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-ink-600 bg-ink-900/40 text-[11px] text-ink-500">
+          Missing a shortcut you'd find useful? Open <em>Settings → Feedback</em>{' '}
+          and tell us.
+        </footer>
+      </div>
+    </div>
+  )
+}

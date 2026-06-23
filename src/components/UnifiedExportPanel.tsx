@@ -68,7 +68,7 @@ interface UnifiedExportPanelProps {
     legend?: Array<{ code: string; label: string; color: string }>
   }>
 
-  /** Raw walls across both trades / all areas — partitioned internally. */
+  /** Raw walls across both trades / all areas - partitioned internally. */
   allWalls: Wall[]
   /** Raw openings across both trades. */
   allOpenings: Opening[]
@@ -84,11 +84,11 @@ interface UnifiedExportPanelProps {
   areas: ProjectArea[]
 
   /** The area the workspace is currently viewing. null = the "All
-   *  areas" view. Seeds the area picker default when the modal opens. */
+   * areas" view. Seeds the area picker default when the modal opens. */
   activeAreaId?: string | null
 
   /**
-   * Controlled open state — when supplied, the parent owns the modal
+   * Controlled open state - when supplied, the parent owns the modal
    * open/close lifecycle and can trigger it from elsewhere (e.g. the
    * top-bar Export button). The big right-rail trigger button is
    * hidden in this mode, since the parent is providing its own
@@ -98,8 +98,8 @@ interface UnifiedExportPanelProps {
    */
   open?: boolean
   /** Setter paired with {@link open}. Called with `false` from inside
-   *  the modal (Cancel / Esc / Export-success) and `true` from the
-   *  built-in trigger button when the panel is uncontrolled. */
+   * the modal (Cancel / Esc / Export-success) and `true` from the
+   * built-in trigger button when the panel is uncontrolled. */
   onOpenChange?: (open: boolean) => void
   /** Per-PDF-page metadata (without trade pre-filtering). */
   rawPagesInfo: Array<{
@@ -130,13 +130,13 @@ const UNASSIGNED = '__unassigned__'
  * Top-level export surface. Renders a SINGLE large "Export estimate"
  * button. Clicking opens a modal where the user picks:
  *
- *   1. **Areas** (skipped when the project only has one area — that
- *      area is auto-selected).
- *   2. **Sections** to include in the PDF.
- *   3. **Block adjustments** — a live tally preview with a "remove"
- *      column per block code. Useful for blocks the user already has
- *      on site or is re-using from another job; the schedule subtracts
- *      them before printing.
+ * 1. **Areas** (skipped when the project only has one area - that
+ * area is auto-selected).
+ * 2. **Sections** to include in the PDF.
+ * 3. **Block adjustments** - a live tally preview with a "remove"
+ * column per block code. Useful for blocks the user already has
+ * on site or is re-using from another job; the schedule subtracts
+ * them before printing.
  *
  * After "Export" inside the modal, we partition the included walls
  * by trade and call the appropriate exporter (block / brick /
@@ -168,7 +168,7 @@ export default function UnifiedExportPanel({
   // Controlled mode: parent owns the open state (e.g. the ProjectBar's
   // Export button drives it). Uncontrolled: internal state, used when
   // someone embeds the rail-button form without lifting state up.
-  // Detected by either prop being defined — the panel never mixes the
+  // Detected by either prop being defined - the panel never mixes the
   // two so this is unambiguous.
   const isControlled = controlledOpen !== undefined || onOpenChange !== undefined
   const open = isControlled ? !!controlledOpen : uncontrolledOpen
@@ -177,14 +177,14 @@ export default function UnifiedExportPanel({
     if (!isControlled) setUncontrolledOpen(next)
   }
 
-  // Disable the button when there are no walls drawn at all — nothing
+  // Disable the button when there are no walls drawn at all - nothing
   // to export. Stays clickable even when only one trade has walls;
   // the modal handles partitioning.
   const hasAnyWalls = allWalls.length > 0
 
   return (
     <>
-      {/* Rail trigger button — only rendered in uncontrolled mode.
+      {/* Rail trigger button - only rendered in uncontrolled mode.
           When a parent (PdfWorkspace) owns the open state and is
           providing its own trigger (the ProjectBar's Export pill),
           the rail button is redundant and we hide it so the column
@@ -259,7 +259,7 @@ function ExportEstimateModal({
   const { settings: userSettings } = useUserSettings()
   const { currentOrg } = useOrganisations()
 
-  // Esc closes — keep keyboard parity with the other modals (wall
+  // Esc closes - keep keyboard parity with the other modals (wall
   // type editor, opening editor, etc.). ⌘/Ctrl + Enter fires Export
   // so power users can ship a quote without touching the mouse.
   useEffect(() => {
@@ -271,7 +271,7 @@ function ExportEstimateModal({
       }
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
-        // Don't reference handleExport directly — it's redefined on
+        // Don't reference handleExport directly - it's redefined on
         // every render. Synthesise a click on the export button
         // instead so the handler that's wired through React fires.
         const btn = document.querySelector<HTMLButtonElement>(
@@ -285,7 +285,7 @@ function ExportEstimateModal({
   }, [onClose])
 
   // Area selection. Default to EVERY area + Unassigned ticked so
-  // exports include the whole project by default — that matches how a
+  // exports include the whole project by default - that matches how a
   // builder reads an estimate (the whole job, not just one floor).
   // Earlier this defaulted to just the active area when activeAreaId
   // was set, which silently dropped every wall in other areas from
@@ -299,10 +299,10 @@ function ExportEstimateModal({
     for (const a of areas) s.add(a.id)
     s.add(UNASSIGNED)
     return s
-    // Initial state only — see comment block above.
+    // Initial state only - see comment block above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  // activeAreaId intentionally not consumed here — see initialSelectedAreas.
+  // activeAreaId intentionally not consumed here - see initialSelectedAreas.
   void activeAreaId
   const [selectedAreas, setSelectedAreas] =
     useState<Set<string>>(initialSelectedAreas)
@@ -344,7 +344,7 @@ function ExportEstimateModal({
     })
   }
 
-  // Sections — short unified list, all ticked by default.
+  // Sections - short unified list, all ticked by default.
   const [sections, setSections] = useState({
     assumptions: true,
     wallLayout: true,
@@ -353,7 +353,7 @@ function ExportEstimateModal({
     disclaimer: true,
   })
 
-  // Cover-page overrides — per-export only, never mutate ProjectDetails.
+  // Cover-page overrides - per-export only, never mutate ProjectDetails.
   // Empty strings fall back to ProjectDetails defaults inside the
   // exporter (projectName → title, etc.). Each field is plain text;
   // the exporter HTML-escapes before rendering.
@@ -361,7 +361,7 @@ function ExportEstimateModal({
   const [coverSubtitle, setCoverSubtitle] = useState('')
   const [coverIntro, setCoverIntro] = useState('')
 
-  // Active nav anchor — drives the highlighted state on the left rail.
+  // Active nav anchor - drives the highlighted state on the left rail.
   // Click → scroll the corresponding section into view; the
   // IntersectionObserver below also updates this as the user scrolls
   // manually through the long body so the rail and content stay
@@ -391,7 +391,7 @@ function ExportEstimateModal({
     if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
-  // IntersectionObserver — when the user scrolls manually through
+  // IntersectionObserver - when the user scrolls manually through
   // the settings column, highlight whichever section's top edge has
   // most recently entered the upper third of the viewport. Without
   // this the nav rail stays stuck on whichever item the user last
@@ -509,9 +509,9 @@ function ExportEstimateModal({
   }, [rawPagesInfo, blockWalls, brickWalls])
 
   // ── Block tally preview (drives the adjustments table). The base
-  //    tally is the auto-calculated map keyed by block code. The
-  //    table component combines this with user adjustments to
-  //    compute final counts + add-only rows. ──
+  // tally is the auto-calculated map keyed by block code. The
+  // table component combines this with user adjustments to
+  // compute final counts + add-only rows. ──
   const blockBaseTally = useMemo(() => {
     if (blockWalls.length === 0) return {} as Record<string, number>
     const makeupsById = Object.fromEntries(blockMakeups.map((m) => [m.id, m]))
@@ -526,7 +526,7 @@ function ExportEstimateModal({
   }, [blockWalls, blockMakeups, blockOpenings, includedPiers, pierMakeups])
   const hasBlockTally = Object.keys(blockBaseTally).length > 0
 
-  // ── Brick tally preview — same shape as the block one. ──
+  // ── Brick tally preview - same shape as the block one. ──
   const brickBaseTally = useMemo(() => {
     if (brickWalls.length === 0) return {} as Record<string, number>
     const tally = calculateBrickTally(
@@ -550,8 +550,8 @@ function ExportEstimateModal({
   // For each project area (plus an "Unassigned" bucket for walls
   // without an areaId), compute the trade-specific metrics the user
   // wants to override on a per-area basis:
-  //   - brick: total brickwork m², head lineal m, sill lineal m
-  //   - block: total blockwork m² (block has no head/sill concept)
+  // - brick: total brickwork m², head lineal m, sill lineal m
+  // - block: total blockwork m² (block has no head/sill concept)
   //
   // These memos run the same calc engine the headline tally uses,
   // just on a wall subset filtered to the area. Overrides (below)
@@ -608,8 +608,8 @@ function ExportEstimateModal({
     runM: number
     wallCount: number
     openingCount: number
-    /** Per-wall-type breakdown — keyed by makeup id — for the
-     *  drilldown editor inside the area card. */
+    /** Per-wall-type breakdown - keyed by makeup id - for the
+     * drilldown editor inside the area card. */
     byMakeup: Record<string, PerAreaBrickMakeupMetrics>
   }
   const perAreaBrickMetrics = useMemo(() => {
@@ -640,7 +640,7 @@ function ExportEstimateModal({
           0,
         ) / 1000
 
-      // Per-makeup brick breakdown — same pattern as block. Groups
+      // Per-makeup brick breakdown - same pattern as block. Groups
       // walls by makeupId, runs calculateBrickTally on each subset,
       // and exposes m² / head / sill per wall type for the drilldown
       // editor in the area card.
@@ -702,10 +702,10 @@ function ExportEstimateModal({
     runM: number
     wallCount: number
     /** Per-block-code counts for this area, from calculateProjectTally
-     *  on the area's wall subset. Sorted entries used by the UI. */
+     * on the area's wall subset. Sorted entries used by the UI. */
     blockTally: Record<string, number>
     /** Per-wall-type breakdown for the wall-type drilldown editor
-     *  inside the area card. Keyed by makeup id. */
+     * inside the area card. Keyed by makeup id. */
     byMakeup: Record<string, PerAreaBlockMakeupMetrics>
   }
   const perAreaBlockMetrics = useMemo(() => {
@@ -741,7 +741,7 @@ function ExportEstimateModal({
         pierMakeupsByIdLocal,
       )
 
-      // Per-wall-type (makeup) breakdown — group the area's walls by
+      // Per-wall-type (makeup) breakdown - group the area's walls by
       // makeup id, then run calculateProjectTally on each subset to
       // get the per-code tally for that wall type alone. Used by the
       // drilldown editor inside each area card. m² for each wall
@@ -835,9 +835,9 @@ function ExportEstimateModal({
         sqM?: number
         headLinealM?: number
         sillLinealM?: number
-        /** Per-wall-type drilldown overrides — keyed by makeup id.
-         *  Mirrors the block side: each entry can override that
-         *  wall type's m² / head / sill within this area. */
+        /** Per-wall-type drilldown overrides - keyed by makeup id.
+         * Mirrors the block side: each entry can override that
+         * wall type's m² / head / sill within this area. */
         byMakeup?: Record<
           string,
           { sqM?: number; headLinealM?: number; sillLinealM?: number }
@@ -851,12 +851,12 @@ function ExportEstimateModal({
       {
         sqM?: number
         /** Per-block-code overrides for this area. Field absent =
-         *  use auto count; numeric = override count. Negative is
-         *  clamped to 0 at apply time. */
+         * use auto count; numeric = override count. Negative is
+         * clamped to 0 at apply time. */
         blocks?: Record<string, number>
         /** Per-wall-type drilldown overrides. Keyed by makeup id;
-         *  each entry can override that wall type's m² and per-code
-         *  counts in this area. */
+         * each entry can override that wall type's m² and per-code
+         * counts in this area. */
         byMakeup?: Record<
           string,
           { sqM?: number; blocks?: Record<string, number> }
@@ -866,7 +866,7 @@ function ExportEstimateModal({
   >({})
 
   // Wastage % applied to brick / block headline totals only (NOT
-  // supply items — those are already user-managed allowances). When
+  // supply items - those are already user-managed allowances). When
   // `wastageEnabled` is on AND `wastagePercent` is a positive number,
   // the brick and block exporters add a "+ X% wastage" column to
   // their area summary, with a wastage-uplifted total alongside the
@@ -892,14 +892,14 @@ function ExportEstimateModal({
     return perAreaBlockMetrics[areaId]?.[field] ?? 0
   }
 
-  // Per-area expansion state — collapsed by default to keep the
+  // Per-area expansion state - collapsed by default to keep the
   // section glanceable on first open; user expands the ones they
   // want to edit. Keyed by `${trade}-${areaId}`.
   const [expandedAreaCards, setExpandedAreaCards] = useState<
     Record<string, boolean>
   >({})
 
-  // Picker options for "+ Add" — show every code in the libraries so
+  // Picker options for "+ Add" - show every code in the libraries so
   // the user can include anything. Sorted alphabetically for
   // predictable scanning.
   const blockPickerOptions = useMemo(
@@ -918,9 +918,9 @@ function ExportEstimateModal({
   )
 
   // ── Signed adjustments. Keyed by block / brick code. ──
-  //   - positive value → remove that many from the auto-tally
-  //   - negative value → add that many on top of the auto-tally
-  //   - missing / 0 → no override (use auto-tally as-is)
+  // - positive value → remove that many from the auto-tally
+  // - negative value → add that many on top of the auto-tally
+  // - missing / 0 → no override (use auto-tally as-is)
   const [blockAdjustments, setBlockAdjustments] = useState<
     Record<string, number>
   >({})
@@ -936,7 +936,7 @@ function ExportEstimateModal({
     return (code: string, signedAdj: number) => {
       setter((prev) => {
         if (signedAdj === 0) {
-          // No override — drop the entry to keep the export params clean.
+          // No override - drop the entry to keep the export params clean.
           const { [code]: _drop, ...rest } = prev
           void _drop
           return rest
@@ -949,17 +949,17 @@ function ExportEstimateModal({
   const setBrickAdj = makeSetAdjustment(setBrickAdjustments)
 
   // ── Supply items adjustments. Same signed-delta model as the
-  //    block / brick adjustments above, keyed by SupplyItem.id.
-  //    Lets the user override the rate-driven quantity per supply
-  //    item from inside the modal — useful for "I have 5 bags of
-  //    cement on site already" or "add 2 extra ties for breakage."
-  //    Applied AFTER the exporter's Math.ceil rounding, then clamped
-  //    to >= 0. ──
+  // block / brick adjustments above, keyed by SupplyItem.id.
+  // Lets the user override the rate-driven quantity per supply
+  // item from inside the modal - useful for "I have 5 bags of
+  // cement on site already" or "add 2 extra ties for breakage."
+  // Applied AFTER the exporter's Math.ceil rounding, then clamped
+  // to >= 0. ──
   const [supplyItemAdjustments, setSupplyItemAdjustments] = useState<
     Record<string, number>
   >({})
   const setSupplyAdj = makeSetAdjustment(setSupplyItemAdjustments)
-  // Per-export supply-item NAME overrides — keyed by item id, value
+  // Per-export supply-item NAME overrides - keyed by item id, value
   // is the renamed label to display in the PDF. Empty string clears
   // the override (falls back to the library item's name). Stays
   // export-scoped (not persisted to the library) so the same item
@@ -980,10 +980,10 @@ function ExportEstimateModal({
   }
 
   // ── Source of truth for the supply item library, same precedence
-  //    as the SupplyItemsPanel and the exporters: org-synced list
-  //    when an org is active, otherwise the personal IndexedDB list
-  //    on userSettings. We read both unconditionally and pick at the
-  //    point of use so the modal stays in sync as orgs switch. ──
+  // as the SupplyItemsPanel and the exporters: org-synced list
+  // when an org is active, otherwise the personal IndexedDB list
+  // on userSettings. We read both unconditionally and pick at the
+  // point of use so the modal stays in sync as orgs switch. ──
   const { items: orgSupplyItems } = useOrgSupplyItems()
   const supplyItems: SupplyItem[] = currentOrg
     ? orgSupplyItems
@@ -992,10 +992,10 @@ function ExportEstimateModal({
   // Per-trade metrics that drive the supply-item maths. Mirror the
   // exporter's logic 1:1 so the modal's preview qty matches the row
   // that lands in the PDF:
-  //   - blockArea = Σ wallLength × wallHeight − Σ openingWidth × openingHeight
-  //   - blockRun = Σ wallLength
-  //   - openingCount = block openings
-  //   - openingWidthsMm = per-opening widths (for width-ranged items)
+  // - blockArea = Σ wallLength × wallHeight − Σ openingWidth × openingHeight
+  // - blockRun = Σ wallLength
+  // - openingCount = block openings
+  // - openingWidthsMm = per-opening widths (for width-ranged items)
   // and the same again for brick. Values flow off the already-
   // filtered includedWalls / blockOpenings / brickOpenings derived
   // above, so toggling areas updates this immediately.
@@ -1030,7 +1030,7 @@ function ExportEstimateModal({
       openingWidthsMm: blockOpenings.map((o) => o.widthMm),
       // Parallel kind list so per-opening-sill (windows only) and
       // per-opening-head (everything) read from the same metrics
-      // object as per-opening — same shape as PdfWorkspace's
+      // object as per-opening - same shape as PdfWorkspace's
       // supplyMetrics. 'window' is the default for older openings.
       openingKinds: blockOpenings.map((o) =>
         o.kind === 'door' ? ('door' as const) : ('window' as const),
@@ -1065,7 +1065,7 @@ function ExportEstimateModal({
       brickCount: tally.brickCount,
       openingCount: brickOpenings.length,
       openingWidthsMm: brickOpenings.map((o) => o.widthMm),
-      // Parallel kind list — see blockMetrics comment.
+      // Parallel kind list - see blockMetrics comment.
       openingKinds: brickOpenings.map((o) =>
         o.kind === 'door' ? ('door' as const) : ('window' as const),
       ),
@@ -1073,7 +1073,7 @@ function ExportEstimateModal({
     }
   }, [brickWalls, brickOpenings, brickSettings, brickMakeups])
 
-  // Resolve a per-project rate for an item — override wins over the
+  // Resolve a per-project rate for an item - override wins over the
   // library default. Lives inline rather than imported because we
   // also need to compute the qty alongside, and this keeps both
   // pieces of logic together.
@@ -1085,7 +1085,7 @@ function ExportEstimateModal({
   }
 
   // Compute the rounded auto-tally quantity for a supply item against
-  // a single trade's metrics. Same rules the exporters use — keep
+  // a single trade's metrics. Same rules the exporters use - keep
   // these in sync.
   function autoQtyFor(
     item: SupplyItem,
@@ -1116,7 +1116,7 @@ function ExportEstimateModal({
       case 'per-opening':
       case 'per-opening-head':
       case 'per-opening-sill': {
-        // Shared resolver — keeps the modal preview locked to the
+        // Shared resolver - keeps the modal preview locked to the
         // workspace tally + the printed PDF.
         const widths = metrics.openingWidthsMm
         const kinds = metrics.openingKinds
@@ -1131,11 +1131,11 @@ function ExportEstimateModal({
       }
     }
     // Match the exporter exactly: round up at the item's chosen
-    // decimal precision (0 dp → whole units, 1–3 dp → finer step).
+    // decimal precision (0 dp → whole units, 1-3 dp → finer step).
     return Math.max(0, roundSupplyQuantity(raw, item))
   }
 
-  // Trade-keyed base tallies for the supply table — { itemId → qty }
+  // Trade-keyed base tallies for the supply table - { itemId → qty }
   // for items that have a non-zero auto count (or have a user
   // adjustment, so add-only rows surface even when the auto is 0).
   // The selections map gates which items appear: a supply item that
@@ -1190,7 +1190,7 @@ function ExportEstimateModal({
   // per trade so brick-only items don't show in the block picker
   // and vice-versa. The picker uses the item's id as the row "code"
   // since supply items aren't identified by a short code like blocks.
-  // Picker options for supply items — bare name only (no category
+  // Picker options for supply items - bare name only (no category
   // suffix); the picker's `<optgroup>` carries the category.
   //
   // We DON'T filter out items where supplyItemSelections[id] === false
@@ -1220,7 +1220,7 @@ function ExportEstimateModal({
 
   // Trade-scoped views of the shared supplyItemAdjustments map so the
   // block supply table doesn't list brick-only adjustments and vice
-  // versa. The writer (setSupplyAdj) still mutates the shared map —
+  // versa. The writer (setSupplyAdj) still mutates the shared map -
   // the item id is globally unique so an adjustment to a per-m² tie
   // count applies to whichever trade it surfaces in.
   const blockSupplyAdjustments = useMemo(() => {
@@ -1265,7 +1265,7 @@ function ExportEstimateModal({
       wallTypeBreakdown: sections.schedules,
       measurements: sections.measurements,
       // 3D snapshots are gated by the user managing their own queue
-      // in the 3D viewport (Capture button + Snapshots panel) — flag
+      // in the 3D viewport (Capture button + Snapshots panel) - flag
       // is always on here so any queued snapshots land in the PDF.
       // If the queue is empty `view3dImages` is `[]` and the export
       // skips the pages anyway.
@@ -1280,7 +1280,7 @@ function ExportEstimateModal({
       measurements: sections.measurements,
       brickAreaSummary: sections.schedules,
       // 3D snapshots gated by the user's queue in the 3D viewport.
-      // Flag is always on here — queue empty → snapshot pages just
+      // Flag is always on here - queue empty → snapshot pages just
       // don't appear in the PDF.
       view3d: true,
       disclaimer: sections.disclaimer,
@@ -1307,7 +1307,7 @@ function ExportEstimateModal({
     setError(null)
     const progressId = toast.info('Generating PDF…', { durationMs: null })
     try {
-      // Cover-page overrides — only forwarded when the user actually
+      // Cover-page overrides - only forwarded when the user actually
       // entered something. Empty / whitespace-only fields stay
       // undefined so the exporter's fallback (projectName, site
       // address, etc.) kicks in instead of stamping a literal "" on
@@ -1330,7 +1330,19 @@ function ExportEstimateModal({
         supplyItemRateOverrides,
         supplyItemAdjustments,
         supplyItemNameOverrides,
-        business: business(),
+        // Company branding (logo + company name + ABN + address) stays
+        // org/team-only so a solo user's export isn't stamped with a fake
+        // company header - the Beme mark is their brand. But we ALWAYS pass
+        // the user's Profile > Contact (name / phone / email) so their
+        // contact line prints on the quote, which is exactly what the
+        // Settings copy promises. Org keeps its org name + logo.
+        business: currentOrg
+          ? business()
+          : {
+              contactName: userSettings.profile.displayName,
+              phone: userSettings.profile.phone,
+              email: userSettings.profile.email,
+            },
         pdfFile: pdfFile ?? undefined,
         coverOverrides,
       }
@@ -1338,12 +1350,12 @@ function ExportEstimateModal({
       // the ▣ Capture button as a JSON array of {id, dataUrl,
       // createdAt, legend}). Storage is namespaced per-PROJECT AND
       // per-TRADE so block-mode captures live under :block and
-      // brick-mode captures under :brick — that way the per-trade
+      // brick-mode captures under :brick - that way the per-trade
       // exports (block estimate / brick estimate) only embed
       // snapshots that match their walls, and the combined export
       // includes both. A legacy `:no-trade` bucket is also read so
       // captures taken before the trade split still surface.
-      // 3D captures: try the prop FIRST (correct path — state lives
+      // 3D captures: try the prop FIRST (correct path - state lives
       // on the SavedProject), fall back to window.__beme3dCurrentSnapshots
       // which PdfWorkspace mirrors the current project's captures
       // onto. The fallback exists because Vite HMR occasionally
@@ -1367,7 +1379,7 @@ function ExportEstimateModal({
           allSnapshots = view3dSnapshotsProp as Snap[]
         }
       } catch {
-        // Stale closure — fall through to the window mirror below.
+        // Stale closure - fall through to the window mirror below.
       }
       if (allSnapshots.length === 0) {
         try {
@@ -1423,7 +1435,7 @@ function ExportEstimateModal({
             blockAdjustments,
             // Per-area m² overrides from the Quantities section.
             perAreaBlockOverrides,
-            // Wastage uplift % — undefined when the checkbox is off
+            // Wastage uplift % - undefined when the checkbox is off
             // (exporter renders no wastage column). Brick / block
             // totals only; supply items unaffected.
             wastagePercent:
@@ -1448,9 +1460,9 @@ function ExportEstimateModal({
             brickAdjustments,
             // Per-area m² / head lineal / sill lineal overrides from
             // the Quantities section. Empty when the user hasn't
-            // touched any field — exporter falls back to auto values.
+            // touched any field - exporter falls back to auto values.
             perAreaBrickOverrides,
-            // Wastage uplift % — undefined when the checkbox is off.
+            // Wastage uplift % - undefined when the checkbox is off.
             // Applied to the headline brick m² figure only; supply
             // schedule + per-area Quantities pass through unchanged.
             wastagePercent:
@@ -1489,7 +1501,7 @@ function ExportEstimateModal({
   // above; there's nothing for the user to pick.
   const showAreaPicker = areas.length > 1
 
-  // Footer quantity summary — Σ for the trades that actually have
+  // Footer quantity summary - Σ for the trades that actually have
   // walls included after the area filter. Drives the "scope of this
   // export" line in the footer so the user feels the impact of each
   // toggle in real time.
@@ -1524,7 +1536,7 @@ function ExportEstimateModal({
     brickOpenings,
   ])
 
-  // Effective cover-page values for the live preview pane — overrides
+  // Effective cover-page values for the live preview pane - overrides
   // take priority, fall back to the project details when blank.
   // Trimmed so a stray space doesn't beat the project name.
   const previewTitle =
@@ -1539,7 +1551,10 @@ function ExportEstimateModal({
     projectDetails.siteAddress.trim() !== previewTitle
       ? projectDetails.siteAddress.trim()
       : ''
-  const previewBusiness = business()
+  // Mirror the export's branding gate (see handleExport) so the live
+  // preview matches what a solo user actually gets - no logo/company
+  // header for individual (no-org) accounts.
+  const previewBusiness = currentOrg ? business() : {}
   const previewModeLabel = modeLabel
 
   return (
@@ -1554,7 +1569,7 @@ function ExportEstimateModal({
         className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-7xl max-h-[94vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header — wider modal earns a more substantial header.
+        {/* Header - wider modal earns a more substantial header.
             Title sits above a chip row that surfaces the export mode
             and (when overridden) the cover-page title so the user
             sees at-a-glance what's about to ship. */}
@@ -1581,14 +1596,14 @@ function ExportEstimateModal({
           </button>
         </header>
 
-        {/* Body — three-column flex: left nav rail / middle settings
+        {/* Body - three-column flex: left nav rail / middle settings
             scroll / right live cover preview. Each pane scrolls
             independently so a long supply list doesn't push the
             preview off-screen and the nav rail stays visible while
             the user works through the settings. */}
         <div className="flex-1 flex min-h-0">
 
-          {/* LEFT — Section nav rail. Click each to anchor-scroll the
+          {/* LEFT - Section nav rail. Click each to anchor-scroll the
               middle column to that section. The active item gets a
               brand-tinted background so the user knows what they're
               reading even on long projects. */}
@@ -1631,16 +1646,16 @@ function ExportEstimateModal({
             )}
           </nav>
 
-          {/* MIDDLE — Settings column. Each section gets its own ref
+          {/* MIDDLE - Settings column. Each section gets its own ref
               so the nav rail can anchor-scroll. space-y-8 between
-              sections gives generous breathing room — the wider
+              sections gives generous breathing room - the wider
               canvas lets us slow down the vertical density. */}
           <div
             ref={settingsScrollRef}
             className="flex-1 overflow-y-auto px-6 py-5 space-y-8 min-w-0"
           >
 
-            {/* Cover page editor — title, subtitle, intro. Per-export
+            {/* Cover page editor - title, subtitle, intro. Per-export
                 only; project details stay untouched. Plain text
                 inputs so estimators can paste straight from email
                 without formatting headaches. */}
@@ -1651,7 +1666,7 @@ function ExportEstimateModal({
               <p className="text-[11px] text-ink-500 mb-3 leading-snug">
                 Customise the title page for this export. Leave blank
                 to use the project name. Changes don't save back to
-                the project — they're scoped to this PDF only.
+                the project - they're scoped to this PDF only.
               </p>
               <div className="space-y-2.5">
                 <label className="block">
@@ -1689,7 +1704,7 @@ function ExportEstimateModal({
                   <textarea
                     value={coverIntro}
                     onChange={(e) => setCoverIntro(e.target.value)}
-                    placeholder="e.g. Estimate covers ground-floor blockwork only — see attached drawings for scope of brickwork upper floor."
+                    placeholder="e.g. Estimate covers ground-floor blockwork only - see attached drawings for scope of brickwork upper floor."
                     rows={3}
                     className="w-full px-3 py-2 rounded-md bg-ink-900 border border-ink-600 text-sm text-ink-100 placeholder-ink-500 focus:outline-none focus:border-beme-500 resize-y"
                   />
@@ -1804,7 +1819,7 @@ function ExportEstimateModal({
               </section>
             )}
 
-            {/* Quantity adjustments — Blocks only. */}
+            {/* Quantity adjustments - Blocks only. */}
             {(hasBlockTally || Object.keys(blockAdjustments).length > 0) && (
               <section ref={quantitiesSectionRef} id="quantities">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-300 mb-1">
@@ -1812,12 +1827,12 @@ function ExportEstimateModal({
                 </h3>
                 <p className="text-[11px] text-ink-500 mb-3 leading-snug">
                   Each row shows the auto-tally quantity. Hit Edit to
-                  override it with a different number — useful when
+                  override it with a different number - useful when
                   you want fewer (blocks on site, reused from another
                   job) or more (extras for breakage, future work). Use
                   the "+ Add" button to include a code that isn't on
                   the plan at all. Tallies respect the area filter
-                  above — untick areas to remove their blocks from
+                  above - untick areas to remove their blocks from
                   the count.
                 </p>
                 {hasBlockTally && (
@@ -1834,7 +1849,7 @@ function ExportEstimateModal({
               </section>
             )}
 
-            {/* Per-area Quantities — collapsible cards per area, one
+            {/* Per-area Quantities - collapsible cards per area, one
                 per trade. Lets the user override the m² and (for
                 brick) head + sill lineal m on a per-area basis. The
                 final exported figure for each area = override ??
@@ -1849,13 +1864,13 @@ function ExportEstimateModal({
                 <p className="text-[11px] text-ink-500 mb-3 leading-snug">
                   Auto-calculated per area from the walls and openings
                   on the plan. Expand any area to override the m² (and
-                  for brick, the head / sill lineal m) — useful when
+                  for brick, the head / sill lineal m) - useful when
                   you need to account for a renovation, or hand-tune
                   for unusual geometry. Empty fields fall back to the
                   auto value.
                 </p>
 
-                {/* Wastage uplift — single project-wide % applied to
+                {/* Wastage uplift - single project-wide % applied to
                     the brick + block area / count totals on the
                     export. Wastage doesn't touch the per-area
                     overrides or the supply schedule (those are
@@ -2293,7 +2308,7 @@ function ExportEstimateModal({
                                                   {code}
                                                 </div>
                                                 <div className="text-ink-500 text-[10px] truncate">
-                                                  {blockLabel(code) || '—'}
+                                                  {blockLabel(code) || '-'}
                                                 </div>
                                               </div>
                                               <PerAreaCountInput
@@ -2309,7 +2324,7 @@ function ExportEstimateModal({
                                       </div>
                                     </div>
                                   )}
-                                  {/* Wall-type drilldown — list every wall
+                                  {/* Wall-type drilldown - list every wall
                                       type used in this area, each
                                       expandable to a per-wall-type m²
                                       input + per-code editor scoped to
@@ -2476,7 +2491,7 @@ function ExportEstimateModal({
                                                                     <div className="text-ink-500 text-[9px] truncate">
                                                                       {blockLabel(
                                                                         code,
-                                                                      ) || '—'}
+                                                                      ) || '-'}
                                                                     </div>
                                                                   </div>
                                                                   <PerAreaCountInput
@@ -2569,18 +2584,18 @@ function ExportEstimateModal({
             )}
 
             {/* Trailing whitespace so the last section can scroll all
-                the way to the top of the viewport — without this,
+                the way to the top of the viewport - without this,
                 "Supplies" can only reach mid-screen before bottoming
                 out and the nav rail's active state stops tracking. */}
             <div className="h-32" aria-hidden />
           </div>
 
-          {/* RIGHT — Live cover-page preview. Sticky on lg+; hidden
+          {/* RIGHT - Live cover-page preview. Sticky on lg+; hidden
               on narrow viewports. Updates as the user types in the
               cover section. Renders a faithful mini-cover with
               brand block, title, subtitle, project meta, intro.
               Wider than a portrait pane so the landscape preview has
-              room to breathe — at w-[28rem] the mini comes out at
+              room to breathe - at w-[28rem] the mini comes out at
               ~316px tall, comfortable to read without dominating
               the modal. */}
           <aside className="w-[28rem] border-l border-ink-600 bg-ink-900/40 overflow-y-auto flex-shrink-0 hidden lg:block">
@@ -2601,14 +2616,14 @@ function ExportEstimateModal({
               />
               <p className="text-[10px] text-ink-500 mt-3 leading-snug">
                 Final PDF uses your settings letterhead and exact
-                fonts. Layout above is a faithful mini — proportions
+                fonts. Layout above is a faithful mini - proportions
                 won't change.
               </p>
             </div>
           </aside>
         </div>
 
-        {/* Footer — beefier than before. Left side carries the live
+        {/* Footer - beefier than before. Left side carries the live
             quantity summary so the user feels the scope of the
             current export as they toggle areas and sections. Right
             side: ghost Cancel + a primary Export button that's
@@ -2710,7 +2725,7 @@ function ExportEstimateModal({
  * Stays proportionally similar to the real cover (brand block top,
  * big title + subtitle, meta strip, intro paragraph) but scaled to
  * fit the modal column. We deliberately don't iframe / SSR the actual
- * exporter HTML — that would mean spinning up react-pdf or rendering
+ * exporter HTML - that would mean spinning up react-pdf or rendering
  * a hidden full-page document just to grab a thumbnail. The mini
  * tracks the cover content one-to-one and that's enough to validate
  * "yes this is the version I want to send".
@@ -2749,16 +2764,16 @@ function CoverPagePreview({
   return (
     <div
       className="bg-white text-ink-900 rounded-md shadow-2xl shadow-black/40 overflow-hidden border border-ink-600 flex flex-col"
-      // A4 landscape — √2 : 1 aspect. Matches `@page { size: A4
+      // A4 landscape - √2 : 1 aspect. Matches `@page { size: A4
       // landscape }` in the exporter so the preview matches what
       // prints, not the legacy portrait shape.
       style={{ aspectRatio: '1.414 / 1' }}
     >
-      {/* Letterhead strip — mirrors the real cover's brand block. */}
+      {/* Letterhead strip - mirrors the real cover's brand block. */}
       <div className="px-5 pt-4 pb-2.5 border-b border-stone-200 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           {business?.logoUrl ? (
-            // Logo as the brand mark when set — matches exporter rule.
+            // Logo as the brand mark when set - matches exporter rule.
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={business.logoUrl}
@@ -2787,7 +2802,7 @@ function CoverPagePreview({
         </div>
       </div>
 
-      {/* Body — two-column landscape layout. Title block on the
+      {/* Body - two-column landscape layout. Title block on the
           left half (eats up the broad horizontal canvas with a
           larger headline), meta block on the right half. Intro
           paragraph spans full width below if set. */}
@@ -2842,7 +2857,7 @@ function CoverPagePreview({
           </div>
         </div>
 
-        {/* Intro paragraph spans the full width — landscape gives us
+        {/* Intro paragraph spans the full width - landscape gives us
             ~22cm of typing room, perfect for a single readable line
             of body text instead of the cramped narrow column the
             portrait layout had. */}
@@ -2855,7 +2870,7 @@ function CoverPagePreview({
         )}
       </div>
 
-      {/* Faux footer — reads as "PDF page furniture" so the preview
+      {/* Faux footer - reads as "PDF page furniture" so the preview
           settles as a real document, not just floating content. */}
       <div className="px-5 py-1.5 border-t border-stone-200 text-[7px] text-stone-400 flex items-center justify-between">
         <span>Page 1</span>
@@ -2904,10 +2919,10 @@ interface AdjustmentsTableProps {
   /** Auto-tally rows from the calc engine, keyed by code. */
   baseTally: Record<string, number>
   /** Current signed adjustments, keyed by code. Missing → 0.
-   *  Positive = remove, negative = add. */
+   * Positive = remove, negative = add. */
   adjustments: Record<string, number>
   /** Replace the current adjustment for `code`. Passing 0 means "no
-   *  override" — caller should drop the entry from the map. */
+   * override" - caller should drop the entry from the map. */
   onSetAdjustment: (code: string, signedAdj: number) => void
   /** Resolves a human-readable description for a code. */
   describe: (code: string) => string
@@ -2918,7 +2933,7 @@ interface AdjustmentsTableProps {
   /**
    * When true, suppress the monospace `code` prefix in each row and
    * show only the `describe(code)` text. Used for supply items where
-   * the "code" is a UUID that's meaningless to the user — the
+   * the "code" is a UUID that's meaningless to the user - the
    * describe callback already returns a friendly "Name · Category"
    * label. Default false so blocks/bricks keep their short codes
    * (e.g. "standard", "200x200x90") visible as before.
@@ -2963,7 +2978,7 @@ function AdjustmentsTable({
   nameOverrides,
   onSetNameOverride,
 }: AdjustmentsTableProps) {
-  // Resolve the label that should display for this row — prefer
+  // Resolve the label that should display for this row - prefer
   // the per-export name override (if the caller passes one) over
   // the library / calc engine's description.
   function labelFor(code: string): string {
@@ -3021,7 +3036,7 @@ function AdjustmentsTable({
     })
   }, [rows, groupBy])
 
-  // Picker options grouped by category too — when groupBy is set we
+  // Picker options grouped by category too - when groupBy is set we
   // render <optgroup>s so the "+ Add" dropdown stays scannable.
   const groupedPickerOptions = useMemo(() => {
     if (!groupBy) return null
@@ -3049,7 +3064,7 @@ function AdjustmentsTable({
   // (currently: supply-item tables only). Persists the typed name
   // independently from the qty draft so Cancel reverts both.
   const [draftName, setDraftName] = useState<string>('')
-  // Open-state for the "+ Add" picker — keeps the form inline below
+  // Open-state for the "+ Add" picker - keeps the form inline below
   // the table without needing a separate modal.
   const [adding, setAdding] = useState(false)
   const [addCode, setAddCode] = useState('')
@@ -3071,7 +3086,7 @@ function AdjustmentsTable({
       // negative adds. Zero means no override (drop the entry).
       onSetAdjustment(editingCode, base - finalCount)
     }
-    // Name override — only meaningful when the parent supplied a
+    // Name override - only meaningful when the parent supplied a
     // setter. Pushing the bare describe(code) back as the "name"
     // would create a noisy override; only persist when the user
     // actually changed it.
@@ -3103,17 +3118,17 @@ function AdjustmentsTable({
     setAddQty('')
   }
 
-  // Codes available in the "+ Add" picker — show ALL library codes so
+  // Codes available in the "+ Add" picker - show ALL library codes so
   // the user can add anything, including codes already in the tally
   // (in which case it just bumps the final count via an add adjustment).
   const pickerOptions = availableCodes
 
   // Renders one quantity row. Pulled out of the JSX so the grouped
-  // and flat layouts share identical markup — the only difference
+  // and flat layouts share identical markup - the only difference
   // between them is whether category headers get interleaved above
   // the rows. All edit-mode handlers are closed over from the
   // enclosing component, so this stays a plain function (not a
-  // React subcomponent — we'd lose the focus-on-edit transition if
+  // React subcomponent - we'd lose the focus-on-edit transition if
   // a parent re-render unmounted the input).
   function renderRow(r: {
     code: string
@@ -3131,7 +3146,7 @@ function AdjustmentsTable({
       >
         <span className="truncate">
           {isEditing && onSetNameOverride ? (
-            // Rename input — only when this row's table supports
+            // Rename input - only when this row's table supports
             // name overrides (currently supply-item tables only).
             // Takes the full label column so the user can type a
             // long descriptive name like "Lintel above front door".
@@ -3166,7 +3181,7 @@ function AdjustmentsTable({
             min="0"
             step="1"
             // Only autofocus qty when name editing isn't available
-            // — when name editing IS available, autofocus the
+            // - when name editing IS available, autofocus the
             // name input (it's the new field and usually what the
             // user is here to change).
             autoFocus={!onSetNameOverride}
@@ -3259,7 +3274,7 @@ function AdjustmentsTable({
             : rows.map((r) => renderRow(r))}
           {rows.length === 0 && (
             <div className="px-3 py-3 text-[11px] text-ink-500 italic">
-              No rows — add one below to include something not on the plan.
+              No rows - add one below to include something not on the plan.
             </div>
           )}
         </div>
@@ -3277,7 +3292,7 @@ function AdjustmentsTable({
                 onChange={(e) => setAddCode(e.target.value)}
                 className="w-full px-2 py-1 bg-ink-900 border border-ink-600 rounded text-xs text-ink-100 focus:outline-none focus:border-beme-400"
               >
-                <option value="">— pick one —</option>
+                <option value="">- pick one -</option>
                 {groupedPickerOptions
                   ? groupedPickerOptions.map(([category, opts]) => (
                       <optgroup key={category} label={category}>
@@ -3287,7 +3302,7 @@ function AdjustmentsTable({
                               ? opt.description || opt.code
                               : `${opt.code}${
                                   opt.description
-                                    ? ` — ${opt.description}`
+                                    ? ` - ${opt.description}`
                                     : ''
                                 }`}
                           </option>
@@ -3299,7 +3314,7 @@ function AdjustmentsTable({
                         {hideCode
                           ? opt.description || opt.code
                           : `${opt.code}${
-                              opt.description ? ` — ${opt.description}` : ''
+                              opt.description ? ` - ${opt.description}` : ''
                             }`}
                       </option>
                     ))}

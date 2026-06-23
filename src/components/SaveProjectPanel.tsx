@@ -96,7 +96,7 @@ export default function SaveProjectPanel({
 
       {!canSave && saveBlockedReason && (
         <p className="text-xs text-neutral-500 w-full">
-          ⚠ {saveBlockedReason}
+          {saveBlockedReason}
         </p>
       )}
     </div>

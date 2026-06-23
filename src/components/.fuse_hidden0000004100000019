@@ -1,0 +1,187 @@
+import { useMemo } from 'react'
+import type { SupplyItem } from '../types/userSettings'
+import type { Opening } from '../types/walls'
+import { resolveOpeningSupplyItems } from '../lib/openingSupplyResolver'
+import type { OpeningScope } from '../lib/openingSupplyResolver'
+
+/**
+ * Per-opening supply override picker.
+ *
+ * Surfaces three dropdowns - Opening, Head, Sill - that let the user
+ * pin which library supply item gets charged for THIS opening on each
+ * scope. Each picker has three classes of option:
+ *
+ *   - **Auto** (default): resolver picks via project-default + width-
+ *     range rules. Reflects whatever the auto behaviour would be
+ *     today on this opening.
+ *   - **Specific library item**: charges that exact item, rate × 1.
+ *     Wins over the project default.
+ *   - **None**: skips the scope entirely on this opening. Useful for
+ *     bespoke openings priced outside the schedule.
+ *
+ * The Sill scope is hidden for doors (a doorway has no sill).
+ *
+ * Pure presentation - the parent owns the opening object and writes
+ * back via onChange with the new full supplyOverrides map.
+ */
+export default function OpeningSupplyOverridePicker({
+  opening,
+  libraryItems,
+  onChange,
+}: {
+  opening: Pick<Opening, 'widthMm' | 'kind' | 'supplyOverrides'>
+  libraryItems: SupplyItem[]
+  onChange: (next: Opening['supplyOverrides']) => void
+}) {
+  const overrides = opening.supplyOverrides ?? {}
+  const isDoor = opening.kind === 'door'
+
+  // Build the dropdown options per scope. Includes:
+  //   - Auto (with a hint of what the resolver currently picks so the
+  //     user can see what they're overriding from).
+  //   - Each library item whose unit matches the scope. We show ALL
+  //     items, not just width-range matches, so the user can
+  //     deliberately charge an out-of-range item (e.g. the typical
+  //     case where the price guide doesn't perfectly map ranges).
+  //   - None.
+  function optionsFor(
+    scope: OpeningScope,
+    unit:
+      | 'per-opening'
+      | 'per-opening-head'
+      | 'per-opening-sill',
+  ) {
+    const allForScope = libraryItems.filter((it) => it.unit === unit)
+    const autoItems = resolveOpeningSupplyItems(
+      { ...opening, supplyOverrides: undefined },
+      scope,
+      libraryItems,
+    )
+    const autoLabel =
+      autoItems.length === 0
+        ? 'Auto - nothing in scope'
+        : autoItems.length === 1
+          ? `Auto - ${autoItems[0].name}`
+          : `Auto - ${autoItems.length} items`
+    return { allForScope, autoLabel }
+  }
+
+  const opening_ = useMemo(() => optionsFor('opening', 'per-opening'), [
+    libraryItems,
+    opening,
+  ])
+  const head_ = useMemo(() => optionsFor('head', 'per-opening-head'), [
+    libraryItems,
+    opening,
+  ])
+  const sill_ = useMemo(() => optionsFor('sill', 'per-opening-sill'), [
+    libraryItems,
+    opening,
+  ])
+
+  function commit(
+    scope: 'opening' | 'head' | 'sill',
+    value: string | undefined,
+  ) {
+    const next: Opening['supplyOverrides'] = { ...overrides }
+    if (value === undefined) {
+      delete next[scope]
+    } else {
+      next[scope] = value as string | 'none'
+    }
+    // Empty object → undefined so the opening shape stays clean.
+    const hasAny =
+      next.opening !== undefined ||
+      next.head !== undefined ||
+      next.sill !== undefined
+    onChange(hasAny ? next : undefined)
+  }
+
+  function renderSelect(
+    scope: 'opening' | 'head' | 'sill',
+    label: string,
+    autoLabel: string,
+    items: SupplyItem[],
+    hint: string,
+  ) {
+    const v = overrides[scope]
+    const selectValue =
+      v === 'none' ? '__none__' : v ?? '__auto__'
+    return (
+      <label className="block text-xs">
+        <span className="block text-ink-300 mb-1">{label}</span>
+        <select
+          value={selectValue}
+          onChange={(e) => {
+            const val = e.target.value
+            if (val === '__auto__') commit(scope, undefined)
+            else if (val === '__none__') commit(scope, 'none')
+            else commit(scope, val)
+          }}
+          className="w-full px-2 py-1.5 border border-ink-600 rounded bg-ink-900 text-ink-50 text-xs focus:outline-none focus:border-beme-400"
+        >
+          <option value="__auto__">{autoLabel}</option>
+          <option value="__none__">None - skip this scope</option>
+          <option disabled>──────────</option>
+          {items.length === 0 && (
+            <option disabled>No library items for this scope</option>
+          )}
+          {items.map((it) => (
+            <option key={it.id} value={it.id}>
+              {it.name}
+              {it.isProjectDefault ? ' ★' : ''}
+            </option>
+          ))}
+        </select>
+        <span className="block text-[10px] text-ink-500 mt-1 leading-snug">
+          {hint}
+        </span>
+      </label>
+    )
+  }
+
+  return (
+    <div className="md:col-span-2 p-3 rounded-lg border border-ink-700 bg-ink-900/40">
+      <div className="text-xs font-semibold text-ink-300 mb-1">
+        Supply overrides (optional)
+      </div>
+      <p className="text-[11px] text-ink-500 mb-3 leading-snug">
+        Pick which supply items charge for this opening. Leave on{' '}
+        <em>Auto</em> to follow the project default. ★ marks library
+        items set as the project default for their scope.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {renderSelect(
+          'opening',
+          'Opening (lintel etc.)',
+          opening_.autoLabel,
+          opening_.allForScope,
+          'Per-opening supplies - typically the lintel.',
+        )}
+        {renderSelect(
+          'head',
+          'Head',
+          head_.autoLabel,
+          head_.allForScope,
+          'Head bedding, lintel mastic, head-trim consumables.',
+        )}
+        {!isDoor &&
+          renderSelect(
+            'sill',
+            'Sill',
+            sill_.autoLabel,
+            sill_.allForScope,
+            'Windows only - doors have no sill.',
+          )}
+        {isDoor && (
+          <div className="text-[11px] text-ink-500 self-end leading-snug">
+            <span className="block font-medium text-ink-400 mb-1">
+              Sill
+            </span>
+            Auto-skipped - doors have no sill course.
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

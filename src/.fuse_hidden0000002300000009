@@ -1,0 +1,378 @@
+@import "tailwindcss";
+
+/**
+ * Custom Tailwind variant: `light:` matches when the `.light` class is on
+ * <html> (or any ancestor). Use it to apply a different utility in light
+ * mode without writing parallel components.
+ *
+ * The default `dark:` variant in Tailwind v4 keys off `prefers-color-scheme`,
+ * which is the OS-level preference — we manage theme via an explicit toggle
+ * stored in localStorage, so we need our own variant pointing at the same
+ * class the theme hook applies.
+ *
+ *   Example:
+ *     <span className="text-blue-200 light:text-blue-800
+ *                      bg-blue-500/15 light:bg-blue-100">
+ *
+ * Dark mode (default) reads text-blue-200 / bg-blue-500/15; in light mode
+ * the same span resolves to text-blue-800 / bg-blue-100.
+ */
+@custom-variant light (&:where(.light, .light *));
+
+/**
+ * Beme theme tokens — two themes, one set of utility classes.
+ *
+ * The default (`:root`) is Studio Black (dark). When `.light` is applied to
+ * `<html>`, the same `--color-ink-N` variables flip to their light-mode
+ * equivalents, so `bg-ink-800` / `text-ink-50` etc. respond to the theme
+ * without us rewriting any component.
+ *
+ * Brand orange stays the same in both themes — it's the load-bearing accent.
+ * Buttons that read `text-ink-900` for "dark text on orange" should use
+ * `text-black` instead so they don't flip in light mode (would fail WCAG).
+ */
+
+@theme {
+  /* Brand orange — same in both themes */
+  --color-beme-50: #fff7ed;
+  --color-beme-100: #ffedd5;
+  --color-beme-200: #fed7aa;
+  --color-beme-300: #fdba74;
+  --color-beme-400: #fb923c;
+  --color-beme-500: #ff7a2d;
+  --color-beme-600: #ed6d1a;
+  --color-beme-700: #c25411;
+  --color-beme-800: #9a3f08;
+  --color-beme-900: #431407;
+
+  /* Warm ink scale — DEFAULTS to dark mode (Studio Black).
+     Dark surfaces (ink-600 through ink-900) sit one step lighter than
+     the original Studio Black draft — the previous values landed too
+     close to pitch black, which made the page feel heavy. Text colours
+     (ink-50 through ink-500) are unchanged; the lift is dark-end only. */
+  --color-ink-50: #f3f3f4;
+  --color-ink-100: #d9d9dc;
+  --color-ink-200: #b4b4b9;
+  --color-ink-300: #9ca0a8;
+  --color-ink-400: #7a7e87;  /* +1 step — keeps muted contrast on lifted bg */
+  --color-ink-500: #585b62;  /* +1 step */
+  --color-ink-600: #3a3d44;  /* borders */
+  --color-ink-700: #2e2f35;  /* panel hover */
+  --color-ink-800: #232328;  /* panels / chrome */
+  --color-ink-900: #18181c;  /* page background — softer near-black */
+
+  /* Paper canvas — light surface for the PDF + walls; same in both themes */
+  --color-paper-50: #fdfcf9;
+  --color-paper-100: #fafaf7;
+  --color-paper-200: #efece4;
+  --color-paper-300: #e5e2dc;
+
+  /* Font families */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ── Type scale (slight bump over Tailwind v4 defaults) ────────────
+     Tailwind v4 reads `--text-*` from @theme; overriding the size and
+     paired line-height here lifts every `text-xs / sm / base / lg / xl
+     / 2xl / 3xl / 4xl` utility across the app in one place. Nudge of
+     roughly +1 px per step — enough to feel noticeably easier to read
+     without reflowing layouts. */
+  --text-xs: 0.9375rem;             /* 15 px (was 12) */
+  --text-xs--line-height: 1.375rem; /* 22 px */
+  --text-sm: 1.0625rem;             /* 17 px (was 14) */
+  --text-sm--line-height: 1.625rem; /* 26 px */
+  --text-base: 1.1875rem;           /* 19 px (was 16) */
+  --text-base--line-height: 1.875rem; /* 30 px */
+  --text-lg: 1.3125rem;             /* 21 px (was 18) */
+  --text-lg--line-height: 2rem;     /* 32 px */
+  --text-xl: 1.5rem;                /* 24 px (was 20) */
+  --text-xl--line-height: 2.125rem; /* 34 px */
+  --text-2xl: 1.875rem;             /* 30 px (was 24) */
+  --text-2xl--line-height: 2.375rem; /* 38 px */
+  --text-3xl: 2.25rem;              /* 36 px (was 30) */
+  --text-3xl--line-height: 2.625rem; /* 42 px */
+  --text-4xl: 2.75rem;              /* 44 px (was 36) */
+  --text-4xl--line-height: 3rem;    /* 48 px */
+}
+
+/* ── Light mode overrides ───────────────────────────────────────────────────
+   ink-50 = lightest in dark mode → becomes DARKEST in light mode (heading text)
+   ink-900 = darkest in dark mode → becomes LIGHTEST in light mode (page bg)
+   Effectively flips the scale end-to-end so the same `bg-ink-800` / `text-ink-50`
+   utilities resolve to the right values in either theme. */
+/* Light-mode palette: orange + black + white with a quiet warm cast.
+   Page surface sits between the old beige cream (#f7f4ec) and the
+   pure neutral gray (#f4f4f5) — just enough warmth that the screen
+   doesn't feel clinical, but cool enough that brand orange + black
+   still read as the dominant tones rather than melting into beige.
+   Universal solution — touch this block, every component using
+   `bg-ink-* / text-ink-* / border-ink-*` re-skins for free. */
+:root.light {
+  --color-ink-50: #09090b;   /* near-black — strongest text / heading */
+  --color-ink-100: #18181b;  /* primary text on white panels */
+  --color-ink-200: #27272a;  /* body text */
+  --color-ink-300: #52525b;  /* secondary text */
+  --color-ink-400: #74716a;  /* muted text — faint warm cast */
+  --color-ink-500: #a3a098;  /* muted icons — faint warm cast */
+  --color-ink-600: #d6d3cc;  /* card / panel borders — visible on the
+                                  page bg, slight warm tint */
+  --color-ink-700: #e8e4db;  /* panel hover / one-step lift, warm */
+  --color-ink-800: #ffffff;  /* panels / cards / chrome — pure white */
+  --color-ink-900: #f6f4ee;  /* page background — softly warm off-white.
+                                  Sits between the old cream and a
+                                  cool gray so the dashboard has a
+                                  real "page" feel without going beige. */
+}
+
+/* ── Accent colour overrides for light mode ─────────────────────────────────
+   The status badges and action buttons across the app use a "subtle dark"
+   pattern that's tuned for dark backgrounds:
+     bg-{colour}-500/15  +  text-{colour}-200  +  border-{colour}-500/40
+   In dark mode this reads as light text on a faintly-tinted dark surface.
+   In light mode the same light text sits on a faintly-tinted *white* surface
+   and effectively disappears.
+   Rather than rewriting every component with `light:` variants, we override
+   the specific Tailwind utility classes when the theme is light. The colour
+   ramps below shift to a "subtle dark text on pale surface" pattern that
+   reads cleanly on the off-white page bg.
+   Each rule has higher specificity than the Tailwind utility (`:root.light`
+   prefix), so the override applies wherever the class is used. */
+:root.light {
+  /* Blue — used for "in progress" state */
+  .bg-blue-500\/10,
+  .bg-blue-500\/15,
+  .bg-blue-500\/20 { background-color: #dbeafe; /* blue-100 */ }
+  .text-blue-100,
+  .text-blue-200,
+  .text-blue-300 { color: #1e40af; /* blue-800 */ }
+  .border-blue-500\/40 { border-color: #93c5fd; /* blue-300 */ }
+
+  /* Emerald — used for "completed" state, win-rate accents */
+  .bg-emerald-500\/10,
+  .bg-emerald-500\/15,
+  .bg-emerald-500\/20 { background-color: #d1fae5; /* emerald-100 */ }
+  .text-emerald-100,
+  .text-emerald-200,
+  .text-emerald-300 { color: #065f46; /* emerald-800 */ }
+  .border-emerald-500\/40 { border-color: #6ee7b7; /* emerald-300 */ }
+  .hover\:bg-emerald-500\/20:hover { background-color: #a7f3d0; /* emerald-200 */ }
+
+  /* Amber — used for "pending" state, calibration banners */
+  .bg-amber-500\/10,
+  .bg-amber-500\/15,
+  .bg-amber-500\/20 { background-color: #fef3c7; /* amber-100 */ }
+  .text-amber-100,
+  .text-amber-200,
+  .text-amber-300 { color: #92400e; /* amber-800 */ }
+  .border-amber-500\/40 { border-color: #fcd34d; /* amber-300 */ }
+  .hover\:bg-amber-500\/20:hover { background-color: #fde68a; /* amber-200 */ }
+
+  /* Rose — used for "cancelled" state, danger buttons */
+  .bg-rose-500\/10,
+  .bg-rose-500\/15,
+  .bg-rose-500\/20 { background-color: #ffe4e6; /* rose-100 */ }
+  .text-rose-100,
+  .text-rose-200,
+  .text-rose-300,
+  .text-rose-400 { color: #9f1239; /* rose-800 */ }
+  .border-rose-500\/40 { border-color: #fda4af; /* rose-300 */ }
+  .hover\:bg-rose-500\/10:hover { background-color: #fecdd3; /* rose-200 */ }
+  .hover\:bg-rose-500\/20:hover { background-color: #fecdd3; /* rose-200 */ }
+
+  /* beme orange — main brand accent. The /15 tint on light-mode white reads
+     as anaemic; bump it to a more saturated pale so the "active" pill
+     selection stays obvious. */
+  .bg-beme-500\/10,
+  .bg-beme-500\/15 { background-color: #ffedd5; /* beme-100 */ }
+  .text-beme-300,
+  .text-beme-400 { color: #9a3f08; /* beme-800 */ }
+  .border-beme-500\/40 { border-color: #fdba74; /* beme-300 */ }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Default page zoom — shrinks the whole UI slightly so more content fits
+   per viewport. Set to 0.88 (the original desktop choice). If you change
+   this, also update the matching `h-[calc(100vh/N)]` on estimate page
+   wrappers so the workspace still fills the visual viewport — the
+   compensation factor is 1/zoom.
+
+   `zoom` is the right tool here — it scales BOTH content and layout boxes
+   so scrollbars / fixed-position elements stay correct, unlike
+   `transform: scale()` which leaves them at their original size and
+   creates a viewport overflow. Standard in WebKit/Blink/Firefox now. */
+html {
+  /* Was 0.88, then 0.75 (15% smaller for more floorplan room). Josh
+     bumped back up by 5% — 0.75 × 1.05 ≈ 0.79. */
+  zoom: 0.79;
+}
+
+body {
+  background: var(--color-ink-900);
+  color: var(--color-ink-50);
+  font-family: var(--font-sans);
+  /* Base size matched to the bumped text-sm token above — controls things
+     that inherit straight from <body> (native <select> options, plain
+     inputs without a Tailwind text class, etc.) so they don't look out of
+     place next to the rest of the UI. */
+  font-size: 17px;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Scroll feel inside panels — adapts to theme via the ink-600 token */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-ink-600);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-500);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* Keep PDF / canvas area light — these classes are applied to the workspace surface */
+.surface-paper {
+  background: var(--color-paper-100);
+  color: var(--color-ink-900);
+}
+
+/* Code-style helpers */
+.font-mono,
+code,
+kbd,
+.tabular-mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/* Allow focused inputs to keep an orange ring on dark */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--color-beme-500);
+  outline-offset: 1px;
+}
+
+/* ── Card hover lift ────────────────────────────────────────────────
+   Mirrors the .lift utility on the marketing site so the dashboard
+   surfaces feel like they belong to the same product. Subtle 3px
+   nudge up + brand-orange border highlight + soft glow on hover.
+   Respects prefers-reduced-motion. */
+.lift {
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.25s ease;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  border-color: var(--color-beme-500);
+  box-shadow: 0 12px 32px rgba(255, 122, 45, 0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .lift:hover {
+    transform: none;
+  }
+}
+
+/**
+ * Force the closed-hand "grabbing" cursor across the whole canvas while
+ * a pan gesture is in progress. The Konva stage and PDF page each set
+ * their own cursor (crosshair while a draw tool is active, default
+ * otherwise), so a container-level style="cursor: grabbing" gets
+ * overridden as soon as the cursor crosses an inner element. The wildcard
+ * with !important on this class wins over those, giving the user clear
+ * feedback that the cursor is panning rather than placing.
+ */
+.beme-pan-active,
+.beme-pan-active * {
+  cursor: grabbing !important;
+}
+
+/**
+ * Stop-and-start logo spin used by <BemeLoader />.
+ *
+ * The Beme logo rotates a clean 360° over the first 55% of the cycle,
+ * then holds dead still for the remaining 45% before kicking off
+ * again. Because 0° and 360° are visually identical the loop appears
+ * seamless — spin, pause, spin, pause — and reads as a deliberate
+ * mechanical rhythm rather than a generic spinner.
+ *
+ * Easing is `cubic-bezier(0.65, 0, 0.35, 1)` (ease-in-out) so the
+ * spin accelerates from a stop, hits speed in the middle, and decelerates
+ * back to a halt at the pause — like a wheel being given a single
+ * crisp push each cycle.
+ *
+ * 1.6s total feels about right for "I notice it's spinning" without
+ * being annoying. Reduced-motion users get a static logo.
+ */
+@keyframes beme-spin-stop {
+  0% {
+    transform: rotate(0deg);
+  }
+  55% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+.beme-spin-stop {
+  animation: beme-spin-stop 1.6s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  transform-origin: 50% 50%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beme-spin-stop {
+    animation: none;
+  }
+}
+
+/**
+ * "Just saved" checkmark — pops in next to the save-status pill the
+ * moment a save lands. Scales from 60% to 105% then settles to 100%
+ * so it reads as a beat of confirmation rather than a static glyph.
+ * Plays once on mount (animation duration 350ms, no iteration count
+ * → runs to completion and stays at the final frame). Pair with a
+ * keyed React node so a fresh save remounts the element and replays
+ * the animation; in ProjectBar we re-render via the justSaved state
+ * flipping true so the element appears fresh each time.
+ */
+@keyframes beme-check-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.beme-check-pop {
+  animation: beme-check-pop 350ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: 50% 50%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .beme-check-pop {
+    animation: none;
+  }
+}

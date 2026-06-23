@@ -1,0 +1,140 @@
+/**
+ * Tiny dependency-free donut chart.
+ *
+ * Renders a ring of arcs in SVG using stroke-dasharray on a single <circle>
+ * per slice. Each slice's dash length is its share of the total circumference;
+ * dashoffset rotates the slice into position behind the previous ones.
+ *
+ * Pass it a `centreLabel` + `centreValue` and they'll be placed in the middle
+ * of the ring (e.g. "WIN RATE" / "68%"). Skips zero-value slices.
+ */
+
+interface DonutSlice {
+  label: string
+  value: number
+  /** Hex / CSS colour for the ring segment. */
+  color: string
+}
+
+interface DonutChartProps {
+  slices: DonutSlice[]
+  /** Pixel size of the SVG (square). Defaults to 160. */
+  size?: number
+  /** Stroke (ring) thickness in px. Defaults to 18. */
+  thickness?: number
+  /** Large value in the centre — e.g. "68%". */
+  centreValue?: string
+  /** Small caps label above the value — e.g. "WIN RATE". */
+  centreLabel?: string
+  /** When all slices are 0 we draw a flat grey ring and show this hint. */
+  emptyHint?: string
+}
+
+export default function DonutChart({
+  slices,
+  size = 160,
+  thickness = 18,
+  centreValue,
+  centreLabel,
+  emptyHint = 'No data yet',
+}: DonutChartProps) {
+  const radius = (size - thickness) / 2
+  const cx = size / 2
+  const cy = size / 2
+  const circumference = 2 * Math.PI * radius
+  const total = slices.reduce((s, x) => s + Math.max(0, x.value), 0)
+
+  // Walk the slices and stash a cumulative offset so each arc starts where
+  // the previous one ended. SVG dashoffset is "shift the dash pattern by N"
+  // — negative shifts it clockwise from the 12 o'clock position (because of
+  // our -90deg rotation below).
+  let cursor = 0
+  const arcs =
+    total === 0
+      ? []
+      : slices
+          .filter((s) => s.value > 0)
+          .map((s) => {
+            const length = (s.value / total) * circumference
+            const dashArray = `${length} ${circumference - length}`
+            const dashOffset = -cursor
+            cursor += length
+            return { ...s, dashArray, dashOffset }
+          })
+
+  return (
+    <div className="inline-flex flex-col items-center gap-3">
+      <div className="relative" style={{ width: size, height: size }}>
+        <svg
+          width={size}
+          height={size}
+          viewBox={`0 0 ${size} ${size}`}
+          // Rotate so arcs start at 12 o'clock and proceed clockwise.
+          style={{ transform: 'rotate(-90deg)' }}
+          aria-hidden
+        >
+          {/* Track ring (always shown, sits behind the slices) */}
+          <circle
+            cx={cx}
+            cy={cy}
+            r={radius}
+            fill="none"
+            stroke="var(--color-ink-700)"
+            strokeWidth={thickness}
+          />
+          {/* Slices */}
+          {arcs.map((arc) => (
+            <circle
+              key={arc.label}
+              cx={cx}
+              cy={cy}
+              r={radius}
+              fill="none"
+              stroke={arc.color}
+              strokeWidth={thickness}
+              strokeDasharray={arc.dashArray}
+              strokeDashoffset={arc.dashOffset}
+              strokeLinecap="butt"
+            />
+          ))}
+        </svg>
+
+        {/* Centre label — absolutely positioned inside the ring */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
+          {total === 0 ? (
+            <span className="text-xs text-ink-400 px-3">{emptyHint}</span>
+          ) : (
+            <>
+              {centreLabel && (
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-400">
+                  {centreLabel}
+                </span>
+              )}
+              {centreValue && (
+                <span className="text-2xl font-extrabold text-ink-50 tabular-nums tracking-tight">
+                  {centreValue}
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Legend underneath */}
+      {slices.length > 0 && (
+        <div className="flex items-center gap-3 flex-wrap justify-center text-xs">
+          {slices.map((s) => (
+            <div key={s.label} className="flex items-center gap-1.5">
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-sm"
+                style={{ backgroundColor: s.color }}
+              />
+              <span className="text-ink-300">{s.label}</span>
+              <span className="text-ink-100 font-semibold tabular-nums">{s.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

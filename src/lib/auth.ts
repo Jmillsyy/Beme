@@ -1,12 +1,12 @@
 /**
- * Auth utilities — sign in with Microsoft, sign out, and a React hook for the
+ * Auth utilities - sign in with Microsoft, sign out, and a React hook for the
  * current user.
  *
  * Microsoft accounts work via Supabase's "azure" OAuth provider, which we
  * configure with the Microsoft Entra app's client ID + secret in the Supabase
  * dashboard. From the client's POV it's just a redirect:
  *
- *    signInWithMicrosoft() → login.microsoftonline.com → back to /auth/callback
+ * signInWithMicrosoft() → login.microsoftonline.com → back to /auth/callback
  *
  * Supabase then exchanges the OAuth code for a session, persists it in
  * localStorage, and emits an `onAuthStateChange` event the hook listens for.
@@ -74,8 +74,41 @@ export function useAuth(): AuthState {
 }
 
 /**
+ * Reject if `work` has not settled within `ms`. supabase-js has no built-in
+ * request timeout, so a connection that stalls mid-handshake (flaky wifi, a
+ * Supabase blip, a laptop waking from sleep) leaves the auth call pending
+ * forever. Without this the sign-in button's busy flag never clears and the
+ * user is stuck on a spinner with no error and no way to retry. Wrapping each
+ * call turns a hang into an ordinary error the UI already knows how to show.
+ */
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                'The server took too long to respond. Check your connection and try again.'
+              )
+            ),
+          ms
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** How long to wait on an auth request before treating it as a hang. */
+const AUTH_TIMEOUT_MS = 20000
+
+/**
  * Kick off the Microsoft OAuth flow. The browser redirects to
- * login.microsoftonline.com and (on success) back to our app's origin —
+ * login.microsoftonline.com and (on success) back to our app's origin -
  * Supabase picks up the `#access_token=…` fragment automatically and stores
  * a session.
  */
@@ -103,7 +136,7 @@ export async function signInWithMicrosoft(): Promise<{ error: Error | null }> {
  *
  * Supabase emails the user a link; clicking it lands them back at the app
  * origin with an active session attached. No password required, no separate
- * sign-up step — the first time a given email signs in, Supabase creates
+ * sign-up step - the first time a given email signs in, Supabase creates
  * an auth.users row for them automatically.
  *
  * This is the lowest-friction sign-in path; useful for dogfooding and for
@@ -118,14 +151,21 @@ export async function signInWithMagicLink(
       error: new Error('Supabase is not configured. See SETUP.md.'),
     }
   }
-  const { error } = await supabase().auth.signInWithOtp({
-    email: email.trim(),
-    options: {
-      emailRedirectTo: `${window.location.origin}/`,
-      shouldCreateUser: true,
-    },
-  })
-  return { error }
+  try {
+    const { error } = await withTimeout(
+      supabase().auth.signInWithOtp({
+        email: email.trim(),
+        options: {
+          emailRedirectTo: `${window.location.origin}/`,
+          shouldCreateUser: true,
+        },
+      }),
+      AUTH_TIMEOUT_MS
+    )
+    return { error }
+  } catch (e) {
+    return { error: e instanceof Error ? e : new Error('Could not send the link.') }
+  }
 }
 
 /**
@@ -134,18 +174,18 @@ export async function signInWithMagicLink(
  * over the user's lifetime.
  *
  * - `org-invited`: signed up by accepting an invitation link. These users
- *   are exclusively organisation members — even if they're not currently in
- *   any org (because they were removed, or their invite hasn't been claimed
- *   on the new org yet), the UI shows an org-aware empty state, not the
- *   personal "win-rate donut" dashboard. They live in a different product
- *   space than a bricklayer doing supply-and-lay quotes.
+ * are exclusively organisation members - even if they're not currently in
+ * any org (because they were removed, or their invite hasn't been claimed
+ * on the new org yet), the UI shows an org-aware empty state, not the
+ * personal "win-rate donut" dashboard. They live in a different product
+ * space than a bricklayer doing supply-and-lay quotes.
  *
  * - `personal`: signed up directly, lives in the personal projects flow.
- *   Can still be added to organisations later (legacy admins fall into
- *   this bucket because they signed themselves up before the invite flow
- *   existed) — when they are, they see the OrgDashboard for their active
- *   org and PersonalDashboard when no org is selected. Default for any
- *   user whose metadata doesn't have an account_type field.
+ * Can still be added to organisations later (legacy admins fall into
+ * this bucket because they signed themselves up before the invite flow
+ * existed) - when they are, they see the OrgDashboard for their active
+ * org and PersonalDashboard when no org is selected. Default for any
+ * user whose metadata doesn't have an account_type field.
  */
 export type AccountType = 'personal' | 'org-invited'
 
@@ -173,7 +213,7 @@ export function accountTypeOf(user: User | null): AccountType {
  * fallback even if they're temporarily not in any org.
  *
  * If Supabase has email confirmation enabled the user will need to click a
- * confirmation link before they can sign in — turn it off in the Auth
+ * confirmation link before they can sign in - turn it off in the Auth
  * settings if you want the invite link to be the only confirmation step.
  */
 export async function signUpWithPassword(
@@ -200,7 +240,7 @@ export async function signUpWithPassword(
 
 /**
  * Sign in with email + password. Counterpart to signUpWithPassword for
- * users who already have an account — works after they set their password
+ * users who already have an account - works after they set their password
  * via the invite flow. Falls back to magic link from the sign-in page if
  * Supabase email confirmation is on and they haven't confirmed yet.
  */
@@ -211,11 +251,15 @@ export async function signInWithPassword(
   if (!isSupabaseConfigured) {
     return { error: new Error('Supabase is not configured. See SETUP.md.') }
   }
-  const { error } = await supabase().auth.signInWithPassword({
-    email: email.trim(),
-    password,
-  })
-  return { error }
+  try {
+    const { error } = await withTimeout(
+      supabase().auth.signInWithPassword({ email: email.trim(), password }),
+      AUTH_TIMEOUT_MS
+    )
+    return { error }
+  } catch (e) {
+    return { error: e instanceof Error ? e : new Error('Sign-in failed.') }
+  }
 }
 
 /**
@@ -225,7 +269,7 @@ export async function signInWithPassword(
  * + password going forward, in addition to whatever auth method they used
  * to create the account.
  *
- * Supabase doesn't require the existing password to update — auth.updateUser
+ * Supabase doesn't require the existing password to update - auth.updateUser
  * trusts the active session. The signed-in user is the only one who can
  * call this for their own account, so accidental changes by a third party
  * are gated by session ownership, not password knowledge. If you ever want
@@ -244,7 +288,7 @@ export async function updatePassword(
 
 /**
  * Update the signed-in user's email address. Supabase sends a verification
- * link to the NEW address — until the user clicks it, sign-in continues to
+ * link to the NEW address - until the user clicks it, sign-in continues to
  * work with the old address. Once verified, the new email replaces the old.
  *
  * Same trust model as `updatePassword`: session ownership is taken as proof
@@ -282,7 +326,7 @@ export async function signOut(): Promise<void> {
 }
 
 /**
- * Best-effort display name for the user — Microsoft puts the full name in
+ * Best-effort display name for the user - Microsoft puts the full name in
  * either `user_metadata.full_name` or `name`. Falls back to the email.
  */
 export function displayNameOf(user: User | null): string {

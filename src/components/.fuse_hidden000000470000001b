@@ -1,0 +1,900 @@
+import { useMemo, useState } from 'react'
+import { confirm } from '../lib/confirm'
+import type { Block, BlockCode, BlockRole } from '../types/blocks'
+import {
+  PROTECTED_BLOCK_CODES,
+  removeBlock,
+  resetBlockLibrary,
+  upsertBlock,
+  useBlockLibrary,
+} from '../data/blockLibrary'
+import LengthInput from './LengthInput'
+import { formatLengthShort } from '../lib/units'
+import { useUserSettings } from '../lib/userSettings'
+
+/**
+ * The user's editable block library. Add, edit, or delete blocks.
+ *
+ * Protected blocks (the SEQ QLD codes the calc engine reaches for by name —
+ * 20.48, 20.01, 20.03, 20.45 + tile, fractions, height-makeup blocks) can be
+ * renamed and re-dimensioned but not deleted. Custom blocks have no
+ * restrictions.
+ *
+ * Changes persist to IndexedDB and live-update every dependent panel
+ * (wall types, pier types, block tally) via the useBlockLibrary subscription.
+ */
+
+/**
+ * Label for a depth bucket. Pure depth → string mapping with no
+ * hardcoded series names or regional terminology. Whatever depth a
+ * block carries gets its own category; the label is just the depth
+ * value formatted as "190mm". A 194mm block makes a "194mm" group, a
+ * 220mm custom block makes a "220mm" group. The library reorganises
+ * itself any time a block is added or has its depth edited — no
+ * lookup table to maintain, no preset state, no naming opinions baked
+ * in. Users who want pretty names can rename a block (the name shows
+ * on the row) without affecting how the catalogue is grouped.
+ */
+function labelForDepth(
+  depthMm: number,
+  units: 'metric' | 'imperial' = 'metric',
+): string {
+  return formatLengthShort(depthMm, units)
+}
+
+const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
+  { value: 'body', label: 'Body (main course)' },
+  { value: 'end-termination', label: 'End termination' },
+  { value: 'corner', label: 'Corner' },
+  { value: 'fraction', label: 'Fraction (length makeup)' },
+  { value: 'height-makeup', label: 'Height makeup' },
+  { value: 'base-course', label: 'Base course' },
+  { value: 'top-course', label: 'Top course (bond beam)' },
+  { value: 'cap', label: 'Capping tile (sits on top of the wall)' },
+  { value: 'pier', label: 'Pier' },
+  { value: 'lintel', label: 'Lintel' },
+  { value: 'curve-tight', label: 'Tight-curve wedge' },
+  { value: 'legacy', label: 'Legacy / rarely used' },
+]
+
+interface BlockLibraryPanelProps {
+  /**
+   * If provided, only blocks usable by this scope are shown by default
+   * (the user can switch to "All blocks"). Otherwise shows all blocks.
+   */
+  scope?: 'block' | 'brick'
+  /**
+   * When true, the panel renders the block list in view-only mode — no
+   * + Add button, no Edit / Delete on rows, no Reset link. Used on the
+   * dashboard for non-admin org members.
+   */
+  readOnly?: boolean
+  /**
+   * Start expanded instead of collapsed. Useful on the dashboard where
+   * the library IS the main content of its section.
+   */
+  defaultExpanded?: boolean
+  /**
+   * Whether to render the panel chrome (border, expand toggle, header).
+   * Set to false when the parent already provides its own header.
+   */
+  hideChrome?: boolean
+}
+
+export default function BlockLibraryPanel({
+  scope: _scope,
+  readOnly = false,
+  defaultExpanded = false,
+  hideChrome = false,
+}: BlockLibraryPanelProps = {}) {
+  void _scope // reserved for future filtering
+  // BLOCK_LIBRARY is a stable singleton mutated in place — the only thing
+  // that signals "library changed" is `version` from useBlockLibrary. We
+  // MUST pass it into every useMemo that derives from `library`, otherwise
+  // edits look like they revert: the singleton updates, the component
+  // re-renders, but the memoised arrays still reference the pre-edit
+  // values because `library === library` evaluates true and useMemo
+  // short-circuits. This was the cause of the "name changes save but
+  // disappear" bug — the BLOCK_LIBRARY had the new value, but the
+  // rendered list was reading from a stale memo.
+  const { library, version: libraryVersion } = useBlockLibrary()
+  const { settings: panelSettings } = useUserSettings()
+  const panelUnits = panelSettings.preferences.units
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const [editingCode, setEditingCode] = useState<BlockCode | 'new' | null>(null)
+  const [filter, setFilter] = useState<'all' | BlockRole>('all')
+  // Collapsed depth buckets — by default every group is expanded so a
+  // first-time user sees all their blocks. Clicking a group's header
+  // toggles its entry in this set; the persistence is per-session
+  // (component state) which is enough for a "fold while I focus on
+  // one series" workflow without leaking opinions across page loads.
+  const [collapsedDepths, setCollapsedDepths] = useState<Set<number>>(
+    () => new Set(),
+  )
+  const toggleDepth = (depthMm: number) => {
+    setCollapsedDepths((prev) => {
+      const next = new Set(prev)
+      if (next.has(depthMm)) next.delete(depthMm)
+      else next.add(depthMm)
+      return next
+    })
+  }
+
+  const blocks = useMemo(() => {
+    const all = Object.values(library)
+    if (filter === 'all') return all.sort((a, b) => a.code.localeCompare(b.code))
+    return all.filter((b) => b.roles.includes(filter)).sort((a, b) => a.code.localeCompare(b.code))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [library, libraryVersion, filter])
+
+  // Depth-grouped view of the filtered block list. Blocks in masonry
+  // catalogues are partitioned by the wall thickness they build —
+  // 90mm-deep blocks form 100-series walls, 190mm-deep form 200-series,
+  // etc. Two blocks at different depths can never lay together (the wall
+  // face would step), so it's the only field that really matters for
+  // grouping. Width and height vary freely within a depth group
+  // (body / corner / half / bond beam all share the same depth).
+  //
+  // Auto-derived from depthMm with no new field on Block. Any non-
+  // standard depth (custom block, specialty unit) lands in its own
+  // bucket — the user sees exactly the depths that exist in their
+  // library, no preset assumption baked in.
+  const groupedBlocks = useMemo(() => {
+    const buckets = new Map<number, Block[]>()
+    for (const b of blocks) {
+      const d = b.dimensions.depthMm
+      const list = buckets.get(d)
+      if (list) list.push(b)
+      else buckets.set(d, [b])
+    }
+    return Array.from(buckets.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([depthMm, list]) => ({ depthMm, blocks: list }))
+  }, [blocks])
+
+  const showAddButton = expanded && !readOnly
+
+  return (
+    <div className={hideChrome ? '' : 'my-4 border border-ink-600 rounded-xl bg-ink-800 p-3'}>
+      {!hideChrome && (
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-center gap-2 text-left flex-1 min-w-0 group"
+          >
+            <span className="text-ink-400 group-hover:text-ink-200 text-xs">
+              {expanded ? '▾' : '▸'}
+            </span>
+            <h3 className="text-sm font-semibold text-ink-50 group-hover:text-beme-300">
+              Block library
+            </h3>
+            <span className="text-xs text-ink-400 truncate">
+              · {Object.keys(library).length} blocks
+            </span>
+          </button>
+          {showAddButton && (
+            <button
+              onClick={() => setEditingCode('new')}
+              className="text-sm px-2.5 py-1 rounded-lg bg-beme-500 text-black font-medium hover:bg-beme-400 transition-colors flex-shrink-0"
+            >
+              + Add
+            </button>
+          )}
+        </div>
+      )}
+      {hideChrome && !readOnly && (
+        // Prominent add row — pinned to the top of the panel so the
+        // primary action (add a block to the library) is always one
+        // glance away, never buried below the catalogue. Mirrored by
+        // BrickLibraryPanel and the supply-items editor so each
+        // material-library tab opens with the same "+ Add" affordance
+        // in the same place.
+        <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-ink-700">
+          <div className="text-xs text-ink-400">
+            <span className="font-semibold text-ink-200">
+              {Object.keys(library).length}
+            </span>{' '}
+            block{Object.keys(library).length === 1 ? '' : 's'} in your library
+          </div>
+          <button
+            onClick={() => setEditingCode('new')}
+            className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 transition-colors shadow-sm whitespace-nowrap"
+          >
+            + Add block
+          </button>
+        </div>
+      )}
+
+      {(expanded || hideChrome) && (
+        <div className="flex flex-col gap-2">
+          {/* Lintel blocks are now just regular library entries tagged
+              with role 'lintel' via the block editor's role picker — no
+              separate "Supply lintels?" toggle, no dedicated catalogue.
+              When at least one block has the role, the calc engine
+              picks the smallest one whose face height bridges each
+              opening's head. When no block has the role, the head
+              course is left empty in the schedule (useful if the
+              region uses a separate structural lintel beam). A body
+              block can double as a lintel by adding the 'lintel'
+              role alongside 'body'. */}
+
+          {/* Filter row */}
+          <div className="flex items-center gap-2 text-xs text-ink-300">
+            <label htmlFor="block-library-filter" className="flex-shrink-0">
+              Show:
+            </label>
+            <select
+              id="block-library-filter"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as 'all' | BlockRole)}
+              className="flex-1 px-2 py-1 border border-ink-600 rounded text-xs bg-ink-900 text-ink-50"
+            >
+              <option value="all">All blocks</option>
+              {ROLE_OPTIONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Empty state. Two flavours: a) library has nothing in it
+              (first-run / wiped), b) filter excludes everything but the
+              library has entries. Different messaging because different
+              fixes — add a block vs change the filter. */}
+          {blocks.length === 0 && (
+            <div className="rounded-lg border border-dashed border-ink-600 bg-ink-900/40 px-4 py-6 text-center">
+              {Object.keys(library).length === 0 ? (
+                <>
+                  <p className="text-sm font-semibold text-ink-100">
+                    Your block library is empty
+                  </p>
+                  <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                    Block estimates need at least one block in your library
+                    before you can create wall types or draw walls. Hit{' '}
+                    <span className="font-semibold text-ink-200">+ Add block</span>{' '}
+                    above to start.
+                  </p>
+                  <div className="mt-4 text-left max-w-md mx-auto rounded-md border border-ink-700 bg-ink-900/60 p-3">
+                    <p className="text-[11px] uppercase tracking-wider font-semibold text-ink-400 mb-2">
+                      What you need
+                    </p>
+                    <ul className="space-y-2 text-xs text-ink-300">
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A body block</span>{' '}
+                          — the main course block (tag it with the{' '}
+                          <span className="font-mono text-ink-200">body</span>{' '}
+                          role).
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A corner block</span>{' '}
+                          — for L-junctions and free ends (tag{' '}
+                          <span className="font-mono text-ink-200">corner</span>).
+                          Often the same block as the body — assign both roles.
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">A half block</span>{' '}
+                          (recommended) — for accurate course staggering
+                          (tag <span className="font-mono text-ink-200">half</span>).
+                        </span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="text-beme-300 font-semibold">•</span>
+                        <span>
+                          <span className="font-semibold text-ink-100">Bond beam, lintel, base course</span>{' '}
+                          — optional, but recommended for richer estimates.
+                        </span>
+                      </li>
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-ink-100">
+                    No blocks match this filter
+                  </p>
+                  <p className="text-xs text-ink-400 mt-1.5 leading-relaxed max-w-md mx-auto">
+                    No block in your library is tagged with the selected role.
+                    Try the <span className="font-semibold text-ink-200">All blocks</span>{' '}
+                    filter to see the full catalogue, or add the role to an
+                    existing block via Edit.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* List — grouped by depth (= masonry series). Auto-derived
+              from depthMm so any block added to the library lands in
+              its depth bucket without manual categorisation. Collapses
+              to a flat list when only one bucket exists (keeps small
+              libraries from showing a header for no reason). */}
+          <div className="flex flex-col gap-3">
+            {groupedBlocks.length === 1
+              ? (
+                <div className="flex flex-col gap-1">
+                  {groupedBlocks[0].blocks.map((block) => (
+                    <BlockRow
+                      key={block.code}
+                      block={block}
+                      readOnly={readOnly}
+                      onEdit={() => setEditingCode(block.code)}
+                      onDelete={async () => {
+                        const ok = await confirm({
+                          title: `Delete block "${block.code} — ${block.name}"?`,
+                          message:
+                            'The block is removed from your library. Wall ' +
+                            'types referencing it will need to be updated.',
+                          confirmLabel: 'Delete',
+                          variant: 'destructive',
+                        })
+                        if (ok) removeBlock(block.code)
+                      }}
+                    />
+                  ))}
+                </div>
+              )
+              : groupedBlocks.map(({ depthMm, blocks: groupBlocks }) => {
+                const isCollapsed = collapsedDepths.has(depthMm)
+                return (
+                  <div key={depthMm} className="flex flex-col gap-1">
+                    <button
+                      onClick={() => toggleDepth(depthMm)}
+                      className="flex items-baseline gap-2 px-1 pb-1 border-b border-ink-700 text-left group hover:border-ink-500 transition-colors"
+                      aria-expanded={!isCollapsed}
+                    >
+                      <span className="text-ink-400 group-hover:text-ink-200 text-xs">
+                        {isCollapsed ? '▸' : '▾'}
+                      </span>
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-ink-200 group-hover:text-beme-300 transition-colors">
+                        {labelForDepth(depthMm, panelUnits)}
+                      </h4>
+                      <span className="text-[11px] text-ink-500">
+                        {groupBlocks.length} block{groupBlocks.length === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                    {!isCollapsed &&
+                      groupBlocks.map((block) => (
+                        <BlockRow
+                          key={block.code}
+                          block={block}
+                          readOnly={readOnly}
+                          onEdit={() => setEditingCode(block.code)}
+                          onDelete={async () => {
+                            // PROTECTED_BLOCK_CODES is empty — every
+                            // block in the library is deletable. The
+                            // calc engine resolves every slot via role
+                            // tags + body-block fallback, so there's
+                            // no code-specific guard to honour.
+                            const ok = await confirm({
+                              title: `Delete block "${block.code} — ${block.name}"?`,
+                              message:
+                                'The block is removed from your library. Wall ' +
+                                'types referencing it will need to be updated.',
+                              confirmLabel: 'Delete',
+                              variant: 'destructive',
+                            })
+                            if (ok) removeBlock(block.code)
+                          }}
+                        />
+                      ))}
+                  </div>
+                )
+              })}
+          </div>
+
+          {/* Reset to defaults — admins only. */}
+          {!readOnly && (
+            <button
+              onClick={async () => {
+                const ok = await confirm({
+                  title: 'Reset the block library?',
+                  message:
+                    'Reverts every block to the SEQ QLD defaults. Custom ' +
+                    'blocks will be removed and any renames lost.',
+                  confirmLabel: 'Reset library',
+                  variant: 'destructive',
+                })
+                if (ok) resetBlockLibrary()
+              }}
+              className="self-start mt-2 text-xs text-ink-400 hover:text-rose-300 transition-colors"
+            >
+              ↺ Reset to defaults
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Editor modal — both for adding new and editing existing. Hidden in
+          read-only mode (the buttons that would open it aren't rendered). */}
+      {!readOnly && editingCode !== null && (
+        <BlockEditor
+          existing={editingCode === 'new' ? null : library[editingCode] ?? null}
+          existingCodes={Object.keys(library)}
+          roleSeed={null}
+          onSave={(block) => {
+            upsertBlock(block)
+            setEditingCode(null)
+          }}
+          onCancel={() => {
+            setEditingCode(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── Row ────────────────────────────────────────────────────────────────────
+
+function BlockRow({
+  block,
+  onEdit,
+  onDelete,
+  readOnly = false,
+}: {
+  block: Block
+  onEdit: () => void
+  onDelete: () => void
+  readOnly?: boolean
+}) {
+  const { settings } = useUserSettings()
+  const units = settings.preferences.units
+  // Reserved for callers that still want to call out seed-shipped
+  // codes, but the engine no longer treats any block as protected.
+  const protectedBlock = false
+  // Dimensions line — formatted per the user's units preference so a
+  // US user reads 8x4x8" and an AU user reads 194x194x194mm for the
+  // same block.
+  const fmt = (mm: number) => formatLengthShort(mm, units)
+  const dims = `${fmt(block.dimensions.widthMm)}×${fmt(block.dimensions.heightMm)}×${fmt(block.dimensions.depthMm)}`
+  return (
+    <div className="flex items-center gap-2 py-1.5 px-2 rounded-md border border-ink-600/40 hover:border-ink-600 hover:bg-ink-700/40 group">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-mono text-xs text-beme-300 font-medium">{block.code}</span>
+          <span className="text-sm text-ink-100 truncate">{block.name}</span>
+          {/* 'built-in' badge removed — every block is now fully
+              editable and deletable. The calc engine is role-based
+              and falls back to the body block for any unfilled slot,
+              so no specific block code is required for the program
+              to work. */}
+        </div>
+        <div className="text-[11px] text-ink-400 font-mono">
+          {dims}
+          {block.fraction !== undefined && <span> · {block.fraction}× fraction</span>}
+          {block.roles.length > 0 && <span> · {block.roles.join(', ')}</span>}
+        </div>
+      </div>
+      {!readOnly && (
+        <>
+          <button
+            onClick={onEdit}
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-ink-700 transition-colors"
+          >
+            Edit
+          </button>
+          <button
+            onClick={onDelete}
+            title={
+              protectedBlock
+                ? 'Default block — delete only when wiping the library to swap to a different block catalogue (warning prompt before it actually removes)'
+                : 'Delete this block'
+            }
+            className="px-2 py-1 rounded border border-ink-600 text-xs text-ink-300 hover:bg-rose-500/10 hover:border-rose-500/40 hover:text-rose-300 transition-colors"
+          >
+            Delete
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Editor ─────────────────────────────────────────────────────────────────
+
+interface BlockEditorProps {
+  existing: Block | null
+  existingCodes: string[]
+  /** Pre-select a role when the editor opens for a new block. Used by the
+   *  "+ Add lintel block" shortcut so the lintel role is ticked from the
+   *  start (rather than the default 'body'). Ignored when editing an
+   *  existing block. */
+  roleSeed?: BlockRole | null
+  onSave: (block: Block) => void
+  onCancel: () => void
+}
+
+function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: BlockEditorProps) {
+  const isNew = existing === null
+  const [code, setCode] = useState(existing?.code ?? '')
+  const [name, setName] = useState(existing?.name ?? '')
+  const [description, setDescription] = useState(existing?.description ?? '')
+  const [widthMm, setWidthMm] = useState<number>(existing?.dimensions.widthMm ?? 390)
+  const [heightMm, setHeightMm] = useState<number>(existing?.dimensions.heightMm ?? 190)
+  const [depthMm, setDepthMm] = useState<number>(existing?.dimensions.depthMm ?? 190)
+  const [rearWidthMm, setRearWidthMm] = useState<number | ''>(
+    existing?.dimensions.rearWidthMm ?? ''
+  )
+  const [roles, setRoles] = useState<BlockRole[]>(
+    existing?.roles ?? (roleSeed ? [roleSeed] : ['body'])
+  )
+  const [fraction, setFraction] = useState<number | ''>(existing?.fraction ?? '')
+  // Pairing fields — any block can be paired with another so the calc
+  // engine automatically tallies the partner block. Drives the AU
+  // 20.45 ↔ 50.45 cleanout-tile pairing without hardcoding it; other
+  // regions can pair their own blocks the same way (e.g. CMU cap
+  // blocks, header courses, etc.).
+  const [pairedWith, setPairedWith] = useState<BlockCode | ''>(
+    existing?.pairedWith ?? ''
+  )
+  const [pairedPer, setPairedPer] = useState<number>(existing?.pairedPer ?? 1)
+  // Lintel-specific configuration — only applied at save time when the
+  // `lintel` role is ticked. Empty string == "not set" (let the calc
+  // engine use its default of 200mm bearing, or fall through to height-
+  // based selection when the range is unset).
+  const [lintelMinHeadHeightMm, setLintelMinHeadHeightMm] = useState<number | ''>(
+    existing?.lintelMinHeadHeightMm ?? ''
+  )
+  const [lintelMaxHeadHeightMm, setLintelMaxHeadHeightMm] = useState<number | ''>(
+    existing?.lintelMaxHeadHeightMm ?? ''
+  )
+  const [lintelOverhangMm, setLintelOverhangMm] = useState<number | ''>(
+    existing?.lintelOverhangMm ?? ''
+  )
+
+  // Block built-in code rename to avoid breaking the calc engine. Built-in
+  // block codes are fixed; only their name / description / dimensions are editable.
+  // Code rename is unrestricted now — there's no protected-code list.
+  // Kept as a constant so the disabled / hint branches still compile;
+  // they're dead in practice and noop until a future workflow needs
+  // to re-introduce code locking (e.g. force-pinned regional codes).
+  const codeLocked = false
+
+  const trimmedCode = code.trim()
+  const codeClash =
+    isNew &&
+    trimmedCode.length > 0 &&
+    existingCodes.includes(trimmedCode)
+  const canSave =
+    trimmedCode.length > 0 && name.trim().length > 0 && !codeClash && roles.length > 0
+
+  function toggleRole(r: BlockRole) {
+    setRoles((prev) => (prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r]))
+  }
+
+  function handleSave() {
+    const block: Block = {
+      code: codeLocked ? existing!.code : trimmedCode,
+      name: name.trim(),
+      description: description.trim(),
+      dimensions: {
+        widthMm,
+        heightMm,
+        depthMm,
+        ...(rearWidthMm !== '' ? { rearWidthMm } : {}),
+      },
+      roles,
+      ...(fraction !== '' ? { fraction } : {}),
+      ...(pairedWith ? { pairedWith, pairedPer } : {}),
+      // Lintel-specific fields only persist when the lintel role is
+      // ticked. Tearing the role off a block also clears its lintel
+      // metadata at save time — keeps the schema tidy (no orphaned
+      // lintelOverhangMm on a body-only block) and matches how role-
+      // gated fields work elsewhere.
+      ...(roles.includes('lintel')
+        ? {
+            ...(lintelMinHeadHeightMm !== '' ? { lintelMinHeadHeightMm } : {}),
+            ...(lintelMaxHeadHeightMm !== '' ? { lintelMaxHeadHeightMm } : {}),
+            ...(lintelOverhangMm !== '' ? { lintelOverhangMm } : {}),
+          }
+        : {}),
+    }
+    onSave(block)
+  }
+
+  // Whether the user has ticked role(s) that need a specific extra
+  // field. Used to gate the "Rules" section visibility — when none of
+  // these are ticked we hide the whole section instead of showing
+  // greyed-out fields the user can't act on. The Lintel rules section
+  // already worked this way; same pattern applies to Fraction value
+  // and Rear width.
+  const showFractionRule = roles.includes('fraction')
+  const showCurveRule = roles.includes('curve-tight')
+  const showLintelRule = roles.includes('lintel')
+  const hasAnyRule = showFractionRule || showCurveRule || showLintelRule
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-2xl bg-ink-800 border border-ink-600 rounded-xl shadow-xl shadow-black/40 overflow-hidden flex flex-col max-h-[90vh]">
+        <header className="px-6 py-3.5 border-b border-ink-600 flex items-center justify-between">
+          <h3 className="font-semibold text-ink-50">{isNew ? 'Add a block' : `Edit ${existing.code}`}</h3>
+          <button
+            onClick={onCancel}
+            className="text-ink-400 hover:text-ink-100 text-xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
+          {/* ─── Identity ─── */}
+          <section>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="block text-ink-300 text-xs mb-1">Code</span>
+                <input
+                  type="text"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  disabled={codeLocked}
+                  placeholder="e.g. 20.48 or BR-CC-90"
+                  className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm font-mono bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 disabled:opacity-60"
+                />
+                {codeLocked && (
+                  <span className="text-[11px] text-ink-400">Built-in code — name / dimensions only.</span>
+                )}
+                {codeClash && (
+                  <span className="text-[11px] text-rose-400">That code already exists.</span>
+                )}
+              </label>
+
+              <label className="block">
+                <span className="block text-ink-300 text-xs mb-1">Name</span>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. H Block"
+                  className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                />
+              </label>
+            </div>
+
+            <label className="block mt-3">
+              <span className="block text-ink-300 text-xs mb-1">Description</span>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={2}
+                placeholder="Where this block is used / what it's for"
+                className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              />
+            </label>
+          </section>
+
+          {/* ─── Dimensions ───
+              Width / Height / Depth always shown — every block has them.
+              Rear width is curve-only and moves into the Role rules
+              section below so it doesn't clutter the dimensions row for
+              the 95% of blocks that don't taper. */}
+          <section>
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+              Dimensions
+            </h4>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <span className="block text-ink-300 text-xs mb-1">Width</span>
+                <LengthInput
+                  valueMm={widthMm}
+                  onChangeMm={setWidthMm}
+                  minMm={50}
+                  className="w-full"
+                />
+              </label>
+              <label className="block">
+                <span className="block text-ink-300 text-xs mb-1">Height</span>
+                <LengthInput
+                  valueMm={heightMm}
+                  onChangeMm={setHeightMm}
+                  minMm={30}
+                  className="w-full"
+                />
+              </label>
+              <label className="block">
+                <span className="block text-ink-300 text-xs mb-1">Depth</span>
+                <LengthInput
+                  valueMm={depthMm}
+                  onChangeMm={setDepthMm}
+                  minMm={50}
+                  className="w-full"
+                />
+              </label>
+            </div>
+          </section>
+
+          {/* ─── Roles ───
+              Roles drive which extra fields appear in the section below,
+              so this comes before "Role rules". Three columns at this
+              modal width so the whole role list fits without scrolling. */}
+          <section>
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+              Roles
+            </h4>
+            <div className="grid grid-cols-3 gap-x-3 gap-y-1.5">
+              {ROLE_OPTIONS.map((r) => (
+                <label key={r.value} className="flex items-center gap-2 text-xs text-ink-200">
+                  <input
+                    type="checkbox"
+                    checked={roles.includes(r.value)}
+                    onChange={() => toggleRole(r.value)}
+                    className="rounded"
+                  />
+                  <span>{r.label}</span>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          {/* ─── Role rules ───
+              Each rule sub-section is hidden when its role isn't ticked.
+              Removes confusion about whether a field applies — when the
+              user reads "Width / Height / Depth / Roles" they don't see
+              a Fraction or Rear-width field they have to wonder about.
+              Section header itself only renders when at least one rule
+              is in play. */}
+          {hasAnyRule && (
+            <section>
+              <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+                Role rules
+              </h4>
+              <div className="space-y-3">
+                {showFractionRule && (
+                  <fieldset className="border border-ink-700 bg-ink-900/40 rounded-lg p-3">
+                    <legend className="px-1 text-ink-300 text-xs">Fraction value</legend>
+                    <label className="block">
+                      <span className="block text-[11px] text-ink-400 mb-1">
+                        Portion of a full body block this block represents — e.g.
+                        0.75 for a 3/4, 0.5 for a half.
+                      </span>
+                      <input
+                        type="number"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        value={fraction}
+                        onChange={(e) => {
+                          const v = e.target.value
+                          setFraction(v === '' ? '' : parseFloat(v))
+                        }}
+                        placeholder="e.g. 0.75"
+                        className="w-32 px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+                      />
+                    </label>
+                  </fieldset>
+                )}
+
+                {showCurveRule && (
+                  <fieldset className="border border-ink-700 bg-ink-900/40 rounded-lg p-3">
+                    <legend className="px-1 text-ink-300 text-xs">Tapered face</legend>
+                    <label className="block">
+                      <span className="block text-[11px] text-ink-400 mb-1">
+                        Rear width of the block for a tapered / wedge face.
+                        The front Width above is the wide end; this is the narrow
+                        end. Leave blank for non-tapered curve blocks.
+                      </span>
+                      <LengthInput
+                        valueMm={typeof rearWidthMm === 'number' ? rearWidthMm : 0}
+                        onChangeMm={(mm) => setRearWidthMm(mm)}
+                        minMm={0}
+                        className="w-40"
+                      />
+                    </label>
+                  </fieldset>
+                )}
+
+                {showLintelRule && (
+                  <fieldset className="border border-ink-700 bg-ink-900/40 rounded-lg p-3">
+                    <legend className="px-1 text-ink-300 text-xs">Lintel rules</legend>
+                    <p className="text-[11px] text-ink-400 mb-3 leading-relaxed">
+                      How this block is sized when used as a lintel. Selection
+                      is automatic — when an opening needs a lintel, beme picks
+                      the smallest lintel-tagged block whose face height covers
+                      the head. No ranges to maintain.
+                    </p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <label className="block">
+                        <span className="block text-ink-300 text-xs mb-1">Bearing each side</span>
+                        <LengthInput
+                          valueMm={typeof lintelOverhangMm === 'number' ? lintelOverhangMm : 0}
+                          onChangeMm={(v) => setLintelOverhangMm(Math.max(0, v))}
+                          minMm={0}
+                          placeholder="200"
+                          className="w-full"
+                        />
+                      </label>
+                    </div>
+                    <p className="text-[11px] text-ink-500 mt-2 leading-relaxed">
+                      Lintel span used in the tally =
+                      {' '}<code className="text-ink-300">opening width + 2 × bearing</code>.
+                    </p>
+                  </fieldset>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* ─── Pairing ───
+              Any block can pair with another (the calc engine adds the
+              partner to the tally automatically). Always-available since
+              it doesn't depend on a specific role — a base course pairs
+              with a tile, a CMU pairs with a cap, etc. */}
+          <section>
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-2">
+              Pairing
+              <span className="ml-2 text-ink-500 normal-case tracking-normal font-normal">
+                · optional
+              </span>
+            </h4>
+            <fieldset className="rounded-lg border border-ink-700 bg-ink-900/40 p-3">
+              <p className="text-[11px] text-ink-400 leading-snug mb-3">
+                When this block is tallied, the paired block is added at
+                the chosen ratio. Use this for blocks that always ship
+                together — e.g. AU 20.45 cleanout + 50.45 tile (1:1).
+              </p>
+              <div className="grid grid-cols-[1fr_auto] gap-3 items-end">
+                <label className="block">
+                  <span className="block text-ink-300 text-xs mb-1">Pairs with</span>
+                  <select
+                    value={pairedWith}
+                    onChange={(e) => setPairedWith(e.target.value as BlockCode | '')}
+                    className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 font-mono"
+                  >
+                    <option value="">— None —</option>
+                    {existingCodes
+                      .filter((c) => c !== (existing?.code ?? trimmedCode))
+                      .sort()
+                      .map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="block text-ink-300 text-xs mb-1">Ratio (1 paired per)</span>
+                  <select
+                    value={pairedPer}
+                    onChange={(e) => setPairedPer(parseInt(e.target.value, 10))}
+                    disabled={!pairedWith}
+                    className="w-full px-2 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 disabled:opacity-50"
+                  >
+                    <option value={1}>1:1</option>
+                    <option value={2}>1:2</option>
+                    <option value={3}>1:3</option>
+                    <option value={4}>1:4</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+          </section>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-ink-600 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!canSave}
+            className="px-3 py-1.5 rounded-md bg-beme-500 text-black text-sm hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-semibold"
+          >
+            {isNew ? 'Add block' : 'Save'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}

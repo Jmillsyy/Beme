@@ -1,0 +1,1458 @@
+/**
+ * Project storage — cloud-first when Supabase is configured and the user is
+ * signed in, otherwise falls back to local IndexedDB.
+ *
+ * The cloud schema is:
+ *
+ *   table `projects`:
+ *     id           uuid  primary key
+ *     user_id      uuid  references auth.users (RLS-scoped)
+ *     type         text  'block' | 'brick'
+ *     status       text  'in-progress' | 'completed'
+ *     created_at, updated_at, completed_at  timestamptz
+ *     data         jsonb (everything else on SavedProject minus the PDF)
+ *     pdf_path     text  (path in supabase storage bucket project-pdfs)
+ *     pdf_file_name text
+ *
+ *   storage bucket `project-pdfs`:
+ *     path = `<user_id>/<project_id>.pdf` — RLS-scoped to owner
+ *
+ * Both have Row Level Security policies so each user only ever reads / writes
+ * their own rows. See SETUP.md for the SQL.
+ */
+
+import type {
+  BlockExportInclusions,
+  BrickExportInclusions,
+  BrickMakeup,
+  BrickSettings,
+  Opening,
+  Pier,
+  PierMakeup,
+  ProjectDetails,
+  Wall,
+  WallMakeup,
+} from '../types/walls'
+import { isSupabaseConfigured, supabase } from './supabase'
+import { getOrgState } from './organisations'
+
+/**
+ * Per-project trade discriminator.
+ *
+ * Historically, every project was ONE trade — block OR brick — and this
+ * type was the discriminator on {@link SavedProject.type}. With
+ * multi-trade unification, a project can carry both block and brick
+ * content in parallel via `trades` (an array). `ProjectType` is
+ * retained as the type of each individual trade slot and as a back-
+ * compat alias for the deprecated `SavedProject.type` field.
+ */
+export type ProjectType = 'block' | 'brick'
+
+/**
+ * A named subdivision of a project — "Balcony", "Staircase", "Level 1",
+ * "Tower A", etc. Areas are an orthogonal organising dimension on top of
+ * pages (PDF pages from the architectural set) and trades (block / brick):
+ *
+ *   - **Page** — physical PDF page (Level 1 plan, Level 2 plan, ...)
+ *   - **Trade** — block walls vs brick walls
+ *   - **Area** — a logical work bucket the estimator defines themselves
+ *
+ * The workspace's active area filters the canvas + tally to walls
+ * assigned to that area; new walls drawn while an area is active get
+ * stamped with that area's id. Walls with no area (`Wall.areaId`
+ * undefined) only show in the "All" view — never under a specific
+ * area tab.
+ */
+export interface ProjectArea {
+  /** Unique id within the project. */
+  id: string
+  /** Display name — what the user typed when creating it. */
+  name: string
+  /**
+   * Optional accent colour hex (e.g. "#f4894e"). Used for the bullet dot
+   * in the area's tab and any per-area visual highlighting on the
+   * canvas. v1 leaves this undefined — the v2 colour-picker fills it in.
+   */
+  colorHex?: string
+  /**
+   * Floor level of this area in millimetres, measured from the FIRST
+   * area's floor (which is treated as the project datum in 3D). The
+   * top-of-list area is the baseline — its footing acts as zero in
+   * world space, every other area's walls are offset by
+   * `area.footingLevelMm − topAreaFootingLevelMm` so a 2700 mm
+   * difference renders Level 1 sitting on top of Ground Floor.
+   *
+   * Defaults to 0. User edits it on area creation / edit. Optional on
+   * the type for back-compat with projects saved before the field
+   * existed; treat undefined as 0 at every read site.
+   */
+  footingLevelMm?: number
+}
+export type ProjectStatus = 'in-progress' | 'completed'
+/**
+ * Sales outcome for the project's quote.
+ *
+ * - 'won': customer accepted the quote → the bricklayer is doing / did the work
+ * - 'lost': customer went elsewhere → quote was declined
+ * - undefined: pending — no decision yet (still quoted, awaiting response, etc.)
+ *
+ * Independent of `status`: a 'won' project can be either in-progress or completed.
+ * Drives the dashboard's win-rate donut.
+ */
+export type ProjectOutcome = 'won' | 'lost'
+
+/**
+ * A reference PDF attached to a project — view-only material the estimator
+ * flips to while working (e.g. engineering specs). `blob` is the runtime
+ * file used by the workspace; `path` is the storage key in the
+ * `project-pdfs` bucket so the row knows where to re-download the bytes on
+ * the next load. Both are optional so a freshly-attached file (blob set,
+ * path not yet known) round-trips through saveProject() cleanly.
+ */
+export interface ReferencePdf {
+  /**
+   * Stable id allocated client-side when the reference is first attached.
+   * Used to key per-doc state (scale, measurements, selected pages) in
+   * the workspace so removing a reference earlier in the list doesn't
+   * shuffle everyone else's data. Optional on load for back-compat with
+   * pre-id projects — the workspace fills one in on first load.
+   */
+  id?: string
+  fileName: string
+  blob?: Blob
+  /** Storage path inside the project-pdfs bucket. Populated by saveProject. */
+  path?: string
+  /**
+   * Subset of the PDF's pages that the user wants to show inside the
+   * project. Pages are 1-indexed and the array is sorted ascending.
+   * Undefined OR empty → all pages are visible (back-compat). The
+   * reference's page-nav cycles through this list rather than the
+   * raw PDF page count.
+   */
+  selectedPages?: number[]
+  /**
+   * Scale calibration per visible page of this reference. Keyed by
+   * page number (1-indexed against the SOURCE PDF, not the position
+   * inside selectedPages). Empty when no page on this reference has
+   * been calibrated yet — the workspace falls back to the default
+   * scale display in that case.
+   */
+  pagesData?: Record<number, SavedPageData>
+  /**
+   * Ruler measurements per visible page. Same keying as `pagesData`.
+   * Persisted so a measurement dropped on the reference's page 3
+   * survives switching back to the primary and reopening.
+   */
+  measurementsByPage?: Record<
+    number,
+    Array<{
+      id: string
+      startMm: { x: number; y: number }
+      endMm: { x: number; y: number }
+    }>
+  >
+}
+
+/** What we save per page about the PDF (e.g. scale calibration). */
+export interface SavedPageData {
+  /**
+   * Real-world-mm per page-mm (e.g. 100 for a 1:100 plan). Window-independent —
+   * the canvas pixel scale is derived at render time from this ratio + the PDF's
+   * intrinsic `pageWidthMm` + the current canvas width. This is the canonical
+   * scale field going forward.
+   */
+  pageScaleRatio?: number
+  /**
+   * @deprecated Pre-fix scale (canvas-pixel-relative). Retained so projects
+   * saved before the page-ratio refactor still load — the workspace migrates
+   * them to `pageScaleRatio` on first open and stops writing this field.
+   */
+  scalePxPerMm?: number
+  pageWidthMm?: number
+  pageHeightMm?: number
+}
+
+/**
+ * A full saved estimate. All fields needed to fully reconstruct the workspace.
+ */
+export interface SavedProject {
+  id: string
+  /**
+   * Legacy single-trade discriminator. Historically the source of truth
+   * for "is this a block project or a brick project". With multi-trade
+   * unification {@link SavedProject.trades} is the new source of truth;
+   * `type` is preserved on saves for forward-compat with older clients
+   * (set to the FIRST trade in `trades`) but new code should read
+   * `trades`.
+   *
+   * Optional + tolerated forever on reads so projects saved by any
+   * version of Beme keep loading.
+   */
+  type?: ProjectType
+  /**
+   * Which trades have content in this project. A project can carry
+   * block walls, brick walls, both, or neither. Drives the trade rail
+   * in the workspace (which icons appear), the dashboard project row
+   * (badges), and the export (which schedule sections render).
+   *
+   * Migrated from `type` on first load of pre-unification projects:
+   * `type='block'` → `['block']`, `type='brick'` → `['brick']`.
+   *
+   * Empty array is legal (project exists but no trade has content yet).
+   * Order in the array is the order trades render in the rail — the
+   * first one is the default active trade on open.
+   */
+  trades?: ProjectType[]
+  /**
+   * Named subdivisions of this project — "Balcony", "Staircase",
+   * "Level 1", etc. See {@link ProjectArea}. The estimator creates these
+   * inside the workspace via the area tab bar above the wall-types
+   * panel. Walls reference an area by id via {@link Wall.areaId}.
+   *
+   * Optional + missing means "no areas defined yet" — the workspace
+   * shows only the "All" tab and any walls drawn are unassigned. Safe
+   * default; pre-Areas projects all read back this way.
+   */
+  areas?: ProjectArea[]
+  status: ProjectStatus
+  /**
+   * Six-digit human-readable reference number, allocated by Postgres at
+   * insert time (sequence + trigger). Stable across renames + updates;
+   * unique per project; surfaced in the project bar, in every exported
+   * PDF, and as the lookup key for "find a job by its ref". Optional on
+   * the SavedProject so a fresh in-memory project before its first save
+   * doesn't have to know it yet — the trigger fills it on insert and the
+   * client reads it back on next load.
+   */
+  referenceNumber?: number
+  /**
+   * Organisation that owns this project. Null/undefined for personal
+   * (single-user) projects. When set, RLS permits any member of the org
+   * to see/edit the project — sharing across the team is then just a
+   * matter of giving a teammate the project's 6-digit reference number.
+   */
+  organisationId?: string
+  /** ISO datetime — when the project was first saved. */
+  createdAt: string
+  /** ISO datetime — most recent save. */
+  updatedAt: string
+  /** ISO datetime — when status was first set to 'completed'. */
+  completedAt?: string
+  /**
+   * User id of whoever first saved this project — the estimator who started
+   * the estimate. Set once at create time and preserved through every
+   * subsequent save (including by other org members). Used to surface
+   * "Started by {name}" in the project bar so teammates can see who picked
+   * up an estimate without having to dig into the row's audit data.
+   *
+   * Optional + missing on saves predating this field — the project-bar
+   * resolver falls back to the cloud row's user_id (the original inserter
+   * by RLS) so older projects still show an author.
+   */
+  createdByUserId?: string
+  /**
+   * User id of the current "owner" — the person with edit rights on this
+   * project (in addition to the org admin and anyone they explicitly
+   * shared it with). Starts equal to `createdByUserId` on new projects
+   * and stays that way for the project's lifetime now that the
+   * estimate-request hand-off flow is gone.
+   *
+   * Optional + missing on saves predating the read-only feature — the
+   * server-side migration backfills it to `coalesce(createdByUserId, user_id)`,
+   * so older rows always end up with a sensible owner once the SQL has run.
+   *
+   * `null` is legal for legacy rows where neither field is set; UI treats
+   * that as "fall back to row.user_id (the original inserter)".
+   */
+  ownerUserId?: string
+  /** Sales outcome — undefined = pending. See {@link ProjectOutcome}. */
+  outcome?: ProjectOutcome
+
+  projectDetails: ProjectDetails
+  /**
+   * Project started without a PDF — the user is drawing on a blank canvas at
+   * a fixed ratio (defaults to 1:100 metric). The drawing surface is a virtual
+   * page seeded into `pagesData[1]`. `pdfBlob` is left undefined and the
+   * upload zone is bypassed on reload because of this flag.
+   */
+  emptyWorkspace?: boolean
+  /** Optional — projects can be saved before a PDF is uploaded.
+   *  This is the PRIMARY PDF — the one walls / openings / piers are drawn on
+   *  (usually the architectural). Reference PDFs (engineering specs etc.)
+   *  go on `referencePdfs` below. */
+  pdfBlob?: Blob
+  pdfFileName?: string
+  /**
+   * Storage path for the PRIMARY PDF in the cloud bucket.
+   *
+   * Transient — populated by `cloudGetProject` when the PDF is held
+   * in remote storage but NOT yet downloaded. The workspace uses it
+   * to fire a background `fetchProjectPdf(id)` once the metadata
+   * lands, so the project opens immediately and the PDF streams in
+   * a moment later instead of blocking the whole load behind a
+   * storage round-trip.
+   *
+   * Never persisted to `data` JSONB — the DB owns `projects.pdf_path`
+   * as a separate column, and `projectToCloudRow` strips this off
+   * before save.
+   */
+  pdfPath?: string
+  /**
+   * Extra PDFs the estimator can flip to while working on this project —
+   * typically engineering specs or notes that inform wall types but aren't
+   * drawn on. Walls, openings, and piers all live against the primary PDF
+   * above; reference PDFs are view-only.
+   *
+   * Optional + defaulted-empty so projects saved before multi-file support
+   * still load cleanly.
+   */
+  referencePdfs?: ReferencePdf[]
+
+  pagesData: Record<number, SavedPageData>
+  wallsByPage: Record<number, Wall[]>
+  openingsByPage: Record<number, Opening[]>
+  /** Piers per page (block mode). Optional — older saved projects predate this field. */
+  piersByPage?: Record<number, Pier[]>
+  /** Pier makeups (block mode). Optional — older saved projects predate this field. */
+  pierMakeups?: PierMakeup[]
+  /** Currently-active pier makeup id, if any. Used to seed the next-placed
+   *  pier's makeup. Optional + nullable for projects saved before the
+   *  panel-level active-pier-makeup state existed. */
+  activePierMakeupId?: string | null
+  /** Last-viewed page number. */
+  currentPage: number
+
+  /**
+   * Per-project opt-in/opt-out for supply items defined in the user's
+   * Material library. Keys are the supply item's `id`, values are
+   * booleans:
+   *   - `true`  → include in tally + export for this project
+   *   - `false` → exclude from tally + export
+   *   - missing → default to included
+   *
+   * The map only stores explicit decisions; unknown ids default to
+   * included so adding a new item to the library shows up on every
+   * existing project automatically. Estimators tick / untick per project
+   * via the Supply items panel.
+   */
+  supplyItemSelections?: Record<string, boolean>
+  /**
+   * Per-project rate overrides for supply items. Keys are the supply
+   * item's `id`, values are the rate (in the item's own unit — e.g. 2 for
+   * "2 ties per m²"). Lets an estimator dial the rate up or down for an
+   * unusual project without editing the library catalogue. Missing keys
+   * fall back to the library's default rate, so the override is purely
+   * additive — leaving everything blank reproduces library behaviour.
+   */
+  supplyItemRateOverrides?: Record<string, number>
+
+  // Block-mode-specific
+  makeups?: WallMakeup[]
+  activeMakeupId?: string
+  blockExportInclusions?: BlockExportInclusions
+
+  // Brick-mode-specific
+  brickSettings?: BrickSettings
+  /**
+   * Brick wall makeups — named categories with their own brick type +
+   * height (e.g. "Facework", "Rendered"). Parallel to `makeups` on block.
+   * Optional + defaulted-empty so projects saved before brick wall types
+   * existed still load cleanly (a default makeup is seeded on hydrate).
+   */
+  brickMakeups?: BrickMakeup[]
+  activeBrickMakeupId?: string
+  /** Brick export inclusion tickboxes. (Block has its own `blockExportInclusions`.) */
+  exportInclusions?: BrickExportInclusions
+  /**
+   * 3D viewport snapshots the user has captured via the ▣ Capture
+   * button. Stored ON the project (rather than in localStorage / a
+   * window-level mirror) so captures are inseparable from their
+   * project: opening a different project can never surface another
+   * project's captures.
+   *
+   * Each entry carries the trade it was captured in so per-trade
+   * exports can filter accordingly, plus the PDF page number it was
+   * taken on so the 3D view's queue panel only shows captures
+   * relevant to the active page.
+   *
+   * Optional + defaulted-empty so projects saved before this field
+   * existed load cleanly.
+   */
+  view3dSnapshots?: Array<{
+    id: string
+    dataUrl: string
+    createdAt: number
+    /** PDF page the capture was taken from (1-indexed). */
+    pageNumber?: number
+    /** Trade the workspace was set to when the capture was taken. */
+    trade?: 'block' | 'brick'
+    /** Frozen legend at capture time so the export can render a
+     *  matching key beside the image even if the wall types have
+     *  changed since. */
+    legend?: Array<{ code: string; label: string; color: string }>
+  }>
+}
+
+export type SavedProjectSummary = Omit<SavedProject, 'pdfBlob'>
+
+// ---------- Multi-trade migration ------------------------------------
+
+/**
+ * Bring a SavedProject up to the current shape. Today this means:
+ *
+ *   1. If `trades` is missing, derive it from `type` (the pre-unification
+ *      discriminator). `type='block'` → `trades=['block']`, brick → ['brick'],
+ *      missing both → empty array.
+ *   2. If any wall is missing the `trade` field, stamp it from the
+ *      project's trade — block-project walls become `trade='block'`,
+ *      brick-project walls become `trade='brick'`. This is what lets the
+ *      workspace look `wall.makeupId` up in the right pool when a single
+ *      project carries both kinds of wall.
+ *
+ * Pure function — returns a new object with the migrated fields applied;
+ * caller decides whether to persist. Called from every load path
+ * ({@link getProject}, {@link listProjects}) so any place that reads a
+ * project gets the migrated shape.
+ *
+ * Idempotent — running it on an already-migrated project is a no-op.
+ */
+export function migrateSavedProject(project: SavedProject): SavedProject {
+  // 1. Derive `trades` from `type` if missing.
+  let trades = project.trades
+  if (!trades) {
+    if (project.type === 'block') trades = ['block']
+    else if (project.type === 'brick') trades = ['brick']
+    else trades = []
+  }
+
+  // 2. Stamp `wall.trade` on any wall missing it. Pre-unification walls
+  //    had no notion of trade; we infer from the project's type — every
+  //    wall in a block project is a block wall, etc. Projects with NO
+  //    type set (legacy edge case) default missing wall.trade to 'block'.
+  const inferredTrade: ProjectType =
+    project.type ?? (trades.length > 0 ? trades[0] : 'block')
+
+  let wallsByPage = project.wallsByPage
+  let anyMutated = false
+  if (wallsByPage) {
+    const out: typeof wallsByPage = {}
+    for (const [pageStr, walls] of Object.entries(wallsByPage)) {
+      const page = Number(pageStr)
+      let mutated = false
+      const next = walls.map((w) => {
+        if (w.trade) return w
+        mutated = true
+        return { ...w, trade: inferredTrade }
+      })
+      out[page] = mutated ? next : walls
+      if (mutated) anyMutated = true
+    }
+    if (anyMutated) wallsByPage = out
+  }
+
+  // Bail early if nothing changed — preserves referential identity for
+  // already-migrated reads (no cascading re-renders downstream).
+  if (project.trades === trades && !anyMutated) return project
+
+  return { ...project, trades, wallsByPage }
+}
+
+// ---------- Public API — dispatches between cloud and local ----------
+
+export function generateProjectId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
+ * Insert or update a saved project. Returns the persisted SavedProject so
+ * callers can pick up server-assigned fields — chiefly `referenceNumber`,
+ * which Postgres allocates on first INSERT via a sequence + trigger.
+ *
+ * Forward-compat: always writes the legacy `type` field alongside the new
+ * `trades` array, so older clients still in production can read newly-
+ * saved projects without breaking. `type` is set to the FIRST entry in
+ * `trades` (the primary trade), preserving today's "every project has a
+ * type" assumption from the old client's perspective.
+ */
+export async function saveProject(project: SavedProject): Promise<SavedProject> {
+  const uid = await currentUserId()
+  const normalised = ensureLegacyTypeField(project)
+  if (uid) return cloudSaveProject(normalised, uid)
+  return localSaveProject(normalised)
+}
+
+/**
+ * Stamp the legacy `type` field from `trades` if absent. Projects created
+ * by the unified workspace might have `trades=['brick']` but no `type` —
+ * older clients in the wild still rely on `type` to route to the right
+ * workspace, so we always write it out alongside.
+ */
+function ensureLegacyTypeField(project: SavedProject): SavedProject {
+  if (project.type) return project
+  const trades = project.trades ?? []
+  if (trades.length === 0) return project // nothing to infer from
+  return { ...project, type: trades[0] }
+}
+
+/** Load a single project by id. Returns undefined if not found. */
+export async function getProject(id: string): Promise<SavedProject | undefined> {
+  const uid = await currentUserId()
+  const loaded = uid ? await cloudGetProject(id, uid) : await localGetProject(id)
+  return loaded ? migrateSavedProject(loaded) : loaded
+}
+
+/**
+ * List every saved project. Sorted by `updatedAt` descending.
+ *
+ * Returns a slim shape on the cloud path — fields like `makeups`,
+ * `brickMakeups`, `pierMakeups`, `pagesByPage`, `view3dSnapshots`,
+ * and reference-PDF metadata are NOT populated. The dashboard cards
+ * don't read those, and the slimming knocks several megabytes off
+ * the response on a typical project set.
+ *
+ * If you need the full project payload for every project (e.g. a
+ * cross-project migration), use {@link listProjectsFull} — it does
+ * the heavy `select('*')` instead.
+ */
+export async function listProjects(): Promise<SavedProject[]> {
+  const uid = await currentUserId()
+  const all = uid ? await cloudListProjects(uid) : await localListProjects()
+  return all.map(migrateSavedProject)
+}
+
+/**
+ * Like {@link listProjects} but pulls the full `data` JSONB column
+ * for every project — including makeups, pier definitions, snapshots
+ * and so on. Use for one-shot cross-project work like region-change
+ * migration where the caller needs to read and rewrite every field.
+ *
+ * On the cloud path this is significantly slower than the slim
+ * `listProjects` (full `select('*')` instead of the dashboard
+ * subset). Keep call sites rare — the dashboard, command palette,
+ * and any UI that lists projects for the user should use the slim
+ * version.
+ */
+export async function listProjectsFull(): Promise<SavedProject[]> {
+  const uid = await currentUserId()
+  const all = uid ? await cloudListProjectsFull(uid) : await localListProjects()
+  return all.map(migrateSavedProject)
+}
+
+/**
+ * Look up a project by its 6-digit reference number. Returns the project's
+ * id + type so the caller can navigate directly into the workspace, or null
+ * when no project with that reference number is visible to the user.
+ *
+ * Cloud-only: personal / offline projects don't carry reference numbers.
+ * Falls back to a flat scan of the local store for offline users so the
+ * helper doesn't error in that mode.
+ */
+export async function findProjectByReferenceNumber(
+  referenceNumber: number
+): Promise<{ id: string; type: ProjectType } | null> {
+  if (!isSupabaseConfigured) {
+    const all = await localListProjects()
+    const match = all.find((p) => p.referenceNumber === referenceNumber)
+    return match ? { id: match.id, type: match.type } : null
+  }
+  const uid = await currentUserId()
+  if (!uid) return null
+  const { data, error } = await supabase()
+    .from('projects')
+    .select('id, type')
+    .eq('reference_number', referenceNumber)
+    .maybeSingle()
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.warn('Failed to look up project by reference:', error.message)
+    return null
+  }
+  if (!data) return null
+  return { id: data.id as string, type: data.type as ProjectType }
+}
+
+/** Delete a project by id. */
+export async function deleteProject(id: string): Promise<void> {
+  const uid = await currentUserId()
+  if (uid) return cloudDeleteProject(id, uid)
+  return localDeleteProject(id)
+}
+
+/**
+ * Duplicate an existing project as a new in-progress project. Copies wall types,
+ * brick settings, pier patterns, export inclusions — the full "this is how I
+ * estimate" boilerplate — but starts with no walls / openings / piers / PDFs
+ * and a fresh project name. The user's typical workflow ("same client, new
+ * job, same wall types") becomes one click instead of recreating setup.
+ *
+ * Returns the new project's id so the caller can route the user into it.
+ */
+export async function duplicateProject(sourceId: string): Promise<string | null> {
+  const source = await getProject(sourceId)
+  if (!source) return null
+  const now = new Date().toISOString()
+  const newId = generateProjectId()
+  const baseName = source.projectDetails.projectName?.trim() || 'Untitled project'
+  const copy: SavedProject = {
+    id: newId,
+    type: source.type,
+    /** Carry over the source's trade set — duplicating a "Block + Brick"
+     *  project should give you a fresh "Block + Brick" project too. */
+    trades: source.trades,
+    /** Carry over the area list — duplicating a project that's organised
+     *  into Balcony / Staircase / etc. should give you a fresh project
+     *  with the same area structure ready to populate. Walls aren't
+     *  copied (per the rule below), so the areas are empty but defined. */
+    areas: source.areas,
+    status: 'in-progress',
+    organisationId: source.organisationId,
+    createdAt: now,
+    updatedAt: now,
+    // Drop completedAt / outcome — the new project hasn't been won/lost yet.
+    projectDetails: {
+      ...source.projectDetails,
+      projectName: `${baseName} (copy)`,
+      // Reset siteAddress + date — usually different per job. Estimator name
+      // + client name often stay the same so we keep those, and the user can
+      // edit them in the side panel anyway.
+      siteAddress: '',
+      date: now.slice(0, 10),
+      notes: '',
+    },
+    // PDFs are NOT copied — a new job has a new plan. Estimator uploads it.
+    pdfBlob: undefined,
+    pdfFileName: undefined,
+    referencePdfs: undefined,
+    // Drawn data is also NOT copied — the whole point is a clean canvas with
+    // the user's preferred setup pre-loaded.
+    pagesData: {},
+    wallsByPage: {},
+    openingsByPage: {},
+    piersByPage: {},
+    currentPage: 1,
+    // Preserve the user's setup work — wall types, pier makeups, export prefs.
+    makeups: source.makeups,
+    activeMakeupId: source.activeMakeupId,
+    pierMakeups: source.pierMakeups,
+    blockExportInclusions: source.blockExportInclusions,
+    brickSettings: source.brickSettings,
+    brickMakeups: source.brickMakeups,
+    activeBrickMakeupId: source.activeBrickMakeupId,
+    exportInclusions: source.exportInclusions,
+  }
+  await saveProject(copy)
+  return newId
+}
+
+/**
+ * Read the local (IndexedDB) project list without touching the cloud. Used by
+ * the first-time-login migration prompt.
+ */
+export async function listLocalProjects(): Promise<SavedProject[]> {
+  return localListProjects()
+}
+
+/**
+ * Wipe the local IndexedDB project store. Used after a successful cloud
+ * migration so the user isn't double-prompted on the next sign-in.
+ */
+export async function clearLocalProjects(): Promise<void> {
+  await withLocalStore('readwrite', (s) => s.clear())
+}
+
+// ---------- Cloud (Supabase) ----------
+
+const PDF_BUCKET = 'project-pdfs'
+
+/** Resolve the currently signed-in Supabase user id, or null if signed out / not configured. */
+async function currentUserId(): Promise<string | null> {
+  if (!isSupabaseConfigured) return null
+  const {
+    data: { user },
+  } = await supabase().auth.getUser()
+  return user?.id ?? null
+}
+
+/** Strip the runtime-only fields out of SavedProject so the rest fits the `data` JSONB column. */
+function projectToCloudRow(p: SavedProject, userId: string, pdfPath: string | null) {
+  // Anything that isn't a top-level column lives inside `data`. We deliberately
+  // exclude pdfBlob (binary, stored in Storage) and pdfFileName (separate column
+  // so we can read it from the project list without parsing JSON).
+  //
+  // Reference PDFs go into `data` as { fileName, path } pairs — the blob lives
+  // in storage at `path`, we don't serialise the bytes into JSONB.
+  const {
+    id,
+    type,
+    status,
+    organisationId,
+    createdAt,
+    updatedAt,
+    completedAt,
+    ownerUserId,
+    referenceNumber,
+    pdfBlob: _pdfBlob,
+    pdfFileName,
+    pdfPath: _pdfPath,
+    referencePdfs,
+    ...rest
+  } = p
+  void _pdfBlob
+  void _pdfPath
+  const referencePdfMeta = referencePdfs?.map((r) => ({ fileName: r.fileName, path: r.path }))
+  // Default owner to the inserting user on first save — the SQL migration
+  // backfills existing rows, but new inserts from app code need to fill
+  // the column themselves. Subsequent saves preserve whatever owner the
+  // pickup flow or share UI set it to.
+  //
+  // referenceNumber is intentionally NOT sent on save — the DB allocates
+  // it via a trigger on INSERT and the client reads it back on next load.
+  // Sending it would risk clobbering an existing row's number on update.
+  void referenceNumber
+  return {
+    id,
+    user_id: userId,
+    organisation_id: organisationId ?? null,
+    owner_user_id: ownerUserId ?? userId,
+    type,
+    status,
+    created_at: createdAt,
+    updated_at: updatedAt,
+    completed_at: completedAt ?? null,
+    data: { ...rest, referencePdfs: referencePdfMeta },
+    pdf_path: pdfPath,
+    pdf_file_name: pdfFileName ?? null,
+  }
+}
+
+interface CloudProjectRow {
+  id: string
+  user_id: string
+  organisation_id: string | null
+  owner_user_id: string | null
+  reference_number: number | null
+  type: ProjectType
+  status: ProjectStatus
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  data: Omit<
+    SavedProject,
+    | 'id'
+    | 'type'
+    | 'status'
+    | 'organisationId'
+    | 'ownerUserId'
+    | 'referenceNumber'
+    | 'createdAt'
+    | 'updatedAt'
+    | 'completedAt'
+    | 'pdfBlob'
+    | 'pdfFileName'
+    | 'pdfPath'
+  >
+  pdf_path: string | null
+  pdf_file_name: string | null
+}
+
+/** Hydrate a row from `projects` back into a SavedProject (without the PDF blob). */
+function rowToProjectMeta(row: CloudProjectRow): SavedProject {
+  // Resolve ownerUserId with a fallback chain. New rows always have
+  // owner_user_id set, but defensively fall back to user_id (the original
+  // inserter) so older / partially-migrated rows still produce a sensible
+  // owner for the permission check.
+  return {
+    id: row.id,
+    type: row.type,
+    status: row.status,
+    organisationId: row.organisation_id ?? undefined,
+    ownerUserId: row.owner_user_id ?? row.user_id,
+    referenceNumber: row.reference_number ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? undefined,
+    pdfFileName: row.pdf_file_name ?? undefined,
+    ...row.data,
+  }
+}
+
+async function cloudSaveProject(p: SavedProject, userId: string): Promise<SavedProject> {
+  const client = supabase()
+  let pdfPath: string | null = null
+
+  if (p.pdfBlob) {
+    pdfPath = `${userId}/${p.id}.pdf`
+    const { error: uploadErr } = await client.storage.from(PDF_BUCKET).upload(pdfPath, p.pdfBlob, {
+      upsert: true,
+      contentType: p.pdfBlob.type || 'application/pdf',
+    })
+    if (uploadErr) throw new Error(`PDF upload failed: ${uploadErr.message}`)
+  } else {
+    // No new blob in this save — DO NOT overwrite pdf_path with null
+    // just because the in-memory project lacks the bytes. The workspace
+    // can save during the window when the background PDF download
+    // hasn't yet resolved (or never resolved on this device), and a
+    // straight `pdf_path = null` write would orphan the existing
+    // stored blob. Preserve the path: read the current row's pdf_path
+    // and pass it through if non-null. If the project carries an
+    // explicit `pdfPath` (set by cloudGetProject), that takes priority
+    // — saves the read round-trip when we already know the path.
+    if (p.pdfPath) {
+      pdfPath = p.pdfPath
+    } else {
+      const { data: existing, error: lookupErr } = await client
+        .from('projects')
+        .select('pdf_path')
+        .eq('id', p.id)
+        .maybeSingle()
+      if (lookupErr) {
+        // Don't fail the save over a lookup hiccup — write null and
+        // log, the user's data is still intact (just the path is
+        // unreachable until next save where they re-attach).
+        // eslint-disable-next-line no-console
+        console.warn(`pdf_path lookup failed for ${p.id}:`, lookupErr.message)
+      } else if (existing) {
+        pdfPath = (existing as { pdf_path: string | null }).pdf_path
+      }
+    }
+  }
+
+  // Reference PDFs (engineering specs etc.) — upload any whose blob hasn't yet
+  // been persisted (path missing) and record their storage path back on the
+  // SavedProject before serialising the row. Path scheme:
+  //   `${userId}/${projectId}-ref-${index}.pdf`
+  // keeps them under the same RLS scope as the primary PDF and trivially
+  // collectable on delete.
+  const refUploaded: ReferencePdf[] = []
+  if (p.referencePdfs && p.referencePdfs.length > 0) {
+    for (let i = 0; i < p.referencePdfs.length; i++) {
+      const ref = p.referencePdfs[i]
+      let path = ref.path
+      if (ref.blob && !path) {
+        path = `${userId}/${p.id}-ref-${i}.pdf`
+        const { error: refErr } = await client.storage.from(PDF_BUCKET).upload(path, ref.blob, {
+          upsert: true,
+          contentType: ref.blob.type || 'application/pdf',
+        })
+        if (refErr) throw new Error(`Reference PDF upload failed (${ref.fileName}): ${refErr.message}`)
+      }
+      refUploaded.push({ fileName: ref.fileName, blob: ref.blob, path })
+    }
+  }
+
+  const projectForRow: SavedProject = { ...p, referencePdfs: refUploaded }
+  const row = projectToCloudRow(projectForRow, userId, pdfPath)
+
+  // Two-step save with retry-on-timeout. The previous single
+  // `.upsert(...).select().single()` chain made one heavy round-trip
+  // that would fail with "canceling statement due to statement
+  // timeout" on large projects (the JSONB write + RLS check + SELECT
+  // returning the big row, all in one query). Splitting the upsert
+  // and the readback into separate calls makes each individually
+  // smaller; retrying transient timeouts handles the rest.
+  //
+  // First-save case (no existing referenceNumber) — we still need
+  // the readback to pick up the DB-allocated reference_number. For
+  // updates of existing projects we can skip the readback entirely
+  // since reference_number is already on the in-memory project.
+  const isFirstSave = p.referenceNumber == null
+
+  await retryOnTimeout(async () => {
+    const { error } = await client.from('projects').upsert(row, { onConflict: 'id' })
+    if (error) throw new Error(`Project save failed: ${error.message}`)
+  })
+
+  // Fast path for repeat saves — caller already has the reference
+  // number, so we don't need to round-trip back to the DB.
+  if (!isFirstSave) {
+    return {
+      ...p,
+      pdfBlob: p.pdfBlob,
+      referencePdfs: refUploaded,
+    }
+  }
+
+  // First-save path — read back so we get the server-allocated
+  // reference_number. This is a small, indexed SELECT (PK lookup),
+  // unlikely to time out even on large projects.
+  const persisted = await retryOnTimeout(async () => {
+    const { data, error } = await client
+      .from('projects')
+      .select('id, type, status, organisation_id, owner_user_id, user_id, reference_number, created_at, updated_at, completed_at, pdf_file_name')
+      .eq('id', row.id)
+      .single()
+    if (error) throw new Error(`Project read-back failed: ${error.message}`)
+    return data as Omit<CloudProjectRow, 'data' | 'pdf_path'> & {
+      data?: never
+      pdf_path?: never
+    }
+  })
+
+  // Compose the SavedProject from the in-memory project + the freshly
+  // read metadata. Cheaper than reading the full JSONB back from the DB.
+  return {
+    ...p,
+    referenceNumber: persisted.reference_number ?? undefined,
+    organisationId: persisted.organisation_id ?? undefined,
+    ownerUserId: persisted.owner_user_id ?? persisted.user_id,
+    pdfBlob: p.pdfBlob,
+    referencePdfs: refUploaded,
+  }
+}
+
+/**
+ * Run `op` and retry on Postgres statement-timeout errors with
+ * exponential backoff. Three attempts: 0ms, 600ms, 1500ms. Any other
+ * error is re-thrown immediately (don't retry permission failures,
+ * conflict errors, etc).
+ *
+ * The "canceling statement due to statement timeout" message comes
+ * from Postgres directly and Supabase surfaces it as a normal error.
+ * Matching on the substring is the documented way to detect it.
+ */
+async function retryOnTimeout<T>(op: () => Promise<T>): Promise<T> {
+  const delays = [0, 600, 1500]
+  let lastError: unknown
+  for (const ms of delays) {
+    if (ms > 0) await sleep(ms)
+    try {
+      return await op()
+    } catch (err) {
+      lastError = err
+      const msg = err instanceof Error ? err.message : String(err)
+      const isTimeout =
+        msg.includes('statement timeout') ||
+        msg.includes('canceling statement') ||
+        msg.includes('57014') // Postgres SQLSTATE for query cancelled
+      if (!isTimeout) throw err
+      // Otherwise loop and retry.
+    }
+  }
+  // Exhausted retries — throw the last timeout error so the toast
+  // explains what happened.
+  throw lastError
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function cloudGetProject(id: string, _userId: string): Promise<SavedProject | undefined> {
+  void _userId // RLS does the user filter for us
+  const client = supabase()
+  const { data, error } = await client
+    .from('projects')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle()
+  if (error) throw new Error(`Project fetch failed: ${error.message}`)
+  if (!data) return undefined
+
+  const row = data as CloudProjectRow
+  const project = rowToProjectMeta(row)
+
+  // PRIMARY PDF — stash the storage path so the workspace can pull
+  // the blob in a background fetch. Awaiting the download here used
+  // to gate the entire project open behind a multi-megabyte storage
+  // round-trip, which made the workspace look frozen on first open
+  // and (when the download silently failed) left the canvas blank
+  // with no recovery path. The metadata returns immediately now;
+  // the caller fires `fetchProjectPdf(id)` once it has the path.
+  if (row.pdf_path) {
+    project.pdfPath = row.pdf_path
+  }
+
+  // Reference PDFs — same deal. Carry the `path` through so the
+  // workspace knows there's a remote blob, but don't block the load
+  // waiting for every spec sheet to download. The workspace fetches
+  // each reference lazily when the user actually flips to that tab
+  // (or eagerly in a background batch — see fetchReferencePdf).
+  // We intentionally leave `blob` undefined on each entry; the
+  // workspace's existing path-based lookup is the signal.
+
+  return project
+}
+
+/**
+ * Download the primary PDF blob for a project from cloud storage.
+ *
+ * Pair with `cloudGetProject` — that function returns metadata fast,
+ * this function pulls the blob in the background. Returns undefined
+ * when the project has no PDF, when the user isn't signed in (local
+ * mode), or when the storage download fails.
+ */
+export async function fetchProjectPdf(projectId: string): Promise<Blob | undefined> {
+  const uid = await currentUserId()
+  if (!uid) {
+    // Local mode — the blob is already in IndexedDB from the
+    // localGetProject path, no separate fetch needed.
+    return undefined
+  }
+  const client = supabase()
+  const { data, error } = await client
+    .from('projects')
+    .select('pdf_path')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (error || !data) return undefined
+
+  const recordedPath = (data as { pdf_path: string | null }).pdf_path
+  // Primary path — recorded in the DB row.
+  if (recordedPath) {
+    const { data: blob, error: dlErr } = await client.storage
+      .from(PDF_BUCKET)
+      .download(recordedPath)
+    if (dlErr) {
+      // eslint-disable-next-line no-console
+      console.warn(`Failed to download PDF for project ${projectId}:`, dlErr.message)
+    } else if (blob) {
+      return blob
+    }
+  }
+
+  // Recovery path — pdf_path is null (or its download failed) but the
+  // blob may still be sitting at the conventional storage path from a
+  // prior save: `${userId}/${projectId}.pdf`. A regression in the save
+  // flow used to overwrite pdf_path with null whenever the in-memory
+  // project lacked the blob (e.g., auto-save fired before the load
+  // brought the bytes in), orphaning the stored file. Try the
+  // conventional path so those orphans show up again.
+  //
+  // If recovery succeeds, the workspace will eventually save with this
+  // blob attached and pdf_path will heal back to the real path.
+  const conventionalPath = `${uid}/${projectId}.pdf`
+  // Skip if we already tried this exact path above.
+  if (recordedPath === conventionalPath) return undefined
+  const { data: recBlob, error: recErr } = await client.storage
+    .from(PDF_BUCKET)
+    .download(conventionalPath)
+  if (recErr) {
+    // No file at the conventional path either — the project genuinely
+    // has no stored PDF. Caller falls through to the upload zone /
+    // empty-workspace backstop.
+    return undefined
+  }
+  return recBlob ?? undefined
+}
+
+/**
+ * Download a single reference PDF blob from cloud storage by path.
+ *
+ * Returns undefined on failure (including local mode where storage
+ * isn't reachable). The workspace handles the undefined case by
+ * leaving the reference tab in its "file unavailable" state.
+ */
+export async function fetchReferencePdf(refPath: string): Promise<Blob | undefined> {
+  const uid = await currentUserId()
+  if (!uid) return undefined
+  const client = supabase()
+  const { data: blob, error: dlErr } = await client.storage.from(PDF_BUCKET).download(refPath)
+  if (dlErr) {
+    // eslint-disable-next-line no-console
+    console.warn(`Failed to download reference PDF at ${refPath}:`, dlErr.message)
+    return undefined
+  }
+  return blob ?? undefined
+}
+
+async function cloudListProjects(_userId: string): Promise<SavedProject[]> {
+  void _userId // RLS scopes to the current user
+  const client = supabase()
+  // Slim select — only pull the fields the dashboard actually reads,
+  // and only the JSONB sub-keys (via the `data->key` syntax) instead
+  // of the entire `data` column. The full column carries view3d
+  // snapshot dataURLs (base64 PNGs, often 100KB-1MB each), per-page
+  // pagesData / piers / openings, makeups, reference-PDF metadata,
+  // measurement strokes, and export-inclusion config — none of which
+  // the dashboard cards render. Trimming these typically drops the
+  // list payload from megabytes to a few dozen KB on a typical user.
+  //
+  // Top-level columns are unchanged. Each `data->key` slot becomes a
+  // top-level field on the row at query time, then we re-nest it
+  // into a SavedProject shape below so consumers see the usual
+  // structure.
+  // Single-line select — PostgREST is robust to whitespace inside
+  // the comma list, but supabase-js URL-encodes the string verbatim
+  // and some proxies / older runtimes have been known to choke on
+  // embedded `%0A` sequences. Cheap to keep this on one line.
+  const slimSelect =
+    'id,user_id,organisation_id,owner_user_id,reference_number,' +
+    'type,status,created_at,updated_at,completed_at,pdf_file_name,' +
+    'projectDetails:data->projectDetails,' +
+    'wallsByPage:data->wallsByPage,' +
+    'trades:data->trades,' +
+    'createdByUserId:data->createdByUserId,' +
+    'outcome:data->outcome,' +
+    'emptyWorkspace:data->emptyWorkspace'
+  const { data, error } = await client
+    .from('projects')
+    .select(slimSelect)
+    .order('updated_at', { ascending: false })
+  if (error) throw new Error(`Project list failed: ${error.message}`)
+  // Re-nest the per-row payload into a SavedProject. The omitted
+  // fields (makeups, view3dSnapshots, piersByPage etc.) stay
+  // undefined — call sites that need them must use getProject(id)
+  // to pull the full row on demand. The dashboard card path never
+  // touches those fields, so the shape matches at runtime.
+  type ListRow = {
+    id: string
+    user_id: string
+    organisation_id: string | null
+    owner_user_id: string | null
+    reference_number: number | null
+    type: ProjectType
+    status: ProjectStatus
+    created_at: string
+    updated_at: string
+    completed_at: string | null
+    pdf_file_name: string | null
+    projectDetails: ProjectDetails | null
+    wallsByPage: SavedProject['wallsByPage'] | null
+    trades: SavedProject['trades'] | null
+    createdByUserId: string | null
+    outcome: SavedProject['outcome'] | null
+    emptyWorkspace: boolean | null
+  }
+  const rows: SavedProject[] = (data as ListRow[]).map((r) => ({
+    id: r.id,
+    type: r.type,
+    status: r.status,
+    organisationId: r.organisation_id ?? undefined,
+    ownerUserId: r.owner_user_id ?? r.user_id,
+    referenceNumber: r.reference_number ?? undefined,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    completedAt: r.completed_at ?? undefined,
+    pdfFileName: r.pdf_file_name ?? undefined,
+    projectDetails: r.projectDetails ?? {
+      clientName: '',
+      projectName: '',
+      siteAddress: '',
+    },
+    wallsByPage: r.wallsByPage ?? {},
+    openingsByPage: {},
+    trades: r.trades ?? undefined,
+    createdByUserId: r.createdByUserId ?? undefined,
+    outcome: r.outcome ?? undefined,
+    emptyWorkspace: r.emptyWorkspace ?? undefined,
+  }))
+
+  // Defence in depth against the RLS-leak bug: if a project is stamped
+  // with an organisationId but the CURRENT signed-in user isn't a member
+  // of that org any more (they were removed from / left it), don't
+  // surface the row on the dashboard. The RLS `Owner or org member`
+  // policy lets `user_id = auth.uid()` through, so a project the user
+  // created while in an org still passes RLS after they're removed —
+  // but it's still owned by the org. We filter client-side here so
+  // those projects disappear from the personal dashboard until the
+  // RLS policy itself is tightened (see SETUP.md migration in section
+  // "Remove user_id self-bypass on org-stamped projects").
+  const memberOrgIds = new Set(
+    getOrgState().organisations.map((o) => o.id)
+  )
+  return rows.filter((p) => {
+    if (!p.organisationId) return true
+    return memberOrgIds.has(p.organisationId)
+  })
+}
+
+/**
+ * Full-fat counterpart to {@link cloudListProjects} — pulls every
+ * top-level column AND the entire `data` JSONB blob for every project
+ * the user can see. Slower and heavier than the dashboard variant; only
+ * use it when the caller needs to read project internals (makeups,
+ * pier definitions, etc.) across the whole set, e.g. region-change
+ * migration.
+ */
+async function cloudListProjectsFull(_userId: string): Promise<SavedProject[]> {
+  void _userId // RLS scopes to the current user
+  const client = supabase()
+  const { data, error } = await client
+    .from('projects')
+    .select('*')
+    .order('updated_at', { ascending: false })
+  if (error) throw new Error(`Project list failed: ${error.message}`)
+  const rows = (data as CloudProjectRow[]).map(rowToProjectMeta)
+  const memberOrgIds = new Set(getOrgState().organisations.map((o) => o.id))
+  return rows.filter((p) => {
+    if (!p.organisationId) return true
+    return memberOrgIds.has(p.organisationId)
+  })
+}
+
+async function cloudDeleteProject(id: string, userId: string): Promise<void> {
+  const client = supabase()
+  // Pull the row first so we know what to remove from storage — both the
+  // primary PDF and any reference PDFs (engineering specs etc.) attached to
+  // the project. Reference paths live inside the `data` JSON column.
+  const { data, error: getErr } = await client
+    .from('projects')
+    .select('pdf_path, data')
+    .eq('id', id)
+    .maybeSingle()
+  if (getErr) throw new Error(`Project lookup failed: ${getErr.message}`)
+
+  const row = data as { pdf_path: string | null; data: { referencePdfs?: { path?: string }[] } } | null
+  const toRemove: string[] = []
+  if (row?.pdf_path) toRemove.push(row.pdf_path)
+  for (const ref of row?.data?.referencePdfs ?? []) {
+    if (ref.path) toRemove.push(ref.path)
+  }
+  if (toRemove.length > 0) {
+    const { error: rmErr } = await client.storage.from(PDF_BUCKET).remove(toRemove)
+    if (rmErr) {
+      // eslint-disable-next-line no-console
+      console.warn(`Failed to remove PDFs for ${id}:`, rmErr.message)
+    }
+  }
+
+  // Delete the row, gated by RLS. Earlier this also had `.eq('user_id', userId)`,
+  // which silently no-op'd for org-shared projects whose original creator
+  // wasn't the current user — anyone but the project's creator clicked
+  // Delete and nothing happened. RLS ('Owner or org admin delete project')
+  // is the right gate: it lets the owner OR any org admin delete, and
+  // rejects everyone else with a clear error.
+  //
+  // We also ask Supabase to return the deleted row(s) and check the count,
+  // because PostgREST returns success with zero rows when RLS quietly
+  // filters the row out — a silent no-op feels broken to the user. Throwing
+  // surfaces the failure so the UI can show a sensible message.
+  void userId
+  const { data: deleted, error: delErr } = await client
+    .from('projects')
+    .delete()
+    .eq('id', id)
+    .select('id')
+  if (delErr) throw new Error(`Project delete failed: ${delErr.message}`)
+  if (!deleted || deleted.length === 0) {
+    throw new Error(
+      'Project not deleted — you may not have permission. Org admins can delete shared projects; otherwise only the owner can.'
+    )
+  }
+}
+
+// ---------- Local (IndexedDB) ----------
+
+const DB_NAME = 'beme'
+const DB_VERSION = 2 // shared with blockLibrary.ts — bumped to add userData store
+const STORE = 'projects'
+const USER_DATA_STORE = 'userData'
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'id' })
+      }
+      // Keep in sync with the userData store created in blockLibrary.ts
+      // (whichever module opens the DB first runs the upgrade).
+      if (!db.objectStoreNames.contains(USER_DATA_STORE)) {
+        db.createObjectStore(USER_DATA_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+function withLocalStore<T>(
+  mode: IDBTransactionMode,
+  fn: (store: IDBObjectStore) => IDBRequest<T> | T
+): Promise<T> {
+  return openDb().then(
+    (db) =>
+      new Promise<T>((resolve, reject) => {
+        const tx = db.transaction(STORE, mode)
+        const store = tx.objectStore(STORE)
+        const result = fn(store)
+        tx.oncomplete = () => {
+          if (result && typeof (result as IDBRequest).result !== 'undefined') {
+            resolve((result as IDBRequest<T>).result)
+          } else {
+            resolve(result as T)
+          }
+        }
+        tx.onerror = () => reject(tx.error)
+        tx.onabort = () => reject(tx.error)
+      })
+  )
+}
+
+async function localSaveProject(project: SavedProject): Promise<SavedProject> {
+  await withLocalStore('readwrite', (s) => s.put(project))
+  return project
+}
+
+async function localGetProject(id: string): Promise<SavedProject | undefined> {
+  return withLocalStore('readonly', (s) => s.get(id) as IDBRequest<SavedProject | undefined>)
+}
+
+async function localListProjects(): Promise<SavedProject[]> {
+  const all = await withLocalStore('readonly', (s) => s.getAll() as IDBRequest<SavedProject[]>)
+  return all.sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : -1))
+}
+
+async function localDeleteProject(id: string): Promise<void> {
+  await withLocalStore('readwrite', (s) => s.delete(id))
+}
+
+// ---------- Per-project collaborators ----------
+//
+// An org member who's neither the owner nor an admin can still be granted
+// edit access on a specific project by the owner (or by an admin acting on
+// the owner's behalf). The grants are stored in a small `project_collaborators`
+// junction table:
+//
+//   project_id  uuid not null references projects(id) on delete cascade
+//   user_id     uuid not null references auth.users(id) on delete cascade
+//   granted_by  uuid (audit only)
+//   created_at  timestamptz
+//   primary key (project_id, user_id)
+//
+// RLS:
+//   - read: any org member of the project's org (so the UI can show a
+//     project's collaborator list to anyone who can see the project).
+//   - insert / delete: owner of the project, or admin of the project's
+//     org. Collaborators themselves CANNOT add other collaborators —
+//     re-share is owner+admin only by product decision.
+//
+// The helpers below are no-ops in offline mode (no Supabase). Local-only
+// users don't have a multi-user concept so collaboration doesn't apply.
+
+export interface ProjectCollaborator {
+  projectId: string
+  userId: string
+  grantedByUserId?: string
+  createdAt: string
+}
+
+/** Fetch the collaborator user ids for a project. Returns [] when offline. */
+export async function listProjectCollaborators(
+  projectId: string
+): Promise<ProjectCollaborator[]> {
+  if (!isSupabaseConfigured) return []
+  const client = supabase()
+  const { data, error } = await client
+    .from('project_collaborators')
+    .select('project_id, user_id, granted_by, created_at')
+    .eq('project_id', projectId)
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.warn('Failed to list project collaborators:', error.message)
+    return []
+  }
+  type Row = {
+    project_id: string
+    user_id: string
+    granted_by: string | null
+    created_at: string
+  }
+  return (data as Row[]).map((r) => ({
+    projectId: r.project_id,
+    userId: r.user_id,
+    grantedByUserId: r.granted_by ?? undefined,
+    createdAt: r.created_at,
+  }))
+}
+
+/** Grant a teammate edit access on a project. */
+export async function addProjectCollaborator(
+  projectId: string,
+  userId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Sharing requires the cloud — not available offline.')
+  }
+  const client = supabase()
+  const {
+    data: { user },
+  } = await client.auth.getUser()
+  const grantedBy = user?.id ?? null
+  const { error } = await client
+    .from('project_collaborators')
+    .upsert(
+      { project_id: projectId, user_id: userId, granted_by: grantedBy },
+      { onConflict: 'project_id,user_id' }
+    )
+  if (error) throw new Error(`Failed to add collaborator: ${error.message}`)
+}
+
+/** Revoke a teammate's edit access. */
+export async function removeProjectCollaborator(
+  projectId: string,
+  userId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Sharing requires the cloud — not available offline.')
+  }
+  const client = supabase()
+  const { error } = await client
+    .from('project_collaborators')
+    .delete()
+    .eq('project_id', projectId)
+    .eq('user_id', userId)
+  if (error) throw new Error(`Failed to remove collaborator: ${error.message}`)
+}
+
+// ---------- Permission helper ----------
+
+/**
+ * Centralised "can this user edit this project?" check. Used by the
+ * workspace, the project bar, and anywhere else that needs to gate a
+ * mutation. Encodes the permission model from the brief:
+ *
+ *   1. Personal (no-org) project + you're the user_id author → edit.
+ *   2. Admin in this project's org → edit anything.
+ *   3. ownerUserId matches you → edit your own.
+ *   4. You're listed in `collaboratorUserIds` → edit (granted).
+ *   5. Otherwise → read-only.
+ *
+ * Pass `collaboratorUserIds` from a prior call to listProjectCollaborators
+ * — the helper is pure (no I/O) so it stays cheap to call on every render.
+ */
+export function canEditProject(opts: {
+  project: SavedProject
+  currentUserId: string | null
+  isAdminOfOrg: boolean
+  collaboratorUserIds: string[]
+  /**
+   * Whether the current user is STILL a member of the project's
+   * organisation. Defaults to true for back-compat with old call sites;
+   * the dashboard / workspace pass `false` for projects whose org is
+   * no longer in the user's org list, so a removed-from-org user
+   * can't edit org-scoped projects they used to author.
+   */
+  isCurrentMemberOfOrg?: boolean
+}): boolean {
+  const {
+    project,
+    currentUserId,
+    isAdminOfOrg,
+    collaboratorUserIds,
+    isCurrentMemberOfOrg = true,
+  } = opts
+  if (!currentUserId) return false
+  // Personal project (no org) — the original author is the only editor.
+  // Fall back to ownerUserId, then createdByUserId, since older personal
+  // saves never had those set.
+  if (!project.organisationId) {
+    const author = project.ownerUserId ?? project.createdByUserId
+    if (!author) return true // legacy local-only project, no recorded author
+    return author === currentUserId
+  }
+  // Org project — first gate: must still be a member of the org. A
+  // removed user keeps their `owner_user_id` on the row but loses
+  // edit rights instantly. Stops the "I left the org, I can still
+  // open + change all my old projects" bug.
+  if (!isCurrentMemberOfOrg) return false
+  if (isAdminOfOrg) return true
+  const owner = project.ownerUserId ?? project.createdByUserId
+  if (owner && owner === currentUserId) return true
+  if (collaboratorUserIds.includes(currentUserId)) return true
+  return false
+}

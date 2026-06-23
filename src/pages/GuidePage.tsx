@@ -2,19 +2,19 @@ import { Link } from 'react-router-dom'
 import GuideMedia from '../components/GuideMedia'
 
 /**
- * Full Beme walkthrough — from creating an account through to exporting
+ * Full Beme walkthrough - from creating an account through to exporting
  * the finished estimate. Each numbered section maps to a real workflow
  * step in the product and includes screenshots / short clips so the
  * reader can match what they're seeing to what's described.
  *
  * Layout: sticky TOC on the left (lg+), long-form scrolling content on
- * the right. Media files live under public/guide/ — when one is missing
+ * the right. Media files live under public/guide/ - when one is missing
  * the GuideMedia component renders a labelled placeholder instead of a
  * broken image, so unfinished sections look intentionally pending
  * rather than broken.
  *
  * Vocabulary stays region-agnostic ("body block", "corner block",
- * "lintel") so an AU, NZ, UK, or US estimator reads equally well —
+ * "lintel") so an AU, NZ, UK, or US estimator reads equally well -
  * specific block codes only appear when the screenshot already shows
  * one (20.48, 40.925 etc.).
  */
@@ -34,7 +34,7 @@ export default function GuidePage() {
             Beme guide
           </h2>
           <p className="text-sm text-ink-400 mt-1 max-w-3xl">
-            Everything you need to take a masonry job off plan — account
+            Everything you need to take a masonry job off plan - account
             setup, library configuration, drawing, openings, piers, lintels,
             and exporting the finished estimate. Read it top to bottom the
             first time, then come back to specific sections via the menu on
@@ -43,7 +43,7 @@ export default function GuidePage() {
         </div>
 
         <div className="lg:grid lg:grid-cols-[220px_1fr] lg:gap-10">
-          {/* Table of contents — sticky on wide screens. */}
+          {/* Table of contents - sticky on wide screens. */}
           <aside className="hidden lg:block">
             <div className="sticky top-6">
               <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-400 mb-3">
@@ -65,7 +65,7 @@ export default function GuidePage() {
           </aside>
 
           {/* Long-form content. Text width caps at max-w-3xl for readability
-              (~70 chars per line) but figures are allowed to extend wider —
+              (~70 chars per line) but figures are allowed to extend wider -
               see GuideMedia's wrapper. */}
           <article className="prose-content space-y-14 max-w-4xl">
             {/* ─── Welcome ────────────────────────────────────────────── */}
@@ -74,7 +74,7 @@ export default function GuidePage() {
                 Beme turns a building plan PDF into a priced masonry
                 estimate. Upload the plan, trace the walls, openings, and
                 piers, and Beme tallies blocks (or bricks), lintels, ties,
-                cement, and any supply items you've configured — ready to
+                cement, and any supply items you've configured - ready to
                 export to PDF for your customer.
               </P>
               <P>
@@ -84,7 +84,7 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="01-dashboard.png"
-                caption="Your dashboard — recent projects, quick-start cards, and the find-by-reference shortcut for jumping to an existing estimate."
+                caption="Your dashboard - recent projects, quick-start cards, and the find-by-reference shortcut for jumping to an existing estimate."
               />
               <Annotation kind="tip">
                 In a hurry? Skip ahead to{' '}
@@ -108,12 +108,12 @@ export default function GuidePage() {
               <P>
                 Your name, contact, and role. The display name and email
                 appear on every exported estimate header. If you sign in
-                with Microsoft, the email field is read-only — it pulls
+                with Microsoft, the email field is read-only - it pulls
                 from your work account.
               </P>
               <GuideMedia
                 src="02-settings-profile.png"
-                caption="Profile tab — name, phone, email, and role / job title."
+                caption="Profile tab - name, phone, email, and role / job title."
               />
 
               <H4>Business</H4>
@@ -121,32 +121,32 @@ export default function GuidePage() {
                 Your company identity. Trading name, ABN / business
                 number, address, logo, and default tax rate (10% for
                 Australian GST). This lands in the header of every PDF
-                export — so customers see your branding, not Beme's.
+                export - so customers see your branding, not Beme's.
               </P>
               <GuideMedia
                 src="03-settings-business.png"
-                caption="Business tab — appears in the header of every exported quote."
+                caption="Business tab - appears in the header of every exported quote."
               />
 
               <H4>Preferences</H4>
               <P>
-                Units (metric / imperial — display only, internals stay
+                Units (metric / imperial - display only, internals stay
                 in mm), date format, theme, and default project type for
                 the New estimate button. The <strong>Library template</strong>{' '}
                 row down the bottom lets you switch between regional
-                presets — handy if you start in one market and later
+                presets - handy if you start in one market and later
                 expand to another.
               </P>
               <GuideMedia
                 src="04-settings-preferences.png"
-                caption="Preferences tab — units, date format, theme, default project type, and library template."
+                caption="Preferences tab - units, date format, theme, default project type, and library template."
               />
 
               <H4>Defaults</H4>
               <P>
                 Starting values for every new estimate. Default wall
                 height, mortar joint, bond pattern, default brick type,
-                and — most useful — the{' '}
+                and - most useful - the{' '}
                 <strong>Default blocks by role</strong> grid. Override
                 which block the calc engine reaches for when it needs to
                 pick on your behalf (e.g. auto-creating a wall type,
@@ -155,11 +155,11 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="05-settings-defaults.png"
-                caption="Defaults tab — wall defaults plus the per-role block override grid."
+                caption="Defaults tab - wall defaults plus the per-role block override grid."
               />
 
               <Annotation kind="tip">
-                Defaults are device-scoped — they apply to every project
+                Defaults are device-scoped - they apply to every project
                 on this computer. Sign in on another machine and you'll
                 set them again there. Cloud-saved projects keep their own
                 copy of any overrides so a project always knows what it
@@ -176,7 +176,7 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="10-library-page.png"
-                caption="Material library — Library template, blocks list, bricks list, and supply items, all on one page."
+                caption="Material library - Library template, blocks list, bricks list, and supply items, all on one page."
               />
 
               <H4>Pick a regional preset</H4>
@@ -187,17 +187,17 @@ export default function GuidePage() {
                 (SEQ), the United States (CMU + modular), and the United
                 Kingdom (concrete block + BS clay brick). Picking one
                 gives you a working set of blocks + bricks for that market
-                — edit or add to it freely after that.
+                - edit or add to it freely after that.
               </P>
               <GuideMedia
                 src="11-pick-region.png"
-                caption="Regional presets — pick the closest to your market, then customise from there."
+                caption="Regional presets - pick the closest to your market, then customise from there."
               />
 
               <H4>Blocks</H4>
               <P>
                 Every concrete block you supply. Code, name, dimensions
-                (width × height × depth), and — most importantly — one
+                (width × height × depth), and - most importantly - one
                 or more <strong>roles</strong>: body, corner,
                 end-termination, half, fraction, height-makeup, lintel,
                 pier, base, top course, tight-curve wedge. The role tells
@@ -205,11 +205,11 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="12-block-editor-add.png"
-                caption="Add a block — code, name, description, dimensions, and the role checkbox grid."
+                caption="Add a block - code, name, description, dimensions, and the role checkbox grid."
               />
               <Annotation kind="tip">
                 Role tags matter more than the block code does. Beme
-                doesn't search for "20.01" by name — it asks the library
+                doesn't search for "20.01" by name - it asks the library
                 "which block is the corner block?" by role tag. Get the
                 roles right and Beme uses the right block regardless of
                 what you've called it.
@@ -221,15 +221,15 @@ export default function GuidePage() {
                 two extra fields:{' '}
                 <strong>min / max head height (mm)</strong>. Beme uses
                 these as inclusive buckets when picking a lintel for each
-                opening — e.g. a "20.25 — 300 mm Lintel Block" with
-                max 300 covers a 300 mm head height; a "20.18 — 400 mm
+                opening - e.g. a "20.25 - 300 mm Lintel Block" with
+                max 300 covers a 300 mm head height; a "20.18 - 400 mm
                 Lintel Block" with min 301, max 400 covers from there up.
                 Catalogue-style ranges; the engine prefers the smaller
                 max on ties.
               </P>
               <GuideMedia
                 src="14-block-editor-lintel.png"
-                caption="Block editor with Lintel role ticked — the min / max head height fields appear so you can define the bucket."
+                caption="Block editor with Lintel role ticked - the min / max head height fields appear so you can define the bucket."
               />
 
               <H4>Bricks</H4>
@@ -237,12 +237,12 @@ export default function GuidePage() {
                 Brick types you supply. Dimensions (width × height ×
                 depth), mortar joint thickness, and the auto-calculated
                 bricks-per-square-metre rate. One brick in the library is
-                tagged <strong>Default</strong> — that's the one new
+                tagged <strong>Default</strong> - that's the one new
                 brick estimates start with.
               </P>
               <GuideMedia
                 src="15-brick-editor.png"
-                caption="Brick editor — dimensions, joint, and the derived bricks/m² rate."
+                caption="Brick editor - dimensions, joint, and the derived bricks/m² rate."
               />
 
               <H4>Supply items</H4>
@@ -251,30 +251,30 @@ export default function GuidePage() {
                 ties, plascourse, rebar, flashings, sealants. Each item
                 has a <strong>unit</strong> (per block, per brick, per
                 m², per lineal m, per opening, or flat each) and a{' '}
-                <strong>rate</strong> — Beme multiplies it out across the
+                <strong>rate</strong> - Beme multiplies it out across the
                 estimate. Tick which estimate types each item applies to
                 (block, brick, or both) so brick items don't appear on
                 block jobs.
               </P>
               <GuideMedia
                 src="16-supply-item-form.png"
-                caption="Supply item form — name, rate, unit, and which estimate types it applies to."
+                caption="Supply item form - name, rate, unit, and which estimate types it applies to."
               />
               <P>
                 Supply items with <strong>unit = per opening</strong>{' '}
-                show extra width-range fields — opening width min / max
+                show extra width-range fields - opening width min / max
                 in mm. Use this for brick-mode lintels (Galintel etc.)
                 where the lintel you specify depends on the opening
                 width.
               </P>
               <GuideMedia
                 src="17-supply-item-width-range.png"
-                caption="Per-opening supply item with width-range bounds — used for brick lintels keyed off opening width."
+                caption="Per-opening supply item with width-range bounds - used for brick lintels keyed off opening width."
               />
 
               <Annotation kind="warning">
                 Switching regional preset later merges the new template's
-                blocks on top of your existing library — your custom
+                blocks on top of your existing library - your custom
                 blocks aren't deleted. <strong>Reset entire library</strong>{' '}
                 does wipe everything and rebuild from a template, so
                 only use it if you really want to start over.
@@ -298,34 +298,34 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="20-new-estimate-modal.png"
-                caption="Start a new block estimate — project name, site address, client. Hit Start estimate to open the workspace."
+                caption="Start a new block estimate - project name, site address, client. Hit Start estimate to open the workspace."
               />
 
               <H4>Upload the plan</H4>
               <P>
                 The empty workspace shows a drop zone in the middle. Drag
                 a PDF in, or click <strong>Choose a PDF</strong> to
-                browse. Multi-page plans are fully supported — you'll be
+                browse. Multi-page plans are fully supported - you'll be
                 asked which pages to import next.
               </P>
               <GuideMedia
                 src="21-empty-workspace.png"
-                caption="Empty workspace — drop a PDF on the canvas, or start with an empty 1:100 workspace for quick what-ifs."
+                caption="Empty workspace - drop a PDF on the canvas, or start with an empty 1:100 workspace for quick what-ifs."
               />
               <P>
                 If your PDF has more than one page, Beme shows a page
-                picker — tick only the pages with actual masonry to
+                picker - tick only the pages with actual masonry to
                 estimate. Plumbing, electrical, and admin pages can be
                 skipped. Each imported page becomes a tab in the page
                 rail on the left, with its own scale and walls.
               </P>
               <GuideMedia
                 src="22-pdf-page-picker.png"
-                caption="Multi-page picker — tick the pages you want, skip the rest."
+                caption="Multi-page picker - tick the pages you want, skip the rest."
               />
               <Annotation kind="tip">
                 No plan to work from? Click{' '}
-                <strong>Start with an empty workspace</strong> — Beme
+                <strong>Start with an empty workspace</strong> - Beme
                 runs at a fixed 1:100 metric grid, useful for sample
                 walls and quick quotes where there's no PDF to trace.
               </Annotation>
@@ -335,8 +335,8 @@ export default function GuidePage() {
             <Section id="scale" title="4. Set the scale">
               <P>
                 Every page needs its scale set before any wall length
-                will be accurate. Pick a known dimension on the plan —
-                an annotated wall length is easiest — then either:
+                will be accurate. Pick a known dimension on the plan -
+                an annotated wall length is easiest - then either:
               </P>
               <Ul>
                 <li>
@@ -351,10 +351,10 @@ export default function GuidePage() {
               </Ul>
               <GuideMedia
                 src="30-ruler-drawn.png"
-                caption="Ruler tool — drag between two points with a known dimension, type the mm length, and save the scale."
+                caption="Ruler tool - drag between two points with a known dimension, type the mm length, and save the scale."
               />
               <Annotation kind="tip">
-                Calibrate carefully on every page — wall lengths Beme
+                Calibrate carefully on every page - wall lengths Beme
                 tallies later all come from this calibration. You can{' '}
                 <strong>Recalibrate</strong> at any time from the
                 toolbar; previously-drawn walls scale to match the new
@@ -373,25 +373,25 @@ export default function GuidePage() {
                 glance which type each wall is.
               </P>
               <P>
-                The same editor handles three things — pick the kind at
+                The same editor handles three things - pick the kind at
                 the top:
               </P>
               <Ul>
                 <li>
-                  <strong>Wall</strong> — standard masonry wall
+                  <strong>Wall</strong> - standard masonry wall
                 </li>
                 <li>
-                  <strong>Tied pier</strong> — a column built into a
+                  <strong>Tied pier</strong> - a column built into a
                   host wall (height inherits the wall)
                 </li>
                 <li>
-                  <strong>Freestanding pier</strong> — a standalone
+                  <strong>Freestanding pier</strong> - a standalone
                   column with its own height
                 </li>
               </Ul>
               <GuideMedia
                 src="40-wall-type-kind-picker.png"
-                caption="One editor for walls, tied piers, and freestanding piers — pick the kind via the tabs at the top."
+                caption="One editor for walls, tied piers, and freestanding piers - pick the kind via the tabs at the top."
               />
 
               <H4>Basics</H4>
@@ -401,12 +401,12 @@ export default function GuidePage() {
                 The <strong>Match exact wall length</strong> toggle
                 controls whether the calc absorbs leftover length using
                 fraction-tagged blocks from your library (AU 20.02 /
-                20.22 etc.) — leave it on if your supplier stocks
+                20.22 etc.) - leave it on if your supplier stocks
                 fractions, turn it off if the bricklayer trims on site.
               </P>
               <GuideMedia
                 src="41-wall-type-basics.png"
-                caption="Basics tab — name, height, bond, and length-matching behaviour."
+                caption="Basics tab - name, height, bond, and length-matching behaviour."
               />
 
               <H4>Composition</H4>
@@ -418,50 +418,50 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="42-wall-type-composition.png"
-                caption="Composition tab — assign blocks to base / body / top / end-termination roles."
+                caption="Composition tab - assign blocks to base / body / top / end-termination roles."
               />
 
               <H4>Course pattern (mixed-height walls)</H4>
               <P>
-                Most walls don't need this — the flat Height field on
+                Most walls don't need this - the flat Height field on
                 the Basics tab handles uniform walls. Use the Course
-                pattern tab when courses are mixed heights — e.g.{' '}
+                pattern tab when courses are mixed heights - e.g.{' '}
                 <em>4 × 200 mm body + 2 × 100 mm bond beam</em>{' '}
                 repeating up the wall.
               </P>
               <GuideMedia
                 src="43-wall-type-pattern-empty.png"
-                caption="Course pattern empty state — click Convert this wall to a pattern or Add band to start."
+                caption="Course pattern empty state - click Convert this wall to a pattern or Add band to start."
               />
               <P>
-                Each band is a count + block — Beme stacks them
+                Each band is a count + block - Beme stacks them
                 bottom-to-top and the Basics height field locks to
                 whatever the pattern sums to. Drag to reorder, ▲▼ to
                 shuffle, × to remove.
               </P>
               <GuideMedia
                 src="44-wall-type-pattern-bands.png"
-                caption="Course pattern populated — multiple bands stack from base to top, preview reflects the layered build."
+                caption="Course pattern populated - multiple bands stack from base to top, preview reflects the layered build."
               />
 
               <H4>Advanced overrides</H4>
               <P>
                 Two extra tools for edge cases:{' '}
                 <strong>per-course overrides</strong> (replace the
-                block on a single course — handy for a mid-wall bond
+                block on a single course - handy for a mid-wall bond
                 beam) and <strong>course-series ranges</strong> (use a
-                different block series for a range of courses — e.g.
+                different block series for a range of courses - e.g.
                 300-series for the bottom 5 courses, 200-series above).
               </P>
               <GuideMedia
                 src="45-wall-type-advanced.png"
-                caption="Advanced tab — per-course overrides and course-series ranges for unusual builds."
+                caption="Advanced tab - per-course overrides and course-series ranges for unusual builds."
               />
 
               <P>
                 Hit <strong>Save changes</strong>. The wall type appears
                 in the right panel and becomes the <strong>Active</strong>{' '}
-                type — every new wall you draw uses it until you switch.
+                type - every new wall you draw uses it until you switch.
                 Click any other type in the panel to make it active.
               </P>
             </Section>
@@ -471,14 +471,14 @@ export default function GuidePage() {
               <P>
                 Click <strong>Draw wall</strong>. Each click places a
                 point; consecutive clicks chain into a continuous
-                polyline — perfect for going around a room without
+                polyline - perfect for going around a room without
                 releasing the tool. Press <Kbd>Esc</Kbd> to stop
                 drawing, or click <strong>Stop drawing</strong> in the
                 toolbar.
               </P>
               <GuideMedia
                 src="51-wall-in-progress.png"
-                caption="Drawing in progress — click points along a wall; consecutive clicks chain into a polyline."
+                caption="Drawing in progress - click points along a wall; consecutive clicks chain into a polyline."
               />
 
               <H4>Snap targets</H4>
@@ -488,16 +488,16 @@ export default function GuidePage() {
               </P>
               <Ul>
                 <li>
-                  <strong>Wall endpoints</strong> — green ring; useful
+                  <strong>Wall endpoints</strong> - green ring; useful
                   for closing a loop or starting a new wall off the end
                   of an existing one
                 </li>
                 <li>
-                  <strong>Wall faces</strong> — purple ring; T-junctions
+                  <strong>Wall faces</strong> - purple ring; T-junctions
                   snap to the face of the host wall
                 </li>
                 <li>
-                  <strong>Orthogonal angles</strong> — 0°, 45°, 90°
+                  <strong>Orthogonal angles</strong> - 0°, 45°, 90°
                   relative to your last point
                 </li>
               </Ul>
@@ -513,12 +513,12 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="50-drawing-typed-length.png"
-                caption="Typed length while drawing — number entered floats above the wall, Enter commits."
+                caption="Typed length while drawing - number entered floats above the wall, Enter commits."
               />
 
               <H4>Corners</H4>
               <P>
-                Just chain — first click places a point, second click
+                Just chain - first click places a point, second click
                 completes wall A, third click branches off in a new
                 direction (wall B). The corner block from the wall
                 type's Composition tab fills the join automatically;
@@ -526,7 +526,7 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="52-corner.png"
-                caption="A corner formed by two chained walls — corner block fills automatically."
+                caption="A corner formed by two chained walls - corner block fills automatically."
               />
 
               <H4>Curved walls</H4>
@@ -536,18 +536,18 @@ export default function GuidePage() {
                 third point on the midpoint of the arc to set the
                 radius. Beme stacks tight-curve wedge blocks (or
                 compresses standard body blocks for large radii)
-                depending on the curve geometry — visible in the tally
+                depending on the curve geometry - visible in the tally
                 as "Curved-Wall Half Block" / wedge entries.
               </P>
               <GuideMedia
                 src="53-curved-wall.png"
-                caption="Curved wall — three-click arc placement, curve blocks tallied separately."
+                caption="Curved wall - three-click arc placement, curve blocks tallied separately."
               />
               <Annotation kind="tip">
                 Radius matters: ≥ 6000 mm uses stock body blocks with
-                compressed mortar. 1500–6000 mm uses stock blocks with
+                compressed mortar. 1500-6000 mm uses stock blocks with
                 a small saw cut. &lt; 1500 mm uses the tight-curve
-                wedge block. &lt; 665 mm requires custom blocks — Beme
+                wedge block. &lt; 665 mm requires custom blocks - Beme
                 will flag it.
               </Annotation>
 
@@ -555,13 +555,13 @@ export default function GuidePage() {
               <P>
                 Switch pages via the thumbnail rail on the left. Each
                 page has its own calibration, walls, openings, and
-                piers — but they all roll up into one total tally in
+                piers - but they all roll up into one total tally in
                 the right panel. Useful for plans split across
                 multiple sheets, or plans with separate floors.
               </P>
               <GuideMedia
                 src="54-multi-page-walls.png"
-                caption="Multi-page plan with walls drawn across pages — single tally rolls up the lot."
+                caption="Multi-page plan with walls drawn across pages - single tally rolls up the lot."
               />
             </Section>
 
@@ -571,32 +571,32 @@ export default function GuidePage() {
                 Click <strong>+ Add opening</strong>, then click two
                 points along an existing wall to set the opening's
                 width. A modal pops up asking for sill and head
-                heights — or pick a preset.
+                heights - or pick a preset.
               </P>
               <GuideMedia
                 src="60-opening-modal.png"
-                caption="New opening modal — presets across the top, sill + head height fields below."
+                caption="New opening modal - presets across the top, sill + head height fields below."
               />
               <P>
                 Presets cover common configurations: Door 2100, Door
                 2040, Window 1500 (sill 900), Window 1200 (sill 900),
-                Window 1800 (sill 600). They pre-fill the dimensions —
+                Window 1800 (sill 600). They pre-fill the dimensions -
                 you can still tweak before saving.
               </P>
               <P>
                 Once placed, the opening shows as a gap in the wall.
-                Click on it to select — the inspector band at the top
+                Click on it to select - the inspector band at the top
                 shows its dimensions, the lintel selected, and which
                 wall it's attached to. Press <Kbd>Del</Kbd> or{' '}
                 <Kbd>Backspace</Kbd> to remove.
               </P>
               <GuideMedia
                 src="61-opening-placed.png"
-                caption="Opening rendered on the wall — visible as a gap with width + height labels."
+                caption="Opening rendered on the wall - visible as a gap with width + height labels."
               />
               <GuideMedia
                 src="62-opening-selected.png"
-                caption="Selected opening — banner shows dimensions, sill, head, and the lintel block selected automatically."
+                caption="Selected opening - banner shows dimensions, sill, head, and the lintel block selected automatically."
               />
               <Annotation kind="warning">
                 Openings are tied to the wall they sit on. Delete the
@@ -614,19 +614,19 @@ export default function GuidePage() {
               </P>
               <Ul>
                 <li>
-                  <strong>On a wall</strong> → a tied pier — height
+                  <strong>On a wall</strong> → a tied pier - height
                   inherits the host wall, course pattern alternates the
                   pier block with a corner / tie-back block per course
                 </li>
                 <li>
-                  <strong>Off any wall</strong> → a freestanding pier —
+                  <strong>Off any wall</strong> → a freestanding pier -
                   standalone column with its own height defined on the
                   pier type
                 </li>
               </Ul>
               <GuideMedia
                 src="70-pier-placement.png"
-                caption="Pier placement banner — click on a wall for tied, anywhere else for freestanding."
+                caption="Pier placement banner - click on a wall for tied, anywhere else for freestanding."
               />
               <P>
                 Pier types live alongside wall types in the right
@@ -635,11 +635,11 @@ export default function GuidePage() {
               </P>
               <GuideMedia
                 src="71-pier-types.png"
-                caption="Wall types panel showing both pier types alongside walls — one unified list."
+                caption="Wall types panel showing both pier types alongside walls - one unified list."
               />
               <GuideMedia
                 src="72-pier-editor.png"
-                caption="Pier editor — placement, height, course pattern, and a per-course preview."
+                caption="Pier editor - placement, height, course pattern, and a per-course preview."
               />
             </Section>
 
@@ -648,21 +648,21 @@ export default function GuidePage() {
               <P>
                 The right panel updates live as you draw. Block tally
                 shows total blocks, run length, and a breakdown by code
-                — sorted by count so the headline numbers are at the
+                - sorted by count so the headline numbers are at the
                 top. Brick tally shows total bricks + area + per-brick
                 breakdown.
               </P>
               <GuideMedia
                 src="80-block-tally.png"
-                caption="Block tally — total blocks, run length, and per-code breakdown."
+                caption="Block tally - total blocks, run length, and per-code breakdown."
                 aspect="4/3"
               />
               <Annotation kind="tip">
                 If your library has overlapping lintel bucket ranges
-                (e.g. two blocks both claim 200–300 mm heads), an amber
+                (e.g. two blocks both claim 200-300 mm heads), an amber
                 warning band appears above the tally listing the
                 conflict. Adjust the ranges in the block editor to
-                clear it — Beme will pick whichever block comes first
+                clear it - Beme will pick whichever block comes first
                 in the library otherwise, which isn't deterministic.
               </Annotation>
             </Section>
@@ -673,14 +673,14 @@ export default function GuidePage() {
                 In the right-hand <strong>Export estimate</strong>{' '}
                 panel, tick the sections you want included, then click{' '}
                 <strong>Save as PDF</strong>. The estimate opens in a
-                new browser tab — hit the orange <em>Print / Save as
+                new browser tab - hit the orange <em>Print / Save as
                 PDF</em> button at the top, or use{' '}
                 <Kbd>Ctrl+P</Kbd> and choose Save as PDF in the print
                 dialog.
               </P>
               <GuideMedia
                 src="81-export-panel.png"
-                caption="Export panel — tick what you want included, save as PDF."
+                caption="Export panel - tick what you want included, save as PDF."
                 aspect="4/3"
               />
               <P>
@@ -688,24 +688,24 @@ export default function GuidePage() {
               </P>
               <Ul>
                 <li>
-                  <strong>Assumptions</strong> — the masonry conventions
+                  <strong>Assumptions</strong> - the masonry conventions
                   Beme applied (mortar joint, rounding, corner dedup,
                   curve thresholds)
                 </li>
                 <li>
-                  <strong>Wall specifications</strong> — per-wall-type
+                  <strong>Wall specifications</strong> - per-wall-type
                   composition and dimensions
                 </li>
                 <li>
-                  <strong>Block / brick schedule</strong> — totals per
+                  <strong>Block / brick schedule</strong> - totals per
                   code with per-wall-type breakdown
                 </li>
                 <li>
-                  <strong>Breakdown by wall type</strong> — runs and
+                  <strong>Breakdown by wall type</strong> - runs and
                   blocks grouped by wall type
                 </li>
                 <li>
-                  <strong>Ruler measurements on layout</strong> — every
+                  <strong>Ruler measurements on layout</strong> - every
                   ruler measurement you drew, on the page where it sits
                 </li>
                 <li>
@@ -714,20 +714,20 @@ export default function GuidePage() {
               </Ul>
               <GuideMedia
                 src="82-export-pdf-assumptions.png"
-                caption="Exported PDF — first page (assumptions). Your business name + ABN sit in the header, the customer's site address as the subtitle."
+                caption="Exported PDF - first page (assumptions). Your business name + ABN sit in the header, the customer's site address as the subtitle."
               />
               <GuideMedia
                 src="84-export-pdf-wall-specs.png"
-                caption="Wall specifications page — composition, dimensions, and run lengths per wall type."
+                caption="Wall specifications page - composition, dimensions, and run lengths per wall type."
               />
               <GuideMedia
                 src="83-export-pdf-schedule.png"
-                caption="Block schedule page — totals per code with breakdown by wall type."
+                caption="Block schedule page - totals per code with breakdown by wall type."
               />
               <Annotation kind="tip">
                 Untick sections that don't apply to this customer (e.g.
                 internal jobs with no lintels schedule). Toggles only
-                affect the export — the tally always has the full
+                affect the export - the tally always has the full
                 numbers available for re-export later.
               </Annotation>
             </Section>
@@ -746,13 +746,13 @@ export default function GuidePage() {
                 <strong>Lost</strong>, or leave it{' '}
                 <strong>Pending</strong> via the outcome pill on the
                 project row. The dashboard tracks your win rate from
-                these — useful for sales meetings and seeing which kinds
+                these - useful for sales meetings and seeing which kinds
                 of jobs convert.
               </P>
               <P>
                 Need to find a specific estimate? Type the six-digit
                 reference number into the <strong>Find by reference</strong>{' '}
-                card on the dashboard — it's printed on every exported
+                card on the dashboard - it's printed on every exported
                 PDF so customers can quote it back to you over the phone.
               </P>
               <Annotation kind="tip">
@@ -760,7 +760,7 @@ export default function GuidePage() {
                 multiple estimates for the same client. The Duplicate
                 button on each dashboard row creates a fresh project
                 with all your wall types, openings, and supply items
-                pre-loaded — just change the project name and adjust
+                pre-loaded - just change the project name and adjust
                 what's different.
               </Annotation>
             </Section>
@@ -772,20 +772,20 @@ export default function GuidePage() {
                 Press <Kbd>Cmd+K</Kbd> (or <Kbd>Ctrl+K</Kbd> on Windows)
                 to open the command palette anywhere in Beme. Search
                 projects by name or reference, jump to settings, library,
-                or the guide, start a new estimate — without lifting your
+                or the guide, start a new estimate - without lifting your
                 hands off the keyboard. Arrow keys to move,{' '}
                 <Kbd>Enter</Kbd> to open.
               </P>
               <GuideMedia
                 src="06-command-palette.png"
-                caption="Command palette — fuzzy-search across navigation, actions, and your projects."
+                caption="Command palette - fuzzy-search across navigation, actions, and your projects."
                 aspect="4/3"
               />
 
               <H4>Keyboard shortcuts</H4>
               <P>
                 Press <Kbd>?</Kbd> anywhere for the full shortcut
-                reference. Highlights below — full list in the modal:
+                reference. Highlights below - full list in the modal:
               </P>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 my-3">
                 <ShortcutRow keys={['Cmd/Ctrl', '+', 'K']} label="Command palette" />
@@ -799,14 +799,14 @@ export default function GuidePage() {
               </div>
               <GuideMedia
                 src="90-keyboard-shortcuts.png"
-                caption="The full shortcut reference — global, drawing, selection, and project shortcuts."
+                caption="The full shortcut reference - global, drawing, selection, and project shortcuts."
               />
             </Section>
 
             {/* ─── Working in a team ─────────────────────────────────── */}
             <Section id="team" title="Working in a team (optional)">
               <P>
-                Beme works fine as a single-user app — most users won't
+                Beme works fine as a single-user app - most users won't
                 need this section. If you're set up as an organisation
                 (typically a masonry supplier with sales + estimating
                 staff), every project is visible to the whole team and
@@ -814,7 +814,7 @@ export default function GuidePage() {
               </P>
               <P>
                 Want a teammate to look at your estimate? Tell them the
-                reference number — they can punch it into the{' '}
+                reference number - they can punch it into the{' '}
                 <em>Find by reference</em> card on the dashboard sidebar
                 and land straight on the project. No inbox routing, no
                 hand-offs.
@@ -838,7 +838,7 @@ export default function GuidePage() {
                 <li>
                   <strong>Use control joints</strong> (toolbar →
                   Control joint) to split a long wall at a specific
-                  point — handy for marking expansion joints or
+                  point - handy for marking expansion joints or
                   breaking up a single drawn wall into two priced
                   pieces.
                 </li>
@@ -851,7 +851,7 @@ export default function GuidePage() {
                 <li>
                   <strong>Library health</strong> badge on the
                   dashboard's Material library card flags when
-                  something needs your attention — overlapping lintel
+                  something needs your attention - overlapping lintel
                   ranges, missing role tags, etc. Click through to fix.
                 </li>
                 <li>
@@ -866,7 +866,7 @@ export default function GuidePage() {
             <Section id="help" title="Need more help?">
               <P>
                 Something not working, or a feature would make your day
-                shorter? Get in touch — Beme is actively developed and
+                shorter? Get in touch - Beme is actively developed and
                 feedback shapes what gets built next.
               </P>
             </Section>
@@ -965,7 +965,7 @@ function Annotation({
     kind === 'tip'
       ? 'border-beme-500/40 bg-beme-500/10 text-beme-300'
       : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
-  const label = kind === 'tip' ? '💡 Tip' : '⚠ Heads up'
+  const label = kind === 'tip' ? 'Tip' : 'Heads up'
   return (
     <div className={`my-3 px-4 py-3 border rounded-lg ${styles}`}>
       <div className="text-[11px] font-semibold uppercase tracking-wider mb-1 opacity-80">

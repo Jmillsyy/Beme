@@ -1,0 +1,246 @@
+/**
+ * Invitation flow - admin-created tokens that grant a specific email
+ * access to a specific organisation when redeemed.
+ *
+ * The token IS the row id. Anyone who can produce that UUID can claim
+ * the invite (subject to email match), so handle the link like a
+ * password-reset link - share it through a private channel, give it
+ * a short lifetime.
+ *
+ * Flow:
+ *   1. Org admin calls `createInvitation(orgId, email, role)` → row goes
+ *      into `public.invitations` with a generated UUID, expires in 7 days.
+ *      Admin gets back the URL via `inviteAcceptUrl(token)` and pastes it
+ *      to the invitee (Slack / email / SMS - their choice).
+ *   2. Invitee opens the URL - `/accept-invite?token=<id>` - which calls
+ *      `peekInvitation(token)` to show "you've been invited by X to Y"
+ *      WITHOUT requiring sign-in (the RPC is SECURITY DEFINER and only
+ *      returns safe fields).
+ *   3. Invitee fills in display name + password, the page calls
+ *      `supabase.auth.signUp(...)` directly, then `acceptInvitation(token)`
+ *      which adds them to `organisation_members` and marks the row used.
+ *
+ * Schema + RPCs live in SETUP.md under "invitations".
+ */
+
+import { isSupabaseConfigured, supabase } from './supabase'
+import type { OrgRole } from '../types/organisations'
+
+export type InvitationStatus = 'pending' | 'used' | 'expired' | 'revoked'
+
+/** A row from public.invitations. */
+export interface Invitation {
+  id: string
+  organisationId: string
+  email: string
+  role: OrgRole
+  invitedByUserId: string
+  expiresAt: string
+  usedAt?: string
+  usedByUserId?: string
+  createdAt: string
+}
+
+/**
+ * What the /accept-invite page sees before sign-up. Returned by the
+ * SECURITY DEFINER `peek_invitation` RPC so non-authenticated callers
+ * can render the welcome screen without leaking the full invitations
+ * table to the public.
+ */
+export interface InvitationPreview {
+  email: string
+  organisationId: string
+  organisationName: string
+  role: OrgRole
+  invitedByDisplayName: string | null
+  expiresAt: string
+}
+
+interface InvitationRow {
+  id: string
+  organisation_id: string
+  email: string
+  role: OrgRole
+  invited_by_user_id: string
+  expires_at: string
+  used_at: string | null
+  used_by_user_id: string | null
+  created_at: string
+}
+
+function rowToInvitation(r: InvitationRow): Invitation {
+  return {
+    id: r.id,
+    organisationId: r.organisation_id,
+    email: r.email,
+    role: r.role,
+    invitedByUserId: r.invited_by_user_id,
+    expiresAt: r.expires_at,
+    usedAt: r.used_at ?? undefined,
+    usedByUserId: r.used_by_user_id ?? undefined,
+    createdAt: r.created_at,
+  }
+}
+
+/**
+ * Derive a human-readable status from the row's timestamps. Reuse for
+ * filtering / badges in the admin UI.
+ */
+export function statusOf(inv: Invitation): InvitationStatus {
+  if (inv.usedAt) return 'used'
+  if (new Date(inv.expiresAt).getTime() < Date.now()) return 'expired'
+  return 'pending'
+}
+
+/**
+ * Build the URL the admin pastes to the invitee. Uses window.location.origin
+ * so it always matches the environment the admin is in - production from
+ * prod, localhost from local dev. Don't hard-code the host: someone
+ * generating an invite from a Vercel preview URL would inadvertently send
+ * the invitee back to the preview build.
+ */
+export function inviteAcceptUrl(token: string): string {
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : ''
+  return `${origin}/accept-invite?token=${encodeURIComponent(token)}`
+}
+
+/**
+ * Create a new invitation row. Caller must be an org admin (RLS gates it).
+ * Email is stored as the user typed it; the accept RPC does the
+ * case-insensitive match against auth.users.email so any casing works.
+ */
+export async function createInvitation(
+  orgId: string,
+  email: string,
+  role: OrgRole
+): Promise<Invitation> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Invitations require Supabase to be configured.')
+  }
+  const client = supabase()
+  const {
+    data: { user },
+  } = await client.auth.getUser()
+  if (!user) throw new Error('You need to be signed in to invite teammates.')
+
+  const { data, error } = await client
+    .from('invitations')
+    .insert({
+      organisation_id: orgId,
+      email: email.trim(),
+      role,
+      invited_by_user_id: user.id,
+    })
+    .select()
+    .single()
+  if (error) throw new Error(`Couldn't create invitation: ${error.message}`)
+  return rowToInvitation(data as InvitationRow)
+}
+
+/**
+ * List invitations for an org - pending first, then used/expired. Admins
+ * only (RLS-gated). Used by the org admin panel to show "X invites
+ * pending, last sent 2d ago" and offer revoke.
+ */
+export async function listInvitations(orgId: string): Promise<Invitation[]> {
+  if (!isSupabaseConfigured) return []
+  const client = supabase()
+  const { data, error } = await client
+    .from('invitations')
+    .select('*')
+    .eq('organisation_id', orgId)
+    .order('created_at', { ascending: false })
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error('listInvitations failed:', error.message)
+    return []
+  }
+  return (data as InvitationRow[]).map(rowToInvitation)
+}
+
+/**
+ * Delete an invitation. Admins only. Use this to revoke a pending
+ * invite (e.g. when the wrong email was typed) - used / expired
+ * invites can also be cleaned up this way, no harm.
+ */
+export async function revokeInvitation(invitationId: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Invitations require Supabase to be configured.')
+  }
+  const client = supabase()
+  const { error } = await client
+    .from('invitations')
+    .delete()
+    .eq('id', invitationId)
+  if (error) throw new Error(`Couldn't revoke invitation: ${error.message}`)
+}
+
+/**
+ * Read just the safe-to-display fields of an invitation by token. Backed
+ * by the SECURITY DEFINER `peek_invitation` RPC so this works for
+ * unauthenticated callers - the accept page needs to show "you've been
+ * invited by X" before the user signs up.
+ *
+ * Returns null when the token doesn't match an active invitation. The
+ * page can't tell the difference between "expired", "used", and
+ * "doesn't exist" - by design, so a stolen-but-stale token doesn't
+ * leak which-of-those.
+ */
+export async function peekInvitation(
+  token: string
+): Promise<InvitationPreview | null> {
+  if (!isSupabaseConfigured) return null
+  const client = supabase()
+  const { data, error } = await client.rpc('peek_invitation', { invite_id: token })
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error('peekInvitation failed:', error.message)
+    return null
+  }
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | {
+        email: string
+        organisation_id: string
+        organisation_name: string
+        role: OrgRole
+        invited_by_display_name: string | null
+        expires_at: string
+      }
+    | undefined
+  if (!row) return null
+  return {
+    email: row.email,
+    organisationId: row.organisation_id,
+    organisationName: row.organisation_name,
+    role: row.role,
+    invitedByDisplayName: row.invited_by_display_name,
+    expiresAt: row.expires_at,
+  }
+}
+
+/**
+ * Redeem an invitation token. Caller must be signed in as the invited
+ * email - the SECURITY DEFINER RPC validates that and rejects mismatches.
+ * On success the user is now a member of the invitation's org and the
+ * row is marked used.
+ *
+ * Returns the org id + role so callers can navigate / set the active org.
+ */
+export async function acceptInvitation(
+  token: string
+): Promise<{ organisationId: string; role: OrgRole }> {
+  if (!isSupabaseConfigured) {
+    throw new Error('Invitations require Supabase to be configured.')
+  }
+  const client = supabase()
+  const { data, error } = await client.rpc('accept_invitation', {
+    invite_id: token,
+  })
+  if (error) throw new Error(error.message)
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { organisation_id: string; role: OrgRole }
+    | undefined
+  if (!row) throw new Error('Invitation could not be accepted.')
+  return { organisationId: row.organisation_id, role: row.role }
+}

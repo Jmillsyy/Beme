@@ -1,0 +1,3087 @@
+/**
+ * Block estimate export — generates a printable HTML document in a new browser tab.
+ * User then prints to PDF via the browser's built-in Print → Save as PDF.
+ *
+ * The block export mirrors brick export but is shaped around what block estimates need:
+ *
+ *   Page 1 — Assumptions
+ *   Page 2 — Block Schedule (full code-by-code tally)
+ *   Page 3 — Wall-type breakdown (block counts per makeup, with per-code grand totals)
+ *   Page 4 — Openings + lintel blocks
+ *   Page 5 — Disclaimer
+ *
+ * Each section is gated by an inclusion flag — users tick what they want in the
+ * BlockExportPanel.
+ */
+
+import type { BlockCode } from '../types/blocks'
+import { BLOCK_LIBRARY, pickHalfBlock } from '../data/blockLibrary'
+import type {
+  BlockExportInclusions,
+  BlockTally,
+  Opening,
+  Pier,
+  PierMakeup,
+  ProjectDetails,
+  Wall,
+  WallMakeup,
+} from '../types/walls'
+import {
+  calculateProjectTally,
+  calculateWallTally,
+  cornerOwnershipFor,
+  curveZoneForRadius,
+  wallLengthMm,
+} from './blockCalc'
+import { arcFromThreePoints, isCurvedWall, sampleArc } from './curveGeom'
+import { straightWallFootprintMm } from './wallFootprint'
+import { rasterisePdfPage } from './pdfRaster'
+import { downloadPdfFromHtml } from './pdfExport'
+import { getEffectiveWallThicknessMm, getMakeupHeightMm } from './makeups'
+import { getUserSettings } from './userSettings'
+import { getOrgSupplyItems } from './orgSupplyItems'
+import { countOpeningsForSupplyItem } from './openingSupplyResolver'
+import { getCurrentOrgId } from './organisations'
+import {
+  formatSupplyQuantity,
+  roundSupplyQuantity,
+} from '../types/userSettings'
+
+interface ExportParams {
+  projectDetails: ProjectDetails
+  inclusions: BlockExportInclusions
+  /**
+   * Optional list of 3D viewport snapshots captured via the ▣
+   * Capture button. Each entry pairs the PNG image with the legend
+   * items visible at the moment of capture (block code, label,
+   * colour swatch). When non-empty and `inclusions.view3d` is true,
+   * the export renders one "3D view" page per snapshot with the
+   * image as the hero and the legend as a key column on the right.
+   */
+  view3dSnapshots?: Array<{
+    dataUrl: string
+    legend: Array<{ code: string; label: string; color: string }>
+  }>
+  /**
+   * Server-allocated reference number for this project. Surfaces in the
+   * cover/header of the exported document so the reader can quote it
+   * back when looking the job up. Optional so projects predating the
+   * reference-number rollout still export cleanly without one.
+   */
+  referenceNumber?: number
+  /** Per-project supply-item include/exclude map. See brick export. */
+  supplyItemSelections?: Record<string, boolean>
+  /** Per-project rate overrides for supply items. */
+  supplyItemRateOverrides?: Record<string, number>
+  /**
+   * Per-supply-item quantity ADJUSTMENTS, keyed by supply item id.
+   * Same semantics as {@link blockAdjustments}: a positive value
+   * subtracts from the auto-computed (rate × metric, rounded up)
+   * quantity, a negative value adds to it. Used when the user wants
+   * to override the per-project supply count from the export modal
+   * (e.g. "I already have 5 bags of cement on site, so order 5 less"
+   * or "add 2 extras for breakage"). Missing keys → no change.
+   * Applied AFTER the rate maths and Math.ceil rounding, then
+   * clamped to >= 0 so a too-aggressive adjustment can't render a
+   * negative row.
+   */
+  supplyItemAdjustments?: Record<string, number>
+  /**
+   * Per-export supply-item NAME overrides — keyed by supply item id,
+   * value is the renamed label to use in the PDF. Lets the user
+   * rename a supply on a per-quote basis without mutating the
+   * master material library. Empty / missing falls back to the
+   * library item's name.
+   */
+  supplyItemNameOverrides?: Record<string, string>
+  /**
+   * Per-export cover page text overrides — title, subtitle, intro.
+   * Each field is plain text; the exporter HTML-escapes before
+   * rendering. When ALL three are missing / empty, no cover page is
+   * rendered and the document opens directly into Assumptions like
+   * the legacy flow. When any field is set, a dedicated cover page
+   * is prepended to the body using `projectDetails` as fallback for
+   * the title.
+   */
+  coverOverrides?: {
+    title?: string
+    subtitle?: string
+    intro?: string
+  }
+  /**
+   * Per-block quantity ADJUSTMENTS (a count to subtract from the
+   * computed tally). Used when the user has some blocks already on
+   * site or reused from another job and doesn't want them on the
+   * order list. Each entry is a positive number representing "remove
+   * this many of code X from the final schedule." Missing codes
+   * count as 0 (no change). After subtraction, counts are clamped
+   * to >= 0 so a too-aggressive adjustment can't render a negative.
+   */
+  blockAdjustments?: Record<BlockCode, number>
+  /**
+   * Per-area overrides from the export modal's Quantities section.
+   * For each area the user can override:
+   *   - `sqM`: replaces the calc-engine m² for that area's wall
+   *     subset; flows into supply-item per-m² math + summary.
+   *   - `blocks`: per-block-code count overrides for that area.
+   *     Each override replaces the auto-tally count for that code
+   *     in that area; deltas are summed globally and applied to
+   *     the project-wide block tally.
+   *
+   * Keyed by areaId (or `__unassigned__` for the unassigned
+   * bucket). Missing fields fall back to the calc-engine value.
+   */
+  perAreaBlockOverrides?: Record<
+    string,
+    {
+      sqM?: number
+      blocks?: Record<string, number>
+      /** Per-wall-type drilldown overrides within this area. Keyed
+       *  by makeup id. Each entry can override that wall type's m²
+       *  contribution and per-code counts in this area. Deltas are
+       *  computed against the per-(area, makeup) auto totals and
+       *  applied to the project-wide tally the same way the
+       *  area-level overrides are. */
+      byMakeup?: Record<
+        string,
+        { sqM?: number; blocks?: Record<string, number> }
+      >
+    }
+  >
+  walls: Wall[]
+  makeups: WallMakeup[]
+  openings: Opening[]
+  piers?: Pier[]
+  pierMakeups?: PierMakeup[]
+  /** Wastage uplift percent for the block schedule's headline counts.
+   *  When supplied (> 0), the Block Schedule table grows a "+ X%
+   *  wastage" column showing each block code's count uplifted, plus
+   *  a wastage-uplifted Total Blocks figure. Supply items, per-area
+   *  Quantities overrides, and the per-wall-type breakdown stay on
+   *  the net numbers — wastage is a single project-wide uplift on
+   *  the ordering figure. */
+  wastagePercent?: number
+  /**
+   * Optional business identity (from user settings). When provided, the
+   * exported document header shows the user's company instead of the generic
+   * "Beme" wordmark — turning the export into a branded quote.
+   */
+  business?: BusinessExportInfo
+  /**
+   * Optional reference to the loaded PDF. When provided together with
+   * `pagesInfo`, each page's plan is rasterised as the SVG background for
+   * its Wall Layout overview so the reader sees the building plan with
+   * walls drawn over it. Without the PDF the layout still renders, just
+   * without the background image.
+   */
+  pdfFile?: File
+  /**
+   * One entry per PDF page that has any walls / openings / piers worth
+   * showing on its own Wall Layout overview page. The export emits one
+   * "Wall Layout — Page N" section per entry in this array, in order.
+   *
+   * Multi-floor projects need this — the current PDF page is no longer
+   * enough info, because the export's Wall Layout section runs across
+   * every drawn floor. When the array has just one entry, the export
+   * behaves the same as the old single-page flow.
+   */
+  pagesInfo?: PageInfo[]
+}
+
+/**
+ * Per-PDF-page metadata + the walls / openings / piers that belong to
+ * that page. The export uses these to build one Wall Layout section per
+ * page; the tally tables still come off the flat `walls` / `openings` /
+ * `piers` arrays in the params so totals are project-wide.
+ */
+export interface PageInfo {
+  pageNumber: number
+  pageWidthMm?: number
+  pageHeightMm?: number
+  pageScaleRatio?: number
+  walls: Wall[]
+  openings: Opening[]
+  piers: Pier[]
+  /**
+   * Ruler measurements drawn on this page. Rendered as dashed-line overlays
+   * with their lengths labelled when `inclusions.measurements` is on.
+   * Coordinates share the same mm space as the walls so they sit at the
+   * right spot relative to the plan.
+   */
+  measurements?: Array<{
+    id: string
+    startMm: { x: number; y: number }
+    endMm: { x: number; y: number }
+  }>
+  /** Optional human label, e.g. "Ground Floor". Falls back to "Page N". */
+  label?: string
+}
+
+export interface BusinessExportInfo {
+  companyName?: string
+  abn?: string
+  phone?: string
+  website?: string
+  addressLine1?: string
+  addressLine2?: string
+  suburb?: string
+  state?: string
+  postcode?: string
+  logoUrl?: string
+}
+
+const DISCLAIMER_TEXT = [
+  'This material schedule has been prepared as an estimate only, based on the drawings and information supplied by the client at the time of preparation. All quantities are indicative and should not be relied upon as a definitive or guaranteed measure of materials required for construction.',
+  'Actual quantities required on site may differ from those shown in this schedule due to variations in construction methodology, site conditions, design changes, cutting waste, breakage, over-ordering requirements, or discrepancies between the drawings and constructed works. The preparer accepts no liability for any loss, cost, or claim arising from reliance on these estimated quantities.',
+  'This schedule should be reviewed and verified by a suitably qualified quantity surveyor or estimator prior to procurement. Any amendments to the design or scope of works should be communicated to the preparer so that quantities can be revised accordingly.',
+]
+
+// ---------- Helpers ----------
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+function formatNumber(n: number, digits = 0): string {
+  return n.toLocaleString('en-AU', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
+function formatDate(iso: string): string {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso)
+    return d.toLocaleDateString('en-AU', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    })
+  } catch {
+    return iso
+  }
+}
+
+function blockName(code: BlockCode): string {
+  return BLOCK_LIBRARY[code]?.name ?? code
+}
+
+/** Sorted [code, count] entries from a tally, dropping zero entries. */
+function tallyEntries(tally: BlockTally): Array<[BlockCode, number]> {
+  return (Object.entries(tally) as Array<[BlockCode, number]>)
+    .filter(([, c]) => c > 0)
+    .sort(([, a], [, b]) => b - a)
+}
+
+/**
+ * Build the Wall Layout page — an SVG diagram of every wall, pier and
+ * curved arc as drawn on the plan, with each wall labelled 1..N so the
+ * tally tables further down the document can be cross-referenced visually.
+ *
+ * The SVG uses millimetre coordinates as its viewBox so we can place
+ * shapes directly from the wall data. The print stylesheet sizes the SVG
+ * to fill a landscape A4 content area with `preserveAspectRatio='xMidYMid
+ * meet'`, so plans of any aspect ratio fit cleanly without distortion.
+ *
+ * Walls: orange thick lines (straight) or polylines (curves, sampled from
+ *        arcFromThreePoints to avoid SVG arc-flag pitfalls). Stroke width
+ *        equals the wall's real-world thickness.
+ * Piers: blue 400 × 400 squares centred on the pier position.
+ * Labels: white-on-orange numbered circles at each wall's midpoint.
+ *
+ * Returns an empty string when there are no walls — no point in a blank
+ * overview page.
+ */
+/**
+ * Render one page of a PDF to a base64 PNG data URL using PDF.js, plus
+ * return the page's intrinsic mm dimensions. Used by the Wall Layout page
+ * to embed the plan as the SVG's background so walls overlay the drawing.
+ *
+ * Failures (corrupt file, page not found, render error) resolve to null so
+ * the export can fall back to the bare diagram without crashing.
+ */
+// rasterisePdfPage now lives in lib/pdfRaster.ts so the brick export can
+// share it. The signature + behaviour are unchanged.
+
+/**
+ * Palette of (stroke, dark) colour pairs used to differentiate wall types on
+ * the layout diagram. Each pair is a medium colour (used at 55 % opacity for
+ * the wall body stroke) and a darker version (used as the solid fill of the
+ * numbered label circle, so the white number reads cleanly inside).
+ *
+ * Colour choice is colour-blind-friendly-ish and prints well in landscape A4.
+ * First slot stays the brand orange so plans with a single wall type look
+ * unchanged from the previous version of the diagram.
+ */
+const WALL_TYPE_PALETTE: Array<{ body: string; dark: string }> = [
+  { body: '#ED7D31', dark: '#9A3F08' }, // brand orange
+  { body: '#2563eb', dark: '#1e3a8a' }, // blue
+  { body: '#16a34a', dark: '#14532d' }, // green
+  { body: '#7c3aed', dark: '#4c1d95' }, // purple
+  { body: '#db2777', dark: '#831843' }, // pink
+  { body: '#0891b2', dark: '#164e63' }, // teal
+  { body: '#ca8a04', dark: '#713f12' }, // amber
+  { body: '#dc2626', dark: '#7f1d1d' }, // red
+]
+
+function buildPlanOverviewPage(
+  walls: Wall[],
+  openings: Opening[],
+  piers: Pier[],
+  makeups: WallMakeup[],
+  makeupsById: Record<string, WallMakeup>,
+  thicknessByWallId: Record<string, number>,
+  /** Lookup so wallLengthMm can resolve the OTHER wall at each corner
+   *  and add the outer-edge corner extension, matching what the user
+   *  sees on the 2D canvas. Without this the export labels would just
+   *  print the raw centreline distance, which is ~halfThickness short
+   *  at any corner end. */
+  wallsById: Record<string, Wall>,
+  totalBlocks: number,
+  pageHeader: string,
+  background: { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number } | null = null,
+  /** Suffix on the section heading + intro, e.g. ' — Ground Floor' or ' — Page 9'.
+   *  Empty string keeps the original "Wall Layout" heading for single-page exports. */
+  pageLabelSuffix: string = '',
+  /** Ruler measurements drawn on this page — rendered as dashed cyan lines
+   *  with the length labelled. Empty array (or omitted) means no overlay. */
+  measurements: Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }> = []
+): string {
+  if (walls.length === 0) return ''
+
+  // Assign each wall type a colour from the palette. Order follows the order
+  // makeups were added to the project so the assignment is stable across
+  // exports — the bricklayer doesn't see the colour for "Retaining" change
+  // between two builds of the same project.
+  const colourByMakeupId: Record<string, { body: string; dark: string }> = {}
+  // Only consider makeups that actually have walls in this project, in the
+  // order they first appear in the walls array. Then fall through to any
+  // remaining makeups (e.g. defined but unused) so the legend stays stable.
+  const orderedMakeups: WallMakeup[] = []
+  const seen = new Set<string>()
+  for (const w of walls) {
+    if (!seen.has(w.makeupId) && makeupsById[w.makeupId]) {
+      seen.add(w.makeupId)
+      orderedMakeups.push(makeupsById[w.makeupId])
+    }
+  }
+  for (const m of makeups) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id)
+      orderedMakeups.push(m)
+    }
+  }
+  for (let i = 0; i < orderedMakeups.length; i++) {
+    colourByMakeupId[orderedMakeups[i].id] = WALL_TYPE_PALETTE[i % WALL_TYPE_PALETTE.length]
+  }
+  // Fallback for any wall whose makeup id isn't in makeupsById (shouldn't
+  // happen but defensively keep the diagram from crashing).
+  const fallbackColour = WALL_TYPE_PALETTE[0]
+  const colourFor = (wall: Wall) => colourByMakeupId[wall.makeupId] ?? fallbackColour
+
+  // Compute the at-a-glance summary stats shown above the diagram. These
+  // give the reader a sense of project size before they look at the
+  // numbered breakdown — walls × total length × wall area × counts.
+  //
+  // Use wallLengthMm (the same helper the 2D canvas, tally, and supply
+  // maths use) so the label printed on each wall in the layout PDF
+  // matches the number the estimator saw on screen. Earlier this
+  // computed the raw centreline distance only, which is
+  // ~halfThickness shorter at every corner end — a wall drawn as
+  // 4.80 m on the canvas surfaced as 4.71 m on the export.
+  const wallLengthsMm = walls.map((w) =>
+    wallLengthMm(w, thicknessByWallId, wallsById),
+  )
+  const totalWallLengthMm = wallLengthsMm.reduce((s, l) => s + l, 0)
+  const totalWallAreaSqMm = walls.reduce((sum, w, i) => {
+    const makeup = makeupsById[w.makeupId]
+    const heightMm = w.heightMmOverride ?? (makeup ? getMakeupHeightMm(makeup) : 0)
+    return sum + wallLengthsMm[i] * heightMm
+  }, 0)
+  const openingsAreaSqMm = openings.reduce((s, o) => s + o.widthMm * o.heightMm, 0)
+  const netWallAreaSqMm = Math.max(0, totalWallAreaSqMm - openingsAreaSqMm)
+  const tiedPierCount = piers.filter((p) => p.type === 'tied').length
+  const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length
+  const wallTypeCount = new Set(walls.map((w) => w.makeupId)).size
+
+  // Stat tiles are tuned for what a bricklayer / supplier looking at the
+  // overview actually needs: count, run, area, total blocks, plus the
+  // accessory counts (openings, piers) when they're non-zero. Per-wall
+  // extremes like "longest" / "tallest" don't drive ordering decisions
+  // so they're left out.
+  const summaryTiles: Array<{ label: string; value: string; sub?: string }> = [
+    {
+      label: 'Walls',
+      value: String(walls.length),
+      sub: `${wallTypeCount} wall type${wallTypeCount === 1 ? '' : 's'}`,
+    },
+    { label: 'Total length', value: `${Math.round(totalWallLengthMm)} mm` },
+    {
+      label: 'Wall area',
+      value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`,
+      sub: openings.length > 0 ? `net of openings` : 'gross area',
+    },
+    {
+      label: 'Total blocks',
+      value: formatNumber(totalBlocks),
+    },
+  ]
+  if (openings.length > 0) {
+    summaryTiles.push({
+      label: 'Openings',
+      value: String(openings.length),
+      sub: `${(openingsAreaSqMm / 1_000_000).toFixed(2)} m² deducted`,
+    })
+  }
+  if (piers.length > 0) {
+    summaryTiles.push({
+      label: 'Piers',
+      value: String(piers.length),
+      sub: `${tiedPierCount} tied · ${freestandingPierCount} freestanding`,
+    })
+  }
+  const summaryRow = `
+    <div class="plan-overview-stats">
+      ${summaryTiles
+        .map(
+          (t) => `
+        <div class="plan-stat">
+          <div class="plan-stat-value">${escapeHtml(t.value)}</div>
+          <div class="plan-stat-label">${escapeHtml(t.label)}</div>
+          ${t.sub ? `<div class="plan-stat-sub">${escapeHtml(t.sub)}</div>` : ''}
+        </div>
+      `
+        )
+        .join('')}
+    </div>
+  `
+
+  // Bounding box of everything we're about to draw (walls + curve midpoints +
+  // freestanding pier positions), so the SVG viewBox covers the whole plan.
+  let minX = Infinity
+  let maxX = -Infinity
+  let minY = Infinity
+  let maxY = -Infinity
+  const expand = (x: number, y: number) => {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  for (const w of walls) {
+    expand(w.startX, w.startY)
+    expand(w.endX, w.endY)
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      // The arc bulges past the chord — sample a few points to capture the
+      // extent. Sampling is cheap and covers any arc geometry correctly.
+      const geom = arcFromThreePoints(
+        { x: w.startX, y: w.startY },
+        { x: w.midX, y: w.midY },
+        { x: w.endX, y: w.endY }
+      )
+      if (geom) {
+        for (const p of sampleArc(geom, 12)) expand(p.x, p.y)
+      } else {
+        expand(w.midX, w.midY)
+      }
+    }
+  }
+  for (const p of piers) {
+    if (p.type === 'freestanding') expand(p.x, p.y)
+  }
+  // Measurements get included in the bounding box so a ruler drawn off to
+  // the side of the walls still appears on the export — otherwise a
+  // measurement past the wall extents would fall outside the viewBox crop
+  // and be invisible.
+  for (const m of measurements) {
+    expand(m.startMm.x, m.startMm.y)
+    expand(m.endMm.x, m.endMm.y)
+  }
+  if (!isFinite(minX) || !isFinite(maxX)) return ''
+
+  // Pad by a generous amount so the walls have breathing room AND a bit
+  // of surrounding plan context (when a PDF is shown behind). The amount
+  // scales with the plan's extent — a tiny gazebo gets a 1 m pad, a
+  // multi-storey commercial layout gets several metres.
+  const maxThick = Math.max(
+    190,
+    ...Object.values(thicknessByWallId).filter((v) => v > 0)
+  )
+  const pad = Math.max(
+    1000,
+    maxThick * 4,
+    (maxX - minX) * 0.1,
+    (maxY - minY) * 0.1
+  )
+
+  // viewBox crops to the walls' bounding box + padding REGARDLESS of
+  // whether we have a background image. With a background, the
+  // rasterised page is placed at the page origin (0, 0) covering its
+  // full real-world extent — the SVG just shows the cropped slice. This
+  // means the reader gets a zoomed-in view of the walls with the relevant
+  // bit of plan around them, instead of a full A4 page with the walls
+  // crammed in one corner. When there's a background, we also clamp the
+  // viewBox to the page bounds so we never expose empty SVG space past
+  // the edge of the page.
+  let viewMinX = minX - pad
+  let viewMinY = minY - pad
+  let viewW = maxX - minX + pad * 2
+  let viewH = maxY - minY + pad * 2
+  if (background) {
+    const pageRealW = background.pageWidthMm * background.pageScaleRatio
+    const pageRealH = background.pageHeightMm * background.pageScaleRatio
+    viewMinX = Math.max(0, viewMinX)
+    viewMinY = Math.max(0, viewMinY)
+    viewW = Math.min(viewW, pageRealW - viewMinX)
+    viewH = Math.min(viewH, pageRealH - viewMinY)
+  }
+
+  // Numbered wall labels — size scales with the larger of plan-extent and
+  // wall thickness. Tuned for "readable but not obscuring the walls" on
+  // plans with many wall types: at a typical residential 190 mm block
+  // wall and a 10 m bounding box the labels print at about 4 mm tall on
+  // landscape A4, which sits comfortably without blocking the plan and
+  // leaves room for adjacent labels even in dense junctions.
+  const labelDiameter = Math.max(maxThick * 2.8, Math.min(viewW, viewH) * 0.045)
+  const labelFontSize = labelDiameter * 0.55
+
+  // Wall bodies — drawn to match the live 2D canvas exactly: each straight
+  // wall is its MITRED FOOTPRINT POLYGON (corner ends meeting the adjacent
+  // wall along a shared diagonal, t-junction ends trimmed to the through-
+  // wall's face) via straightWallFootprintMm, the same geometry the canvas
+  // uses. Curved walls keep the sampled-polyline stroke (round joins read
+  // fine on an arc).
+  //
+  // TWO passes so corners tile cleanly: every wall's dark RIM first, then
+  // every wall's body on top. The body pass covers the internal mitre seams
+  // (adjacent bodies share the diagonal edge), leaving only the outer rim —
+  // a ~15 mm dark border (RIM_EXTRA_MM stroke, centred on the footprint
+  // edge) so walls pop against rasterised / busy PDF backgrounds. The bumped
+  // body opacity (0.9) keeps the wall colour reading clearly.
+  const RIM_EXTRA_MM = 30
+  const rimShapes: string[] = []
+  const bodyShapes: string[] = []
+  for (const w of walls) {
+    const thickness = thicknessByWallId[w.id] || 190
+    const rim = thickness + RIM_EXTRA_MM
+    const c = colourFor(w)
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      const geom = arcFromThreePoints(
+        { x: w.startX, y: w.startY },
+        { x: w.midX, y: w.midY },
+        { x: w.endX, y: w.endY }
+      )
+      if (!geom) {
+        rimShapes.push(`<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${rim}" stroke-linecap="butt"/>`)
+        bodyShapes.push(`<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${thickness}" stroke-linecap="butt"/>`)
+        continue
+      }
+      // Sample the arc into a polyline — sidesteps SVG arc flag bugs and
+      // matches exactly what's rendered in the live canvas (which uses the
+      // same sampleArc helper).
+      const samples = sampleArc(geom, 48)
+      const pts = samples.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+      rimShapes.push(`<polyline points="${pts}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${rim}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`)
+      bodyShapes.push(`<polyline points="${pts}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${thickness}" fill="none" stroke-linecap="butt" stroke-linejoin="round"/>`)
+      continue
+    }
+    // Straight wall — mitred footprint polygon (matches the 2D canvas).
+    const fp = straightWallFootprintMm(w, walls, thicknessByWallId)
+    if (!fp) {
+      rimShapes.push(`<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${rim}" stroke-linecap="butt"/>`)
+      bodyShapes.push(`<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${thickness}" stroke-linecap="butt"/>`)
+      continue
+    }
+    const poly = fp.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+    rimShapes.push(`<polygon points="${poly}" fill="${c.dark}" fill-opacity="0.85" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${RIM_EXTRA_MM}" stroke-linejoin="miter"/>`)
+    bodyShapes.push(`<polygon points="${poly}" fill="${c.body}" fill-opacity="0.9" stroke="${c.body}" stroke-opacity="0.9" stroke-width="1" stroke-linejoin="miter"/>`)
+  }
+  // Rims under all bodies so mitred corners tile without seams.
+  const wallShapes = [...rimShapes, ...bodyShapes]
+
+  // Opening markers — drawn ON TOP of the wall line as a cream
+  // segment that visually breaks the wall colour at each opening's
+  // along-wall position. Two short perpendicular jamb ticks bracket
+  // the break so it reads as a window / door rather than a missing
+  // chunk of wall. Cream + dark-grey jambs reads clearly against
+  // every wall colour in the palette without competing with the
+  // wall body for visual weight.
+  const openingShapes: string[] = []
+  for (const op of openings) {
+    const w = walls.find((ww) => ww.id === op.wallId)
+    if (!w) continue
+    if (isCurvedWall(w)) continue // curve openings not supported on this overlay yet
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    const wallLen = Math.sqrt(dx * dx + dy * dy)
+    if (wallLen === 0) continue
+    const ux = dx / wallLen
+    const uy = dy / wallLen
+    // Perpendicular unit vector (rotated 90° CCW).
+    const px = -uy
+    const py = ux
+    const s0 = Math.max(0, op.startAlongWallMm)
+    const s1 = Math.min(wallLen, op.startAlongWallMm + op.widthMm)
+    if (s1 - s0 < 1) continue
+    const ox0 = w.startX + ux * s0
+    const oy0 = w.startY + uy * s0
+    const ox1 = w.startX + ux * s1
+    const oy1 = w.startY + uy * s1
+    const thickness = thicknessByWallId[w.id] || 190
+    // Jamb tick: short perpendicular line across the wall body at
+    // each end of the opening. Half-thickness past the wall on each
+    // side so the tick visibly clears the wall colour.
+    const tickHalf = thickness * 0.65
+    const t0x = ox0 + px * tickHalf
+    const t0y = oy0 + py * tickHalf
+    const t0xN = ox0 - px * tickHalf
+    const t0yN = oy0 - py * tickHalf
+    const t1x = ox1 + px * tickHalf
+    const t1y = oy1 + py * tickHalf
+    const t1xN = ox1 - px * tickHalf
+    const t1yN = oy1 - py * tickHalf
+    openingShapes.push(
+      // Break in the wall body — opaque cream that masks the wall
+      // colour beneath, exactly opening-width wide.
+      `<line x1="${ox0.toFixed(1)}" y1="${oy0.toFixed(1)}" x2="${ox1.toFixed(1)}" y2="${oy1.toFixed(1)}" stroke="#fef3c7" stroke-opacity="0.96" stroke-width="${(thickness * 0.92).toFixed(1)}" stroke-linecap="butt"/>`,
+      // Jamb ticks at each end.
+      `<line x1="${t0x.toFixed(1)}" y1="${t0y.toFixed(1)}" x2="${t0xN.toFixed(1)}" y2="${t0yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(thickness * 0.18).toFixed(1)}" stroke-linecap="round"/>`,
+      `<line x1="${t1x.toFixed(1)}" y1="${t1y.toFixed(1)}" x2="${t1xN.toFixed(1)}" y2="${t1yN.toFixed(1)}" stroke="#0f172a" stroke-width="${(thickness * 0.18).toFixed(1)}" stroke-linecap="round"/>`
+    )
+  }
+
+  // Pier squares — 400 × 400 mm centred on the pier position. For tied piers
+  // we resolve the (along-wall mm) into an x/y from the host wall's geometry.
+  const pierShapes: string[] = []
+  for (const p of piers) {
+    let cx: number
+    let cy: number
+    if (p.type === 'freestanding') {
+      cx = p.x
+      cy = p.y
+    } else {
+      const wall = walls.find((w) => w.id === p.wallId)
+      if (!wall) continue
+      const dx = wall.endX - wall.startX
+      const dy = wall.endY - wall.startY
+      const len = Math.sqrt(dx * dx + dy * dy)
+      if (len === 0) continue
+      const t = p.alongMm / len
+      cx = wall.startX + t * dx
+      cy = wall.startY + t * dy
+    }
+    const s = 400
+    pierShapes.push(
+      `<rect x="${cx - s / 2}" y="${cy - s / 2}" width="${s}" height="${s}" fill="#3b82f6" stroke="#1e40af" stroke-width="${maxThick * 0.1}"/>`
+    )
+  }
+
+  // Measurement overlays — dashed cyan lines with the length labelled at
+  // the midpoint. Cyan reads as "reference / dimension" against the orange/
+  // blue palette of walls and piers without clashing. Stroke-width scales
+  // with the plan extent so the dashes stay visible on small AND large
+  // plans (a tiny gazebo and a multi-storey commercial layout both work).
+  const measurementStrokeWidth = Math.max(maxThick * 0.18, Math.min(viewW, viewH) * 0.004)
+  const measurementFontSize = labelFontSize * 0.7
+  const measurementShapes = measurements
+    .map((m) => {
+      const dx = m.endMm.x - m.startMm.x
+      const dy = m.endMm.y - m.startMm.y
+      const lenMm = Math.sqrt(dx * dx + dy * dy)
+      if (lenMm < 1) return ''
+      const lenLabel = Math.round(lenMm)
+      const midX = (m.startMm.x + m.endMm.x) / 2
+      const midY = (m.startMm.y + m.endMm.y) / 2
+      // Dashes scaled to the stroke so they read as a dotted reference line
+      // rather than a continuous mark — keeps the eye distinguishing it
+      // from wall outlines.
+      const dash = measurementStrokeWidth * 4
+      const gap = measurementStrokeWidth * 2
+      const dotR = measurementStrokeWidth * 1.6
+      return `
+        <line x1="${m.startMm.x.toFixed(1)}" y1="${m.startMm.y.toFixed(1)}" x2="${m.endMm.x.toFixed(1)}" y2="${m.endMm.y.toFixed(1)}" stroke="#0891b2" stroke-width="${measurementStrokeWidth.toFixed(1)}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}" stroke-linecap="round"/>
+        <circle cx="${m.startMm.x.toFixed(1)}" cy="${m.startMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
+        <circle cx="${m.endMm.x.toFixed(1)}" cy="${m.endMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
+        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="Inter, system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenLabel} mm</text>
+      `
+    })
+    .join('\n          ')
+
+  // Length-only labels at each wall's midpoint. The numbered circles
+  // (1, 2, 3 …) that used to sit on top of the length were removed —
+  // there's no companion table referencing those numbers in the
+  // document any more, so they were noise on the diagram. The length
+  // text is dark with a heavier white stroke (paint-order: stroke) so
+  // it's legible whether it falls on the wall body or in the gap.
+  const lengthFontSize = labelFontSize * 0.85
+  // labelDiameter is no longer used for circles but kept for the per-wall
+  // labelling sizing logic above. Silence the unused-warning.
+  void labelDiameter
+  const wallLabels: string[] = walls.map((w, i) => {
+    let cx: number
+    let cy: number
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      cx = w.midX
+      cy = w.midY
+    } else {
+      cx = (w.startX + w.endX) / 2
+      cy = (w.startY + w.endY) / 2
+    }
+    const lengthLabel = Math.round(wallLengthsMm[i])
+    return `
+      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthLabel} mm</text>
+    `
+  })
+
+  // Inline legend — one row per wall type used on the project, each with
+  // its colour swatch and the count + total length of walls in that type.
+  // Piers (if any) get their own line at the end. Lets the reader map a
+  // colour they see on the diagram back to a named wall type instantly.
+  const wallTypeLegendItems = orderedMakeups
+    .filter((m) => walls.some((w) => w.makeupId === m.id))
+    .map((m) => {
+      const c = colourByMakeupId[m.id] ?? fallbackColour
+      const wallsOfType = walls.filter((w) => w.makeupId === m.id)
+      const totalLenMm =
+        wallsOfType.reduce((s, w) => {
+          const idx = walls.indexOf(w)
+          return s + (idx >= 0 ? wallLengthsMm[idx] : 0)
+        }, 0)
+      return `
+        <span class="legend-item">
+          <span class="legend-swatch" style="background: ${c.body}; opacity: 0.85; border: 1px solid ${c.dark};"></span>
+          <strong>${escapeHtml(m.name)}</strong>
+          <span class="legend-sub">${wallsOfType.length} wall${wallsOfType.length === 1 ? '' : 's'} · ${Math.round(totalLenMm)} mm</span>
+        </span>
+      `
+    })
+    .join('')
+  // Opening keys — break out by door / window kind so the reader
+  // can match the cream-break markers on the plan to "opening of
+  // kind X" in the legend. Inline SVG swatch mirrors the cream-body
+  // + dark jamb-tick marker treatment the plan uses.
+  const windowCount = openings.filter((o) => o.kind !== 'door').length
+  const doorCount = openings.filter((o) => o.kind === 'door').length
+  const openingSwatch = `
+    <svg viewBox="0 0 24 12" xmlns="http://www.w3.org/2000/svg" class="legend-opening-swatch" aria-hidden="true">
+      <rect x="0" y="3" width="24" height="6" fill="#cbb89a" stroke="#0f172a" stroke-width="0.5"/>
+      <rect x="3" y="3" width="18" height="6" fill="#fef3c7"/>
+      <line x1="3" y1="1" x2="3" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+      <line x1="21" y1="1" x2="21" y2="11" stroke="#0f172a" stroke-width="0.8" stroke-linecap="round"/>
+    </svg>
+  `
+  const openingKeyItems: string[] = []
+  if (windowCount > 0) {
+    openingKeyItems.push(
+      `<span class="legend-item">${openingSwatch}<strong>Window</strong><span class="legend-sub">${windowCount} on this page</span></span>`,
+    )
+  }
+  if (doorCount > 0) {
+    openingKeyItems.push(
+      `<span class="legend-item">${openingSwatch}<strong>Door</strong><span class="legend-sub">${doorCount} on this page</span></span>`,
+    )
+  }
+
+  const legend = `
+    <div class="plan-overview-legend">
+      ${wallTypeLegendItems}
+      ${piers.length > 0 ? `<span class="legend-item"><span class="legend-swatch legend-pier"></span><strong>Pier</strong></span>` : ''}
+      ${openingKeyItems.join('')}
+      <span class="legend-item legend-note">Shapes drawn at real-world thickness; plan scaled to fit page.</span>
+    </div>
+  `
+
+  // Background <image> — only when we have a rasterised PDF. Sits at the
+  // page origin (0, 0) covering the full page real-world extent. Walls
+  // (which are positioned in the same coordinate system) overlay it
+  // perfectly. preserveAspectRatio="none" on the image so the data URL
+  // stretches edge-to-edge regardless of the source PNG's pixel ratio.
+  const backgroundSvgElement = background
+    ? `<image href="${background.dataUrl}" x="0" y="0" width="${(background.pageWidthMm * background.pageScaleRatio).toFixed(0)}" height="${(background.pageHeightMm * background.pageScaleRatio).toFixed(0)}" preserveAspectRatio="none" opacity="0.85"/>`
+    : ''
+
+  const intro = background
+    ? 'The plan with the drawn walls and piers overlaid in colour, length labelled at each wall midpoint.'
+    : 'Diagram of every wall as drawn on the plan with overall sizing. Length labelled at each wall midpoint.'
+
+  return `
+    <section class="page plan-overview-page">
+      ${pageHeader}
+      <h2 class="section-title">Wall Layout${escapeHtml(pageLabelSuffix)}</h2>
+      <p class="page-intro">${intro}</p>
+      ${summaryRow}
+      <div class="plan-overview-wrap">
+        <svg viewBox="${viewMinX.toFixed(0)} ${viewMinY.toFixed(0)} ${viewW.toFixed(0)} ${viewH.toFixed(0)}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+          ${backgroundSvgElement}
+          ${wallShapes.join('\n          ')}
+          ${openingShapes.join('\n          ')}
+          ${pierShapes.join('\n          ')}
+          ${measurementShapes}
+          ${wallLabels.join('\n          ')}
+        </svg>
+      </div>
+      ${legend}
+    </section>
+  `
+}
+
+/**
+ * Build the "Wall Specifications" section — one card per wall makeup
+ * listing its bond + height, block composition, any course-series ranges,
+ * course overrides, and how many walls use it / their total length. Sits
+ * between the Assumptions page and the Wall Layout overview pages so the
+ * reader can flick to a wall reference number on the layout and find what
+ * went into that wall type.
+ *
+ * Returns the full <section class="page"> wrapper — or '' if no wall types
+ * are in use, in which case the doc assembly silently skips the section.
+ */
+function buildWallSpecsPage(
+  makeups: WallMakeup[],
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>,
+  wallsById: Record<string, Wall>,
+  pageHeader: string
+): string {
+  // Document EVERY wall type defined in the project — including
+  // unused ones and curved types. Previously we filtered to
+  // `wallsOfMakeup.length > 0`, which silently dropped curved wall
+  // types and any type the user had defined but not yet drawn with.
+  // The reader expects to see every type they configured in the
+  // project, not just the ones with walls already placed.
+  const used = makeups.map((m) => {
+    const wallsOfMakeup = walls.filter((w) => w.makeupId === m.id)
+    const totalLenMm = wallsOfMakeup.reduce(
+      (s, w) => s + wallLengthMm(w, thicknessByWallId, wallsById),
+      0,
+    )
+    return { makeup: m, walls: wallsOfMakeup, totalLenMm }
+  })
+
+  if (used.length === 0) return ''
+
+  // Each card is a self-contained spec block. Compact key/value grid + an
+  // optional 'Course series ranges' table + an optional 'Course overrides'
+  // table. break-inside: avoid keeps a card whole when it would otherwise
+  // straddle a page edge.
+  const cards = used
+    .map(({ makeup, walls: wallsOfMakeup, totalLenMm }) => {
+      const baseLabel = makeup.baseCourseBlockCode
+      // End-termination blocks: full goes at corners + odd courses of
+      // stretcher bond at free ends, half alternates with full on even
+      // courses. Older makeups (no halfBlockCode set) fall back to 20.03.
+      const fullEndLabel = makeup.cornerBlockCode
+      // Older makeups without halfBlockCode set fall back to the library's
+      // half block by role (AU SEQ: 20.03, US/UK: their equivalent).
+      const halfEndLabel = makeup.halfBlockCode ?? pickHalfBlock()?.code ?? '20.03'
+
+      // Resolved wall height — sums the band counts when a course pattern is
+      // set, otherwise the flat heightMm. Keeps the spec card honest for
+      // mixed-height walls where heightMm alone would understate the build.
+      const resolvedHeightMm = getMakeupHeightMm(makeup)
+      const hasPattern = !!(makeup.coursePattern && makeup.coursePattern.length > 0)
+
+      // Key/value rows for the always-on fields. Pier type is only shown
+      // when the makeup actually opted into piers.
+      const specRows: Array<[string, string]> = [
+        ['Bond', `${makeup.bondType} bond`],
+        ['Height', `${formatNumber(resolvedHeightMm)} mm${hasPattern ? ' (from pattern)' : ''}`],
+        ['Base course', baseLabel],
+        ['Body block', makeup.bodyBlockCode],
+        ['Top course', makeup.topCourseBlockCode],
+        ['Full end', fullEndLabel],
+        ['Half end', halfEndLabel],
+        ['Fractions', makeup.useFractions ? 'On (20.02 / 20.22)' : 'Off'],
+      ]
+      if (makeup.pierType) {
+        specRows.push(['Piers', `${makeup.pierType} piers`])
+      }
+
+      const specGrid = specRows
+        .map(
+          ([k, v]) => `
+        <div class="spec-row">
+          <span class="spec-key">${escapeHtml(k)}</span>
+          <span class="spec-val">${escapeHtml(v)}</span>
+        </div>`
+        )
+        .join('')
+
+      // Course pattern (bands) — bricklayer needs to see the actual stack
+      // order for a mixed-height wall, not just a single Height number.
+      // Walked from bottom to top, with a per-band height column so the
+      // running total ties out to the Height row above.
+      let patternBlock = ''
+      if (hasPattern && makeup.coursePattern) {
+        const bandRows = makeup.coursePattern
+          .map((band, i) => {
+            const blockHeight = BLOCK_LIBRARY[band.blockCode]?.dimensions.heightMm
+            const moduleHeight =
+              blockHeight !== undefined ? blockHeight + 10 : 200 // +10mm mortar
+            const totalForBand = band.count * moduleHeight
+            return `
+              <tr>
+                <td class="mono">${i + 1}</td>
+                <td class="mono">${band.count}× ${escapeHtml(band.blockCode)}</td>
+                <td class="right">${formatNumber(moduleHeight)} mm</td>
+                <td class="right">${formatNumber(totalForBand)} mm</td>
+              </tr>`
+          })
+          .join('')
+        patternBlock = `
+          <div class="spec-subsection">
+            <div class="spec-sub-title">Course pattern (bottom to top)</div>
+            <table class="spec-sub-table">
+              <thead>
+                <tr>
+                  <th style="width: 40px">Band</th>
+                  <th>Block</th>
+                  <th class="right" style="width: 120px">Per course</th>
+                  <th class="right" style="width: 120px">Band height</th>
+                </tr>
+              </thead>
+              <tbody>${bandRows}</tbody>
+            </table>
+          </div>`
+      }
+
+      // Course-series ranges — only render the block when the makeup has
+      // any. Each range's overrides are shown as code-list pairs; fields
+      // left on default are omitted to keep the table tight.
+      let rangesBlock = ''
+      if (makeup.courseSeriesRanges && makeup.courseSeriesRanges.length > 0) {
+        const rangeRows = makeup.courseSeriesRanges
+          .map((r) => {
+            const parts: string[] = []
+            if (r.bodyBlockCode) parts.push(`body ${r.bodyBlockCode}`)
+            if (r.cornerBlockCode) parts.push(`corner ${r.cornerBlockCode}`)
+            if (r.halfBlockCode) parts.push(`half ${r.halfBlockCode}`)
+            if (r.baseCourseBlockCode) parts.push(`base ${r.baseCourseBlockCode}`)
+            if (r.heightMakeup71BlockCode) parts.push(`90mm makeup ${r.heightMakeup71BlockCode}`)
+            if (r.cornerLeadInBlockCode) {
+              const count = r.cornerLeadInCount ?? 2
+              parts.push(`corner lead-in ${count}× ${r.cornerLeadInBlockCode}`)
+            }
+            const rangeLabel =
+              r.toCourse > r.fromCourse
+                ? `Courses ${r.fromCourse}–${r.toCourse}`
+                : `Course ${r.fromCourse}`
+            return `
+            <tr>
+              <td class="range-courses">${escapeHtml(rangeLabel)}</td>
+              <td class="range-detail">${escapeHtml(parts.join(' · ')) || '—'}</td>
+            </tr>`
+          })
+          .join('')
+        rangesBlock = `
+          <div class="spec-subsection">
+            <div class="spec-sub-title">Course series ranges</div>
+            <table class="spec-sub-table">
+              <tbody>${rangeRows}</tbody>
+            </table>
+          </div>`
+      }
+
+      // Per-course explicit overrides (e.g. an intermediate bond beam) —
+      // separate from series ranges because they target a single course
+      // by number rather than swapping a whole block series.
+      let overridesBlock = ''
+      if (makeup.courseOverrides && makeup.courseOverrides.length > 0) {
+        const overrideRows = makeup.courseOverrides
+          .map(
+            (o) => `
+          <tr>
+            <td class="range-courses">Course ${o.courseNumber}</td>
+            <td class="range-detail">body ${escapeHtml(o.blockCode)}</td>
+          </tr>`
+          )
+          .join('')
+        overridesBlock = `
+          <div class="spec-subsection">
+            <div class="spec-sub-title">Course overrides</div>
+            <table class="spec-sub-table">
+              <tbody>${overrideRows}</tbody>
+            </table>
+          </div>`
+      }
+
+      const wallCountLabel =
+        wallsOfMakeup.length === 0
+          ? 'Not yet used on this plan'
+          : `${wallsOfMakeup.length} wall${wallsOfMakeup.length === 1 ? '' : 's'}`
+      const totalLenLabel =
+        wallsOfMakeup.length === 0
+          ? ''
+          : ` · ${(totalLenMm / 1000).toFixed(2)} m run`
+
+      return `
+        <div class="wall-spec-card">
+          <div class="wall-spec-header">
+            <h3 class="wall-spec-name">${escapeHtml(makeup.name)}</h3>
+            <span class="wall-spec-meta">${escapeHtml(wallCountLabel)}${escapeHtml(totalLenLabel)}</span>
+          </div>
+          <div class="spec-grid">
+            ${specGrid}
+          </div>
+          ${patternBlock}
+          ${rangesBlock}
+          ${overridesBlock}
+        </div>`
+    })
+    .join('')
+
+  return `
+    <section class="page">
+      ${pageHeader}
+      <h2 class="section-title">Wall Specifications</h2>
+      <p class="page-intro">
+        Block composition for every wall type used on the job — cross-reference
+        with the numbered labels on the Wall Layout pages and the per-makeup
+        tables in the breakdown.
+      </p>
+      ${cards}
+    </section>
+  `
+}
+
+/**
+ * Categorised assumption list — each group renders as a subheading
+ * with its bullet items beneath. Groups are added in a deterministic
+ * order (Materials → Geometry → Junctions → Openings → Curves →
+ * Piers → Waste → Project-specific) so the reader gets the same
+ * information architecture every export.
+ */
+export type AssumptionCategory =
+  | 'materials'
+  | 'geometry'
+  | 'junctions'
+  | 'openings'
+  | 'curves'
+  | 'piers'
+  | 'waste'
+  | 'project'
+export interface AssumptionGroup {
+  category: AssumptionCategory
+  title: string
+  items: string[]
+}
+
+function buildAssumptions(
+  inclusions: BlockExportInclusions,
+  hasOpenings: boolean,
+  customNotes: string,
+  pierCounts: { tied: number; freestanding: number } = { tied: 0, freestanding: 0 },
+  curvePresence: { hasCutCurves: boolean; hasWedgeCurves: boolean; hasCustomCurves: boolean } = {
+    hasCutCurves: false,
+    hasWedgeCurves: false,
+    hasCustomCurves: false,
+  },
+  supplyItemNotes: string[] = []
+): AssumptionGroup[] {
+  if (!inclusions.assumptions) return []
+
+  const groups: AssumptionGroup[] = []
+
+  // ── Materials ──
+  // Library-agnostic: sizes come from the user's block library and
+  // the wall-type definitions, not from any specific supplier's
+  // catalogue. Mortar joint is the only universal here.
+  groups.push({
+    category: 'materials',
+    title: 'Materials',
+    items: [
+      'All block sizes are nominal and include the mortar joint per the wall-type definitions.',
+    ],
+  })
+
+  // ── Geometry ──
+  // Wall heights, lengths. No hard-coded code names — the calc
+  // engine picks from the user's library based on each wall type's
+  // composition, so any reference to specific blocks here would be
+  // wrong for half the user base.
+  groups.push({
+    category: 'geometry',
+    title: 'Wall geometry',
+    items: [
+      'Wall heights come from the wall-type definitions unless overridden per wall.',
+      "Wall heights are rounded UP to the nearest achievable course stack from the wall type's composition. When the requested height doesn't hit an exact combination, the closest-size makeup block gets applied and the bricklayer trims mortar to suit on site.",
+      'Wall lengths are measured from the drawings supplied. All dimensions in millimetres.',
+      'Short walls / stubs that don\'t fit the standard end + body sequence use end blocks only or a single closest-size body block per course, chosen from the wall type\'s composition.',
+    ],
+  })
+
+  // ── Junctions ──
+  // How adjacent walls + corners are counted. Bond-pattern naming
+  // is universal; no code references needed.
+  groups.push({
+    category: 'junctions',
+    title: 'Junctions',
+    items: [
+      'Corner columns shared between two walls are counted once.',
+      'T-junctions are treated as two separate walls. The stem terminates against the through-wall face with its own end column following the wall type\'s bond pattern; the through-wall is unaffected.',
+    ],
+  })
+
+  // ── Openings ──
+  // Only when the project actually has any. Lintel selection
+  // language is generic — the user's library + per-opening lintel
+  // catalogue (supply items) decide the specific block, not a
+  // hard-coded code range.
+  if (hasOpenings) {
+    groups.push({
+      category: 'openings',
+      title: 'Openings',
+      items: [
+        'Openings (doors, windows) are deducted from the gross block count.',
+        "Lintels are selected per the wall-type lintel rules and the user's block library — the chosen lintel block matches the head height (the wall above the opening).",
+      ],
+    })
+  }
+
+  // ── Curves ──
+  // Curve handling is no longer rule-based on radius — whatever block
+  // the user puts in the curved wall type's composition is what gets
+  // supplied. The legacy radius-band rules (≥6000 mm stock / 1500–6000
+  // cut / <1500 wedge / <665 custom) have been removed; the wall type
+  // composition is authoritative.
+  groups.push({
+    category: 'curves',
+    title: 'Curved walls',
+    items: [
+      'Curved walls use the block(s) configured in the wall type composition — whatever block is set is what gets supplied, regardless of radius. The bricklayer is responsible for any on-site cutting needed for the chosen block to seat on the curve.',
+    ],
+  })
+  // The curvePresence flags (cut / wedge / custom) are still accepted
+  // for back-compat but no longer steer assumption content.
+  void curvePresence
+
+  // ── Piers ──
+  // Only emitted when the project has piers (tied or freestanding).
+  // No hard-coded block codes — pier composition comes from the
+  // pier-type definitions in the user's library.
+  const pierItems: string[] = []
+  if (pierCounts.tied > 0) {
+    pierItems.push(
+      "Tied piers use the per-pier-type course pattern repeated up the wall height. A pier only displaces a body block on courses where the pier's block is deeper than the wall.",
+    )
+  }
+  if (pierCounts.freestanding > 0) {
+    pierItems.push(
+      'Freestanding piers use the per-pier-type course pattern repeated up the pier height.',
+    )
+  }
+  if (pierItems.length > 0) {
+    groups.push({ category: 'piers', title: 'Piers', items: pierItems })
+  }
+
+  // ── Waste / supply ──
+  groups.push({
+    category: 'waste',
+    title: 'Waste & supply',
+    items: ['No waste allowance applied — quantities are net as measured.'],
+  })
+
+  // Supply-item lines deliberately NOT appended here. Per-item notes
+  // became overwhelming once users had 16+ Galintel SKUs configured.
+  // Each supply item is already listed in the Accessories table.
+  void supplyItemNotes
+
+  // ── Project-specific ──
+  // User-typed lines from Project details → Notes. Anything not
+  // covered by the canned categories above lives here. One bullet
+  // per non-empty line so the user can cover ANY scenario by typing.
+  const customLines = customNotes
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (customLines.length > 0) {
+    groups.push({
+      category: 'project',
+      title: 'Project-specific notes',
+      items: customLines,
+    })
+  }
+
+  return groups
+}
+
+// ---------- Main entry point ----------
+
+/**
+ * Build the assembled block-export HTML without downloading it. Returned
+ * pieces feed both the single-trade `exportBlockEstimate` wrapper (which
+ * just downloads `html`) and `exportCombinedEstimate` (which extracts
+ * `body` + `styles` and stitches them alongside the brick export's
+ * matching pieces in one PDF). Pulling the assembly out of the side-
+ * effecting wrapper means the combined exporter doesn't have to duplicate
+ * any page-building logic.
+ */
+export async function buildBlockEstimateHtml(
+  params: ExportParams
+): Promise<{ html: string; filename: string; bodyContent: string; styles: string }> {
+  const {
+    projectDetails,
+    inclusions,
+    referenceNumber,
+    supplyItemSelections,
+    supplyItemRateOverrides,
+    supplyItemAdjustments,
+    walls,
+    makeups,
+    openings,
+    piers = [],
+    pierMakeups = [],
+    business,
+    pdfFile,
+    pagesInfo,
+    view3dSnapshots,
+  } = params
+
+  // 6-digit zero-padded reference string for inline use in the document.
+  // Empty when no number has been allocated yet (project hasn't been saved).
+  const referenceText =
+    typeof referenceNumber === 'number'
+      ? `#${
+          referenceNumber >= 100000
+            ? referenceNumber
+            : String(referenceNumber).padStart(6, '0')
+        }`
+      : ''
+
+  const makeupsById = Object.fromEntries(makeups.map((m) => [m.id, m]))
+  const pierMakeupsById = Object.fromEntries(pierMakeups.map((m) => [m.id, m]))
+  const rawTally: BlockTally = calculateProjectTally(
+    walls,
+    makeupsById,
+    openings,
+    piers,
+    pierMakeupsById
+  )
+
+  // Apply per-area per-block-code overrides from the export modal's
+  // Quantities section, BEFORE the blockAdjustments pass below.
+  // For every (area, code) the user has overridden, compute the
+  // auto count on the area's wall subset, then mutate rawTally by
+  // the delta (override - auto). End result: blockAdjustments work
+  // as before on top of an already-adjusted rawTally.
+  const perAreaBlockOv = params.perAreaBlockOverrides ?? {}
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      const blockOv = ov.blocks
+      if (!blockOv || Object.keys(blockOv).length === 0) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      const piersInArea = piers.filter((p) => {
+        const pWallId = (p as { wallId?: string }).wallId
+        if (pWallId) return wallIds.has(pWallId)
+        return true
+      })
+      const areaTally = calculateProjectTally(
+        wallsInArea,
+        makeupsById,
+        openingsInArea,
+        piersInArea,
+        pierMakeupsById,
+      )
+      for (const [code, overrideCount] of Object.entries(blockOv)) {
+        if (typeof overrideCount !== 'number') continue
+        const c = code as BlockCode
+        const autoCount = areaTally[c] ?? 0
+        const delta = overrideCount - autoCount
+        if (delta === 0) continue
+        const currentGlobal = rawTally[c] ?? 0
+        rawTally[c] = Math.max(0, currentGlobal + delta)
+      }
+    }
+  }
+
+  // Apply per-(area, makeup) per-block-code overrides — the
+  // wall-type drilldown inside each area. Computes the auto count
+  // on the wall subset filtered to BOTH the area and the makeup,
+  // then applies (override - auto) deltas to rawTally. Runs after
+  // the area-level pass so per-wall-type edits stack on top of
+  // any area-level edits the user made.
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      const byMakeup = ov.byMakeup
+      if (!byMakeup) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+        const blockOv = mkOv.blocks
+        if (!blockOv || Object.keys(blockOv).length === 0) continue
+        const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+        if (mkWalls.length === 0) continue
+        const mkWallIds = new Set(mkWalls.map((w) => w.id))
+        const mkOpenings = openings.filter((o) => mkWallIds.has(o.wallId))
+        const mkPiers = piers.filter((p) => {
+          const pWallId = (p as { wallId?: string }).wallId
+          if (!pWallId) return false
+          return mkWallIds.has(pWallId)
+        })
+        const mkAutoTally = calculateProjectTally(
+          mkWalls,
+          makeupsById,
+          mkOpenings,
+          mkPiers,
+          pierMakeupsById,
+        )
+        for (const [code, overrideCount] of Object.entries(blockOv)) {
+          if (typeof overrideCount !== 'number') continue
+          const c = code as BlockCode
+          const autoCount = mkAutoTally[c] ?? 0
+          const delta = overrideCount - autoCount
+          if (delta === 0) continue
+          const currentGlobal = rawTally[c] ?? 0
+          rawTally[c] = Math.max(0, currentGlobal + delta)
+        }
+      }
+    }
+  }
+  // Apply per-block adjustments. Each entry in `blockAdjustments` is
+  // a SIGNED delta to subtract from the tally:
+  //   - positive number → remove from tally (already on site, reused).
+  //   - negative number → add extra to the tally (extra blocks not
+  //     automatically counted, or a block code the user wants to
+  //     include that's not in the auto-tally at all).
+  // Iterate over the union of tally codes + adjustment codes so
+  // "add-only" entries (code present in adjustments but not in
+  // rawTally) appear in the schedule. Final clamped to >= 0.
+  const tally: BlockTally = {}
+  const adjustmentCodes = Object.keys(params.blockAdjustments ?? {}) as BlockCode[]
+  const allCodes = new Set<BlockCode>([
+    ...(Object.keys(rawTally) as BlockCode[]),
+    ...adjustmentCodes,
+  ])
+  for (const code of allCodes) {
+    const base = rawTally[code] ?? 0
+    const adj = params.blockAdjustments?.[code] ?? 0
+    const remaining = Math.max(0, base - adj)
+    if (remaining > 0) tally[code] = remaining
+  }
+  const entries = tallyEntries(tally)
+  const totalBlocks = entries.reduce((sum, [, c]) => sum + c, 0)
+
+  // Aggregate length + net area for supply-item rate math (per-m-lineal /
+  // per-m² items). Wall height comes off the per-wall override or its
+  // makeup default; openings reduce the area as gross voids. Done with a
+  // simple geometric length here rather than wallLengthMm() because supply
+  // rates are wall-run / wall-area concepts that don't need the corner /
+  // endpoint accounting wallLengthMm does.
+  let totalLengthMm_supply = 0
+  let totalAreaSqMm_supply = 0
+  for (const w of walls) {
+    const dx = w.endX - w.startX
+    const dy = w.endY - w.startY
+    const lenMm = Math.sqrt(dx * dx + dy * dy)
+    totalLengthMm_supply += lenMm
+    const h = w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+    totalAreaSqMm_supply += lenMm * h
+  }
+  for (const o of openings) {
+    totalAreaSqMm_supply -= o.widthMm * o.heightMm
+  }
+  if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+
+  // Apply per-area m² overrides from the export modal's Quantities
+  // section. For each area with an override, compute the auto m²
+  // on that area's wall subset and apply the delta to the global
+  // totalAreaSqMm_supply. Drives the blockwork-area figure used by
+  // per-m² supply items + summary lines; the block schedule (counts
+  // per code) is geometry-bound and remains untouched.
+  // (`perAreaBlockOv` is the same map already captured above for the
+  // per-code overrides — reuse it here for the m² delta pass.)
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const areaId of Object.keys(perAreaBlockOv)) {
+      const ov = perAreaBlockOv[areaId]
+      if (!ov || typeof ov.sqM !== 'number') continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      const wallIds = new Set(wallsInArea.map((w) => w.id))
+      const openingsInArea = openings.filter((o) => wallIds.has(o.wallId))
+      let autoAreaSqMm = 0
+      for (const w of wallsInArea) {
+        const dx = w.endX - w.startX
+        const dy = w.endY - w.startY
+        const lenMm = Math.sqrt(dx * dx + dy * dy)
+        const h =
+          w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+        autoAreaSqMm += lenMm * h
+      }
+      for (const o of openingsInArea) {
+        autoAreaSqMm -= o.widthMm * o.heightMm
+      }
+      autoAreaSqMm = Math.max(0, autoAreaSqMm)
+      const overrideSqMm = ov.sqM * 1_000_000
+      totalAreaSqMm_supply += overrideSqMm - autoAreaSqMm
+    }
+    if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+  }
+
+  // Per-(area, makeup) m² overrides — wall-type drilldown sqM.
+  // These only apply when the area itself has no area-level sqM
+  // override (otherwise the area-level value is the boss for total
+  // m² and we'd double-count). For each unrestricted area, sum the
+  // (override - auto) deltas across its makeup-level overrides and
+  // apply to totalAreaSqMm_supply.
+  if (Object.keys(perAreaBlockOv).length > 0) {
+    for (const [areaId, ov] of Object.entries(perAreaBlockOv)) {
+      if (typeof ov.sqM === 'number') continue // area-level wins
+      const byMakeup = ov.byMakeup
+      if (!byMakeup) continue
+      const wallsInArea = walls.filter((w) =>
+        areaId === '__unassigned__' ? !w.areaId : w.areaId === areaId,
+      )
+      if (wallsInArea.length === 0) continue
+      for (const [makeupId, mkOv] of Object.entries(byMakeup)) {
+        if (typeof mkOv.sqM !== 'number') continue
+        const mkWalls = wallsInArea.filter((w) => w.makeupId === makeupId)
+        if (mkWalls.length === 0) continue
+        const mkWallIds = new Set(mkWalls.map((w) => w.id))
+        const mkOpenings = openings.filter((o) => mkWallIds.has(o.wallId))
+        let mkAutoSqMm = 0
+        for (const w of mkWalls) {
+          const dx = w.endX - w.startX
+          const dy = w.endY - w.startY
+          const lenMm = Math.sqrt(dx * dx + dy * dy)
+          const h =
+            w.heightMmOverride ?? makeupsById[w.makeupId]?.heightMm ?? 0
+          mkAutoSqMm += lenMm * h
+        }
+        for (const o of mkOpenings) {
+          mkAutoSqMm -= o.widthMm * o.heightMm
+        }
+        mkAutoSqMm = Math.max(0, mkAutoSqMm)
+        const mkOverrideSqMm = mkOv.sqM * 1_000_000
+        totalAreaSqMm_supply += mkOverrideSqMm - mkAutoSqMm
+      }
+    }
+    if (totalAreaSqMm_supply < 0) totalAreaSqMm_supply = 0
+  }
+
+  // User-defined supply items applicable to block estimates. Source
+  // of truth: when an org is active, use the org-synced Supabase
+  // list; otherwise fall back to the local IndexedDB (personal /
+  // offline mode). Same model as the brick export: each item
+  // resolves to a whole-unit count from its rate × unit basis; zero-
+  // qty rows drop out. per-brick items skipped. supplyRows feeds
+  // both the Accessories table below and a matching assumption note
+  // so the document stays self-explanatory.
+  const supplyItems = getCurrentOrgId()
+    ? getOrgSupplyItems()
+    : getUserSettings().supplyItems ?? []
+  const blockArea_m2 = totalAreaSqMm_supply / 1_000_000
+  const blockRun_m = totalLengthMm_supply / 1000
+  const supplyRows: {
+    name: string
+    qty: number
+    /** Pre-formatted quantity at the item's chosen decimalPlaces — used
+     *  by the schedule + assumption notes so the same row prints the
+     *  same number wherever it appears in the PDF. */
+    display: string
+    noteRate: string
+    category: string
+  }[] = []
+  for (const item of supplyItems) {
+    if (!item.appliesTo.includes('block')) continue
+    if (supplyItemSelections?.[item.id] === false) continue
+    // Honour the per-project rate override — undefined falls back to the
+    // library default so projects without overrides behave as before.
+    const override = supplyItemRateOverrides?.[item.id]
+    const rate =
+      override !== undefined && Number.isFinite(override) ? override : item.rate
+    let qty = 0
+    let noteRate = ''
+    switch (item.unit) {
+      case 'each':
+        qty = rate
+        noteRate = `${rate} per project`
+        break
+      case 'per-block':
+        qty = rate * totalBlocks
+        noteRate = `${rate} per block`
+        break
+      case 'per-m2':
+        qty = rate * blockArea_m2
+        noteRate = `${rate} per m²`
+        break
+      case 'per-m-lineal':
+        qty = rate * blockRun_m
+        noteRate = `${rate} per lineal metre`
+        break
+      case 'per-opening':
+      case 'per-opening-head':
+      case 'per-opening-sill': {
+        // Shared resolver: respects per-opening overrides + project
+        // defaults + the width-range / kind filter. See
+        // src/lib/openingSupplyResolver.ts for the rules. Same chain
+        // the workspace tally + export preview use, so the PDF row
+        // matches the modal preview exactly.
+        const inScope = countOpeningsForSupplyItem(item, openings, supplyItems)
+        qty = rate * inScope
+        const min = item.openingWidthMinMm
+        const max = item.openingWidthMaxMm
+        const rangeLabel =
+          min !== undefined || max !== undefined
+            ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
+            : ''
+        const scopeLabel =
+          item.unit === 'per-opening-sill'
+            ? 'opening sill (windows)'
+            : item.unit === 'per-opening-head'
+              ? 'opening head'
+              : 'opening'
+        noteRate = `${rate} per ${scopeLabel}${rangeLabel}`
+        break
+      }
+      case 'per-brick':
+        // Block estimate — brick-relative rates don't apply.
+        continue
+    }
+    // Round at the item's chosen precision (0 dp → whole units, 1–3 dp
+    // → finer granularity). Same ceil semantics as before — no under-
+    // ordering — just at a smaller step for consumables that need
+    // decimals (cement m³, sand m³, flashing m).
+    const rounded = roundSupplyQuantity(qty, item)
+    // Apply the user's per-supply-item adjustment (positive = remove,
+    // negative = add) AFTER rounding so the modal's preview number
+    // matches what lands in the PDF. Clamp to >= 0 to avoid negative
+    // rows on aggressive subtractions. We skip rows that resolve to
+    // zero, but we don't gate on the pre-adjusted `rounded` value —
+    // an adjustment with a negative delta can promote a zero-qty
+    // item into the schedule.
+    const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
+    const finalQty = Math.max(0, rounded - supplyAdj)
+    if (finalQty <= 0) continue
+    // Apply per-export name override (set in the export modal) so
+    // a renamed supply item shows with the user's chosen label
+    // instead of the library default.
+    const overriddenName = params.supplyItemNameOverrides?.[item.id]?.trim()
+    supplyRows.push({
+      name: overriddenName || item.name,
+      qty: finalQty,
+      display: formatSupplyQuantity(finalQty, item),
+      noteRate,
+      category: item.category?.trim() || 'Uncategorised',
+    })
+  }
+
+  // Per-wall thickness + lookup so wallLengthMm returns outer-edge length consistently
+  // (only the wall whose endpoint sits INSIDE the other wall gets the extension).
+  const thicknessByWallId: Record<string, number> = {}
+  const wallsById: Record<string, Wall> = {}
+  for (const w of walls) {
+    const makeup = makeupsById[w.makeupId]
+    // Wall envelope = max block depth across the makeup, so corner
+    // blocks deeper than the body sit inside the wall extent.
+    thicknessByWallId[w.id] = makeup
+      ? getEffectiveWallThicknessMm(makeup, BLOCK_LIBRARY)
+      : 190
+    wallsById[w.id] = w
+  }
+
+  // Per-makeup breakdown: re-run calculateWallTally for walls of each
+  // makeup, passing `cornerOwnershipFor(w)` so each wall only counts
+  // the corner blocks it OWNS at shared junctions. Matches the
+  // dedup'd numbers calculateProjectTally produces for the Grand
+  // Total page, so the per-wall-type subtotals add up to the order
+  // quantity instead of overshooting it by the shared-corner column.
+  //
+  // Bug history: this used to run without `cornerOwnership`, so every
+  // wall at a shared corner counted its full end-block column.
+  // Customers saw "sum of breakdown rows > grand total" and rightly
+  // didn't trust the schedule. cornerOwnershipFor(w) without the
+  // wallsById argument matches calculateProjectTally's call shape
+  // exactly (alphabetical phase=0 fallback), so the two paths now
+  // agree by construction.
+  const perMakeup = makeups.map((m) => {
+    const wallsOfMakeup = walls.filter((w) => w.makeupId === m.id)
+    const merged: BlockTally = {}
+    for (const w of wallsOfMakeup) {
+      const openingsForWall = openings.filter((o) => o.wallId === w.id)
+      const wallTally = calculateWallTally(
+        w,
+        m,
+        openingsForWall,
+        thicknessByWallId,
+        wallsById,
+        cornerOwnershipFor(w),
+      )
+      for (const [code, count] of Object.entries(wallTally) as Array<[BlockCode, number]>) {
+        if (!count) continue
+        merged[code] = (merged[code] ?? 0) + count
+      }
+    }
+    return {
+      makeup: m,
+      wallCount: wallsOfMakeup.length,
+      lengthMm: wallsOfMakeup.reduce(
+        (s, w) => s + wallLengthMm(w, thicknessByWallId, wallsById),
+        0
+      ),
+      tally: merged,
+    }
+  })
+
+
+  const headerTitle =
+    projectDetails.siteAddress.trim() ||
+    projectDetails.projectName.trim() ||
+    'Block Takeoff'
+  // Filename + document title — prefer site address so the saved
+  // PDF is named by site (matches how the estimator files them).
+  // Falls back to project name, then a generic 'Block Takeoff'.
+  const docTitle =
+    `${projectDetails.siteAddress.trim() || projectDetails.projectName.trim() || 'Block Takeoff'} — Block Takeoff`
+
+  const tiedPierCount = piers.filter((p) => p.type === 'tied').length
+  const freestandingPierCount = piers.filter((p) => p.type === 'freestanding').length
+
+  // Walk the curved walls once and bucket each by its build zone, so the
+  // assumption page can conditionally tell the bricklayer / supplier whether
+  // any block-cutting is required. A curve whose geometry can't be derived
+  // (degenerate three-point arc) is ignored — those don't tally anything.
+  let hasCutCurves = false
+  let hasWedgeCurves = false
+  let hasCustomCurves = false
+  for (const w of walls) {
+    if (!isCurvedWall(w) || w.midX === undefined || w.midY === undefined) continue
+    const geom = arcFromThreePoints(
+      { x: w.startX, y: w.startY },
+      { x: w.midX, y: w.midY },
+      { x: w.endX, y: w.endY }
+    )
+    if (!geom) continue
+    const zone = curveZoneForRadius(geom.radiusMm)
+    if (zone === 'cut') hasCutCurves = true
+    else if (zone === 'wedge') hasWedgeCurves = true
+    else if (zone === 'custom') hasCustomCurves = true
+  }
+
+  const supplyItemNotes = supplyRows.map(
+    (r) => `${r.name} allowance at ${r.noteRate} — ${r.display} included.`
+  )
+  const assumptions = buildAssumptions(
+    inclusions,
+    openings.length > 0,
+    projectDetails.notes,
+    { tied: tiedPierCount, freestanding: freestandingPierCount },
+    { hasCutCurves, hasWedgeCurves, hasCustomCurves },
+    supplyItemNotes
+  )
+
+  // ---------- HTML pieces ----------
+
+  // Branded header — when the user has filled out their business identity in
+  // settings, the company name + ABN + address replace the generic "Beme"
+  // wordmark, turning the export into a real quote.
+  // Brand block rules:
+  //   - Logo set → the logo IS the brand mark, render it large, drop the
+  //     company-name text entirely (the logo carries the name, so
+  //     reprinting it as text is visual duplication).
+  //   - No logo, company name set → render the company name as text in
+  //     the usual brand position. Same legacy behaviour.
+  //   - Neither → fall back to the generic "Beme" wordmark.
+  // ABN / phone / website / address still print under whichever mark is
+  // chosen so the customer always has a way to identify the supplier.
+  const hasBusinessIdentity = !!business?.companyName?.trim()
+  const hasLogo = !!business?.logoUrl
+  const contactBlock = hasBusinessIdentity
+    ? `
+        <div class="brand-tag">
+          ${business?.abn ? `ABN ${escapeHtml(business.abn)}` : ''}
+          ${business?.phone ? ` · ${escapeHtml(business.phone)}` : ''}
+          ${business?.website ? ` · ${escapeHtml(business.website)}` : ''}
+        </div>
+        ${
+          business?.addressLine1
+            ? `<div class="brand-address">${[
+                business.addressLine1,
+                business.addressLine2,
+                [business.suburb, business.state, business.postcode]
+                  .filter(Boolean)
+                  .join(' '),
+              ]
+                .filter(Boolean)
+                .map((line) => escapeHtml(line ?? ''))
+                .join('<br/>')}</div>`
+            : ''
+        }
+      `
+    : ''
+  const brandBlock = hasLogo
+    ? `
+        <img src="${escapeHtml(business!.logoUrl ?? '')}" alt="${escapeHtml(business?.companyName ?? 'Logo')}" class="brand-logo-primary" />
+        ${contactBlock}
+      `
+    : hasBusinessIdentity
+    ? `
+        <div class="brand-name">${escapeHtml(business?.companyName ?? '')}</div>
+        ${contactBlock}
+      `
+    : `
+        <div class="brand-logo-row">
+          <svg class="beme-mark" viewBox="0 0 64 64" width="34" height="34" aria-hidden="true">
+            <path fill-rule="evenodd" clip-rule="evenodd" fill="#FF7A2D" d="M12 0 H52 A12 12 0 0 1 64 12 V52 A12 12 0 0 1 52 64 H12 A12 12 0 0 1 0 52 V12 A12 12 0 0 1 12 0 Z M17 12 A5 5 0 0 0 12 17 V47 A5 5 0 0 0 17 52 H47 A5 5 0 0 0 52 47 V17 A5 5 0 0 0 47 12 H17 Z" />
+          </svg>
+          <div>
+            <div class="brand-name">Beme</div>
+            <div class="brand-tag">Building Estimates Made Easy</div>
+          </div>
+        </div>
+      `
+
+  const pageHeader = `
+    <header class="page-header">
+      <div class="brand">${brandBlock}</div>
+      <div class="title-block">
+        <div class="title-main">Block Takeoff — Material Schedule</div>
+        <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm${
+          referenceText ? ` | Ref ${escapeHtml(referenceText)}` : ''
+        }</div>
+      </div>
+    </header>
+  `
+
+  const metaBlock = (() => {
+    const rows: string[] = []
+    if (referenceText)
+      rows.push(`<div><span>Reference</span> ${escapeHtml(referenceText)}</div>`)
+    if (projectDetails.clientName.trim())
+      rows.push(`<div><span>Client</span> ${escapeHtml(projectDetails.clientName)}</div>`)
+    // Estimator name intentionally omitted — the deliverable doesn't
+    // need it called out per page; the running header / footer carries
+    // the company brand which is what the client cares about.
+    if (projectDetails.date)
+      rows.push(`<div><span>Date</span> ${formatDate(projectDetails.date)}</div>`)
+    if (rows.length === 0) return ''
+    return `<div class="meta">${rows.join('')}</div>`
+  })()
+
+  // Page 0: Cover page — only when the user customised any of the
+  // cover fields via the export modal. Falls back to the project
+  // name when no title override is set so the cover still reads
+  // sensibly. Document opens directly into Assumptions when all
+  // overrides are empty (legacy behaviour, no blank cover page).
+  const coverTitle = params.coverOverrides?.title?.trim() ?? ''
+  const coverSubtitle = params.coverOverrides?.subtitle?.trim() ?? ''
+  const coverIntro = params.coverOverrides?.intro?.trim() ?? ''
+  const hasCover = !!(coverTitle || coverSubtitle || coverIntro)
+  const coverTitleResolved =
+    coverTitle ||
+    projectDetails.projectName.trim() ||
+    projectDetails.siteAddress.trim() ||
+    'Block Takeoff'
+  const coverPage = hasCover
+    ? `
+      <section class="page cover-page">
+        ${pageHeader}
+        <div class="cover-body">
+          <div class="cover-eyebrow">Block estimate${referenceText ? ` · ${escapeHtml(referenceText)}` : ''}</div>
+          <div class="cover-head">
+            <div>
+              <h1 class="cover-title">${escapeHtml(coverTitleResolved)}</h1>
+              ${coverSubtitle ? `<p class="cover-subtitle">${escapeHtml(coverSubtitle)}</p>` : ''}
+            </div>
+            <dl class="cover-meta">
+              ${projectDetails.siteAddress.trim() && projectDetails.siteAddress.trim() !== coverTitleResolved ? `<div><dt>Site</dt><dd>${escapeHtml(projectDetails.siteAddress)}</dd></div>` : ''}
+              ${projectDetails.clientName.trim() ? `<div><dt>Client</dt><dd>${escapeHtml(projectDetails.clientName)}</dd></div>` : ''}
+              ${projectDetails.date ? `<div><dt>Date</dt><dd>${formatDate(projectDetails.date)}</dd></div>` : ''}
+            </dl>
+          </div>
+          ${coverIntro ? `<div class="cover-intro">${escapeHtml(coverIntro).replace(/\n/g, '<br/>')}</div>` : ''}
+        </div>
+      </section>
+    `
+    : ''
+
+  // Page 1: Assumptions — rendered as categorised groups with
+  // subheadings so the reader can scan to the relevant area
+  // (Geometry vs Curves vs Openings vs Project-specific notes etc.)
+  // rather than reading through one long numbered list.
+  const assumptionsPage = inclusions.assumptions
+    ? `
+      <section class="page">
+        ${pageHeader}
+        ${metaBlock}
+        <h2 class="section-title">Assumptions</h2>
+        ${assumptions
+          .map(
+            (g) => `
+          <div class="assumption-group">
+            <h3 class="assumption-group-title">${escapeHtml(g.title)}</h3>
+            <ul class="assumption-list">
+              ${g.items.map((a) => `<li>${escapeHtml(a)}</li>`).join('')}
+            </ul>
+          </div>`,
+          )
+          .join('')}
+      </section>
+    `
+    : ''
+
+  // Page 2: Wall Specifications — one card per wall type with bond,
+  // height, block composition, course-series ranges, course overrides,
+  // and the wall count + total length using it. Sits between Assumptions
+  // and the Wall Layout pages so the reader can map a layout reference
+  // back to the spec.
+  const wallSpecsPage = inclusions.wallSpecs
+    ? buildWallSpecsPage(makeups, walls, thicknessByWallId, wallsById, pageHeader)
+    : ''
+
+  // Page 3: Grand Total (full code-by-code tally with corner dedup applied —
+  // these are the ACTUAL ORDER QUANTITIES). Previously titled "Block
+  // Schedule"; renamed so the only "Grand Total" the customer sees is the
+  // one with the real numbers. The old "Grand Total per Block Type" page
+  // that appeared AFTER the per-wall-type breakdown showed the pre-dedup
+  // sum and was confusing — that's been removed below.
+  // Wastage uplift — when configured, a second column on the Grand
+  // Total table shows each row with X% added (rounded UP to the next
+  // whole block so the estimator can order against a real integer
+  // count) plus a wastage-uplifted Total Blocks line. Supply items
+  // are intentionally untouched — those are estimator-managed
+  // allowances, wastage is a single project-wide ordering buffer on
+  // the masonry tally only.
+  const blockWastagePct =
+    typeof params.wastagePercent === 'number' && params.wastagePercent > 0
+      ? params.wastagePercent
+      : null
+  const blockWastageFactor = blockWastagePct ? 1 + blockWastagePct / 100 : 1
+  const blockWastageHeader = blockWastagePct
+    ? `<th class="right" style="width: 120px">+ ${formatNumber(blockWastagePct, 1)}% wastage</th>`
+    : ''
+  const blockWastageCell = (count: number): string =>
+    blockWastagePct
+      ? `<td class="right">${formatNumber(Math.ceil(count * blockWastageFactor))}</td>`
+      : ''
+
+  const scheduleTable = inclusions.blockSchedule && entries.length > 0
+    ? `
+      <h2 class="section-title">Grand Total</h2>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 100px">Code</th>
+            <th>Block</th>
+            <th class="right" style="width: 100px">Quantity</th>
+            ${blockWastageHeader}
+          </tr>
+        </thead>
+        <tbody>
+          ${entries
+            .map(
+              ([code, count]) =>
+                `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td>${blockWastageCell(count)}</tr>`
+            )
+            .join('')}
+          <tr class="bold">
+            <td colspan="2">Total blocks</td>
+            <td class="right">${formatNumber(totalBlocks)}</td>
+            ${blockWastageCell(totalBlocks)}
+          </tr>
+        </tbody>
+      </table>
+    `
+    : ''
+
+  // Accessories table — rows pulled from the user's Material library
+  // supply-items catalogue (cement bags, rebar, sundries, anything they
+  // need to ship alongside the blocks). Shown immediately under the Grand
+  // Total so the customer sees the full material list in one page. Hidden
+  // entirely when no supply items applied to this estimate so the page
+  // doesn't end with an empty 'Accessories' heading.
+  //
+  // Grouped by category — items sharing the same category render as a
+  // sub-header row, with their entries listed below. Uncategorised
+  // items render last under an 'Other' heading. Within each category
+  // rows stay in the order they were declared (so e.g. Galintel sizes
+  // appear small-to-large as the user entered them).
+  const accessoriesTable = (() => {
+    if (supplyRows.length === 0) return ''
+    const UNCAT = 'Uncategorised'
+    const groups = new Map<string, typeof supplyRows>()
+    for (const r of supplyRows) {
+      const key = r.category || UNCAT
+      const arr = groups.get(key)
+      if (arr) arr.push(r)
+      else groups.set(key, [r])
+    }
+    // Named groups alphabetically first, Uncategorised pinned last.
+    const ordered = Array.from(groups.entries()).sort(([a], [b]) => {
+      if (a === UNCAT) return 1
+      if (b === UNCAT) return -1
+      return a.localeCompare(b)
+    })
+    const renderGroup = (label: string, rows: typeof supplyRows) => {
+      // Only render a category header when there's more than one
+      // group (or the one group isn't Uncategorised) — single
+      // uncategorised lists keep the original flat appearance.
+      const showHeader = ordered.length > 1 || label !== UNCAT
+      const headerRow = showHeader
+        ? `<tr class="category-row"><td colspan="2" style="font-weight: 600; padding-top: 12px;">${escapeHtml(label)}</td></tr>`
+        : ''
+      const itemRows = rows
+        .map(
+          (r) =>
+            `<tr><td>${escapeHtml(r.name)}</td><td class="right">${r.display}</td></tr>`
+        )
+        .join('')
+      return headerRow + itemRows
+    }
+    return `
+      <h2 class="section-title">Accessories</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th class="right" style="width: 100px">Quantity</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ordered.map(([cat, rows]) => renderGroup(cat, rows)).join('')}
+        </tbody>
+      </table>
+    `
+  })()
+
+  const schedulePage = scheduleTable || accessoriesTable
+    ? `
+      <section class="page">
+        ${pageHeader}
+        ${scheduleTable}
+        ${accessoriesTable}
+      </section>
+    `
+    : ''
+
+  // Plan-overview pages — one section per PDF page that has walls (a
+  // multi-floor project draws walls on multiple pages, so a single
+  // overview can't show the whole job). Each section has its own SVG
+  // viewBox cropped to its page's walls, its own rasterised PDF page as
+  // a background, and a heading like "Wall Layout — Page 9" so the
+  // running header on continuation pages carries the same label.
+  //
+  // The schedule + breakdown tables that follow are project-wide and
+  // come off the flat walls/openings/piers arrays — only the layout
+  // diagram needs page splitting.
+  const pagesToShow: PageInfo[] = pagesInfo && pagesInfo.length > 0
+    ? pagesInfo.filter((p) => p.walls.length > 0)
+    : []
+  const planOverviewPages: string[] = []
+  for (const page of pagesToShow) {
+    // Rasterise this PDF page so the diagram has the building plan behind
+    // it. If the page isn't calibrated yet (no scale ratio) or the PDF
+    // can't be opened, the section still renders — just without the
+    // background image.
+    let pageBackground: {
+      dataUrl: string
+      pageWidthMm: number
+      pageHeightMm: number
+      pageScaleRatio: number
+    } | null = null
+    if (
+      pdfFile &&
+      page.pageWidthMm &&
+      page.pageHeightMm &&
+      page.pageScaleRatio &&
+      page.pageScaleRatio > 0
+    ) {
+      const rastered = await rasterisePdfPage(pdfFile, page.pageNumber)
+      if (rastered) {
+        pageBackground = {
+          dataUrl: rastered.dataUrl,
+          pageWidthMm: page.pageWidthMm,
+          pageHeightMm: page.pageHeightMm,
+          pageScaleRatio: page.pageScaleRatio,
+        }
+      }
+    }
+
+    const pageLabel = page.label?.trim() || `Page ${page.pageNumber}`
+    // Only suffix the heading when there's more than one Wall Layout
+    // section — single-page exports keep the cleaner "Wall Layout" title.
+    const labelSuffix = pagesToShow.length > 1 ? ` — ${pageLabel}` : ''
+
+    // Total blocks across just THIS page's walls so the per-page tile
+    // reads as the blocks for this floor, not the whole project. Computed
+    // from per-wall tallies (without corner dedup, same as the breakdown
+    // tables); the project-wide dedup'd count still appears on the Block
+    // Schedule page.
+    let pageBlockTotal = 0
+    for (const w of page.walls) {
+      const makeup = makeupsById[w.makeupId]
+      if (!makeup) continue
+      const openingsForWall = page.openings.filter((o) => o.wallId === w.id)
+      const t = calculateWallTally(w, makeup, openingsForWall, thicknessByWallId, wallsById)
+      for (const c of Object.values(t)) pageBlockTotal += c ?? 0
+    }
+
+    planOverviewPages.push(
+      buildPlanOverviewPage(
+        page.walls,
+        page.openings,
+        page.piers,
+        makeups,
+        makeupsById,
+        thicknessByWallId,
+        wallsById,
+        pageBlockTotal,
+        pageHeader,
+        pageBackground,
+        labelSuffix,
+        inclusions.measurements ? page.measurements ?? [] : []
+      )
+    )
+  }
+  // Pre-joined so the assembly below can splice it in unchanged regardless
+  // of how many pages there are.
+  const planOverviewPage = planOverviewPages.join('\n')
+
+  // Page 3: Wall-type breakdown
+  // Combined totals per block code across all makeups — pre-corner-dedup, so these are the
+  // sums you'd get from adding up every sub-table above. The Block Schedule on its own page
+  // shows the dedup'd numbers; the diff = corner blocks shared between adjacent walls.
+  const combinedPerCode: BlockTally = {}
+  for (const p of perMakeup) {
+    for (const [code, count] of Object.entries(p.tally) as Array<[BlockCode, number]>) {
+      if (!count) continue
+      combinedPerCode[code] = (combinedPerCode[code] ?? 0) + count
+    }
+  }
+  // Each wall-type breakdown gets its own .page section so every page reliably
+  // carries the full pageHeader (ABC Building Products / Block Takeoff —
+  // Material Schedule) and the "Breakdown by Wall Type" subtitle. Trying to
+  // pack multiple wall types onto one page would have left continuation pages
+  // headerless because the first .page section's pageHeader only renders once
+  // at the section's start. Per-wall-type pages is more pages but every page
+  // reads as a complete, self-labelled sheet.
+  const breakdownPages = inclusions.wallTypeBreakdown && perMakeup.some((p) => p.wallCount > 0)
+    ? (() => {
+        const wallTypePages = perMakeup
+          .filter((p) => p.wallCount > 0)
+          .map((p) => {
+            const subEntries = tallyEntries(p.tally)
+            const subTotal = subEntries.reduce((s, [, c]) => s + c, 0)
+            return `
+              <section class="page">
+                ${pageHeader}
+                <h2 class="section-title">Breakdown by Wall Type</h2>
+                <p class="page-intro">Block counts per wall makeup.</p>
+                <div class="wall-type-section">
+                  <h3 class="wall-type-name">
+                    ${escapeHtml(p.makeup.name)}
+                    <span class="wall-type-meta">
+                      · ${p.wallCount} wall${p.wallCount === 1 ? '' : 's'}
+                      · ${formatNumber(p.lengthMm / 1000, 2)} m
+                      · ${getMakeupHeightMm(p.makeup)}mm high
+                    </span>
+                  </h3>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style="width: 100px">Code</th>
+                        <th>Block</th>
+                        <th class="right" style="width: 100px">Quantity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${subEntries
+                        .map(
+                          ([code, count]) =>
+                            `<tr><td class="mono">${escapeHtml(code)}</td><td>${escapeHtml(blockName(code))}</td><td class="right">${formatNumber(count)}</td></tr>`
+                        )
+                        .join('')}
+                      <tr class="bold">
+                        <td colspan="2">Subtotal</td>
+                        <td class="right">${formatNumber(subTotal)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            `
+          })
+          .join('')
+
+        // The "Grand Total per Block Type" summary that used to live here
+        // was the same data the per-wall-type rows above add up to, but
+        // pre-corner-dedup — so its totals didn't match the real order
+        // quantities on the Grand Total page (formerly Block Schedule).
+        // Two grand-totals looked contradictory to customers, so the
+        // inflated one has been dropped. The breakdown pages stand on
+        // their own as the "where did each block come from" view.
+        return wallTypePages
+      })()
+    : ''
+
+  // Openings & Lintels page used to live here; it was retired when the
+  // Wall Layout pages started visualising openings inline with their
+  // walls. The wall-type breakdown above (and per-wall lintel rows)
+  // covers any per-opening detail an estimator needs.
+
+  // 3D view snapshots — one PDF page per queued snapshot, in queue
+  // order. Sits with the plan-overview pages so the visual context
+  // flows from "the plan + walls" to "the same walls in 3D". Each
+  // page is laid out like a hero shot: orange accent bar across the
+  // top, a large title, the image as the dominant element with a
+  // soft drop shadow, and a project-metadata footer in a single
+  // line. No dark frame on the image so it sits naturally on the
+  // sheet.
+  const formattedDate = projectDetails.date
+    ? new Date(projectDetails.date).toLocaleDateString('en-AU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    : ''
+  const view3dPages =
+    inclusions.view3d && view3dSnapshots && view3dSnapshots.length > 0
+      ? view3dSnapshots
+          .map((snap, i) => {
+            const legendHtml =
+              snap.legend.length > 0
+                ? `
+              <aside class="view3d-legend">
+                <div class="view3d-legend-title">Legend</div>
+                <ul class="view3d-legend-list">
+                  ${snap.legend
+                    .map(
+                      (item) => `
+                    <li class="view3d-legend-row">
+                      <span class="view3d-legend-swatch" style="background:${item.color};"></span>
+                      <span class="view3d-legend-label">${escapeHtml(item.label)}</span>
+                      <span class="view3d-legend-code">${escapeHtml(item.code)}</span>
+                    </li>
+                  `
+                    )
+                    .join('')}
+                </ul>
+              </aside>
+            `
+                : ''
+            return `
+      <section class="page view3d-page">
+        ${pageHeader}
+        <div class="view3d-accent"></div>
+        <header class="view3d-header">
+          <div class="view3d-eyebrow">3D Visualisation${view3dSnapshots.length > 1 ? ` &middot; View ${i + 1} of ${view3dSnapshots.length}` : ''}</div>
+          <h1 class="view3d-title">${escapeHtml(projectDetails.projectName || 'Project preview')}</h1>
+          ${
+            projectDetails.siteAddress
+              ? `<div class="view3d-subtitle">${escapeHtml(projectDetails.siteAddress)}</div>`
+              : ''
+          }
+        </header>
+        <div class="view3d-body${legendHtml ? ' has-legend' : ''}">
+          <figure class="view3d-figure">
+            <img
+              src="${snap.dataUrl}"
+              alt="3D view of the project"
+              class="view3d-image"
+            />
+          </figure>
+          ${legendHtml}
+        </div>
+      </section>
+    `
+          })
+          .join('')
+      : ''
+
+  // Page 5: Disclaimer
+  const disclaimerPage = inclusions.disclaimer
+    ? `
+      <section class="page">
+        ${pageHeader}
+        <div class="disclaimer">
+          <div class="disclaimer-title">Disclaimer</div>
+          ${DISCLAIMER_TEXT.map((p) => `<p>${escapeHtml(p)}</p>`).join('')}
+        </div>
+      </section>
+    `
+    : ''
+
+  // ---------- Assembled HTML ----------
+  //
+  // Body content is captured into its own template literal so the combined
+  // exporter can splice block pages alongside brick pages in a single
+  // document. Styles are captured in their own variable for the same
+  // reason. Single-trade callers (the existing `exportBlockEstimate`
+  // wrapper) get the full assembled doc just like before.
+
+  const bodyContent = `
+  ${coverPage}
+  ${assumptionsPage}
+  ${/* 3D snapshots come FIRST after the assumptions pages so the
+       reader sees the project in 3D as soon as they've finished
+       the cover/assumptions reading. Wall-type specs and the 2D
+       plan overview follow before the data tables. */ ''}
+  ${view3dPages}
+  ${wallSpecsPage}
+  ${planOverviewPage}
+  ${breakdownPages}
+  ${/* Grand Total sits just before the disclaimer so the customer's
+       last data-bearing page is the actual order quantities — the page
+       they'll quote and order from. Disclaimer wraps the document so
+       the legal copy is the final read. */ ''}
+  ${schedulePage}
+  ${disclaimerPage}
+`
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>${escapeHtml(docTitle)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    color: #1f2937;
+    margin: 0;
+    background: #fff;
+    /* Base font size used by every element that doesn't declare its
+       own — sets the visual density of the whole document. Was the
+       browser default (16px), reduced to 11px so the same content
+       fits in noticeably less vertical space. */
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .page {
+    /* Tighter padding so each page can hold more content. Was
+       40 48px; reduced to keep enough breathing room around the
+       header / footer without wasting vertical space. */
+    padding: 24px 32px;
+    page-break-after: always;
+    min-height: 100vh;
+  }
+  .page:last-child { page-break-after: auto; }
+
+  .page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1.5px solid #1f2937;
+    padding-bottom: 8px;
+    margin-bottom: 16px;
+  }
+  .brand-name {
+    color: #C5530A;
+    font-weight: 700;
+    font-size: 22px;
+    line-height: 1;
+  }
+  .brand-tag {
+    color: #ED7D31;
+    font-style: italic;
+    font-size: 10px;
+    margin-top: 2px;
+  }
+  .brand-address {
+    color: #4B5563;
+    font-size: 10px;
+    margin-top: 3px;
+    line-height: 1.4;
+  }
+  .brand-logo {
+    max-height: 46px;
+    max-width: 150px;
+    display: block;
+    margin-bottom: 4px;
+  }
+  /* Beme mark + wordmark lockup in the header on unbranded exports. */
+  .brand-logo-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .beme-mark {
+    flex-shrink: 0;
+    display: block;
+  }
+
+  /* Cover page — A4 landscape layout. Title block takes the LEFT
+     half of the page (3 cols of a 5-col grid), meta block takes
+     the RIGHT half (2 cols). Intro paragraph spans the full width
+     below them, separated by a divider so the eye lands on the
+     title-meta split first. Title can grow larger than the portrait
+     version because landscape has the horizontal room to support
+     a ~44px headline without crowding. */
+  .cover-page .cover-body {
+    padding: 28px 12px 0 12px;
+    max-width: 100%;
+  }
+  .cover-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 10px;
+    color: #6B7280;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .cover-head {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    column-gap: 36px;
+    align-items: start;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #E5E7EB;
+  }
+  .cover-title {
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+    color: #111827;
+    margin: 0 0 6px 0;
+  }
+  .cover-subtitle {
+    font-size: 15px;
+    color: #4B5563;
+    margin: 8px 0 0 0;
+    line-height: 1.45;
+    max-width: 540px;
+  }
+  .cover-meta {
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 10px;
+    margin: 4px 0 0 0;
+    padding: 0 0 0 24px;
+    border-left: 1px solid #E5E7EB;
+  }
+  .cover-meta dt {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 9px;
+    color: #6B7280;
+    margin-bottom: 2px;
+  }
+  .cover-meta dd {
+    font-size: 12px;
+    color: #1F2937;
+    font-weight: 500;
+    margin: 0;
+  }
+  .cover-intro {
+    font-size: 12px;
+    color: #374151;
+    line-height: 1.6;
+    margin-top: 24px;
+    max-width: 100%;
+    white-space: pre-wrap;
+  }
+  /* Logo used as the primary brand mark — bigger than the inline logo
+     because no text name accompanies it. Capped at 80 px tall / 280 px
+     wide so it doesn't dominate the header on tall / wide images. */
+  .brand-logo-primary {
+    max-height: 64px;
+    max-width: 230px;
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  /* "Built with Beme" credit footer that appears on every page.
+     Pulled tight against the bottom margin (was 1cm, now 0.3cm) so
+     it doesn't crowd page footers like the 3D-view metadata row.
+     Also rendered slimmer (smaller font, less padding) so a thinner
+     credit line gives more breathing room above it. */
+  .page { position: relative; padding-bottom: 50px; }
+  .beme-credit {
+    position: absolute;
+    left: 1.5cm;
+    right: 1.5cm;
+    bottom: 0.3cm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    font-size: 9px;
+    color: #9CA3AF;
+    border-top: 1px solid #E5E7EB;
+    padding-top: 4px;
+  }
+  .beme-credit .beme-mark {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid #FF7A2D;
+    border-radius: 2px;
+    box-sizing: border-box;
+    /* True transparent hole through the middle — matches the BemeMark
+       component in the app, so the PDF credit mark reads the same as
+       the in-product brand mark instead of trying to fake a dark
+       inset on a white page. */
+  }
+  .beme-credit strong {
+    color: #1F2937;
+    font-weight: 700;
+  }
+  .title-block { text-align: right; }
+  .title-main {
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .title-sub {
+    font-size: 10px;
+    color: #6b7280;
+    margin-top: 2px;
+  }
+
+  .meta {
+    display: flex;
+    gap: 20px;
+    font-size: 10px;
+    color: #4b5563;
+    margin-bottom: 14px;
+  }
+  .meta span {
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 9px;
+    margin-right: 4px;
+  }
+
+  h2 {
+    font-size: 13px;
+    margin: 16px 0 6px;
+    color: #1f2937;
+  }
+  h3.wall-type-name {
+    font-size: 11px;
+    margin: 14px 0 4px;
+    color: #1f2937;
+    font-weight: 700;
+  }
+  .wall-type-meta {
+    color: #6b7280;
+    font-weight: 400;
+    font-size: 10px;
+  }
+  .page-intro {
+    font-size: 10px;
+    color: #6b7280;
+    margin: 0 0 8px;
+  }
+
+  ol.assumptions { padding-left: 20px; margin: 0; }
+  ol.assumptions li {
+    padding: 2px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+  }
+  /* Categorised assumption groups — one subheading + bullet list
+     per category. Groups try not to split across pages (the
+     subheading + at least one bullet should stay together), and
+     they sit tight enough that the canonical full set still fits
+     on one landscape A4 page. */
+  .assumption-group {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-top: 10px;
+  }
+  .assumption-group:first-of-type { margin-top: 0; }
+  .assumption-group-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #1f2937;
+    margin: 0 0 4px 0;
+    padding-bottom: 2px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  ul.assumption-list {
+    list-style: disc;
+    padding-left: 18px;
+    margin: 0;
+  }
+  ul.assumption-list li {
+    padding: 1.5px 0;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: #374151;
+  }
+
+  /* ── Wall layout page ─────────────────────────────────────────────
+     Stats strip across the top, SVG diagram in the middle, legend at
+     the bottom. Sizes are tuned to keep the whole section on a single
+     landscape A4 page — content area is ≈ 165 mm tall after page
+     margins + footer, and the stats + intro + legend take ~40 mm of
+     that, leaving ~95 mm for the diagram. Don't increase any of
+     these without re-checking the one-page fit. */
+  .plan-overview-page h2.section-title {
+    margin: 12px 0 4px;
+  }
+  .plan-overview-page .page-intro {
+    margin-bottom: 6px;
+  }
+  /* Force the wall-layout page (stats strip + diagram + legend) to
+     print as a SINGLE page even when the diagram is at its biggest
+     setting. Without this, the legend underneath the diagram tends
+     to spill onto a second page in landscape A4. */
+  .plan-overview-page {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    page-break-after: always;
+    break-after: page;
+  }
+  .plan-overview-stats {
+    display: flex;
+    gap: 10px;
+    margin: 4px 0 6px;
+    flex-wrap: wrap;
+  }
+  .plan-stat {
+    flex: 1 1 0;
+    min-width: 100px;
+    padding: 6px 10px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+  }
+  .plan-stat-value {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1f2937;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .plan-stat-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+    margin-top: 2px;
+  }
+  .plan-stat-sub {
+    font-size: 9px;
+    color: #6b7280;
+    margin-top: 1px;
+  }
+
+  .plan-overview-wrap {
+    width: 100%;
+    /* Hero diagram height — tuned so the whole page (header + stats
+       + diagram + legend + page footer credit) fits on a single
+       landscape A4. Was briefly 140mm which spilled the legend onto
+       a second page. ~120mm leaves headroom for the legend strip
+       (~12mm) and the bottom credit (~12mm). */
+    height: 120mm;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafaf7;
+  }
+  .plan-overview-wrap svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .plan-overview-legend {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    margin-top: 6px;
+    font-size: 10px;
+    color: #4b5563;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-item strong {
+    font-weight: 600;
+    color: #1f2937;
+  }
+  .legend-sub {
+    color: #6b7280;
+    font-size: 10px;
+    margin-left: 2px;
+  }
+  .legend-swatch {
+    display: inline-block;
+    width: 18px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .legend-pier {
+    background: #3b82f6;
+    border: 1px solid #1e40af;
+    width: 10px;
+  }
+  .legend-opening-swatch {
+    display: inline-block;
+    width: 22px;
+    height: 11px;
+    vertical-align: middle;
+  }
+  .legend-note {
+    color: #9ca3af;
+    font-style: italic;
+  }
+
+  /* ── Wall specifications page ─────────────────────────────────────
+     One card per wall type with a compact key/value spec grid and
+     optional sub-tables for course-series ranges + per-course
+     overrides. Multiple cards flow down the page; break-inside: avoid
+     keeps a single card whole when it would otherwise straddle a page
+     boundary. Sized so 3–4 cards fit comfortably on a landscape A4. */
+  .wall-spec-card {
+    margin: 8px 0 14px;
+    padding: 10px 14px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    background: #fafafa;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .wall-spec-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .wall-spec-name {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #1f2937;
+    margin: 0;
+  }
+  .wall-spec-meta {
+    font-size: 10px;
+    color: #6b7280;
+    font-variant-numeric: tabular-nums;
+  }
+  .spec-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 16px;
+    font-size: 10.5px;
+  }
+  .spec-row {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 1px dotted #e5e7eb;
+    padding: 3px 0;
+    gap: 12px;
+  }
+  .spec-key {
+    color: #6b7280;
+  }
+  .spec-val {
+    color: #1f2937;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .spec-subsection {
+    margin-top: 8px;
+  }
+  .spec-sub-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6b7280;
+    margin-bottom: 4px;
+  }
+  .spec-sub-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0;
+    font-size: 10px;
+  }
+  .spec-sub-table td {
+    padding: 2px 5px;
+    border-bottom: 1px dotted #e5e7eb;
+  }
+  .spec-sub-table .range-courses {
+    width: 110px;
+    color: #1f2937;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .spec-sub-table .range-detail {
+    color: #4b5563;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+    font-size: 10.5px;
+  }
+  th, td {
+    padding: 5px 9px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+  }
+  thead th {
+    background: #f3f4f6;
+    font-weight: 600;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #4b5563;
+  }
+  .right { text-align: right; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .tabular { font-variant-numeric: tabular-nums; }
+  tr.bold td { font-weight: 700; background: #fafafa; }
+
+  /* 3D view pages — magazine-style hero shot. Print engines ignore
+     flex grow on landscape A4, so every block has an EXPLICIT mm
+     height and the image is capped at a fixed value that leaves
+     room for the chrome above and below. Available vertical on a
+     landscape A4 page is roughly 170mm (210mm sheet − 11mm @page
+     top margin − ~14mm page-header − ~15mm bottom credit). Chrome
+     here ≈ 55mm; image gets the remaining ~110mm. */
+  .view3d-page {
+    position: relative;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    page-break-after: always;
+    break-after: page;
+  }
+  .view3d-accent {
+    width: 32mm;
+    height: 3px;
+    background: linear-gradient(90deg, #ED7D31 0%, #F59E0B 100%);
+    border-radius: 2px;
+    margin-bottom: 3mm;
+  }
+  .view3d-header {
+    margin-bottom: 3mm;
+  }
+  .view3d-eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 9px;
+    font-weight: 700;
+    color: #ED7D31;
+    margin-bottom: 1.5mm;
+  }
+  .view3d-title {
+    margin: 0 0 1.5mm 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: #0f172a;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+  .view3d-subtitle {
+    font-size: 10px;
+    color: #475569;
+    font-weight: 400;
+  }
+  .view3d-body {
+    display: flex;
+    align-items: stretch;
+    gap: 5mm;
+    height: 125mm; /* hard cap — was 140mm but pushed the title onto a
+                      separate page on some plans. Budget: page-header
+                      ~22mm + accent ~5mm + view3d-header (eyebrow +
+                      title + subtitle) ~28mm + body 125mm + bottom
+                      credit ~12mm = ~192mm, leaving ~5mm slack
+                      against the 197mm content area (landscape A4
+                      minus 24mm top/bottom padding). */
+  }
+  .view3d-figure {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .view3d-image {
+    max-width: 100%;
+    max-height: 125mm;
+    object-fit: contain;
+    border-radius: 8px;
+    box-shadow:
+      0 1px 2px rgba(15, 23, 42, 0.04),
+      0 8px 24px rgba(15, 23, 42, 0.10);
+  }
+  /* Legend column sits to the right of the hero image — same height
+     so it visually anchors against the image's top + bottom edges.
+     Sized so the image gets the majority of the page width while
+     the key stays comfortably legible at print resolution. */
+  .view3d-legend {
+    flex: 0 0 44mm;
+    padding: 2.5mm 3mm 2mm;
+    border: 1px solid #e2e8f0;
+    border-radius: 5px;
+    background: #f8fafc;
+    font-size: 8px;
+    color: #1f2937;
+    overflow: hidden;
+  }
+  .view3d-legend-title {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 7px;
+    font-weight: 700;
+    color: #ED7D31;
+    margin-bottom: 1.5mm;
+    padding-bottom: 1mm;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .view3d-legend-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .view3d-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 1.5mm;
+    padding: 0.4mm 0;
+    min-width: 0;
+  }
+  .view3d-legend-swatch {
+    flex: 0 0 auto;
+    width: 2.2mm;
+    height: 2.2mm;
+    border-radius: 1px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+  }
+  .view3d-legend-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #0f172a;
+    font-weight: 500;
+  }
+  .view3d-legend-code {
+    flex: 0 0 auto;
+    color: #94a3b8;
+    font-size: 7px;
+    font-variant-numeric: tabular-nums;
+  }
+  .view3d-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6mm;
+    padding-top: 3mm;
+    margin-top: 3mm;
+    border-top: 1px solid #e2e8f0;
+  }
+  .view3d-meta-block {
+    min-width: 0;
+  }
+  .view3d-meta-label {
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 7px;
+    font-weight: 600;
+    color: #94a3b8;
+    margin-bottom: 0.7mm;
+  }
+  .view3d-meta-value {
+    font-size: 10px;
+    font-weight: 600;
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
+  }
+
+  .disclaimer {
+    background: #fef9c3;
+    border-left: 3px solid #ca8a04;
+    padding: 12px 16px;
+    border-radius: 4px;
+  }
+  .disclaimer-title {
+    color: #854d0e;
+    font-weight: 700;
+    margin-bottom: 6px;
+    font-size: 11.5px;
+  }
+  .disclaimer p {
+    margin: 0 0 6px 0;
+    font-size: 10px;
+    line-height: 1.45;
+    color: #422006;
+  }
+  .disclaimer p:last-child { margin-bottom: 0; }
+
+  @media print {
+    .page { padding: 0.4cm 1.5cm 1.5cm 1.5cm; min-height: auto; }
+    /* Landscape A4 with a 1.1cm top margin reserved for the running header
+       in @top-center. The .page padding-top is reduced to 0.4cm in print
+       to compensate so the body content doesn't end up double-padded. */
+    @page {
+      margin: 1.1cm 0 0 0;
+      size: A4 landscape;
+      /* Running header — picks up the current section's title from the
+         CSS named string 'sectionTitle' (set via the section-title class
+         on each <h2>). Chrome propagates the most recent value of a named
+         string across continuation pages, so when a section overflows
+         onto a second page the same heading still appears at the top.
+         On the section's first page, the in-flow h2 sits below this
+         running version — slight redundancy that reads as 'page subtitle
+         + section heading', which is the standard report layout. */
+      @top-center {
+        content: string(sectionTitle);
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-size: 10pt;
+        color: #6b7280;
+        font-style: italic;
+        padding-top: 4mm;
+      }
+      /* Explicitly blank out the other margin boxes so the browser's
+         built-in 'Headers and footers' chrome (date / URL / page title)
+         doesn't get to draw there. Per the CSS Paged Media spec, when
+         these boxes have content defined the user-agent's default
+         content is replaced. Chrome's print dialog 'Headers and footers'
+         option may still override this — that's a print-dialog setting,
+         not a CSS rule — but the empty boxes are the most we can do
+         from the document side. */
+      @top-left { content: ""; }
+      @top-right { content: ""; }
+      @bottom-left { content: ""; }
+      @bottom-center { content: ""; }
+      @bottom-right { content: ""; }
+    }
+    /* Each section's h2 sets the named string so any continuation pages
+       of that section inherit the title in the running header. */
+    h2.section-title {
+      string-set: sectionTitle content();
+    }
+
+    /* ── Page-break hygiene ──────────────────────────────────────────
+       Keep individual rows from being sliced in half across pages, and
+       repeat each table's header at the top of every continuation page
+       so a long schedule still reads cleanly. Each wall-type subsection
+       (heading + its table) is kept together when it fits on a single
+       page — break-inside: avoid is a hint, so a section that's too
+       big for a page will still break, but the rows inside it stay
+       atomic and the header reprints. */
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+    tr, .beme-credit { page-break-inside: avoid; break-inside: avoid; }
+    .wall-type-section, .disclaimer, .meta {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    /* Don't let the bold subtotal/total rows orphan at the top of a
+       new page — they have to stay glued to the row above. Without
+       this, a tall table whose last few data rows fit on one page
+       can push its Total summary onto a near-empty next page, which
+       is what looked janky in the v1 export. */
+    tr.bold {
+      page-break-before: avoid;
+      break-before: avoid-page;
+    }
+    /* Tables are preferred-together when they fit on a page. If a
+       table is genuinely longer than a page, the browser ignores this
+       hint and falls back to splitting between rows — which is fine
+       because thead reprints and the row-atomic rule keeps each row
+       intact. */
+    table {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    /* Don't strand a heading at the bottom of a page — let the heading
+       drag onto the next page with its content. */
+    h2, h3 {
+      page-break-after: avoid;
+      break-after: avoid-page;
+    }
+  }
+</style>
+</head>
+<body>${bodyContent}</body>
+</html>`
+
+  // Inject the "Built with Beme" credit before each page's closing tag.
+  // Doing it post-hoc keeps the per-page building blocks simple while
+  // ensuring every page (assumptions / schedule / breakdown / openings /
+  // disclaimer) carries the footer.
+  const bemeFooter = `
+    <footer class="beme-credit">
+      <span class="beme-mark"></span>
+      <span>Built with <strong>Beme</strong> · building estimates made easy</span>
+    </footer>`
+  const htmlWithFooter = html.replace(/<\/section>/g, `${bemeFooter}</section>`)
+  // Same footer injection applied to the standalone bodyContent so the
+  // combined exporter (which uses bodyContent directly without going
+  // through `html`) inherits the credit on every page too.
+  const bodyContentWithFooter = bodyContent.replace(
+    /<\/section>/g,
+    `${bemeFooter}</section>`
+  )
+
+  // Extract the <style>...</style> contents so the combined exporter can
+  // merge block styles with brick styles into one document. Regex is fine
+  // here — the only `<style>` tag in the doc is the one we just built.
+  const styleMatch = htmlWithFooter.match(/<style>([\s\S]*?)<\/style>/)
+  const styles = styleMatch ? styleMatch[1] : ''
+
+  return {
+    html: htmlWithFooter,
+    filename: docTitle,
+    bodyContent: bodyContentWithFooter,
+    styles,
+  }
+}
+
+/**
+ * Single-trade entry point — kept as a thin wrapper over
+ * `buildBlockEstimateHtml` so existing call sites (BlockExportPanel)
+ * don't need to change.
+ */
+export async function exportBlockEstimate(params: ExportParams): Promise<void> {
+  const built = await buildBlockEstimateHtml(params)
+  await downloadPdfFromHtml({ html: built.html, filename: built.filename })
+}
+
+export function createDefaultBlockExportInclusions(): BlockExportInclusions {
+  return {
+    assumptions: true,
+    wallSpecs: true,
+    blockSchedule: true,
+    wallTypeBreakdown: true,
+    // Ruler measurements default ON — if the user took the trouble to draw
+    // them on the plan they almost certainly want them carried through into
+    // the exported PDF. Toggle hides them when not wanted.
+    measurements: true,
+    // 3D snapshot default ON — if the user has captured one it'll
+    // appear; if not, the export is just silently shorter by one page.
+    view3d: true,
+    disclaimer: true,
+  }
+}

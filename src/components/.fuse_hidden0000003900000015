@@ -1,0 +1,699 @@
+import { useEffect, useState } from 'react'
+import type { ProjectArea } from '../lib/projectStorage'
+import { confirm } from '../lib/confirm'
+
+/**
+ * Area selector - collapsible panel that matches the chrome of the
+ * WallTypesPanel / SupplyItemsPanel directly below it. Same outer
+ * container (border + rounded + padded), same header pattern (chevron
+ * + title + active-name caption), same inline expansion (the list of
+ * areas drops down INSIDE the panel rather than as a floating menu).
+ *
+ * Why panel-style instead of a dropdown:
+ *   - Sits in the same column as Wall types / Supply items. A floating
+ *     dropdown looked like a button rather than a section, so users
+ *     didn't see it as part of the right-rail grouping.
+ *   - Inline expansion stacks nicely with the panels below (no
+ *     overlap, no z-index fights).
+ *
+ * Inside, when expanded:
+ *   - **All areas** row at the top (selects null = show every area).
+ *   - One row per area, with colour dot + hover-revealed rename ✎ /
+ *     delete × buttons.
+ *   - "+ New area" button at the bottom of the list.
+ *
+ * Pure presentation - workspace owns `activeAreaId` (per-session) and
+ * `areas` (project-persisted); this component just renders + dispatches.
+ */
+export default function AreaTabs({
+  areas,
+  activeAreaId,
+  wallCountByAreaId,
+  onSelect,
+  onCreate,
+  onRename,
+  onDelete,
+  onReorder,
+}: {
+  areas: ProjectArea[]
+  /** null = the "All" view. */
+  activeAreaId: string | null
+  /** Wall counts per area for the active trade. Used as a "12 walls"
+   *  subtitle on each row so the user can tell at a glance which areas
+   *  have content. Optional - when omitted, rows render without the
+   *  count. */
+  wallCountByAreaId?: Record<string, number>
+  onSelect: (areaId: string | null) => void
+  /** Called with the new area's display name + a flag indicating whether
+   *  to clone the walls from the current view into the new area.
+   *  Workspace generates the id, pushes onto `areas`, and switches
+   *  activeAreaId to the new id. When `copyWalls` is true the workspace
+   *  also clones every wall currently visible (geometry only - new ids,
+   *  new makeup) into the new area. */
+  onCreate: (name: string, copyWalls: boolean, footingLevelMm: number) => void
+  /** Update an area's name AND/OR footing level. Callers should
+   *  treat any field that hasn't actually changed as a no-op (the
+   *  modal commits both in one shot, but unchanged values mean
+   *  unchanged state). */
+  onRename: (areaId: string, newName: string, footingLevelMm: number) => void
+  /** Optional - when omitted, the per-row × delete button is hidden. */
+  onDelete?: (areaId: string) => void
+  /** Called with the new ordered list of area ids when the user drops
+   *  a dragged row. Optional - when omitted, drag-and-drop is disabled
+   *  and the rows render without the drag handle. */
+  onReorder?: (orderedIds: string[]) => void
+}) {
+  // expanded = panel body visible; editingId = Edit area modal pre-filled
+  // with that area's name. Defaults to EXPANDED so the user sees the area
+  // list on first load - same default as SupplyItemsPanel. The legacy
+  // "creating" modal flow was retired in favour of one-click create with
+  // an auto-numbered default name ("New Area 2", "New Area 3"…) - users
+  // rename via the existing ✎ affordance if they want a custom label.
+  const [expanded, setExpanded] = useState(true)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  /** True while the "+ New area" modal is open. Separate from
+   *  editingId because creation is a fresh blank, not editing an
+   *  existing row. */
+  const [creating, setCreating] = useState(false)
+  // "+ New area" used to open a small AreaCreateChoiceModal asking
+  // start-fresh vs copy-existing; the user found this an unnecessary
+  // gate. New areas now create immediately with copyWalls=false (fresh
+  // wall type, empty walls). The modal component is still defined
+  // below but no longer rendered - left in place in case we want to
+  // bring back a "duplicate this area" affordance later.
+  // Drag-to-reorder state. `dragId` is the area currently being dragged;
+  // `dropTargetId` is the row the cursor is hovering over (used to
+  // show the insertion indicator). Both clear on dragend / drop. The
+  // native HTML5 drag API needs both pieces because dragover fires
+  // continuously and we want the indicator only when over a *different*
+  // row.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null)
+  const editingArea = editingId
+    ? areas.find((a) => a.id === editingId) ?? null
+    : null
+
+  // Commit a reorder - moves `dragId` to land just BEFORE `targetId`
+  // in the area list. Targets that come after the source naturally
+  // splice into the slot the source vacates, so the visible "above /
+  // below the target row" decision is handled implicitly by the source
+  // position relative to the target.
+  const reorder = (sourceId: string, targetId: string) => {
+    if (sourceId === targetId || !onReorder) return
+    const ids = areas.map((a) => a.id)
+    const from = ids.indexOf(sourceId)
+    const to = ids.indexOf(targetId)
+    if (from < 0 || to < 0) return
+    ids.splice(from, 1)
+    // After splicing out the source, the target index shifts down by
+    // one when the source was earlier in the list - recompute against
+    // the new array.
+    const newTo = ids.indexOf(targetId)
+    ids.splice(newTo, 0, sourceId)
+    onReorder(ids)
+  }
+
+  // handleCreate retired with the create modal - "+ New area" now
+  // calls onCreate(nextDefaultAreaName()) directly. Rename / edit
+  // still flows through handleRename + the AreaNameModal in 'edit'
+  // mode below.
+
+  /**
+   * Resolve the next default name for "+ New area".
+   *
+   *   - No existing area called "New Area" → use "New Area".
+   *   - "New Area" exists, no "New Area 2" → use "New Area 2".
+   *   - Highest suffix is N → use "New Area (N+1)".
+   *
+   * Comparison is case-insensitive against trimmed names so a manually-
+   * renamed "new area" still collides cleanly. Gaps are allowed
+   * (renaming "New Area 2" to "Balcony" leaves "New Area 3" as the
+   * next slot, since N+1 anchors on the max suffix not the count).
+   */
+  const nextDefaultAreaName = () => {
+    const norm = (s: string) => s.trim().toLowerCase()
+    const names = areas.map((a) => norm(a.name))
+    if (!names.includes('new area')) return 'New Area'
+    let maxN = 1
+    for (const n of names) {
+      const m = n.match(/^new area\s+(\d+)$/)
+      if (m) {
+        const num = parseInt(m[1], 10)
+        if (Number.isFinite(num) && num > maxN) maxN = num
+      }
+    }
+    return `New Area ${maxN + 1}`
+  }
+
+  const handleRename = (
+    id: string,
+    name: string,
+    footingLevelMm: number,
+  ) => {
+    const trimmed = name.trim()
+    const existing = areas.find((a) => a.id === id)
+    if (
+      trimmed &&
+      existing &&
+      (trimmed !== existing.name ||
+        footingLevelMm !== (existing.footingLevelMm ?? 0))
+    ) {
+      onRename(id, trimmed, footingLevelMm)
+    }
+    setEditingId(null)
+  }
+
+  const existingNamesFor = (excludeId: string | null) =>
+    areas
+      .filter((a) => a.id !== excludeId)
+      .map((a) => a.name.toLowerCase())
+
+  const activeArea = activeAreaId
+    ? areas.find((a) => a.id === activeAreaId) ?? null
+    : null
+  const activeLabel = activeArea?.name ?? 'All areas'
+
+  return (
+    <div className="border border-ink-600 rounded-lg bg-ink-800 p-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-2 text-left group flex-1 min-w-0"
+          aria-expanded={expanded}
+        >
+          <span className="text-ink-500 group-hover:text-ink-300 text-xs flex-shrink-0">
+            {expanded ? '▾' : '▸'}
+          </span>
+          {expanded ? (
+            // Expanded - small "Area · <name>" header, since the area
+            // list below already shows the active row prominently. Keeps
+            // the chrome compact and matches Wall Types / Supply Items.
+            <>
+              <h3 className="text-sm font-semibold text-ink-200 group-hover:text-beme-300 flex-shrink-0">
+                Area
+              </h3>
+              {activeArea?.colorHex && (
+                <span
+                  className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: activeArea.colorHex }}
+                  aria-hidden
+                />
+              )}
+              <span className="text-xs text-ink-400 truncate min-w-0">
+                · {activeLabel}
+              </span>
+            </>
+          ) : (
+            // Collapsed - promote the area name to the title since this
+            // is the only place it's visible. Tiny "Area" eyebrow above
+            // keeps the section label without stealing weight from the
+            // name. User asked specifically for a bigger title here so
+            // they can tell at a glance which area they're working in.
+            <>
+              {activeArea?.colorHex && (
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: activeArea.colorHex }}
+                  aria-hidden
+                />
+              )}
+              <div className="flex flex-col min-w-0 leading-tight">
+                <span className="text-[10px] uppercase tracking-wider text-ink-500 group-hover:text-ink-400">
+                  Area
+                </span>
+                <span className="text-base font-semibold text-ink-100 group-hover:text-beme-300 truncate">
+                  {activeLabel}
+                </span>
+              </div>
+            </>
+          )}
+        </button>
+      </div>
+
+      {expanded && (
+        <div
+          role="listbox"
+          aria-label="Project areas"
+          className="mt-2 space-y-0.5"
+        >
+          {/* "All areas" pseudo-row only makes sense when there's more
+              than one area to span - with a single area it's just a
+              redundant duplicate of that one area's view. Hidden
+              entirely (along with the divider that separates it from
+              the area list) when areas.length < 2. */}
+          {areas.length >= 2 && (
+            <>
+              <AreaMenuRow
+                label="All areas"
+                active={activeAreaId === null}
+                onSelect={() => onSelect(null)}
+              />
+              <div className="border-t border-ink-700 my-1" />
+            </>
+          )}
+          {areas.map((area) => {
+            const wallCount = wallCountByAreaId?.[area.id]
+            const subLabel =
+              typeof wallCount === 'number'
+                ? `${wallCount} wall${wallCount === 1 ? '' : 's'}`
+                : undefined
+            // Drag affordance is only wired when onReorder is provided
+            // AND there's more than one area to reorder (single-area
+            // case the drag handle is a no-op).
+            const draggable = !!onReorder && areas.length > 1
+            return (
+              <AreaMenuRow
+                key={area.id}
+                label={area.name}
+                subLabel={subLabel}
+                colorHex={area.colorHex}
+                active={activeAreaId === area.id}
+                draggable={draggable}
+                isDragging={dragId === area.id}
+                isDropTarget={dropTargetId === area.id && dragId !== area.id}
+                onDragStart={() => setDragId(area.id)}
+                onDragEnter={() => {
+                  if (!dragId || dragId === area.id) return
+                  setDropTargetId(area.id)
+                }}
+                onDragLeave={() => {
+                  // Only clear when leaving the row entirely - dragenter
+                  // on the next row will set it again, so the
+                  // brief-clear-then-reset doesn't flicker the indicator.
+                  setDropTargetId((cur) => (cur === area.id ? null : cur))
+                }}
+                onDragEnd={() => {
+                  setDragId(null)
+                  setDropTargetId(null)
+                }}
+                onDrop={() => {
+                  if (dragId) reorder(dragId, area.id)
+                  setDragId(null)
+                  setDropTargetId(null)
+                }}
+                onSelect={() => onSelect(area.id)}
+                onRename={() => setEditingId(area.id)}
+                onDelete={
+                  onDelete
+                    ? async () => {
+                        // Include the wall count in the confirmation so
+                        // the user knows what they're orphaning when they
+                        // delete an area with walls in it. Loud message
+                        // when there's content, quiet one when there
+                        // isn't.
+                        const countMessage =
+                          typeof wallCount === 'number' && wallCount > 0
+                            ? `${wallCount} wall${wallCount === 1 ? '' : 's'} in this area will become unassigned (still visible in All until you reassign or delete them).`
+                            : 'Walls in this area become unassigned but stay visible in the All tab. The area itself is removed.'
+                        const ok = await confirm({
+                          title: `Delete area "${area.name}"?`,
+                          message: countMessage,
+                          confirmLabel: 'Delete area',
+                          variant: 'destructive',
+                        })
+                        if (ok) onDelete(area.id)
+                      }
+                    : undefined
+                }
+              />
+            )
+          })}
+          <div className="border-t border-ink-700 my-1" />
+          {/* Create modal: name (pre-filled with the next auto
+              number) + floor level. The footing field drives 3D
+              multi-storey stacking, so capturing it on creation is
+              cheaper than asking the user to edit every area after
+              the fact. */}
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="w-full text-left px-2 py-1 text-xs font-medium text-beme-300 hover:bg-ink-700 rounded transition-colors"
+          >
+            + New area
+          </button>
+        </div>
+      )}
+
+      {editingArea && (
+        <AreaNameModal
+          mode="edit"
+          initialName={editingArea.name}
+          initialFootingLevelMm={editingArea.footingLevelMm ?? 0}
+          existingNames={existingNamesFor(editingArea.id)}
+          onSubmit={(name, footing) =>
+            handleRename(editingArea.id, name, footing)
+          }
+          onCancel={() => setEditingId(null)}
+        />
+      )}
+
+      {creating && (
+        <AreaNameModal
+          mode="create"
+          initialName={nextDefaultAreaName()}
+          initialFootingLevelMm={0}
+          existingNames={areas.map((a) => a.name.trim().toLowerCase())}
+          onSubmit={(name, footing) => {
+            onCreate(name, false, footing)
+            setCreating(false)
+          }}
+          onCancel={() => setCreating(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------- Internal: dropdown row with rename / delete affordances ----
+
+function AreaMenuRow({
+  label,
+  subLabel,
+  colorHex,
+  active,
+  draggable,
+  isDragging,
+  isDropTarget,
+  onDragStart,
+  onDragEnter,
+  onDragLeave,
+  onDragEnd,
+  onDrop,
+  onSelect,
+  onRename,
+  onDelete,
+}: {
+  label: string
+  /** Optional secondary line - used for wall counts. Renders muted to
+   *  the right of the label so the area name stays primary. */
+  subLabel?: string
+  colorHex?: string
+  active: boolean
+  /** When true, render a grab handle and respond to drag events. */
+  draggable?: boolean
+  /** True while THIS row is the row being dragged - dimmed so the user
+   *  knows what they're moving. */
+  isDragging?: boolean
+  /** True when the dragged row is hovering THIS row - shows the
+   *  insertion indicator bar above. */
+  isDropTarget?: boolean
+  onDragStart?: () => void
+  onDragEnter?: () => void
+  onDragLeave?: () => void
+  onDragEnd?: () => void
+  onDrop?: () => void
+  onSelect: () => void
+  onRename?: () => void
+  onDelete?: () => void
+}) {
+  return (
+    <div
+      className={`group relative flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer transition-colors ${
+        active
+          ? 'bg-beme-500/15 text-beme-300 ring-1 ring-beme-500/30'
+          : 'text-ink-100 hover:bg-ink-700'
+      } ${isDragging ? 'opacity-40' : ''} ${
+        isDropTarget ? 'ring-1 ring-beme-400/60' : ''
+      }`}
+      onClick={onSelect}
+      role="option"
+      aria-selected={active}
+      draggable={draggable}
+      onDragStart={(e) => {
+        if (!draggable) return
+        // Set drag data + effect so the cursor shows the "move"
+        // affordance and other listeners can read which row is being
+        // dragged if they care.
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', label)
+        onDragStart?.()
+      }}
+      onDragEnter={(e) => {
+        if (!draggable) return
+        e.preventDefault()
+        onDragEnter?.()
+      }}
+      onDragOver={(e) => {
+        // dragover must be prevented for drop to fire. Defaults to "no
+        // drop allowed" otherwise, which is the bug 90% of native-drag
+        // tutorials open with.
+        if (!draggable) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+      }}
+      onDragLeave={() => {
+        if (!draggable) return
+        onDragLeave?.()
+      }}
+      onDragEnd={() => {
+        if (!draggable) return
+        onDragEnd?.()
+      }}
+      onDrop={(e) => {
+        if (!draggable) return
+        e.preventDefault()
+        onDrop?.()
+      }}
+    >
+      {draggable && (
+        // Six-dot grip glyph. Pointer-events-none so the row's onClick
+        // still fires when the user clicks on the handle area instead
+        // of starting a drag; the row's `draggable` attribute owns the
+        // drag-initiation behaviour at the surface level.
+        <span
+          className="text-ink-500 group-hover:text-ink-300 text-[10px] leading-none cursor-grab select-none pointer-events-none flex-shrink-0"
+          aria-hidden
+          title="Drag to reorder"
+        >
+          ⋮⋮
+        </span>
+      )}
+      {colorHex ? (
+        <span
+          className="inline-block w-1.5 h-1.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: colorHex }}
+          aria-hidden
+        />
+      ) : (
+        <span className="inline-block w-1.5 h-1.5 flex-shrink-0" />
+      )}
+      <span className="flex-1 truncate">{label}</span>
+      {subLabel && (
+        <span
+          className={`text-[10px] tabular-nums flex-shrink-0 ${
+            active ? 'text-beme-300/70' : 'text-ink-400'
+          }`}
+        >
+          {subLabel}
+        </span>
+      )}
+      {onRename && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRename()
+          }}
+          title={`Rename ${label}`}
+          aria-label={`Rename area ${label}`}
+          className="w-5 h-5 rounded text-ink-500 hover:bg-ink-600 hover:text-beme-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
+        >
+          ✎
+        </button>
+      )}
+      {onDelete && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          title={`Delete ${label}`}
+          aria-label={`Delete area ${label}`}
+          className="w-5 h-5 rounded text-ink-500 hover:bg-ink-600 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-opacity text-[11px] leading-none flex items-center justify-center"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ---------- Internal: AreaNameModal (create + edit) ----------
+
+interface AreaNameModalProps {
+  mode: 'create' | 'edit'
+  initialName: string
+  /** Pre-filled footing level (mm). 0 for fresh creates; existing
+   *  area's footing for edit. */
+  initialFootingLevelMm: number
+  existingNames: string[]
+  onSubmit: (name: string, footingLevelMm: number) => void
+  onCancel: () => void
+}
+
+/**
+ * Small focused modal used for both creating and renaming an area.
+ * Mirrors the WallTypeEditorModal / BrickTypeEditorModal pattern
+ * (fixed inset overlay, backdrop dismiss, Esc to close) so naming
+ * flows across the workspace feel uniform.
+ *
+ * Duplicate-name guard is case-insensitive. In edit mode the area's
+ * OWN current name is excluded from the duplicate check so saving an
+ * unchanged name isn't blocked.
+ */
+function AreaNameModal({
+  mode,
+  initialName,
+  initialFootingLevelMm,
+  existingNames,
+  onSubmit,
+  onCancel,
+}: AreaNameModalProps) {
+  const [name, setName] = useState(initialName)
+  const [footingDraft, setFootingDraft] = useState(
+    String(initialFootingLevelMm),
+  )
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onCancel()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  const trimmed = name.trim()
+  const isDuplicate =
+    trimmed.length > 0 && existingNames.includes(trimmed.toLowerCase())
+  const parsedFooting = Number.parseInt(footingDraft.trim(), 10)
+  const footingValid =
+    footingDraft.trim() === '' || Number.isFinite(parsedFooting)
+  const effectiveFooting = Number.isFinite(parsedFooting) ? parsedFooting : 0
+  const isUnchanged =
+    mode === 'edit' &&
+    trimmed === initialName.trim() &&
+    effectiveFooting === initialFootingLevelMm
+  const canSubmit =
+    trimmed.length > 0 && !isDuplicate && !isUnchanged && footingValid
+
+  function handleSubmit() {
+    if (!canSubmit) return
+    onSubmit(trimmed, effectiveFooting)
+  }
+
+  const title = mode === 'create' ? 'New area' : 'Edit area'
+  const explainer =
+    mode === 'create'
+      ? 'Group walls into named buckets - Balcony, Staircase, Level 1, Front facade. Walls drawn while an area is active get stamped with it.'
+      : 'Rename this area or change its floor level. Walls stay assigned.'
+  const submitLabel = mode === 'create' ? 'Create area' : 'Save changes'
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        className="bg-ink-800 border border-ink-600 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3 border-b border-ink-600 flex items-center justify-between bg-ink-900/40">
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-ink-100">{title}</h2>
+            <p className="text-[11px] text-ink-500 mt-0.5">{explainer}</p>
+          </div>
+          <button
+            onClick={onCancel}
+            className="text-ink-400 hover:text-ink-100 text-2xl leading-none px-2"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="p-5 space-y-3">
+          <label className="text-sm block">
+            <span className="block text-ink-300 mb-1">Area name</span>
+            <input
+              type="text"
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
+              placeholder="e.g. Balcony"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+            />
+          </label>
+
+          {/* Floor level - drives multi-storey stacking in the 3D
+              All-areas view. The TOP-of-list area is the baseline;
+              every other area's walls render with their floor at
+              area.footingLevelMm − topAreaFootingLevelMm in world
+              space. Default 0; user types the actual level (e.g.
+              2700 for Level 1 sitting on top of a Ground Floor
+              with a 2700 mm wall height). */}
+          <label className="text-sm block">
+            <span className="block text-ink-300 mb-1">Floor level (mm)</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={footingDraft}
+              onChange={(e) =>
+                setFootingDraft(e.target.value.replace(/[^0-9-]/g, ''))
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleSubmit()
+                }
+              }}
+              placeholder="0"
+              className="w-full px-3 py-1.5 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+            />
+            <span className="block text-[11px] text-ink-500 mt-1 leading-snug">
+              Measured from the FIRST area's floor. Used in 3D when
+              viewing all areas to stack the walls at the right
+              storey height. Leave 0 for the ground floor.
+            </span>
+          </label>
+
+          {isDuplicate && (
+            <p className="text-[11px] text-rose-300">
+              An area called "{trimmed}" already exists. Pick a different
+              name.
+            </p>
+          )}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-ink-600 bg-ink-900/40 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-1.5 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="px-4 py-1.5 rounded-lg bg-beme-500 text-black text-sm font-medium hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {submitLabel}
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}

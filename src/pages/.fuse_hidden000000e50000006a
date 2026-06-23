@@ -1,0 +1,2026 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import BemeLoader from '../components/BemeLoader'
+import {
+  resetUserSettings,
+  updateUserSettings,
+  useUserSettings,
+} from '../lib/userSettings'
+import { toast } from '../lib/toast'
+import { confirm } from '../lib/confirm'
+import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
+import { useTheme } from '../lib/theme'
+import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
+import { isSupabaseConfigured } from '../lib/supabase'
+import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
+import LengthInput from '../components/LengthInput'
+import { formatLengthMm } from '../lib/units'
+import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
+import { getLibraryTemplate } from '../data/libraryTemplates'
+import { computeAutoWallLengthSnapMm } from '../lib/wallLengthSnap'
+import { PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
+import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
+import RegionPicker from '../components/RegionPicker'
+import {
+  updateOrganisationLogo,
+  useOrganisations,
+  listOrgMembers,
+  isCurrentUserOrgAdmin,
+  removeOrgMember,
+  updateOrgMemberRole,
+} from '../lib/organisations'
+import {
+  createInvitation,
+  inviteAcceptUrl,
+  listInvitations,
+  revokeInvitation,
+  statusOf,
+  type Invitation,
+} from '../lib/invitations'
+import type { OrgMember, OrgRole } from '../types/organisations'
+import { orgRoleLabel } from '../types/organisations'
+// Brick-type defaults dropped from Settings — the per-project picker
+// is the source of truth now, no app-wide default needed.
+import type {
+  BusinessProfile,
+  DateFormat,
+  EstimatingDefaults,
+  Theme as ThemePref,
+  UserPreferences,
+  UserProfile,
+  UserSettings,
+  Units,
+} from '../types/userSettings'
+
+type TabKey = 'profile' | 'business' | 'preferences' | 'defaults' | 'organisation' | 'account'
+
+interface Tab {
+  key: TabKey
+  label: string
+  description: string
+  /** When set, the tab is hidden unless this predicate returns true. */
+  showWhen?: (ctx: { hasOrg: boolean }) => boolean
+}
+
+const TABS: Tab[] = [
+  { key: 'profile', label: 'Profile', description: 'You — name, contact, role' },
+  {
+    key: 'business',
+    label: 'Business',
+    description: 'Used on every quote you export',
+    // Branding (logo + business identity stamped on exports) is an
+    // org/team feature. Individual (no-org) users don't get branded
+    // exports, so the tab is hidden for them rather than collecting
+    // settings that never reach their quotes. Mirrors the Organisation
+    // tab's gating.
+    showWhen: ({ hasOrg }) => hasOrg,
+  },
+  { key: 'preferences', label: 'Preferences', description: 'Units, date, theme, library template' },
+  { key: 'defaults', label: 'Defaults', description: 'Starting values for new estimates' },
+  {
+    key: 'organisation',
+    label: 'Organisation',
+    description: 'Members and roles in your team',
+    // Only render the tab for users who actually belong to an org. Personal
+    // single-user accounts (supply-and-lay bricklayers) don't need it.
+    showWhen: ({ hasOrg }) => hasOrg,
+  },
+  { key: 'account', label: 'Account', description: 'Sign out, reset, danger zone' },
+]
+
+/**
+ * The settings hub. Tabs along the left, panel on the right. Every change
+ * persists immediately — no Save button. Studio Black themed throughout.
+ */
+type DeepPartial<T> = { [K in keyof T]?: Partial<T[K]> }
+
+/**
+ * Compact "just now / 4m ago / 2h ago" formatter for the Settings save
+ * pill. Identical vocabulary to ProjectBar's formatter so users see one
+ * consistent relative-time language across the app.
+ */
+function formatRelativeAge(savedAtMs: number): string {
+  const diffMs = Date.now() - savedAtMs
+  const diffMin = Math.round(diffMs / 60_000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.round(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  const diffDay = Math.round(diffHr / 24)
+  return `${diffDay}d ago`
+}
+
+export default function SettingsPage() {
+  const { settings } = useUserSettings()
+  const { currentOrg } = useOrganisations()
+  const [activeTab, setActiveTab] = useState<TabKey>('profile')
+
+  // Draft model — Settings now saves on demand instead of on every
+  // keystroke. `draft` mirrors the persisted `settings` but only sync
+  // with it when the user clicks Save (or Discard). The dirty flag
+  // is a serialised compare so deep nested edits register as changes.
+  const [draft, setDraft] = useState<UserSettings>(settings)
+  const draftStringRef = useRef(JSON.stringify(settings))
+  // If the underlying settings change FROM ANOTHER TAB / DEVICE while
+  // the user has the page open and no pending edits, pull the new
+  // value into the draft so the form mirrors the latest state. If the
+  // user is mid-edit (dirty), leave draft alone — overwriting would
+  // surprise them.
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings)
+  useEffect(() => {
+    if (!dirty) {
+      setDraft(settings)
+      draftStringRef.current = JSON.stringify(settings)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings])
+
+  // Last-saved timestamp for the "Saved · 2m ago" pill, bumped on
+  // explicit save. Ticks every 30s so the relative time rolls forward.
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null)
+  const [, setRelativeTick] = useState(0)
+  useEffect(() => {
+    if (lastSavedAt === null) return
+    const id = window.setInterval(() => setRelativeTick((v) => v + 1), 30_000)
+    return () => window.clearInterval(id)
+  }, [lastSavedAt])
+
+  // Setters for each tab — patch the relevant slice on the draft.
+  // Wrapped in useCallback so child tab references stay stable.
+  const setProfile = useCallback(
+    (p: Partial<UserProfile>) => setDraft((d) => ({ ...d, profile: { ...d.profile, ...p } })),
+    []
+  )
+  const setBusiness = useCallback(
+    (p: Partial<BusinessProfile>) => setDraft((d) => ({ ...d, business: { ...d.business, ...p } })),
+    []
+  )
+  const setPreferences = useCallback(
+    (p: Partial<UserPreferences>) => setDraft((d) => ({ ...d, preferences: { ...d.preferences, ...p } })),
+    []
+  )
+  const setDefaults = useCallback(
+    (p: Partial<EstimatingDefaults>) => setDraft((d) => ({ ...d, defaults: { ...d.defaults, ...p } })),
+    []
+  )
+  function handleSave() {
+    if (!dirty) return
+    // Diff per top-level slice so we don't write unchanged sections back
+    // through the cloud call. Cheap shallow ref compare per slice.
+    const partial: DeepPartial<UserSettings> = {}
+    if (draft.profile !== settings.profile) partial.profile = draft.profile
+    if (draft.business !== settings.business) partial.business = draft.business
+    if (draft.preferences !== settings.preferences)
+      partial.preferences = draft.preferences
+    if (draft.defaults !== settings.defaults) partial.defaults = draft.defaults
+    updateUserSettings(partial)
+    setLastSavedAt(Date.now())
+    toast.success('Settings saved')
+  }
+
+  function handleDiscard() {
+    if (!dirty) return
+    setDraft(settings)
+    toast.info('Changes discarded')
+  }
+
+  // Guard nav while dirty so the user doesn't lose unsaved Settings
+  // edits to a stray Link click.
+  useUnsavedChangesPrompt(dirty, {
+    message: 'You have unsaved settings changes. Save them before leaving, or discard?',
+    onSave: async () => {
+      handleSave()
+    },
+  })
+
+  // Filter tabs by membership context — the Organisation tab disappears for
+  // personal-only users so the rail doesn't show empty / inapplicable sections.
+  const visibleTabs = TABS.filter(
+    (t) => !t.showWhen || t.showWhen({ hasOrg: !!currentOrg })
+  )
+
+  return (
+    <>
+      <div className="px-12 py-10">
+        <div className="flex items-end justify-between flex-wrap gap-4 mb-8">
+          <div>
+            <Link
+              to="/"
+              className="text-xs text-ink-400 hover:text-ink-100 transition-colors"
+            >
+              ← Back to dashboard
+            </Link>
+            <h2 className="text-4xl font-extrabold tracking-tight text-ink-50 mt-2">
+              Settings
+            </h2>
+            <p className="text-ink-300 text-sm mt-1">
+              Your profile, business info, preferences, and defaults — applied across every
+              project on this device. Click <strong>Save changes</strong> to commit your edits.
+            </p>
+          </div>
+          {/* Save / Discard cluster. Shows the manual save state at a
+              glance: green Saved pill when clean, amber Unsaved-changes
+              pill + action buttons when dirty. Sticky-ish here at the
+              top of the page — visible without scrolling. */}
+          <div className="flex items-center gap-2 flex-wrap ml-auto">
+            {!dirty && lastSavedAt !== null && (
+              <span
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-xs text-emerald-300"
+                role="status"
+                aria-live="polite"
+                title={`Saved at ${new Date(lastSavedAt).toLocaleTimeString()}`}
+              >
+                <span
+                  className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"
+                  aria-hidden
+                />
+                Saved · {formatRelativeAge(lastSavedAt)}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleDiscard}
+              disabled={!dirty}
+              className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={!dirty}
+              className="px-4 py-1.5 rounded-md bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Save changes
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-6 items-start">
+          {/* ── Tab rail ── */}
+          <nav className="border border-ink-600 rounded-xl bg-ink-800 p-1.5 flex flex-col gap-0.5 sticky top-6">
+            {visibleTabs.map((t) => {
+              const active = t.key === activeTab
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setActiveTab(t.key)}
+                  className={`text-left px-3 py-2 rounded-lg transition-colors ${
+                    active
+                      ? 'bg-beme-500/15 border border-beme-500/40'
+                      : 'border border-transparent hover:bg-ink-700'
+                  }`}
+                >
+                  <div
+                    className={`text-sm font-semibold ${
+                      active ? 'text-beme-300' : 'text-ink-100'
+                    }`}
+                  >
+                    {t.label}
+                  </div>
+                  <div className="text-[11px] text-ink-400 mt-0.5">{t.description}</div>
+                </button>
+              )
+            })}
+          </nav>
+
+          {/* ── Panel ── */}
+          <section className="min-w-0">
+            {activeTab === 'profile' && (
+              <ProfileTab profile={draft.profile} set={setProfile} />
+            )}
+            {activeTab === 'business' && (
+              <BusinessTab business={draft.business} set={setBusiness} />
+            )}
+            {activeTab === 'preferences' && (
+              <PreferencesTab preferences={draft.preferences} set={setPreferences} />
+            )}
+            {activeTab === 'defaults' && (
+              <DefaultsTab defaults={draft.defaults} set={setDefaults} />
+            )}
+            {activeTab === 'organisation' && <OrganisationTab />}
+            {activeTab === 'account' && <AccountTab />}
+          </section>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ─── Shared form primitives ────────────────────────────────────────────────
+
+function FieldGroup({
+  children,
+  title,
+  description,
+  subtitle,
+}: {
+  children: React.ReactNode
+  title?: string
+  /** Body copy under the title. Accepts both `description` and
+   *  `subtitle` so the call-sites scattered through this file work
+   *  uniformly — both refer to the same thing. */
+  description?: string
+  subtitle?: string
+}) {
+  const body = description ?? subtitle
+  return (
+    <div className="space-y-4">
+      {title && (
+        <div>
+          <h3 className="text-sm font-semibold text-ink-100">{title}</h3>
+          {body && (
+            <p className="text-xs text-ink-400 mt-1 leading-snug">{body}</p>
+          )}
+        </div>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{children}</div>
+    </div>
+  )
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-semibold uppercase tracking-[0.08em] text-ink-400 mb-1">
+        {label}
+      </span>
+      {children}
+      {hint && <span className="block text-[11px] text-ink-400 mt-1">{hint}</span>}
+    </label>
+  )
+}
+
+function TextInput({
+  value,
+  onChange,
+  type = 'text',
+  placeholder,
+  disabled,
+}: {
+  value: string
+  onChange: (v: string) => void
+  type?: string
+  placeholder?: string
+  disabled?: boolean
+}) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      disabled={disabled}
+      className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400 disabled:opacity-60"
+    />
+  )
+}
+
+/**
+ * Logo picker — accepts a PNG / JPG / SVG file from the user's device,
+ * encodes it as a data URL, and writes it through to whatever string
+ * field the parent controls (business.logoUrl on Settings → Business,
+ * organisations.logo_url on Settings → Organisation, etc.). Data URLs
+ * embed the bytes inline so the logo travels with every export and we
+ * don't need a separate storage bucket / CDN to serve the image.
+ *
+ * Files >1 MB get a warning — they balloon the saved settings payload
+ * and slow down every estimate save / load on this device. PNG/SVG
+ * exports trimmed to a couple hundred pixels are typically well under
+ * 100 KB.
+ */
+function LogoUploader({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function handlePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-picking the same file
+    if (!file) return
+    setError(null)
+    if (!/^image\//.test(file.type)) {
+      setError('Pick an image file (PNG, JPG, or SVG).')
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('Logo is over 2 MB — please resize it down to a few hundred pixels for the brand strip.')
+      return
+    }
+    setBusy(true)
+    const reader = new FileReader()
+    reader.onload = () => {
+      onChange(typeof reader.result === 'string' ? reader.result : '')
+      setBusy(false)
+    }
+    reader.onerror = () => {
+      setError('Failed to read the image.')
+      setBusy(false)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-3 flex-wrap">
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/svg+xml,image/webp"
+          onChange={handlePick}
+          disabled={busy}
+          className="text-sm text-ink-300 file:mr-3 file:rounded-md file:border-0 file:bg-beme-500 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-black hover:file:bg-beme-400 file:cursor-pointer"
+        />
+        {value && (
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            className="text-xs text-rose-300 hover:text-rose-200 underline-offset-2 hover:underline"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-300">{error}</p>}
+      {value && (
+        <div className="bg-white p-3 rounded-lg inline-block">
+          <img
+            src={value}
+            alt="Logo preview"
+            className="max-h-16"
+            onError={(ev) => {
+              ;(ev.currentTarget as HTMLImageElement).style.display = 'none'
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NumberInput({
+  value,
+  onChange,
+  min,
+  step,
+  suffix,
+}: {
+  value: number
+  onChange: (v: number) => void
+  min?: number
+  step?: number
+  suffix?: string
+}) {
+  return (
+    <div className="flex items-stretch">
+      <input
+        type="number"
+        value={value}
+        min={min}
+        step={step}
+        onChange={(e) => onChange(parseFloat(e.target.value || '0') || 0)}
+        className={`flex-1 min-w-0 px-3 py-2 border border-ink-600 ${
+          suffix ? 'rounded-l-lg border-r-0' : 'rounded-lg'
+        } text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400`}
+      />
+      {suffix && (
+        <span className="flex items-center px-3 border border-ink-600 rounded-r-lg bg-ink-700 text-ink-300 text-xs">
+          {suffix}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function Select<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: { value: T; label: string }[]
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as T)}
+      className="w-full px-3 py-2 border border-ink-600 rounded-lg text-sm bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function PanelCard({
+  title,
+  description,
+  subtitle,
+  children,
+}: {
+  title: string
+  /** Body copy under the heading. `description` and `subtitle` are
+   *  aliases — call-sites mix both. */
+  description?: string
+  subtitle?: string
+  children: React.ReactNode
+}) {
+  const body = description ?? subtitle
+  return (
+    <div className="border border-ink-600 rounded-xl bg-ink-800 p-6">
+      <div className="mb-5">
+        <h3 className="text-lg font-bold text-ink-50">{title}</h3>
+        {body && (
+          <p className="text-sm text-ink-300 mt-1">{body}</p>
+        )}
+      </div>
+      <div className="space-y-4">{children}</div>
+    </div>
+  )
+}
+
+// ─── Profile ──────────────────────────────────────────────────────────────
+
+function ProfileTab({ profile, set }: { profile: UserProfile; set: (p: Partial<UserProfile>) => void }) {
+  return (
+    <div className="space-y-6">
+      <PanelCard
+        title="You"
+        description="Shown in the app header and on the quotes you export."
+      >
+        <FieldGroup>
+          <Field label="Display name">
+            <TextInput
+              value={profile.displayName}
+              onChange={(v) => set({ displayName: v })}
+              placeholder="e.g. Sam Reeves"
+            />
+          </Field>
+          <Field label="Role / job title">
+            <TextInput
+              value={profile.role}
+              onChange={(v) => set({ role: v })}
+              placeholder="Owner / Estimator / Site supervisor"
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Contact"
+        description="Your contact line on exported quotes."
+      >
+        <FieldGroup>
+          <Field
+            label="Email"
+            hint="The contact email printed on your quotes. Your sign-in email lives under Account."
+          >
+            <TextInput
+              value={profile.email}
+              onChange={(v) => set({ email: v })}
+              placeholder="you@example.com"
+              type="email"
+            />
+          </Field>
+          <Field label="Phone">
+            <TextInput
+              value={profile.phone}
+              onChange={(v) => set({ phone: v })}
+              placeholder="0400 000 000"
+              type="tel"
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+    </div>
+  )
+}
+
+// ─── Business ─────────────────────────────────────────────────────────────
+
+function BusinessTab({ business, set }: { business: BusinessProfile; set: (p: Partial<BusinessProfile>) => void }) {
+  return (
+    <div className="space-y-6">
+      <PanelCard
+        title="Business identity"
+        description="Appears in the header of every exported quote / estimate."
+      >
+        <FieldGroup>
+          <Field label="Company / trading name">
+            <TextInput
+              value={business.companyName}
+              onChange={(v) => set({ companyName: v })}
+              placeholder="e.g. ABC Bricklaying Pty Ltd"
+            />
+          </Field>
+          <Field label="ABN / business number">
+            <TextInput
+              value={business.abn}
+              onChange={(v) => set({ abn: v })}
+              placeholder="12 345 678 901"
+            />
+          </Field>
+          <Field label="Business phone">
+            <TextInput
+              value={business.phone}
+              onChange={(v) => set({ phone: v })}
+              placeholder="(07) 1234 5678"
+              type="tel"
+            />
+          </Field>
+          <Field label="Website">
+            <TextInput
+              value={business.website}
+              onChange={(v) => set({ website: v })}
+              placeholder="abcbricklaying.com.au"
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard title="Business address">
+        <FieldGroup>
+          <Field label="Address line 1">
+            <TextInput
+              value={business.addressLine1}
+              onChange={(v) => set({ addressLine1: v })}
+              placeholder="14 Mothership Drive"
+            />
+          </Field>
+          <Field label="Address line 2">
+            <TextInput
+              value={business.addressLine2}
+              onChange={(v) => set({ addressLine2: v })}
+              placeholder="Unit 3 (optional)"
+            />
+          </Field>
+          <Field label="Suburb / city">
+            <TextInput
+              value={business.suburb}
+              onChange={(v) => set({ suburb: v })}
+              placeholder="Berrinba"
+            />
+          </Field>
+          <Field label="State / region">
+            <TextInput
+              value={business.state}
+              onChange={(v) => set({ state: v })}
+              placeholder="QLD"
+            />
+          </Field>
+          <Field label="Postcode">
+            <TextInput
+              value={business.postcode}
+              onChange={(v) => set({ postcode: v })}
+              placeholder="4117"
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Branding & tax"
+        description="Logo and default tax rate for exports."
+      >
+        <FieldGroup>
+          <Field
+            label="Logo"
+            hint="PNG, JPG, or SVG. Picked file is embedded inline so it travels with every export."
+          >
+            <LogoUploader
+              value={business.logoUrl}
+              onChange={(v) => set({ logoUrl: v })}
+            />
+          </Field>
+          {/* Tax rate field retired — beme estimates quantities, not
+              prices. */}
+        </FieldGroup>
+
+      </PanelCard>
+    </div>
+  )
+}
+
+// ─── Preferences ──────────────────────────────────────────────────────────
+
+function PreferencesTab({ preferences, set }: { preferences: UserPreferences; set: (p: Partial<UserPreferences>) => void }) {
+  const [, setTheme] = useTheme()
+  const [showRegionPicker, setShowRegionPicker] = useState(false)
+
+  // Keep the theme module in sync with settings.preferences.theme.
+  function handleThemeChange(t: ThemePref) {
+    set({ theme: t })
+    setTheme(t)
+  }
+
+  return (
+    <div className="space-y-6">
+    <PanelCard
+      title="Display"
+      description="How beme shows things — units, date format, theme."
+    >
+      <FieldGroup>
+        <Field
+          label="Units"
+          hint="Display preference only — measurements stay in mm internally."
+        >
+          <Select<Units>
+            value={preferences.units}
+            onChange={(v) => set({ units: v })}
+            options={[
+              { value: 'metric', label: 'Metric (mm / m)' },
+              { value: 'imperial', label: 'Imperial (in / ft)' },
+            ]}
+          />
+        </Field>
+
+        {/* Currency was retired — beme estimates quantities, not prices. */}
+
+        <Field label="Date format">
+          <Select<DateFormat>
+            value={preferences.dateFormat}
+            onChange={(v) => set({ dateFormat: v })}
+            options={[
+              { value: 'DD/MM/YYYY', label: 'DD/MM/YYYY (Aus / UK)' },
+              { value: 'MM/DD/YYYY', label: 'MM/DD/YYYY (US)' },
+              { value: 'YYYY-MM-DD', label: 'YYYY-MM-DD (ISO)' },
+            ]}
+          />
+        </Field>
+
+        <Field label="Theme">
+          <Select<ThemePref>
+            value={preferences.theme}
+            onChange={handleThemeChange}
+            options={[
+              { value: 'dark', label: 'Dark (Studio Black)' },
+              { value: 'light', label: 'Light' },
+            ]}
+          />
+        </Field>
+
+        <Field
+          label="Block colouring"
+          hint="How blocks are coloured in the 3D view, the legend, and the export. By role groups blocks into masonry colours (body, end, half…). By block gives every block code its own colour — pick the colour family with the palette button in the 3D toolbar."
+        >
+          <Select<'role' | 'code'>
+            value={preferences.blockColorMode ?? 'role'}
+            onChange={(v) => set({ blockColorMode: v })}
+            options={[
+              { value: 'role', label: 'By role (body, end, half…)' },
+              { value: 'code', label: 'By block (each block its own colour)' },
+            ]}
+          />
+        </Field>
+
+        <Field
+          label="Block palette"
+          hint="The colour family for blocks (in By block mode) and for bricks and piers. Vibrant is bold and high-contrast, so blocks sitting next to each other always read as clearly different."
+        >
+          <Select<PaletteName>
+            value={preferences.blockColorPalette ?? 'vibrant'}
+            onChange={(v) => set({ blockColorPalette: v })}
+            options={(Object.keys(PALETTE_LABELS) as PaletteName[]).map((k) => ({
+              value: k,
+              label: k === 'vibrant' ? `${PALETTE_LABELS[k]} (default)` : PALETTE_LABELS[k],
+            }))}
+          />
+        </Field>
+
+      </FieldGroup>
+    </PanelCard>
+
+    {/* Library template — the regional block set the user is on; switching
+        seeds / merges the new template's blocks. */}
+    <PanelCard
+      title="Library template"
+      description="The regional block set your library is seeded from. Switching merges the new template's blocks on top of your existing library — your custom blocks stay."
+    >
+      <FieldGroup>
+        <Field
+          label="Current template"
+          hint={
+            preferences.libraryTemplateKey
+              ? 'Click Switch template to pick a different region or reseed the library.'
+              : 'No template picked yet. Click Switch template to choose one.'
+          }
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex-1 text-sm text-ink-200 font-mono">
+              {(() => {
+                const t = preferences.libraryTemplateKey
+                  ? getLibraryTemplate(preferences.libraryTemplateKey)
+                  : undefined
+                return t
+                  ? `${t.displayName} (${Object.keys(t.blocks).length} blocks)`
+                  : 'Not set — running on the AU SEQ default'
+              })()}
+            </div>
+            <button
+              onClick={() => setShowRegionPicker(true)}
+              className="text-sm px-3 py-1.5 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 transition-colors flex-shrink-0"
+            >
+              Switch template
+            </button>
+          </div>
+        </Field>
+      </FieldGroup>
+    </PanelCard>
+
+      {/* Regional features (lintels / brick ties / plascourse) used to
+          live here as a FieldGroup. Each of those line items is now
+          driven by the Material library directly — block lintels via
+          the 'lintel' BlockRole, brick lintels + ties + plascourse via
+          supply items the user can add, edit, or disable from one
+          place. Removed the parallel set of toggles so there's a single
+          source of truth. */}
+
+      {/* Region picker mounted at the Preferences tab root so it floats
+          over everything when the user clicks Switch template. */}
+      {showRegionPicker && (
+        <RegionPicker
+          allowSkip
+          onPicked={() => setShowRegionPicker(false)}
+          onCancel={() => setShowRegionPicker(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Simple labelled toggle row — matches the Field/FieldGroup styling but
+ * uses a checkbox instead of a value input.
+ */
+// Currently unused on the page itself but kept for future toggle
+// settings — exported so noUnusedLocals doesn't flag it.
+export function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string
+  hint?: string
+  checked: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer py-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-1 w-4 h-4 accent-beme-500 cursor-pointer"
+      />
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-ink-100">{label}</div>
+        {hint && <div className="text-xs text-ink-400 mt-0.5">{hint}</div>}
+      </div>
+    </label>
+  )
+}
+
+// ─── Defaults ─────────────────────────────────────────────────────────────
+
+function DefaultsTab({
+  defaults,
+  set,
+}: {
+  defaults: EstimatingDefaults
+  set: (p: Partial<EstimatingDefaults>) => void
+}) {
+  // User's units pref drives the labels + hints below. Reads the live
+  // (saved) settings — not the draft from the edit form — so the
+  // measurements format the same way they do everywhere else in the
+  // app.
+  const { settings: liveSettings } = useUserSettings()
+  const unitsPref = liveSettings.preferences.units
+  // Block library — used by the auto wall-length-snap value below.
+  const { library: blockLibrary } = useBlockLibrary()
+
+  return (
+    <div className="space-y-6">
+      <PanelCard
+        title="Wall basics"
+        description="Applied to every new wall makeup you create in a project."
+      >
+        <FieldGroup>
+          <Field label="Default wall height">
+            <LengthInput
+              valueMm={defaults.defaultWallHeightMm}
+              onChangeMm={(v) => set({ defaultWallHeightMm: v })}
+              minMm={200}
+            />
+          </Field>
+          <Field label="Default bond type">
+            <Select<'stretcher' | 'stack'>
+              value={defaults.defaultBondType}
+              onChange={(v) => set({ defaultBondType: v })}
+              options={[
+                { value: 'stretcher', label: 'Stretcher bond (half-block stagger)' },
+                { value: 'stack', label: 'Stack bond (no stagger)' },
+              ]}
+            />
+          </Field>
+          <Field label="Default mortar joint">
+            <LengthInput
+              valueMm={defaults.defaultMortarJointMm}
+              onChangeMm={(v) => set({ defaultMortarJointMm: v })}
+              minMm={0}
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Openings"
+        description="Defaults for doors and windows in new walls."
+      >
+        <FieldGroup>
+          <Field
+            label="Default lintel overlap"
+            hint="Lintel end-bearing added to EACH side of an opening head. A 1000mm opening at 190mm lays a 1380mm lintel; the lintel ends rest on the masonry either side. Adjust per opening by clicking it. 0 = no bearing."
+          >
+            <LengthInput
+              valueMm={defaults.defaultLintelBearingMm ?? 0}
+              onChangeMm={(v) => set({ defaultLintelBearingMm: v })}
+              minMm={0}
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Length &amp; cuts"
+        description="How new walls round off and absorb leftover length."
+      >
+        <FieldGroup>
+          {(() => {
+            // The auto value is derived from the active block library
+            // + the user's mortar joint default. When the user hasn't
+            // explicitly set a snap, this is the value drawing uses.
+            const autoSnap = computeAutoWallLengthSnapMm(
+              blockLibrary,
+              defaults.defaultMortarJointMm ?? DEFAULT_MORTAR_JOINT_MM
+            )
+            const isAuto = defaults.wallLengthSnapMm === undefined
+            const autoSnapDisplay = formatLengthMm(autoSnap, unitsPref)
+            return (
+              <Field
+                label="Wall length snap"
+                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library — currently ${autoSnapDisplay}. Set a custom value to override.`}
+              >
+                <div className="flex items-center gap-2">
+                  <LengthInput
+                    valueMm={defaults.wallLengthSnapMm ?? autoSnap}
+                    onChangeMm={(v) =>
+                      set({ wallLengthSnapMm: Math.max(1, v) })
+                    }
+                    minMm={1}
+                  />
+                  {isAuto ? (
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-beme-500/20 text-beme-300 font-medium border border-beme-500/30">
+                      Auto
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => set({ wallLengthSnapMm: undefined })}
+                      className="text-[11px] px-2 py-0.5 rounded border border-ink-600 text-ink-300 hover:bg-ink-700 transition-colors"
+                      title={`Reset to auto-derived (${autoSnapDisplay})`}
+                    >
+                      Use auto
+                    </button>
+                  )}
+                </div>
+              </Field>
+            )
+          })()}
+          <Field
+            label="Match exact wall length"
+            hint="When on, the calc absorbs leftover length using fraction-tagged blocks (e.g. AU 20.02 / 20.22), or tallies cut blocks if your library has none. When off, walls round up to whole body blocks and the gap is ignored."
+          >
+            <Select<'yes' | 'no'>
+              value={(defaults.defaultMatchExactLength ?? true) ? 'yes' : 'no'}
+              onChange={(v) =>
+                set({ defaultMatchExactLength: v === 'yes' })
+              }
+              options={[
+                { value: 'yes', label: 'On (use fractions / cut blocks)' },
+                { value: 'no', label: 'Off (round up to whole blocks)' },
+              ]}
+            />
+          </Field>
+          {(defaults.defaultMatchExactLength ?? true) && (
+            <Field
+              label="Apply exact length to"
+              hint="Which course types match exact length. The rest round up to whole blocks. 'Body only' is the most common — avoids cuts on the cleanout / cap row. 'Body + bottom' or 'Body + top' lets you also match the base or cap course. 'All courses' matches everything."
+            >
+              {(() => {
+                // Preset → set of course-type buckets. The dropdown
+                // shows these presets; selecting one writes the set
+                // back to defaultExactLengthCourses. Matching the saved
+                // set against the presets picks the displayed value.
+                type Bucket = 'base' | 'body' | 'height-makeup' | 'top'
+                const PRESETS: Array<{
+                  key: string
+                  label: string
+                  set: Bucket[]
+                }> = [
+                  {
+                    key: 'all',
+                    label: 'All courses',
+                    set: ['base', 'body', 'height-makeup', 'top'],
+                  },
+                  {
+                    key: 'body',
+                    label: 'Body courses only',
+                    set: ['body'],
+                  },
+                  {
+                    key: 'body-bottom',
+                    label: 'Body + bottom (base)',
+                    set: ['body', 'base'],
+                  },
+                  {
+                    key: 'body-top',
+                    label: 'Body + top',
+                    set: ['body', 'top'],
+                  },
+                  {
+                    key: 'body-bottom-top',
+                    label: 'Body + bottom + top',
+                    set: ['body', 'base', 'top'],
+                  },
+                  {
+                    key: 'body-hm',
+                    label: 'Body + height makeup',
+                    set: ['body', 'height-makeup'],
+                  },
+                  {
+                    key: 'none',
+                    label: 'None',
+                    set: [],
+                  },
+                ]
+                const sameSet = (a: Bucket[], b: Bucket[]): boolean => {
+                  if (a.length !== b.length) return false
+                  const sa = [...a].sort()
+                  const sb = [...b].sort()
+                  for (let i = 0; i < sa.length; i++) {
+                    if (sa[i] !== sb[i]) return false
+                  }
+                  return true
+                }
+                const current: Bucket[] =
+                  defaults.defaultExactLengthCourses ?? [
+                    'base',
+                    'body',
+                    'height-makeup',
+                    'top',
+                  ]
+                const matched = PRESETS.find((p) => sameSet(p.set, current))
+                const value = matched?.key ?? 'custom'
+                const options = matched
+                  ? PRESETS.map((p) => ({ value: p.key, label: p.label }))
+                  : [
+                      { value: 'custom', label: 'Custom combination' },
+                      ...PRESETS.map((p) => ({
+                        value: p.key,
+                        label: p.label,
+                      })),
+                    ]
+                return (
+                  <Select<string>
+                    value={value}
+                    onChange={(v) => {
+                      const preset = PRESETS.find((p) => p.key === v)
+                      if (preset) {
+                        set({ defaultExactLengthCourses: preset.set })
+                      }
+                    }}
+                    options={options}
+                  />
+                )
+              })()}
+            </Field>
+          )}
+        </FieldGroup>
+      </PanelCard>
+
+    </div>
+  )
+}
+
+// ─── Organisation ─────────────────────────────────────────────────────────
+
+/**
+ * Members and (eventually) settings for the user's current organisation.
+ *
+ * Reads the org context for the active org id, then fetches the live members
+ * list from Supabase on mount. The fetch is intentionally not cached in the
+ * org singleton — there isn't much value in keeping a copy around between
+ * settings visits, and it stays fresh each time the user opens the tab.
+ *
+ * Adding / removing members from the UI is not wired up yet — that comes in
+ * a follow-up. For now the page surfaces who's in the org and what role
+ * they have, plus an "invite by email" hint pointing at the SETUP.md
+ * provisioning steps (until self-serve invites are built).
+ */
+function OrganisationTab() {
+  const { currentOrg } = useOrganisations()
+  const { user } = useAuth()
+  const [members, setMembers] = useState<OrgMember[]>([])
+  const [loading, setLoading] = useState(true)
+  const [isAdmin, setIsAdmin] = useState(false)
+  // Per-row busy state for in-flight role changes / removals so we can
+  // disable just the row being edited rather than the whole table.
+  const [busyMemberId, setBusyMemberId] = useState<string | null>(null)
+  const [memberError, setMemberError] = useState<string | null>(null)
+
+  const refreshMembers = useCallback(async () => {
+    if (!currentOrg) return
+    const list = await listOrgMembers(currentOrg.id)
+    setMembers(list)
+  }, [currentOrg])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!currentOrg) return
+    setLoading(true)
+    Promise.all([
+      listOrgMembers(currentOrg.id),
+      isCurrentUserOrgAdmin(currentOrg.id),
+    ])
+      .then(([memberList, admin]) => {
+        if (cancelled) return
+        setMembers(memberList)
+        setIsAdmin(admin)
+        setLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentOrg])
+
+  async function handleChangeRole(member: OrgMember, newRole: OrgRole) {
+    if (newRole === member.role) return
+    setBusyMemberId(member.id)
+    setMemberError(null)
+    try {
+      await updateOrgMemberRole(member.id, newRole)
+      await refreshMembers()
+    } catch (err) {
+      setMemberError((err as Error).message ?? 'Could not change role.')
+    } finally {
+      setBusyMemberId(null)
+    }
+  }
+
+  async function handleRemoveMember(member: OrgMember) {
+    const isSelf = member.userId === user?.id
+    const label = member.displayName || member.email || 'this member'
+    const ok = await confirm({
+      title: isSelf
+        ? `Leave ${currentOrg?.name ?? 'this team'}?`
+        : `Remove ${label}?`,
+      message: isSelf
+        ? "You'll lose access to this team's projects and requests until " +
+          'an admin re-invites you.'
+        : `${label} will lose access to ${currentOrg?.name ?? 'this team'} ` +
+          'immediately. Existing estimate requests they were assigned to ' +
+          'stay in place, just unattributed.',
+      confirmLabel: isSelf ? 'Leave team' : 'Remove member',
+      variant: 'destructive',
+    })
+    if (!ok) return
+    setBusyMemberId(member.id)
+    setMemberError(null)
+    try {
+      await removeOrgMember(member.id)
+      if (isSelf) {
+        // Reload so the org context drops this org from the list and the
+        // user lands back in personal mode / sign-in if it was their only
+        // org.
+        window.location.assign('/')
+        return
+      }
+      await refreshMembers()
+    } catch (err) {
+      setMemberError((err as Error).message ?? 'Could not remove member.')
+    } finally {
+      setBusyMemberId(null)
+    }
+  }
+
+  if (!currentOrg) {
+    return (
+      <PanelCard title="Organisation">
+        <p className="text-sm text-ink-400">
+          You're not signed in to an organisation. Personal projects live under your
+          own account; nothing to manage here.
+        </p>
+      </PanelCard>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <PanelCard
+        title={currentOrg.name}
+        subtitle="The workspace you and your teammates share. Estimate requests, projects, and branding all live here."
+      >
+        <FieldGroup>
+          <Field label="Organisation name">
+            <TextInput value={currentOrg.name} onChange={() => {}} disabled />
+          </Field>
+          <Field label="URL slug">
+            <TextInput value={currentOrg.slug} onChange={() => {}} disabled />
+          </Field>
+        </FieldGroup>
+        <p className="text-xs text-ink-400 mt-2">
+          Renaming your organisation isn't available from the app yet. Ping the
+          admin if you need it changed.
+        </p>
+
+        <div className="mt-4 pt-4 border-t border-ink-600">
+          <Field
+            label="Organisation logo"
+            hint={
+              isAdmin
+                ? 'Replaces the org name in the top-left of every exported PDF. Picked file is stored inline (data URL) so it travels with the org row.'
+                : 'Admins can set the org logo. Currently showing whatever the admin has uploaded.'
+            }
+          >
+            {isAdmin ? (
+              <LogoUploader
+                value={currentOrg.logoUrl ?? ''}
+                onChange={(v) => {
+                  void updateOrganisationLogo(currentOrg.id, v).catch((err) => {
+                    toast.error('Failed to update team logo', {
+                      description: (err as Error).message,
+                    })
+                  })
+                }}
+              />
+            ) : currentOrg.logoUrl ? (
+              <div className="bg-white p-3 rounded-lg inline-block">
+                <img
+                  src={currentOrg.logoUrl}
+                  alt="Organisation logo"
+                  className="max-h-16"
+                  onError={(e) => {
+                    ;(e.currentTarget as HTMLImageElement).style.display = 'none'
+                  }}
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-ink-400 italic">
+                No logo set yet.
+              </p>
+            )}
+          </Field>
+        </div>
+      </PanelCard>
+
+      <PanelCard
+        title="Members"
+        subtitle={`${members.length} ${members.length === 1 ? 'person' : 'people'} in ${currentOrg.name}.`}
+      >
+        {loading ? (
+          <div className="py-4 flex justify-center">
+            <BemeLoader size={28} caption="Loading members…" />
+          </div>
+        ) : members.length === 0 ? (
+          <p className="text-sm text-ink-400">
+            No members yet — that's unusual since you're seeing this page. Try
+            refreshing.
+          </p>
+        ) : (
+          <div className="border border-ink-600 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-ink-700/40">
+                <tr className="text-left text-xs uppercase tracking-wider text-ink-400">
+                  <th className="px-3 py-2 font-semibold">Name</th>
+                  <th className="px-3 py-2 font-semibold">Role</th>
+                  <th className="px-3 py-2 font-semibold">Joined</th>
+                  {isAdmin && (
+                    <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((m) => {
+                  const isSelf = m.userId === user?.id
+                  const rowBusy = busyMemberId === m.id
+                  return (
+                    <tr
+                      key={m.id}
+                      className="border-t border-ink-600 text-ink-100"
+                    >
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-ink-50">
+                          {m.displayName || m.email || (
+                            <span className="text-ink-400 italic">Member</span>
+                          )}
+                          {isSelf && (
+                            <span className="ml-2 text-[10px] uppercase tracking-wider text-ink-400">
+                              You
+                            </span>
+                          )}
+                        </div>
+                        {m.email && m.email !== m.displayName && (
+                          <div className="text-xs text-ink-400">{m.email}</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {isAdmin ? (
+                          // Admins get an inline dropdown. The RPC blocks
+                          // demoting the last admin, so the destructive
+                          // case is server-enforced; we just surface the
+                          // resulting error in memberError below.
+                          <select
+                            value={m.role}
+                            onChange={(e) =>
+                              handleChangeRole(m, e.target.value as OrgRole)
+                            }
+                            disabled={rowBusy}
+                            className="px-2 py-1 rounded border border-ink-600 bg-ink-900 text-ink-50 text-xs focus:outline-none focus:border-beme-400 disabled:opacity-40"
+                          >
+                            <option value="admin">Admin</option>
+                            <option value="staff">Staff</option>
+                          </select>
+                        ) : (
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                              m.role === 'admin'
+                                ? 'bg-beme-500/15 text-beme-300 border border-beme-500/40'
+                                : 'bg-ink-700 text-ink-200 border border-ink-600'
+                            }`}
+                          >
+                            {orgRoleLabel(m.role)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-ink-400">
+                        {new Date(m.createdAt).toLocaleDateString()}
+                      </td>
+                      {isAdmin && (
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveMember(m)}
+                            disabled={rowBusy}
+                            className="text-xs text-rose-300 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {rowBusy ? '…' : isSelf ? 'Leave org' : 'Remove'}
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {memberError && (
+          <p className="text-sm text-rose-300 mt-3">{memberError}</p>
+        )}
+
+        {!isAdmin && (
+          <div className="mt-4 p-3 rounded-lg border border-ink-600 bg-ink-700/30 text-xs text-ink-300">
+            <strong className="text-ink-100">Want to add a teammate?</strong>{' '}
+            Ask an admin to send them an invite from this page.
+          </div>
+        )}
+      </PanelCard>
+
+      {/* Invite teammate — admins only. Workflow: admin types email + picks
+          role, app creates the invitation row + builds the accept URL, admin
+          copies the URL into Slack / email / wherever. The invitee opens the
+          link, sets their password on /accept-invite, and lands in the org. */}
+      {isAdmin && (
+        <InvitationsPanel orgId={currentOrg.id} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Invite-teammate card. Lives at the bottom of the Organisation tab for
+ * admins. Creates rows in `public.invitations` and shows the resulting
+ * URL, plus a list of pending / used / expired invites so the admin can
+ * see what's outstanding and revoke ones they shouldn't have sent.
+ */
+function InvitationsPanel({ orgId }: { orgId: string }) {
+  const [invitations, setInvitations] = useState<Invitation[]>([])
+  const [loading, setLoading] = useState(true)
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState<OrgRole>('staff')
+  const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // Most recently created invitation. Its row stays in the table below too,
+  // but we surface the copy link inline above the form so the admin doesn't
+  // have to hunt for the one they just made.
+  const [justCreated, setJustCreated] = useState<Invitation | null>(null)
+  // Tracks which invite is currently showing a "Copied!" tick instead of
+  // the Copy button — clears itself after 1.5s.
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    const list = await listInvitations(orgId)
+    setInvitations(list)
+    setLoading(false)
+  }, [orgId])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  async function handleCopy(token: string) {
+    const url = inviteAcceptUrl(token)
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      // Some browsers (older Safari over http) can't write to the clipboard
+      // — fall back to a temporary textarea so we never silently fail.
+      const ta = document.createElement('textarea')
+      ta.value = url
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setCopiedId(token)
+    setTimeout(() => {
+      setCopiedId((cur) => (cur === token ? null : cur))
+    }, 1500)
+  }
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault()
+    if (creating || !email.trim()) return
+    setCreating(true)
+    setError(null)
+    try {
+      const inv = await createInvitation(orgId, email.trim(), role)
+      setJustCreated(inv)
+      setEmail('')
+      // Pre-copy the link so the admin can paste straight into Slack/email
+      // without an extra click. Falls back to manual copy via the Copy
+      // button if the clipboard API rejects.
+      await handleCopy(inv.id)
+      await refresh()
+    } catch (err) {
+      setError((err as Error).message ?? 'Failed to create invitation')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function handleRevoke(invitationId: string) {
+    const ok = await confirm({
+      title: 'Revoke invitation?',
+      message:
+        'The invite link will stop working. The invitee can be re-invited ' +
+        'later if you change your mind.',
+      confirmLabel: 'Revoke invite',
+      variant: 'destructive',
+    })
+    if (!ok) return
+    try {
+      await revokeInvitation(invitationId)
+      if (justCreated?.id === invitationId) setJustCreated(null)
+      await refresh()
+    } catch (err) {
+      setError((err as Error).message ?? 'Failed to revoke')
+    }
+  }
+
+  return (
+    <PanelCard
+      title="Invite a teammate"
+      subtitle="Generate a link they can use to set their own password and join the org. Send it however suits — Slack, email, SMS."
+    >
+      <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-[1fr_180px_auto] gap-2 items-end">
+        <Field label="Teammate email">
+          <TextInput
+            value={email}
+            onChange={setEmail}
+            placeholder="teammate@yourcompany.com.au"
+            type="email"
+          />
+        </Field>
+        <Field label="Role">
+          <select
+            value={role}
+            onChange={(e) => setRole(e.target.value as OrgRole)}
+            className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+          >
+            <option value="staff">Staff</option>
+            <option value="admin">Admin</option>
+          </select>
+        </Field>
+        <button
+          type="submit"
+          disabled={creating || !email.trim()}
+          className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors h-fit"
+        >
+          {creating ? 'Generating…' : 'Generate link'}
+        </button>
+      </form>
+
+      {error && <p className="text-sm text-rose-300 mt-2">{error}</p>}
+
+      {justCreated && (
+        <div className="mt-4 p-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-sm text-emerald-100">
+          <strong className="text-emerald-50">Invite link ready</strong>
+          <p className="text-xs mt-1">
+            Copied to your clipboard. Paste it to <strong>{justCreated.email}</strong>{' '}
+            so they can set their password and sign in.
+          </p>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <code className="text-xs px-2 py-1 rounded bg-ink-900/50 text-ink-100 truncate max-w-[28rem] flex-1 min-w-0">
+              {inviteAcceptUrl(justCreated.id)}
+            </code>
+            <button
+              type="button"
+              onClick={() => handleCopy(justCreated.id)}
+              className="px-3 py-1 rounded border border-emerald-500/40 text-emerald-200 text-xs hover:bg-emerald-500/20 transition-colors"
+            >
+              {copiedId === justCreated.id ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Existing invites — pending sit at top, used + expired below.
+          Admin can copy a still-valid link or revoke any of them. */}
+      <div className="mt-6">
+        <h4 className="text-xs uppercase tracking-wider text-ink-400 mb-2">
+          Pending + recent invites
+        </h4>
+        {loading ? (
+          <div className="py-4 flex justify-center">
+            <BemeLoader size={28} caption={null} />
+          </div>
+        ) : invitations.length === 0 ? (
+          <p className="text-sm text-ink-400">No invitations yet.</p>
+        ) : (
+          <div className="border border-ink-600 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-ink-700/40">
+                <tr className="text-left text-xs uppercase tracking-wider text-ink-400">
+                  <th className="px-3 py-2 font-semibold">Email</th>
+                  <th className="px-3 py-2 font-semibold">Role</th>
+                  <th className="px-3 py-2 font-semibold">Status</th>
+                  <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invitations.map((inv) => {
+                  const status = statusOf(inv)
+                  const statusClass =
+                    status === 'pending'
+                      ? 'bg-amber-500/15 text-amber-200 border-amber-500/40'
+                      : status === 'used'
+                        ? 'bg-emerald-500/15 text-emerald-200 border-emerald-500/40'
+                        : 'bg-ink-700 text-ink-300 border-ink-600'
+                  return (
+                    <tr key={inv.id} className="border-t border-ink-600 text-ink-100">
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-ink-50 truncate max-w-[18rem]">
+                          {inv.email}
+                        </div>
+                        <div className="text-[11px] text-ink-400">
+                          Sent {new Date(inv.createdAt).toLocaleDateString()}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-ink-300">
+                        {orgRoleLabel(inv.role)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${statusClass}`}
+                        >
+                          {status}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="inline-flex gap-2">
+                          {status === 'pending' && (
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(inv.id)}
+                              className="text-xs text-beme-300 hover:text-beme-200"
+                            >
+                              {copiedId === inv.id ? 'Copied!' : 'Copy link'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRevoke(inv.id)}
+                            className="text-xs text-rose-300 hover:text-rose-200"
+                          >
+                            {status === 'pending' ? 'Revoke' : 'Delete'}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </PanelCard>
+  )
+}
+
+// ─── Account ──────────────────────────────────────────────────────────────
+
+function AccountTab() {
+  const { signedIn, user } = useAuth()
+  const { version: bv } = useBlockLibrary()
+  const { version: br } = useBrickLibrary()
+  void bv
+  void br
+
+  async function handleClearLocal() {
+    const ok = await confirm({
+      title: 'Clear all local data on this device?',
+      message:
+        'Removes every project, library entry and setting stored ' +
+        'locally. ' +
+        (signedIn
+          ? 'Your cloud-stored projects are unaffected.'
+          : 'Your local projects WILL be deleted.') +
+        ' This cannot be undone.',
+      confirmLabel: 'Clear local data',
+      variant: 'destructive',
+    })
+    if (!ok) return
+    // Wipe the userData store + projects store.
+    try {
+      const req = indexedDB.deleteDatabase('beme')
+      req.onsuccess = () => {
+        window.localStorage.removeItem('beme-theme')
+        window.localStorage.removeItem('beme-local-migration-dismissed')
+        window.location.reload()
+      }
+      req.onerror = () => {
+        alert('Could not clear local data. Check the browser console.')
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(err)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {isSupabaseConfigured && (
+        <PanelCard
+          title="Account"
+          description={signedIn ? 'Signed in to Beme.' : 'Not signed in.'}
+        >
+          {signedIn && user ? (
+            <>
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="font-semibold text-ink-50">{user.email}</div>
+                  <div className="text-xs text-ink-400">
+                    Your projects sync to the cloud and are ready on any device you sign in from.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void signOut()}
+                  className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+                >
+                  Sign out
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-ink-300">
+              Sign in to sync your projects across devices.
+            </p>
+          )}
+        </PanelCard>
+      )}
+
+      {/* Email card — change the signed-in user's email address. Supabase
+          sends a verification link to the new address; once clicked, the
+          new email replaces the old for sign-in. */}
+      {isSupabaseConfigured && signedIn && user && (
+        <EmailCard currentEmail={user.email ?? ''} />
+      )}
+
+      {/* Password card — set or change the signed-in user's password.
+          Works whether they originally signed in via magic link, Microsoft
+          OAuth, or password. After setting, they can also use email +
+          password to sign in alongside whatever they used first. */}
+      {isSupabaseConfigured && signedIn && <PasswordCard />}
+
+      <PanelCard
+        title="Reset libraries"
+        description="Restore the SEQ QLD seed defaults. Custom blocks / bricks are removed."
+      >
+        <div className="flex gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Reset block library?',
+                message:
+                  'Reverts every block to SEQ QLD defaults. Custom ' +
+                  'blocks will be removed.',
+                confirmLabel: 'Reset blocks',
+                variant: 'destructive',
+              })
+              if (ok) resetBlockLibrary()
+            }}
+            className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            ↺ Reset block library
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Reset brick library?',
+                message:
+                  'Reverts every brick type to defaults. Custom brick ' +
+                  'types will be removed.',
+                confirmLabel: 'Reset bricks',
+                variant: 'destructive',
+              })
+              if (ok) resetBrickLibrary()
+            }}
+            className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            ↺ Reset brick library
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              const ok = await confirm({
+                title: 'Reset all settings to defaults?',
+                message:
+                  'Theme, units, preferences and any per-device ' +
+                  'overrides will revert to the out-of-the-box defaults.',
+                confirmLabel: 'Reset settings',
+                variant: 'destructive',
+              })
+              if (ok) resetUserSettings()
+            }}
+            className="px-3 py-1.5 rounded-md border border-ink-600 text-sm text-ink-200 hover:bg-ink-700 transition-colors"
+          >
+            ↺ Reset settings
+          </button>
+        </div>
+      </PanelCard>
+
+      <PanelCard
+        title="Danger zone"
+        description="Permanent destructive actions — make sure you've exported anything you want to keep."
+      >
+        <button
+          type="button"
+          onClick={handleClearLocal}
+          className="px-3 py-1.5 rounded-md border border-rose-500/40 text-sm text-rose-300 hover:bg-rose-500/10 transition-colors"
+        >
+          🗑 Clear all local data on this device
+        </button>
+      </PanelCard>
+    </div>
+  )
+}
+
+/**
+ * Change the signed-in user's email address. Lives inside the Account tab,
+ * directly below the account header so the user sees the email they're
+ * currently signed in with and can edit it without scrolling. Submitting
+ * triggers a Supabase verification email to the new address — until the
+ * user clicks that link, sign-in keeps working with the old address.
+ *
+ * Heads-up displayed in the card: for users whose auth comes from
+ * Microsoft OAuth, Supabase still accepts the update, but the next OAuth
+ * sign-in will overwrite the email with whatever Microsoft sends — so
+ * for those users the long-term fix is to update the email in their
+ * Microsoft account rather than here.
+ */
+function EmailCard({ currentEmail }: { currentEmail: string }) {
+  const [email, setEmail] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (submitting) return
+    if (!email.trim()) {
+      setError('Enter the new email you want to use.')
+      return
+    }
+    if (email.trim().toLowerCase() === currentEmail.toLowerCase()) {
+      setError("That's already the email on your account.")
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    setSuccess(null)
+    const { error: updateErr } = await updateEmail(email.trim())
+    if (updateErr) {
+      setError(updateErr.message)
+      setSubmitting(false)
+      return
+    }
+    setSuccess(
+      `Verification email sent to ${email.trim()}. Click the link in it to switch over. You'll keep using ${currentEmail} to sign in until then.`
+    )
+    setEmail('')
+    setSubmitting(false)
+  }
+
+  return (
+    <PanelCard
+      title="Email address"
+      description="Change the email Beme uses to sign you in. We'll send a verification link to the new address — until you click it, your current email keeps working."
+    >
+      <div className="space-y-3 max-w-md">
+        <div className="text-xs text-ink-300">
+          Currently signed in as{' '}
+          <span className="font-medium text-ink-50">{currentEmail || '(unknown)'}</span>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <label className="block">
+            <span className="text-xs text-ink-300 mb-1.5 inline-block">
+              New email
+            </span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              autoComplete="email"
+              className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+            />
+          </label>
+
+          {error && (
+            <p className="text-sm text-rose-300 px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/10">
+              {error}
+            </p>
+          )}
+          {success && (
+            <p className="text-sm text-emerald-200 px-3 py-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10">
+              {success}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting || !email.trim()}
+            className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {submitting ? 'Sending…' : 'Send verification email'}
+          </button>
+        </form>
+        <p className="text-[11px] text-ink-500">
+          If you signed in with Microsoft, your email comes from Microsoft on
+          every sign-in. Changing it here works, but the next Microsoft
+          sign-in will overwrite it — update it in your Microsoft account
+          for a permanent change.
+        </p>
+      </div>
+    </PanelCard>
+  )
+}
+
+/**
+ * Set or change the signed-in user's password. Lives inside the Account tab.
+ * Doesn't ask for the existing password — Supabase auth.updateUser trusts
+ * the active session, and we treat session ownership as proof of identity
+ * (someone with a stolen session can do worse things than change a
+ * password). If a higher bar is needed later, gate this behind a fresh
+ * sign-in or require the current password explicitly.
+ */
+function PasswordCard() {
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (submitting) return
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    if (password !== confirm) {
+      setError("Passwords don't match.")
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    setSuccess(false)
+    const { error: updateErr } = await updatePassword(password)
+    if (updateErr) {
+      setError(updateErr.message)
+      setSubmitting(false)
+      return
+    }
+    // Clear the form so the user can see a fresh empty state if they
+    // open it again; surfaces the success banner instead.
+    setPassword('')
+    setConfirm('')
+    setSuccess(true)
+    setSubmitting(false)
+  }
+
+  return (
+    <PanelCard
+      title="Password"
+      description="Set a password so you can sign in with email + password as an alternative to magic links. Updating this won't affect your current session."
+    >
+      <form onSubmit={handleSubmit} className="space-y-3 max-w-md">
+        <label className="block">
+          <span className="text-xs text-ink-300 mb-1.5 inline-block">
+            New password
+          </span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="At least 8 characters"
+            autoComplete="new-password"
+            minLength={8}
+            className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs text-ink-300 mb-1.5 inline-block">
+            Confirm new password
+          </span>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            minLength={8}
+            className="w-full px-3 py-2 rounded-lg border border-ink-600 bg-ink-900 text-ink-50 text-sm focus:outline-none focus:border-beme-400"
+          />
+        </label>
+
+        {error && (
+          <p className="text-sm text-rose-300 px-3 py-2 rounded-lg border border-rose-500/40 bg-rose-500/10">
+            {error}
+          </p>
+        )}
+        {success && (
+          <p className="text-sm text-emerald-200 px-3 py-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10">
+            Password saved. You can now sign in with email + password from the
+            sign-in page.
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={submitting || password.length < 8 || password !== confirm}
+          className="px-4 py-2 rounded-lg bg-beme-500 text-black text-sm font-semibold hover:bg-beme-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {submitting ? 'Saving…' : 'Save password'}
+        </button>
+      </form>
+    </PanelCard>
+  )
+}

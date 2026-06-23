@@ -1,0 +1,63 @@
+/**
+ * The canonical Beme brand mark - orange rounded square with a square
+ * HOLE cut from the middle (true transparency, not a dark inset). The
+ * page background shows through the hole, so the mark sits cleanly on
+ * any surface - cream dashboard, dark hero, screenshot card, anywhere.
+ *
+ * Why a single path with `evenodd` instead of two stacked rects:
+ *   • Two-rect version filled the hole with a theme-tracking colour
+ *     (ink-900). That worked when the mark sat on the page bg, but on
+ *     a coloured card or hover treatment the inset was the wrong
+ *     colour and the mark looked layered rather than cut.
+ *   • The single-path approach uses fill-rule="evenodd" to subtract
+ *     the inner rect from the outer one in a single fill operation,
+ *     so the centre is GENUINELY transparent. No theme dependency,
+ *     no per-surface colour mismatch.
+ *
+ * Colour:
+ *   • `currentColor` so the consuming wrapper drives it via
+ *     `text-beme-500` (or hover `text-beme-400`, etc).
+ */
+export default function BemeMark({
+  size = 32,
+  className,
+}: {
+  /** Rendered edge length in CSS pixels. Default 32 matches the
+   *  legacy `<div className="w-[32px] h-[32px]" />` mark size so the
+   *  drop-in replacement is invisible to layouts that hard-coded
+   *  around that dimension. */
+  size?: number
+  className?: string
+}) {
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      width={size}
+      height={size}
+      className={className}
+      aria-hidden="true"
+      role="img"
+    >
+      {/*
+        Path notes:
+          - First subpath traces the outer rounded square clockwise
+            (12px corner radius on a 64px square).
+          - Second subpath traces the inner rounded square (40×40
+            offset (12,12), 5px corner radius) - direction doesn't
+            matter for evenodd, which subtracts any enclosed area
+            from the fill.
+          - Result: a single fill of `currentColor` with a square
+            hole through the middle, so whatever sits behind the
+            wrapper (cream page bg, white card, dark hero, etc.)
+            shows through.
+      */}
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        fill="currentColor"
+        d="M12 0 H52 A12 12 0 0 1 64 12 V52 A12 12 0 0 1 52 64 H12 A12 12 0 0 1 0 52 V12 A12 12 0 0 1 12 0 Z
+           M17 12 A5 5 0 0 0 12 17 V47 A5 5 0 0 0 17 52 H47 A5 5 0 0 0 52 47 V17 A5 5 0 0 0 47 12 H17 Z"
+      />
+    </svg>
+  )
+}

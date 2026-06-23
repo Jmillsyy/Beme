@@ -1,0 +1,67 @@
+/**
+ * Lintel end-bearing / overlap.
+ *
+ * A per-opening (or project-default) bearing extends the lintel past each
+ * side of the opening so its ends rest on the masonry. The renderer lays
+ * the lintel across [start - bearing, end + bearing] (clamped to the wall),
+ * and the tally counts those boxes - so more bearing → more lintel blocks
+ * and fewer body blocks under them. Pins that against regression.
+ */
+import { describe, it, expect } from 'vitest'
+import { cornerOwnershipFor } from '../blockCalc'
+import {
+  segmentsForStraightWall,
+  adjustOpeningForRender,
+  resolveWallCourses,
+} from '../wallSegments'
+import { getEffectiveWallThicknessMm } from '../makeups'
+import { BLOCK_LIBRARY } from '../../data/blockLibrary'
+import type { Wall, WallMakeup, Opening } from '../../types/walls'
+
+const MK: WallMakeup = {
+  id: 'mk', name: '200', bondType: 'stretcher', heightMm: 2400,
+  baseCourseBlockCode: '20.45', bodyBlockCode: '20.48', topCourseBlockCode: '20.48',
+  cornerBlockCode: '20.01', halfBlockCode: '20.03', useFractions: false,
+}
+const makeupsById = { mk: MK }
+
+function counts(wallLenMm: number, opStart: number, opWidth: number, bearing: number) {
+  const wall: Wall = { id: 'w', makeupId: 'mk', startX: 0, startY: 0, endX: wallLenMm, endY: 0, startJunction: { type: 'free' }, endJunction: { type: 'free' } }
+  const op: Opening = { id: 'op1', wallId: 'w', startAlongWallMm: opStart, widthMm: opWidth, sillHeightMm: 900, heightMm: 1200, kind: 'window', lintelBearingMmOverride: bearing }
+  const thick = getEffectiveWallThicknessMm(MK, BLOCK_LIBRARY)
+  const { courses, totalHeightM } = resolveWallCourses(wall, makeupsById, BLOCK_LIBRARY)
+  const adjusted = [adjustOpeningForRender(op, MK.heightMm)]
+  const boxes = segmentsForStraightWall(
+    wall, adjusted, thick, courses, totalHeightM, 'stretcher', new Map(),
+    BLOCK_LIBRARY, { w: thick }, { w: wall }, false, undefined, undefined,
+    cornerOwnershipFor(wall, { w: wall }, { w: thick }), 0.01,
+  )
+  let lintel = 0
+  for (const b of boxes) {
+    const c = (b as { code?: string }).code
+    if (c && (BLOCK_LIBRARY[c]?.roles ?? []).includes('lintel')) lintel++
+  }
+  return lintel
+}
+
+describe('lintel end-bearing', () => {
+  it('extends the lintel - more lintel blocks as bearing grows', () => {
+    const base = counts(4000, 1500, 1000, 0)
+    const b190 = counts(4000, 1500, 1000, 190)
+    const b390 = counts(4000, 1500, 1000, 390)
+    expect(b190).toBeGreaterThan(base)
+    expect(b390).toBeGreaterThan(b190)
+  })
+
+  it('zero bearing lays the lintel across exactly the opening (baseline)', () => {
+    expect(counts(4000, 1500, 1000, 0)).toBe(5)
+  })
+
+  it('clamps at the wall end - a near-end opening can\'t overrun the wall', () => {
+    // 400mm opening 100mm from the end; 190 bearing would exceed the wall
+    // but the span clamps to [0, length]. Just assert a sane, small count.
+    const n = counts(4000, 3500, 400, 190)
+    expect(n).toBeGreaterThan(0)
+    expect(n).toBeLessThanOrEqual(counts(4000, 1500, 1000, 190))
+  })
+})

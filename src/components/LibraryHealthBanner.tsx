@@ -7,7 +7,7 @@ import {
 
 /**
  * Sits above the block list on the material library page. Shows any
- * problems the calc engine would hit downstream — missing required
+ * problems the calc engine would hit downstream - missing required
  * roles (errors) or missing-but-recoverable roles (warnings).
  *
  * Auto-hides when the library is fully tagged. Errors render in red,
@@ -48,7 +48,7 @@ export default function LibraryHealthBanner() {
         }`}
       >
         <span className="text-base font-semibold">
-          {tone === 'error' ? '⚠ Library issues' : '! Library advisories'}
+          {tone === 'error' ? 'Library issues' : 'Library advisories'}
         </span>
         <span className="text-xs font-mono opacity-80">
           {errorCount > 0 &&

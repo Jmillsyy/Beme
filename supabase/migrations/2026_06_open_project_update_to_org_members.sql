@@ -24,7 +24,7 @@
 --   org. Ownership is purely a DASHBOARD-DISPLAY attribute (drives
 --   the "Your projects" vs "Your team's projects" split); it does
 --   NOT gate edit rights. This matches the SELECT policy and the
---   way the team actually works — multiple staff dipping in and out
+--   way the team actually works - multiple staff dipping in and out
 --   of each other's takeoffs.
 --
 -- What it does
@@ -39,7 +39,7 @@
 --
 -- Safety
 --   - Doesn't touch personal-project access.
---   - Doesn't loosen DELETE — section 12's "Project delete" stays as
+--   - Doesn't loosen DELETE - section 12's "Project delete" stays as
 --     owner-or-admin.
 --   - is_org_member() already excludes removed users so leaving the
 --     org instantly revokes edit rights on the org's projects.

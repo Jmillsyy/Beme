@@ -3,7 +3,7 @@
 -- Default Supabase value is 8s for the `authenticated` role. Project
 -- saves on large projects (many areas / walls / wall types) are
 -- writing a big JSONB blob in `projects.data` and occasionally
--- exceed 8s during the upsert — surfaces as "canceling statement
+-- exceed 8s during the upsert - surfaces as "canceling statement
 -- due to statement timeout" toasts in the app.
 --
 -- 30s gives plenty of head-room without letting genuinely runaway

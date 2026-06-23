@@ -1,0 +1,55 @@
+# beme
+
+**Block Estimates Made Easy** — masonry estimating software for the Australian market.
+
+beme imports a building plan PDF, lets the user calibrate scale and either trace brick walls or draw block walls over the plan, then produces an itemised takeoff of all materials ready to export to PDF or Excel — with optional extras (cement, lime, lintels, ties, sundries) added at export time.
+
+The full functional and rule-level specification lives in [`docs/beme - Project Brief.docx`](./docs/beme%20-%20Project%20Brief.docx).
+
+## Estimate modes
+
+- **Brick Estimates** — trace walls, set heights, subtract openings, auto-add lintels (per opening-width bearing rules), brick ties (per m²) and plascourse (per lineal m).
+- **Block Estimates** — define wall makeups (bond type, height, course composition, end terminations, fractions, etc.), draw walls over the plan with auto-handling of corners, T-junctions and openings, and tally blocks across the project using the full block library (20.48, 20.01, 20.03, 20.02, 20.22, 20.71, 20.140, 20.20, 20.21, 40.925 etc.).
+
+## Tech stack
+
+- **React 19** + **TypeScript** + **Vite**
+- **Tailwind CSS v4** for styling (orange/white brand palette defined in `src/index.css`)
+- **react-pdf** for plan rendering *(planned)*
+- **react-konva** for the wall drawing layer *(planned)*
+- **Zustand** for state management *(planned)*
+- **Supabase** for auth (Microsoft OAuth) and cloud sync *(planned)*
+
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+The app starts on [http://localhost:5173](http://localhost:5173).
+
+To build for production:
+
+```bash
+npm run build
+npm run preview
+```
+
+## Project structure
+
+```
+beme/
+├── docs/                  # Project brief and supporting documents
+├── public/                # Static assets
+├── src/
+│   ├── App.tsx            # Root component
+│   ├── main.tsx           # Entry point
+│   └── index.css          # Tailwind + beme theme tokens
+├── package.json
+└── vite.config.ts
+```
+
+## Status
+
+Early development. The landing page and brand theme are live; the PDF viewer, drawing layer, wall makeup model, and block calculation engine are next on the roadmap.

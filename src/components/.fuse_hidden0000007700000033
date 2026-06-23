@@ -1,0 +1,49 @@
+/**
+ * HelpFloatingButton — small ? pill anchored to the bottom-left corner
+ * of the viewport, always visible across every page.
+ *
+ * Click → opens the keyboard cheat-sheet by dispatching a synthetic `?`
+ * keydown event. Reuses the existing `<KeyboardCheatSheet />` listener
+ * rather than introducing a separate open/close store. A bit hacky but
+ * keeps the cheat-sheet's API surface to one trigger (which makes
+ * mental model + onboarding copy easier: "Press ? anywhere" stays the
+ * single canonical instruction).
+ *
+ * Mount once near the app root. Hidden on the sign-in page by guarding
+ * on `useAuth().signedIn` — there's nothing to do without an account
+ * yet, so the FAB would just be decoration.
+ *
+ * Anchored bottom-LEFT (not right) so it doesn't fight the toast stack
+ * (bottom-right). Both are pointer-events-auto so each handles its own
+ * clicks without overlapping each other.
+ */
+import { useAuth } from '../lib/auth'
+
+export default function HelpFloatingButton() {
+  const { signedIn } = useAuth()
+  if (!signedIn) return null
+
+  function open() {
+    // Dispatch a `?` keydown so the KeyboardCheatSheet listener fires
+    // through its existing code path. preventDefault inside the
+    // listener stops anything else handling it.
+    const ev = new KeyboardEvent('keydown', {
+      key: '?',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.dispatchEvent(ev)
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={open}
+      title="Keyboard shortcuts (?)"
+      aria-label="Open keyboard shortcuts"
+      className="fixed bottom-4 left-4 z-[90] w-9 h-9 rounded-full bg-ink-800 border border-ink-600 text-ink-300 hover:bg-ink-700 hover:text-ink-50 hover:border-beme-500/60 shadow-lg shadow-black/40 transition-colors flex items-center justify-center text-sm font-mono"
+    >
+      ?
+    </button>
+  )
+}

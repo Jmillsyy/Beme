@@ -1,0 +1,63 @@
+/**
+ * Skeleton - a tiny placeholder primitive used while data loads.
+ *
+ * Renders a grey rounded block with a subtle pulse animation. Composable:
+ * stack multiple Skeletons in a parent layout to fake a list-row, card,
+ * or paragraph. Same visual language as the rest of Beme - uses ink-700
+ * for the base + the framework's `animate-pulse` for the shimmer.
+ *
+ * Why a separate primitive instead of inline divs: every skeleton row
+ * looks the same, and having one component makes it trivial to retune
+ * the look (animation speed, base colour, corner radius) across the
+ * whole app from one place later.
+ *
+ * Usage:
+ *   <Skeleton className="h-4 w-32" />
+ *   <Skeleton className="h-10 w-full" />
+ */
+import type { CSSProperties } from 'react'
+
+interface SkeletonProps {
+  /** Tailwind classes for sizing (h-* w-*) and extras. */
+  className?: string
+  /** Inline style escape hatch - width as % etc. */
+  style?: CSSProperties
+  /** Optional title for screen readers / hover. Default: 'Loading'. */
+  ariaLabel?: string
+}
+
+export default function Skeleton({
+  className = '',
+  style,
+  ariaLabel = 'Loading',
+}: SkeletonProps) {
+  return (
+    <div
+      role="status"
+      aria-label={ariaLabel}
+      aria-busy="true"
+      className={`bg-ink-700/60 rounded-md animate-pulse ${className}`}
+      style={style}
+    />
+  )
+}
+
+/**
+ * Row-shaped skeleton that matches Beme's project list row layout.
+ * Used by HomePage / ProjectsPage while the project list is loading.
+ * Kept here so the project-row layout and its skeleton stay in lockstep
+ * - any change to row padding / chip width updates both at once.
+ */
+export function ProjectRowSkeleton() {
+  return (
+    <li className="border border-ink-600 rounded-xl bg-ink-800 p-3 flex items-center gap-3">
+      <Skeleton className="h-4 w-40" />
+      <Skeleton className="h-5 w-16 rounded-full" />
+      <Skeleton className="h-5 w-12 rounded-full" />
+      <div className="flex-1" />
+      <Skeleton className="h-7 w-14 rounded-md" />
+      <Skeleton className="h-7 w-20 rounded-md" />
+      <Skeleton className="h-7 w-16 rounded-md" />
+    </li>
+  )
+}

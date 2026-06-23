@@ -1,0 +1,296 @@
+import { useEffect, useState } from 'react'
+import type { Wall } from '../types/walls'
+import { wallCapAreaSqMm } from '../lib/wallTopProfile'
+
+/**
+ * Inline "Top shape" picker for the currently-selected wall.
+ *
+ * Surfaces three radios - Flat / Gable / Raked - and the dimension
+ * inputs for whichever shape is picked. Saves to `wall.topProfile`
+ * via the `onChange` callback, which the workspace plumbs into the
+ * wall's persisted state.
+ *
+ * Why a dedicated component:
+ *   - Keeps the editor's local edit-buffer state (mm inputs) out of
+ *     the workspace's giant state tree.
+ *   - Resets the buffer cleanly when the user selects a different
+ *     wall (key it on wall.id at the call site).
+ *
+ * Sits in the toolbar zone so the user always knows where to find it
+ * - same position as the legacy single-wall properties banner.
+ */
+export default function WallTopProfileBar({
+  wall,
+  wallLengthMm,
+  onChange,
+  onDeselect,
+}: {
+  wall: Wall
+  /** Pre-computed length of the wall (mm) - passed in so we don't
+   *  re-derive it here (curved walls have their own length calc). */
+  wallLengthMm: number
+  onChange: (next: Wall['topProfile']) => void
+  onDeselect: () => void
+}) {
+  // What kind is currently selected? Drives which inputs render.
+  const currentKind: 'flat' | 'triangle' | 'trapezoid' =
+    wall.topProfile?.kind === 'triangle'
+      ? 'triangle'
+      : wall.topProfile?.kind === 'trapezoid'
+        ? 'trapezoid'
+        : 'flat'
+
+  // Local edit buffers for the mm inputs. Held separately from the
+  // wall state so typing "24" mid-entry doesn't commit a 24mm peak
+  // before the user reaches "2400". Committed on blur / Enter.
+  const [peakHeightDraft, setPeakHeightDraft] = useState<string>(
+    wall.topProfile?.kind === 'triangle'
+      ? String(wall.topProfile.peakHeightMm)
+      : '600',
+  )
+  const [peakOffsetDraft, setPeakOffsetDraft] = useState<string>(
+    wall.topProfile?.kind === 'triangle'
+      ? String(wall.topProfile.peakOffsetFraction)
+      : '0.5',
+  )
+  const [leftHeightDraft, setLeftHeightDraft] = useState<string>(
+    wall.topProfile?.kind === 'trapezoid'
+      ? String(wall.topProfile.leftHeightMm)
+      : '0',
+  )
+  const [rightHeightDraft, setRightHeightDraft] = useState<string>(
+    wall.topProfile?.kind === 'trapezoid'
+      ? String(wall.topProfile.rightHeightMm)
+      : '600',
+  )
+
+  // When the selected wall changes (key remount), re-seed buffers from
+  // the new wall's stored values. Without this, picking wall B after
+  // editing wall A leaves B's buffer showing A's typed-but-uncommitted
+  // numbers - confusing.
+  useEffect(() => {
+    if (wall.topProfile?.kind === 'triangle') {
+      setPeakHeightDraft(String(wall.topProfile.peakHeightMm))
+      setPeakOffsetDraft(String(wall.topProfile.peakOffsetFraction))
+    } else if (wall.topProfile?.kind === 'trapezoid') {
+      setLeftHeightDraft(String(wall.topProfile.leftHeightMm))
+      setRightHeightDraft(String(wall.topProfile.rightHeightMm))
+    }
+  }, [wall.id, wall.topProfile])
+
+  function commitPeakHeight(value: string) {
+    const parsed = Number.parseInt(value, 10)
+    if (!Number.isFinite(parsed) || parsed < 0) return
+    const offset = clampOffset(peakOffsetDraft)
+    onChange({
+      kind: 'triangle',
+      peakHeightMm: parsed,
+      peakOffsetFraction: offset,
+    })
+  }
+  function commitPeakOffset(value: string) {
+    const offset = clampOffset(value)
+    const peak = Number.parseInt(peakHeightDraft, 10)
+    onChange({
+      kind: 'triangle',
+      peakHeightMm: Number.isFinite(peak) && peak >= 0 ? peak : 0,
+      peakOffsetFraction: offset,
+    })
+  }
+  function commitTrapezoidLeft(value: string) {
+    const parsed = Number.parseInt(value, 10)
+    if (!Number.isFinite(parsed) || parsed < 0) return
+    const right = Number.parseInt(rightHeightDraft, 10)
+    onChange({
+      kind: 'trapezoid',
+      leftHeightMm: parsed,
+      rightHeightMm: Number.isFinite(right) && right >= 0 ? right : 0,
+    })
+  }
+  function commitTrapezoidRight(value: string) {
+    const parsed = Number.parseInt(value, 10)
+    if (!Number.isFinite(parsed) || parsed < 0) return
+    const left = Number.parseInt(leftHeightDraft, 10)
+    onChange({
+      kind: 'trapezoid',
+      leftHeightMm: Number.isFinite(left) && left >= 0 ? left : 0,
+      rightHeightMm: parsed,
+    })
+  }
+
+  function setKind(next: 'flat' | 'triangle' | 'trapezoid') {
+    if (next === 'flat') {
+      onChange(undefined)
+      return
+    }
+    if (next === 'triangle') {
+      const peak = Number.parseInt(peakHeightDraft, 10)
+      const offset = clampOffset(peakOffsetDraft)
+      onChange({
+        kind: 'triangle',
+        peakHeightMm: Number.isFinite(peak) && peak >= 0 ? peak : 600,
+        peakOffsetFraction: offset,
+      })
+      return
+    }
+    // trapezoid
+    const left = Number.parseInt(leftHeightDraft, 10)
+    const right = Number.parseInt(rightHeightDraft, 10)
+    onChange({
+      kind: 'trapezoid',
+      leftHeightMm: Number.isFinite(left) && left >= 0 ? left : 0,
+      rightHeightMm: Number.isFinite(right) && right >= 0 ? right : 600,
+    })
+  }
+
+  const capAreaM2 = wallCapAreaSqMm(wall, wallLengthMm) / 1_000_000
+
+  return (
+    // Floating-panel styling - used to be `bg-ink-700/40` because the
+    // bar lived inside the dark toolbar zone. Now it's an overlay on
+    // top of the (typically white) PDF, so we use a near-opaque dark
+    // surface + backdrop blur + drop-shadow so it reads as a proper
+    // panel instead of a faded watermark. Margin-bottom dropped - the
+    // overlay wrapper controls spacing now.
+    <div className="px-4 py-3 bg-ink-800/95 backdrop-blur-md border border-ink-500 rounded-lg text-sm text-ink-100 flex items-center justify-between flex-wrap gap-3 shadow-xl">
+      <div className="flex items-center gap-3 flex-wrap min-w-0">
+        <div className="font-medium whitespace-nowrap">Top shape</div>
+
+        <div
+          className="inline-flex rounded-lg border border-ink-500 overflow-hidden text-xs bg-ink-900"
+          role="radiogroup"
+          aria-label="Wall top shape"
+        >
+          {(
+            [
+              { key: 'flat', label: 'Flat' },
+              { key: 'triangle', label: 'Gable' },
+              { key: 'trapezoid', label: 'Raked' },
+            ] as const
+          ).map((opt) => {
+            const isActive = currentKind === opt.key
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setKind(opt.key)}
+                aria-pressed={isActive}
+                className={`px-3 py-1.5 font-medium transition-colors ${
+                  isActive
+                    ? 'bg-ink-100 text-ink-900'
+                    : 'text-ink-300 hover:bg-ink-800 hover:text-ink-100'
+                }`}
+              >
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
+
+        {currentKind === 'triangle' && (
+          <>
+            <label className="flex items-center gap-1.5 text-xs">
+              <span className="text-ink-300">Peak height</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={peakHeightDraft}
+                onChange={(e) => setPeakHeightDraft(e.target.value)}
+                onBlur={() => commitPeakHeight(peakHeightDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    ;(e.target as HTMLInputElement).blur()
+                  }
+                }}
+                className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              />
+              <span className="text-ink-400">mm</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-xs">
+              <span className="text-ink-300">Peak position</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={Number.parseFloat(peakOffsetDraft)}
+                onChange={(e) => {
+                  setPeakOffsetDraft(e.target.value)
+                  commitPeakOffset(e.target.value)
+                }}
+                className="w-24 accent-beme-500"
+              />
+              <span className="text-ink-400 tabular-nums w-8 text-right">
+                {Math.round(Number.parseFloat(peakOffsetDraft) * 100)}%
+              </span>
+            </label>
+          </>
+        )}
+
+        {currentKind === 'trapezoid' && (
+          <>
+            <label className="flex items-center gap-1.5 text-xs">
+              <span className="text-ink-300">Left rise</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={leftHeightDraft}
+                onChange={(e) => setLeftHeightDraft(e.target.value)}
+                onBlur={() => commitTrapezoidLeft(leftHeightDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    ;(e.target as HTMLInputElement).blur()
+                  }
+                }}
+                className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              />
+              <span className="text-ink-400">mm</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-xs">
+              <span className="text-ink-300">Right rise</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={rightHeightDraft}
+                onChange={(e) => setRightHeightDraft(e.target.value)}
+                onBlur={() => commitTrapezoidRight(rightHeightDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    ;(e.target as HTMLInputElement).blur()
+                  }
+                }}
+                className="w-20 px-2 py-1 border border-ink-500 rounded text-xs bg-ink-900 text-ink-50 focus:outline-none focus:border-beme-400"
+              />
+              <span className="text-ink-400">mm</span>
+            </label>
+          </>
+        )}
+
+        {currentKind !== 'flat' && (
+          <div className="text-xs text-beme-200 tabular-nums whitespace-nowrap">
+            +{capAreaM2.toFixed(2)} m² cap
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={onDeselect}
+        className="px-3 py-1.5 rounded-lg border border-ink-600 text-xs hover:bg-ink-700 transition-colors"
+      >
+        Done
+      </button>
+    </div>
+  )
+}
+
+function clampOffset(value: string): number {
+  const parsed = Number.parseFloat(value)
+  if (!Number.isFinite(parsed)) return 0.5
+  return Math.max(0, Math.min(1, parsed))
+}

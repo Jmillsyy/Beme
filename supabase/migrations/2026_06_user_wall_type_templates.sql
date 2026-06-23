@@ -2,8 +2,8 @@
 --
 -- Until now wall type templates lived in each browser's IndexedDB
 -- (userSettings.wallTypeTemplates), so a template saved on one computer
--- never appeared on another — even for the same signed-in user. This
--- table moves them to Supabase, scoped to the user (NOT the org —
+-- never appeared on another - even for the same signed-in user. This
+-- table moves them to Supabase, scoped to the user (NOT the org -
 -- deliberate: templates are personal; org sharing is a possible later
 -- step on top of this).
 --

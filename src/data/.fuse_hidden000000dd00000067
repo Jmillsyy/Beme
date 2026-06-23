@@ -1,0 +1,348 @@
+/**
+ * The beme brick library - user-editable, persisted to IndexedDB.
+ *
+ * Same architecture as the block library: stable singleton, `useBrickLibrary`
+ * hook for React subscription, `initBrickLibrary()` for app-startup hydration.
+ *
+ * Seeded with common Australian brick sizes; users in other regions can edit
+ * names / dimensions or add new types via BrickLibraryPanel.
+ */
+
+import { useEffect, useReducer } from 'react'
+import type { BrickCode, BrickType } from '../types/bricks'
+import { getOrgState, subscribeToOrgState } from '../lib/organisations'
+import { isSupabaseConfigured, supabase } from '../lib/supabase'
+
+// ─── Seed library ───────────────────────────────────────────────────────────
+
+/**
+ * Default brick library - ONE standard brick. The curated brick library
+ * was phased out: brick estimates count the standard 230 × 76 face
+ * everywhere, and the 3D brick render uses the same size. Legacy
+ * projects whose makeups reference retired codes (maxi, double-height,
+ * …) still resolve through the calc engine's standard-size fallbacks,
+ * and any custom bricks previously synced to the cloud are simply no
+ * longer surfaced in the UI.
+ */
+export const DEFAULT_BRICK_LIBRARY: Record<BrickCode, BrickType> = {
+  standard: {
+    code: 'standard',
+    name: 'Standard 230×76',
+    description: 'The default Australian face brick. ~48 bricks/m².',
+    widthMm: 230,
+    heightMm: 76,
+    depthMm: 110,
+  },
+}
+
+/** Codes the calc engine relies on by name (none currently - bricks are purely data-driven). */
+export const PROTECTED_BRICK_CODES = new Set<BrickCode>(['standard'])
+
+// ─── Mutable singleton ──────────────────────────────────────────────────────
+
+export const BRICK_LIBRARY: Record<BrickCode, BrickType> = { ...DEFAULT_BRICK_LIBRARY }
+
+let _version = 0
+const listeners = new Set<() => void>()
+
+function notifyChange() {
+  _version++
+  listeners.forEach((l) => l())
+}
+
+function replaceLibraryContents(next: Record<BrickCode, BrickType>) {
+  for (const key of Object.keys(BRICK_LIBRARY)) {
+    delete BRICK_LIBRARY[key]
+  }
+  Object.assign(BRICK_LIBRARY, next)
+}
+
+export function getBrickLibrary(): Record<BrickCode, BrickType> {
+  return BRICK_LIBRARY
+}
+
+export function setBrickLibrary(next: Record<BrickCode, BrickType>): void {
+  replaceLibraryContents(next)
+  notifyChange()
+  void persistLibraryEverywhere(BRICK_LIBRARY, { full: true })
+}
+
+export function upsertBrickType(type: BrickType): void {
+  BRICK_LIBRARY[type.code] = type
+  notifyChange()
+  void persistLibraryEverywhere(BRICK_LIBRARY, { upsertedCodes: [type.code] })
+}
+
+export function removeBrickType(code: BrickCode): void {
+  if (PROTECTED_BRICK_CODES.has(code)) return
+  if (!(code in BRICK_LIBRARY)) return
+  delete BRICK_LIBRARY[code]
+  notifyChange()
+  void persistLibraryEverywhere(BRICK_LIBRARY, { removedCodes: [code] })
+}
+
+export function resetBrickLibrary(): void {
+  setBrickLibrary({ ...DEFAULT_BRICK_LIBRARY })
+}
+
+// ─── React hook ─────────────────────────────────────────────────────────────
+
+export function useBrickLibrary(): { library: Record<BrickCode, BrickType>; version: number } {
+  const [, force] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    listeners.add(force)
+    return () => {
+      listeners.delete(force)
+    }
+  }, [])
+  return { library: BRICK_LIBRARY, version: _version }
+}
+
+// ─── Persistence ────────────────────────────────────────────────────────────
+// Mirrors the block-library architecture: IndexedDB for personal/offline,
+// Supabase (`brick_library_items` table, primary-keyed by organisation_id +
+// code) when the user is in an org. See blockLibrary.ts for the full
+// rationale; the brick library uses the same dispatch pattern + first-time
+// bootstrap behaviour.
+
+const DB_NAME = 'beme'
+const DB_VERSION = 2 // keep in sync with blockLibrary + projectStorage
+const USER_DATA_STORE = 'userData'
+const LIBRARY_KEY = 'brickLibrary'
+const CLOUD_TABLE = 'brick_library_items'
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION)
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains('projects')) {
+        db.createObjectStore('projects', { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(USER_DATA_STORE)) {
+        db.createObjectStore(USER_DATA_STORE)
+      }
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+async function loadLibraryLocal(): Promise<Record<BrickCode, BrickType> | null> {
+  try {
+    const db = await openDb()
+    return await new Promise<Record<BrickCode, BrickType> | null>((resolve, reject) => {
+      const tx = db.transaction(USER_DATA_STORE, 'readonly')
+      const store = tx.objectStore(USER_DATA_STORE)
+      const req = store.get(LIBRARY_KEY)
+      req.onsuccess = () => resolve((req.result as Record<BrickCode, BrickType> | undefined) ?? null)
+      req.onerror = () => reject(req.error)
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to load brick library from IndexedDB:', err)
+    return null
+  }
+}
+
+async function persistLibraryLocal(lib: Record<BrickCode, BrickType>): Promise<void> {
+  try {
+    const db = await openDb()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(USER_DATA_STORE, 'readwrite')
+      const store = tx.objectStore(USER_DATA_STORE)
+      store.put({ ...lib }, LIBRARY_KEY)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to persist brick library:', err)
+  }
+}
+
+// ---------- Cloud (Supabase) ----------
+
+interface CloudBrickRow {
+  organisation_id: string
+  code: string
+  data: BrickType
+}
+
+async function loadLibraryCloud(orgId: string): Promise<Record<BrickCode, BrickType> | null> {
+  if (!isSupabaseConfigured) return null
+  try {
+    const { data, error } = await supabase()
+      .from(CLOUD_TABLE)
+      .select('organisation_id, code, data')
+      .eq('organisation_id', orgId)
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[beme] Failed to load brick library from cloud:', error.message)
+      return null
+    }
+    const out: Record<BrickCode, BrickType> = {}
+    for (const row of (data ?? []) as CloudBrickRow[]) {
+      out[row.code] = row.data
+    }
+    return out
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to load brick library from cloud:', err)
+    return null
+  }
+}
+
+async function persistLibraryCloudFull(
+  lib: Record<BrickCode, BrickType>,
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured) return
+  try {
+    const client = supabase()
+    const { error: delErr } = await client.from(CLOUD_TABLE).delete().eq('organisation_id', orgId)
+    if (delErr) throw new Error(delErr.message)
+    const rows = Object.values(lib).map((b) => ({
+      organisation_id: orgId,
+      code: b.code,
+      data: b,
+    }))
+    if (rows.length > 0) {
+      const { error: upErr } = await client.from(CLOUD_TABLE).upsert(rows, {
+        onConflict: 'organisation_id,code',
+      })
+      if (upErr) throw new Error(upErr.message)
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to persist brick library to cloud:', err)
+  }
+}
+
+async function persistBricksCloudUpsert(
+  bricks: BrickType[],
+  orgId: string
+): Promise<void> {
+  if (!isSupabaseConfigured || bricks.length === 0) return
+  try {
+    const rows = bricks.map((b) => ({ organisation_id: orgId, code: b.code, data: b }))
+    const { error } = await supabase()
+      .from(CLOUD_TABLE)
+      .upsert(rows, { onConflict: 'organisation_id,code' })
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to upsert brick(s) to cloud:', err)
+  }
+}
+
+async function persistBricksCloudDelete(codes: BrickCode[], orgId: string): Promise<void> {
+  if (!isSupabaseConfigured || codes.length === 0) return
+  try {
+    const { error } = await supabase()
+      .from(CLOUD_TABLE)
+      .delete()
+      .eq('organisation_id', orgId)
+      .in('code', codes)
+    if (error) throw new Error(error.message)
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[beme] Failed to delete brick(s) from cloud:', err)
+  }
+}
+
+// ---------- Unified persistence dispatcher ----------
+
+interface PersistOptions {
+  full?: boolean
+  upsertedCodes?: BrickCode[]
+  removedCodes?: BrickCode[]
+}
+
+async function persistLibraryEverywhere(
+  lib: Record<BrickCode, BrickType>,
+  opts: PersistOptions
+): Promise<void> {
+  void persistLibraryLocal(lib)
+  const orgId = getOrgState().currentOrgId
+  if (!orgId) return
+
+  if (opts.full) {
+    void persistLibraryCloudFull(lib, orgId)
+    return
+  }
+  if (opts.upsertedCodes && opts.upsertedCodes.length > 0) {
+    const bricks = opts.upsertedCodes
+      .map((code) => lib[code])
+      .filter((b): b is BrickType => Boolean(b))
+    void persistBricksCloudUpsert(bricks, orgId)
+  }
+  if (opts.removedCodes && opts.removedCodes.length > 0) {
+    void persistBricksCloudDelete(opts.removedCodes, orgId)
+  }
+}
+
+// ---------- Sync coordinator ----------
+
+let lastSyncedOrgId: string | null = null
+let initialLocalLoadComplete = false
+
+function isLibraryCustomised(lib: Record<BrickCode, BrickType>): boolean {
+  const defaultKeys = Object.keys(DEFAULT_BRICK_LIBRARY)
+  const libKeys = Object.keys(lib)
+  if (defaultKeys.length !== libKeys.length) return true
+  for (const k of defaultKeys) {
+    if (!(k in lib)) return true
+    if (JSON.stringify(lib[k]) !== JSON.stringify(DEFAULT_BRICK_LIBRARY[k])) return true
+  }
+  return false
+}
+
+async function syncWithOrg(orgId: string | null): Promise<void> {
+  if (orgId === lastSyncedOrgId && initialLocalLoadComplete) return
+
+  if (!orgId) {
+    const saved = await loadLibraryLocal()
+    if (saved && Object.keys(saved).length > 0) {
+      replaceLibraryContents(saved)
+    }
+    notifyChange()
+    lastSyncedOrgId = null
+    initialLocalLoadComplete = true
+    return
+  }
+
+  const cloud = await loadLibraryCloud(orgId)
+  if (cloud && Object.keys(cloud).length > 0) {
+    replaceLibraryContents(cloud)
+    void persistLibraryLocal(cloud)
+    notifyChange()
+  } else {
+    if (isLibraryCustomised(BRICK_LIBRARY)) {
+      void persistLibraryCloudFull(BRICK_LIBRARY, orgId)
+    }
+    notifyChange()
+  }
+  lastSyncedOrgId = orgId
+  initialLocalLoadComplete = true
+}
+
+export async function initBrickLibrary(): Promise<void> {
+  const saved = await loadLibraryLocal()
+  if (saved && Object.keys(saved).length > 0) {
+    replaceLibraryContents(saved)
+    notifyChange()
+  }
+  initialLocalLoadComplete = true
+
+  const initialOrg = getOrgState()
+  if (!initialOrg.loading) {
+    void syncWithOrg(initialOrg.currentOrgId)
+  }
+
+  subscribeToOrgState(() => {
+    const s = getOrgState()
+    if (s.loading) return
+    void syncWithOrg(s.currentOrgId)
+  })
+}

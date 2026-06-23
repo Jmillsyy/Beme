@@ -18,6 +18,7 @@ import { formatLengthMm } from '../lib/units'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { getLibraryTemplate } from '../data/libraryTemplates'
 import { computeAutoWallLengthSnapMm } from '../lib/wallLengthSnap'
+import { PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import RegionPicker from '../components/RegionPicker'
 import {
@@ -38,12 +39,11 @@ import {
 } from '../lib/invitations'
 import type { OrgMember, OrgRole } from '../types/organisations'
 import { orgRoleLabel } from '../types/organisations'
-// Brick-type defaults dropped from Settings — the per-project picker
+// Brick-type defaults dropped from Settings - the per-project picker
 // is the source of truth now, no app-wide default needed.
 import type {
   BusinessProfile,
   DateFormat,
-  DefaultsByRole,
   EstimatingDefaults,
   Theme as ThemePref,
   UserPreferences,
@@ -51,7 +51,6 @@ import type {
   UserSettings,
   Units,
 } from '../types/userSettings'
-import type { Block } from '../types/blocks'
 
 type TabKey = 'profile' | 'business' | 'preferences' | 'defaults' | 'organisation' | 'account'
 
@@ -64,8 +63,18 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
-  { key: 'profile', label: 'Profile', description: 'You — name, contact, role' },
-  { key: 'business', label: 'Business', description: 'Used on every quote you export' },
+  { key: 'profile', label: 'Profile', description: 'You - name, contact, role' },
+  {
+    key: 'business',
+    label: 'Business',
+    description: 'Used on every quote you export',
+    // Branding (logo + business identity stamped on exports) is an
+    // org/team feature. Individual (no-org) users don't get branded
+    // exports, so the tab is hidden for them rather than collecting
+    // settings that never reach their quotes. Mirrors the Organisation
+    // tab's gating.
+    showWhen: ({ hasOrg }) => hasOrg,
+  },
   { key: 'preferences', label: 'Preferences', description: 'Units, date, theme, library template' },
   { key: 'defaults', label: 'Defaults', description: 'Starting values for new estimates' },
   {
@@ -81,7 +90,7 @@ const TABS: Tab[] = [
 
 /**
  * The settings hub. Tabs along the left, panel on the right. Every change
- * persists immediately — no Save button. Studio Black themed throughout.
+ * persists immediately - no Save button. Studio Black themed throughout.
  */
 type DeepPartial<T> = { [K in keyof T]?: Partial<T[K]> }
 
@@ -106,22 +115,28 @@ export default function SettingsPage() {
   const { currentOrg } = useOrganisations()
   const [activeTab, setActiveTab] = useState<TabKey>('profile')
 
-  // Draft model — Settings now saves on demand instead of on every
+  // Draft model - Settings now saves on demand instead of on every
   // keystroke. `draft` mirrors the persisted `settings` but only sync
   // with it when the user clicks Save (or Discard). The dirty flag
   // is a serialised compare so deep nested edits register as changes.
   const [draft, setDraft] = useState<UserSettings>(settings)
-  const draftStringRef = useRef(JSON.stringify(settings))
-  // If the underlying settings change FROM ANOTHER TAB / DEVICE while
-  // the user has the page open and no pending edits, pull the new
-  // value into the draft so the form mirrors the latest state. If the
-  // user is mid-edit (dirty), leave draft alone — overwriting would
-  // surprise them.
+  // True once the user types into ANY field, until they Save or Discard.
+  // This is what tells a REAL user edit apart from an external `settings`
+  // change. The big external change is the async IndexedDB load: settings
+  // bootstrap is fire-and-forget in main.tsx, so this page can mount with
+  // the factory defaults and only receive the saved values a tick later.
+  // The old guard compared draft to the new settings ("dirty") and so
+  // mistook that load for an edit - it left the form stuck on the blank
+  // defaults, and the next Save then wrote those blanks back over the real
+  // saved profile. That's why a display name vanished after signing back in.
+  const userEditedRef = useRef(false)
+  // Unsaved-changes flag for the Save / Discard buttons + the leave prompt.
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings)
   useEffect(() => {
-    if (!dirty) {
+    // Adopt the latest settings (async load, or an edit from another tab)
+    // whenever the user has no in-progress edits of their own.
+    if (!userEditedRef.current) {
       setDraft(settings)
-      draftStringRef.current = JSON.stringify(settings)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings])
@@ -136,41 +151,36 @@ export default function SettingsPage() {
     return () => window.clearInterval(id)
   }, [lastSavedAt])
 
-  // Setters for each tab — patch the relevant slice on the draft.
+  // Setters for each tab - patch the relevant slice on the draft.
   // Wrapped in useCallback so child tab references stay stable.
   const setProfile = useCallback(
-    (p: Partial<UserProfile>) => setDraft((d) => ({ ...d, profile: { ...d.profile, ...p } })),
+    (p: Partial<UserProfile>) => {
+      userEditedRef.current = true
+      setDraft((d) => ({ ...d, profile: { ...d.profile, ...p } }))
+    },
     []
   )
   const setBusiness = useCallback(
-    (p: Partial<BusinessProfile>) => setDraft((d) => ({ ...d, business: { ...d.business, ...p } })),
+    (p: Partial<BusinessProfile>) => {
+      userEditedRef.current = true
+      setDraft((d) => ({ ...d, business: { ...d.business, ...p } }))
+    },
     []
   )
   const setPreferences = useCallback(
-    (p: Partial<UserPreferences>) => setDraft((d) => ({ ...d, preferences: { ...d.preferences, ...p } })),
+    (p: Partial<UserPreferences>) => {
+      userEditedRef.current = true
+      setDraft((d) => ({ ...d, preferences: { ...d.preferences, ...p } }))
+    },
     []
   )
   const setDefaults = useCallback(
-    (p: Partial<EstimatingDefaults>) => setDraft((d) => ({ ...d, defaults: { ...d.defaults, ...p } })),
+    (p: Partial<EstimatingDefaults>) => {
+      userEditedRef.current = true
+      setDraft((d) => ({ ...d, defaults: { ...d.defaults, ...p } }))
+    },
     []
   )
-  // defaultsByRole lives at the top level of UserSettings (not under
-  // `defaults`) so it gets its own patch helper. Empty-string values are
-  // normalised to undefined so the persisted map only stores explicit
-  // user picks — a missing key means "fall through to library tag".
-  const setDefaultsByRole = useCallback(
-    (p: Partial<DefaultsByRole>) =>
-      setDraft((d) => {
-        const merged: DefaultsByRole = { ...(d.defaultsByRole ?? {}) }
-        for (const [k, v] of Object.entries(p)) {
-          if (v) merged[k as keyof DefaultsByRole] = v
-          else delete merged[k as keyof DefaultsByRole]
-        }
-        return { ...d, defaultsByRole: merged }
-      }),
-    []
-  )
-
   function handleSave() {
     if (!dirty) return
     // Diff per top-level slice so we don't write unchanged sections back
@@ -181,15 +191,17 @@ export default function SettingsPage() {
     if (draft.preferences !== settings.preferences)
       partial.preferences = draft.preferences
     if (draft.defaults !== settings.defaults) partial.defaults = draft.defaults
-    if (draft.defaultsByRole !== settings.defaultsByRole)
-      partial.defaultsByRole = draft.defaultsByRole
     updateUserSettings(partial)
+    // Edits are now persisted - clear the flag so the draft re-syncs to the
+    // freshly saved settings (and to any later external change).
+    userEditedRef.current = false
     setLastSavedAt(Date.now())
     toast.success('Settings saved')
   }
 
   function handleDiscard() {
     if (!dirty) return
+    userEditedRef.current = false
     setDraft(settings)
     toast.info('Changes discarded')
   }
@@ -203,7 +215,7 @@ export default function SettingsPage() {
     },
   })
 
-  // Filter tabs by membership context — the Organisation tab disappears for
+  // Filter tabs by membership context - the Organisation tab disappears for
   // personal-only users so the rail doesn't show empty / inapplicable sections.
   const visibleTabs = TABS.filter(
     (t) => !t.showWhen || t.showWhen({ hasOrg: !!currentOrg })
@@ -224,14 +236,14 @@ export default function SettingsPage() {
               Settings
             </h2>
             <p className="text-ink-300 text-sm mt-1">
-              Your profile, business info, preferences, and defaults — applied across every
+              Your profile, business info, preferences, and defaults - applied across every
               project on this device. Click <strong>Save changes</strong> to commit your edits.
             </p>
           </div>
           {/* Save / Discard cluster. Shows the manual save state at a
               glance: green Saved pill when clean, amber Unsaved-changes
               pill + action buttons when dirty. Sticky-ish here at the
-              top of the page — visible without scrolling. */}
+              top of the page - visible without scrolling. */}
           <div className="flex items-center gap-2 flex-wrap ml-auto">
             {!dirty && lastSavedAt !== null && (
               <span
@@ -307,12 +319,7 @@ export default function SettingsPage() {
               <PreferencesTab preferences={draft.preferences} set={setPreferences} />
             )}
             {activeTab === 'defaults' && (
-              <DefaultsTab
-                defaults={draft.defaults}
-                set={setDefaults}
-                defaultsByRole={draft.defaultsByRole}
-                setDefaultsByRole={setDefaultsByRole}
-              />
+              <DefaultsTab defaults={draft.defaults} set={setDefaults} />
             )}
             {activeTab === 'organisation' && <OrganisationTab />}
             {activeTab === 'account' && <AccountTab />}
@@ -334,8 +341,8 @@ function FieldGroup({
   children: React.ReactNode
   title?: string
   /** Body copy under the title. Accepts both `description` and
-   *  `subtitle` so the call-sites scattered through this file work
-   *  uniformly — both refer to the same thing. */
+   * `subtitle` so the call-sites scattered through this file work
+   * uniformly - both refer to the same thing. */
   description?: string
   subtitle?: string
 }) {
@@ -401,14 +408,14 @@ function TextInput({
 }
 
 /**
- * Logo picker — accepts a PNG / JPG / SVG file from the user's device,
+ * Logo picker - accepts a PNG / JPG / SVG file from the user's device,
  * encodes it as a data URL, and writes it through to whatever string
  * field the parent controls (business.logoUrl on Settings → Business,
  * organisations.logo_url on Settings → Organisation, etc.). Data URLs
  * embed the bytes inline so the logo travels with every export and we
  * don't need a separate storage bucket / CDN to serve the image.
  *
- * Files >1 MB get a warning — they balloon the saved settings payload
+ * Files >1 MB get a warning - they balloon the saved settings payload
  * and slow down every estimate save / load on this device. PNG/SVG
  * exports trimmed to a couple hundred pixels are typically well under
  * 100 KB.
@@ -433,7 +440,7 @@ function LogoUploader({
       return
     }
     if (file.size > 2 * 1024 * 1024) {
-      setError('Logo is over 2 MB — please resize it down to a few hundred pixels for the brand strip.')
+      setError('Logo is over 2 MB - please resize it down to a few hundred pixels for the brand strip.')
       return
     }
     setBusy(true)
@@ -552,7 +559,7 @@ function PanelCard({
 }: {
   title: string
   /** Body copy under the heading. `description` and `subtitle` are
-   *  aliases — call-sites mix both. */
+   * aliases - call-sites mix both. */
   description?: string
   subtitle?: string
   children: React.ReactNode
@@ -575,46 +582,49 @@ function PanelCard({
 
 function ProfileTab({ profile, set }: { profile: UserProfile; set: (p: Partial<UserProfile>) => void }) {
   return (
-    <PanelCard
-      title="Profile"
-      description="Personal details — used in the header and on exported quotes."
-    >
-      <FieldGroup>
-        <Field label="Display name">
-          <TextInput
-            value={profile.displayName}
-            onChange={(v) => set({ displayName: v })}
-            placeholder="e.g. Sam Reeves"
-          />
-        </Field>
-        <Field
-          label="Email"
-          hint="Read-only when you sign in with Microsoft — the email comes from your work account."
-        >
-          <TextInput
-            value={profile.email}
-            onChange={(v) => set({ email: v })}
-            placeholder="you@example.com"
-            type="email"
-          />
-        </Field>
-        <Field label="Phone">
-          <TextInput
-            value={profile.phone}
-            onChange={(v) => set({ phone: v })}
-            placeholder="0400 000 000"
-            type="tel"
-          />
-        </Field>
-        <Field label="Role / job title">
-          <TextInput
-            value={profile.role}
-            onChange={(v) => set({ role: v })}
-            placeholder="Owner / Estimator / Site supervisor"
-          />
-        </Field>
-      </FieldGroup>
-    </PanelCard>
+    <div className="space-y-6">
+      <PanelCard
+        title="You"
+        description="Shown in the app header and on the quotes you export."
+      >
+        <FieldGroup>
+          <Field label="Display name">
+            <TextInput
+              value={profile.displayName}
+              onChange={(v) => set({ displayName: v })}
+              placeholder="e.g. Sam Reeves"
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Contact"
+        description="Your contact line on exported quotes."
+      >
+        <FieldGroup>
+          <Field
+            label="Email"
+            hint="The contact email printed on your quotes. Your sign-in email lives under Account."
+          >
+            <TextInput
+              value={profile.email}
+              onChange={(v) => set({ email: v })}
+              placeholder="you@example.com"
+              type="email"
+            />
+          </Field>
+          <Field label="Phone">
+            <TextInput
+              value={profile.phone}
+              onChange={(v) => set({ phone: v })}
+              placeholder="0400 000 000"
+              type="tel"
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+    </div>
   )
 }
 
@@ -714,7 +724,7 @@ function BusinessTab({ business, set }: { business: BusinessProfile; set: (p: Pa
               onChange={(v) => set({ logoUrl: v })}
             />
           </Field>
-          {/* Tax rate field retired — beme estimates quantities, not
+          {/* Tax rate field retired - beme estimates quantities, not
               prices. */}
         </FieldGroup>
 
@@ -736,14 +746,15 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
   }
 
   return (
+    <div className="space-y-6">
     <PanelCard
-      title="Preferences"
-      description="How beme displays things — units, date format, theme."
+      title="Display"
+      description="How beme shows things - units, date format, theme."
     >
       <FieldGroup>
         <Field
           label="Units"
-          hint="Display preference only — measurements stay in mm internally."
+          hint="Display preference only - measurements stay in mm internally."
         >
           <Select<Units>
             value={preferences.units}
@@ -755,7 +766,7 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
           />
         </Field>
 
-        {/* Currency was retired — beme estimates quantities, not prices. */}
+        {/* Currency was retired - beme estimates quantities, not prices. */}
 
         <Field label="Date format">
           <Select<DateFormat>
@@ -781,27 +792,43 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
         </Field>
 
         <Field
-          label="Default project type"
-          hint="What's selected when you click + New estimate."
+          label="Block colouring"
+          hint="How blocks are coloured in the 3D view, the legend, and the export. By role groups blocks into masonry colours (body, end, half…). By block gives every block code its own colour - pick the colour family with the palette button in the 3D toolbar."
         >
-          <Select<'block' | 'brick'>
-            value={preferences.defaultProjectType}
-            onChange={(v) => set({ defaultProjectType: v })}
+          <Select<'role' | 'code'>
+            value={preferences.blockColorMode ?? 'role'}
+            onChange={(v) => set({ blockColorMode: v })}
             options={[
-              { value: 'block', label: 'Block estimate' },
-              { value: 'brick', label: 'Brick estimate' },
+              { value: 'role', label: 'By role (body, end, half…)' },
+              { value: 'code', label: 'By block (each block its own colour)' },
             ]}
           />
         </Field>
-      </FieldGroup>
 
-      {/* Library template — shows the regional block set the user is on
-          and lets them switch (which seeds / merges the new template's
-          blocks). Setting lives on preferences.libraryTemplateKey. */}
-      <FieldGroup
-        title="Library template"
-        description="The regional block set your library is seeded from. Switching merges the new template's blocks on top of your existing library — your custom blocks stay."
-      >
+        <Field
+          label="Block palette"
+          hint="The colour family for blocks (in By block mode) and for bricks and piers. Vibrant is bold and high-contrast, so blocks sitting next to each other always read as clearly different."
+        >
+          <Select<PaletteName>
+            value={preferences.blockColorPalette ?? 'vibrant'}
+            onChange={(v) => set({ blockColorPalette: v })}
+            options={(Object.keys(PALETTE_LABELS) as PaletteName[]).map((k) => ({
+              value: k,
+              label: k === 'vibrant' ? `${PALETTE_LABELS[k]} (default)` : PALETTE_LABELS[k],
+            }))}
+          />
+        </Field>
+
+      </FieldGroup>
+    </PanelCard>
+
+    {/* Library template - the regional block set the user is on; switching
+        seeds / merges the new template's blocks. */}
+    <PanelCard
+      title="Library template"
+      description="The regional block set your library is seeded from. Switching merges the new template's blocks on top of your existing library - your custom blocks stay."
+    >
+      <FieldGroup>
         <Field
           label="Current template"
           hint={
@@ -818,7 +845,7 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
                   : undefined
                 return t
                   ? `${t.displayName} (${Object.keys(t.blocks).length} blocks)`
-                  : 'Not set — running on the AU SEQ default'
+                  : 'Not set - running on the AU SEQ default'
               })()}
             </div>
             <button
@@ -830,10 +857,11 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
           </div>
         </Field>
       </FieldGroup>
+    </PanelCard>
 
       {/* Regional features (lintels / brick ties / plascourse) used to
           live here as a FieldGroup. Each of those line items is now
-          driven by the Material library directly — block lintels via
+          driven by the Material library directly - block lintels via
           the 'lintel' BlockRole, brick lintels + ties + plascourse via
           supply items the user can add, edit, or disable from one
           place. Removed the parallel set of toggles so there's a single
@@ -848,16 +876,16 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
           onCancel={() => setShowRegionPicker(false)}
         />
       )}
-    </PanelCard>
+    </div>
   )
 }
 
 /**
- * Simple labelled toggle row — matches the Field/FieldGroup styling but
+ * Simple labelled toggle row - matches the Field/FieldGroup styling but
  * uses a checkbox instead of a value input.
  */
 // Currently unused on the page itself but kept for future toggle
-// settings — exported so noUnusedLocals doesn't flag it.
+// settings - exported so noUnusedLocals doesn't flag it.
 export function Toggle({
   label,
   hint,
@@ -887,76 +915,27 @@ export function Toggle({
 
 // ─── Defaults ─────────────────────────────────────────────────────────────
 
-/**
- * Per-role block picks the user wants the engine to favour when it auto-
- * creates wall types, heals stale-makeup references, or otherwise has to
- * choose "the default block for role X" on the user's behalf.
- *
- * Each row in `ROLE_DEFAULT_ROWS` corresponds to one optional key on
- * DefaultsByRole. The `hint` shows under the dropdown so the user knows
- * WHERE the pick gets used (instead of guessing from the label alone).
- *
- * Leaving a row blank ("Use library tag") falls through to the legacy
- * library role-tag scan — same behaviour as before this map existed.
- */
-const ROLE_DEFAULT_ROWS: ReadonlyArray<{
-  key: keyof DefaultsByRole
-  label: string
-  hint: string
-}> = [
-  { key: 'body', label: 'Body block', hint: 'Used through the middle of every course in a new wall type.' },
-  { key: 'corner', label: 'Corner block', hint: 'Full block at wall corners and odd-course free ends.' },
-  { key: 'half', label: 'Half block', hint: 'End termination on alternating stretcher-bond courses.' },
-  { key: 'base', label: 'Base course block', hint: 'Course 1 of every wall — the cleanout / starter block.' },
-  { key: 'top', label: 'Top-course / bond-beam block', hint: 'Top course when "bond beam on top" is enabled.' },
-  { key: 'pier', label: 'Pier block', hint: 'Default column block when you place a tied or freestanding pier.' },
-  { key: 'lintel', label: 'Lintel block', hint: 'Default lintel when no head-height range matches the opening.' },
-  { key: 'curveWedge', label: 'Curve wedge', hint: 'Tapered block used for tight-radius curved walls.' },
-  { key: 'cornerLeadIn', label: 'Corner lead-in', hint: 'Pair placed between a deeper-than-body corner and the body to get back on bond.' },
-]
-
 function DefaultsTab({
   defaults,
   set,
-  defaultsByRole,
-  setDefaultsByRole,
 }: {
   defaults: EstimatingDefaults
   set: (p: Partial<EstimatingDefaults>) => void
-  defaultsByRole: DefaultsByRole | undefined
-  setDefaultsByRole: (p: Partial<DefaultsByRole>) => void
 }) {
   // User's units pref drives the labels + hints below. Reads the live
-  // (saved) settings — not the draft from the edit form — so the
+  // (saved) settings - not the draft from the edit form - so the
   // measurements format the same way they do everywhere else in the
   // app.
   const { settings: liveSettings } = useUserSettings()
   const unitsPref = liveSettings.preferences.units
-  // Block library options — all blocks, sorted by code so a user scanning
-  // the dropdown sees a stable order. The label includes the roles the
-  // block is tagged for so the user knows whether their pick makes sense
-  // (e.g. picking a 'pier'-tagged block for the corner default is unusual
-  // but allowed — we trust the user).
+  // Block library - used by the auto wall-length-snap value below.
   const { library: blockLibrary } = useBlockLibrary()
-  const blockOptions = Object.values(blockLibrary)
-    .sort((a: Block, b: Block) => a.code.localeCompare(b.code))
-    .map((b: Block) => ({
-      value: b.code,
-      label: b.roles.length > 0
-        ? `${b.code} · ${b.name} (${b.roles.join(', ')})`
-        : `${b.code} · ${b.name}`,
-    }))
-  // Leading empty option = "use the library tag" (i.e. clear the override).
-  const blockOptionsWithBlank = [
-    { value: '', label: '— Use library tag —' },
-    ...blockOptions,
-  ]
 
   return (
     <div className="space-y-6">
       <PanelCard
-        title="Wall defaults"
-        description="Applied when you create a new wall makeup in a project."
+        title="Wall basics"
+        description="Applied to every new wall makeup you create in a project."
       >
         <FieldGroup>
           <Field label="Default wall height">
@@ -983,6 +962,32 @@ function DefaultsTab({
               minMm={0}
             />
           </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Openings"
+        description="Defaults for doors and windows in new walls."
+      >
+        <FieldGroup>
+          <Field
+            label="Default lintel overlap"
+            hint="Lintel end-bearing added to EACH side of an opening head. A 1000mm opening at 190mm lays a 1380mm lintel; the lintel ends rest on the masonry either side. Adjust per opening by clicking it. 0 = no bearing."
+          >
+            <LengthInput
+              valueMm={defaults.defaultLintelBearingMm ?? 0}
+              onChangeMm={(v) => set({ defaultLintelBearingMm: v })}
+              minMm={0}
+            />
+          </Field>
+        </FieldGroup>
+      </PanelCard>
+
+      <PanelCard
+        title="Length &amp; cuts"
+        description="How new walls round off and absorb leftover length."
+      >
+        <FieldGroup>
           {(() => {
             // The auto value is derived from the active block library
             // + the user's mortar joint default. When the user hasn't
@@ -996,7 +1001,7 @@ function DefaultsTab({
             return (
               <Field
                 label="Wall length snap"
-                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library — currently ${autoSnapDisplay}. Set a custom value to override.`}
+                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library - currently ${autoSnapDisplay}. Set a custom value to override.`}
               >
                 <div className="flex items-center gap-2">
                   <LengthInput
@@ -1042,7 +1047,7 @@ function DefaultsTab({
           {(defaults.defaultMatchExactLength ?? true) && (
             <Field
               label="Apply exact length to"
-              hint="Which course types match exact length. The rest round up to whole blocks. 'Body only' is the most common — avoids cuts on the cleanout / cap row. 'Body + bottom' or 'Body + top' lets you also match the base or cap course. 'All courses' matches everything."
+              hint="Which course types match exact length. The rest round up to whole blocks. 'Body only' is the most common - avoids cuts on the cleanout / cap row. 'Body + bottom' or 'Body + top' lets you also match the base or cap course. 'All courses' matches everything."
             >
               {(() => {
                 // Preset → set of course-type buckets. The dropdown
@@ -1136,22 +1141,6 @@ function DefaultsTab({
         </FieldGroup>
       </PanelCard>
 
-      <PanelCard
-        title="Default blocks by role"
-        description="Override which block the engine picks when it has to choose on your behalf — auto-created wall types, stale-makeup healing, lintel selection. Leave a row blank to fall back to whatever the library tags."
-      >
-        <FieldGroup>
-          {ROLE_DEFAULT_ROWS.map((row) => (
-            <Field key={row.key} label={row.label} hint={row.hint}>
-              <Select<string>
-                value={defaultsByRole?.[row.key] ?? ''}
-                onChange={(v) => setDefaultsByRole({ [row.key]: v || undefined })}
-                options={blockOptionsWithBlank}
-              />
-            </Field>
-          ))}
-        </FieldGroup>
-      </PanelCard>
     </div>
   )
 }
@@ -1163,10 +1152,10 @@ function DefaultsTab({
  *
  * Reads the org context for the active org id, then fetches the live members
  * list from Supabase on mount. The fetch is intentionally not cached in the
- * org singleton — there isn't much value in keeping a copy around between
+ * org singleton - there isn't much value in keeping a copy around between
  * settings visits, and it stays fresh each time the user opens the tab.
  *
- * Adding / removing members from the UI is not wired up yet — that comes in
+ * Adding / removing members from the UI is not wired up yet - that comes in
  * a follow-up. For now the page surfaces who's in the org and what role
  * they have, plus an "invite by email" hint pointing at the SETUP.md
  * provisioning steps (until self-serve invites are built).
@@ -1340,7 +1329,7 @@ function OrganisationTab() {
           </div>
         ) : members.length === 0 ? (
           <p className="text-sm text-ink-400">
-            No members yet — that's unusual since you're seeing this page. Try
+            No members yet - that's unusual since you're seeing this page. Try
             refreshing.
           </p>
         ) : (
@@ -1444,7 +1433,7 @@ function OrganisationTab() {
         )}
       </PanelCard>
 
-      {/* Invite teammate — admins only. Workflow: admin types email + picks
+      {/* Invite teammate - admins only. Workflow: admin types email + picks
           role, app creates the invitation row + builds the accept URL, admin
           copies the URL into Slack / email / wherever. The invitee opens the
           link, sets their password on /accept-invite, and lands in the org. */}
@@ -1473,7 +1462,7 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
   // have to hunt for the one they just made.
   const [justCreated, setJustCreated] = useState<Invitation | null>(null)
   // Tracks which invite is currently showing a "Copied!" tick instead of
-  // the Copy button — clears itself after 1.5s.
+  // the Copy button - clears itself after 1.5s.
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
@@ -1493,7 +1482,7 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
       await navigator.clipboard.writeText(url)
     } catch {
       // Some browsers (older Safari over http) can't write to the clipboard
-      // — fall back to a temporary textarea so we never silently fail.
+      // - fall back to a temporary textarea so we never silently fail.
       const ta = document.createElement('textarea')
       ta.value = url
       document.body.appendChild(ta)
@@ -1550,7 +1539,7 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
   return (
     <PanelCard
       title="Invite a teammate"
-      subtitle="Generate a link they can use to set their own password and join the org. Send it however suits — Slack, email, SMS."
+      subtitle="Generate a link they can use to set their own password and join the org. Send it however suits - Slack, email, SMS."
     >
       <form onSubmit={handleCreate} className="grid grid-cols-1 sm:grid-cols-[1fr_180px_auto] gap-2 items-end">
         <Field label="Teammate email">
@@ -1604,7 +1593,7 @@ function InvitationsPanel({ orgId }: { orgId: string }) {
         </div>
       )}
 
-      {/* Existing invites — pending sit at top, used + expired below.
+      {/* Existing invites - pending sit at top, used + expired below.
           Admin can copy a still-valid link or revoke any of them. */}
       <div className="mt-6">
         <h4 className="text-xs uppercase tracking-wider text-ink-400 mb-2">
@@ -1733,7 +1722,7 @@ function AccountTab() {
       {isSupabaseConfigured && (
         <PanelCard
           title="Account"
-          description={signedIn ? 'Signed in to Beme via Microsoft.' : 'Not signed in.'}
+          description={signedIn ? 'Signed in to Beme.' : 'Not signed in.'}
         >
           {signedIn && user ? (
             <>
@@ -1741,7 +1730,7 @@ function AccountTab() {
                 <div>
                   <div className="font-semibold text-ink-50">{user.email}</div>
                   <div className="text-xs text-ink-400">
-                    Signed in via Microsoft. Your projects are synced to the cloud.
+                    Your projects sync to the cloud and are ready on any device you sign in from.
                   </div>
                 </div>
                 <button
@@ -1761,14 +1750,14 @@ function AccountTab() {
         </PanelCard>
       )}
 
-      {/* Email card — change the signed-in user's email address. Supabase
+      {/* Email card - change the signed-in user's email address. Supabase
           sends a verification link to the new address; once clicked, the
           new email replaces the old for sign-in. */}
       {isSupabaseConfigured && signedIn && user && (
         <EmailCard currentEmail={user.email ?? ''} />
       )}
 
-      {/* Password card — set or change the signed-in user's password.
+      {/* Password card - set or change the signed-in user's password.
           Works whether they originally signed in via magic link, Microsoft
           OAuth, or password. After setting, they can also use email +
           password to sign in alongside whatever they used first. */}
@@ -1835,14 +1824,14 @@ function AccountTab() {
 
       <PanelCard
         title="Danger zone"
-        description="Permanent destructive actions — make sure you've exported anything you want to keep."
+        description="Permanent destructive actions - make sure you've exported anything you want to keep."
       >
         <button
           type="button"
           onClick={handleClearLocal}
           className="px-3 py-1.5 rounded-md border border-rose-500/40 text-sm text-rose-300 hover:bg-rose-500/10 transition-colors"
         >
-          🗑 Clear all local data on this device
+          Clear all local data on this device
         </button>
       </PanelCard>
     </div>
@@ -1853,12 +1842,12 @@ function AccountTab() {
  * Change the signed-in user's email address. Lives inside the Account tab,
  * directly below the account header so the user sees the email they're
  * currently signed in with and can edit it without scrolling. Submitting
- * triggers a Supabase verification email to the new address — until the
+ * triggers a Supabase verification email to the new address - until the
  * user clicks that link, sign-in keeps working with the old address.
  *
  * Heads-up displayed in the card: for users whose auth comes from
  * Microsoft OAuth, Supabase still accepts the update, but the next OAuth
- * sign-in will overwrite the email with whatever Microsoft sends — so
+ * sign-in will overwrite the email with whatever Microsoft sends - so
  * for those users the long-term fix is to update the email in their
  * Microsoft account rather than here.
  */
@@ -1898,7 +1887,7 @@ function EmailCard({ currentEmail }: { currentEmail: string }) {
   return (
     <PanelCard
       title="Email address"
-      description="Change the email Beme uses to sign you in. We'll send a verification link to the new address — until you click it, your current email keeps working."
+      description="Change the email Beme uses to sign you in. We'll send a verification link to the new address - until you click it, your current email keeps working."
     >
       <div className="space-y-3 max-w-md">
         <div className="text-xs text-ink-300">
@@ -1942,7 +1931,7 @@ function EmailCard({ currentEmail }: { currentEmail: string }) {
         <p className="text-[11px] text-ink-500">
           If you signed in with Microsoft, your email comes from Microsoft on
           every sign-in. Changing it here works, but the next Microsoft
-          sign-in will overwrite it — update it in your Microsoft account
+          sign-in will overwrite it - update it in your Microsoft account
           for a permanent change.
         </p>
       </div>
@@ -1952,7 +1941,7 @@ function EmailCard({ currentEmail }: { currentEmail: string }) {
 
 /**
  * Set or change the signed-in user's password. Lives inside the Account tab.
- * Doesn't ask for the existing password — Supabase auth.updateUser trusts
+ * Doesn't ask for the existing password - Supabase auth.updateUser trusts
  * the active session, and we treat session ownership as proof of identity
  * (someone with a stolen session can do worse things than change a
  * password). If a higher bar is needed later, gate this behind a fresh

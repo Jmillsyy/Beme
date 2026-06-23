@@ -1,0 +1,320 @@
+/**
+ * Per-user wall type templates, synced via Supabase.
+ *
+ * Replaces the IndexedDB-only model that lived in
+ * userSettings.wallTypeTemplates. Same singleton-with-hook pattern as
+ * orgSupplyItems.ts, but keyed to the signed-in USER rather than the org
+ * (deliberate: templates are personal - org sharing can layer on later):
+ *
+ *   useUserWallTypeTemplates() → { templates, loading, signedIn }
+ *   getUserWallTypeTemplates() - synchronous read for non-React consumers
+ *   saveUserWallTypeTemplate(makeup) - insert-or-update by id
+ *   deleteUserWallTypeTemplate(id)
+ *   refreshUserWallTypeTemplates() - re-fetch for the current user
+ *   initUserWallTypeTemplates() - call once from main.tsx
+ *
+ * Fallback behaviour: when Supabase isn't configured OR the user is signed
+ * out, reads and writes go to the legacy IndexedDB list
+ * (userSettings.wallTypeTemplates) so personal/offline mode keeps working
+ * exactly as before. When signed in, the cloud list is the single source
+ * of truth.
+ *
+ * One-time migration: the first time a signed-in user's cloud list comes
+ * back EMPTY while their local IndexedDB list has templates, the local
+ * templates are pushed up (then the device is flagged in localStorage so
+ * a later deliberate delete-all in the cloud doesn't resurrect them).
+ */
+
+import { useEffect, useReducer } from 'react'
+import type { WallMakeup } from '../types/walls'
+import { isSupabaseConfigured, supabase } from './supabase'
+import { getUserSettings, updateUserSettings } from './userSettings'
+
+const MIGRATED_FLAG = 'beme:wallTypeTemplatesMigrated'
+
+interface State {
+  /** Cloud templates for the signed-in user. Empty when signed out. */
+  templates: WallMakeup[]
+  /** The user id the templates belong to (guards against races on
+   *  sign-in/sign-out mid-fetch). Null when signed out. */
+  userId: string | null
+  /** True until the first fetch for the current user completes. */
+  loading: boolean
+}
+
+let state: State = { templates: [], userId: null, loading: false }
+const listeners = new Set<() => void>()
+function notify() {
+  for (const l of listeners) l()
+}
+
+// ---------- Row ↔ WallMakeup mappers ----------
+
+interface Row {
+  id: string
+  name: string
+  makeup: WallMakeup
+}
+
+function rowToMakeup(row: Row): WallMakeup {
+  // The row id is the template's identity - stamp it over whatever id the
+  // JSON payload carried so edits/deletes address the right row.
+  return { ...row.makeup, id: row.id, name: row.name }
+}
+
+// ---------- Fallback (offline / signed out) ----------
+
+function localTemplates(): WallMakeup[] {
+  return getUserSettings().wallTypeTemplates ?? []
+}
+
+function setLocalTemplates(next: WallMakeup[]): void {
+  updateUserSettings({ wallTypeTemplates: next })
+  // userSettings has its own listener set - also poke ours so components
+  // on useUserWallTypeTemplates re-render in signed-out mode.
+  notify()
+}
+
+function signedInUserId(): string | null {
+  return state.userId
+}
+
+// ---------- Public API ----------
+
+/**
+ * Synchronous read - cloud list when signed in, legacy IndexedDB list
+ * otherwise. This is the ONLY read path callers should use; never read
+ * userSettings.wallTypeTemplates directly anymore.
+ */
+export function getUserWallTypeTemplates(): WallMakeup[] {
+  return signedInUserId() ? state.templates : localTemplates()
+}
+
+/** One-shot fetch of the signed-in user's templates. RLS scopes to auth.uid(). */
+async function listCloudTemplates(): Promise<Row[] | null> {
+  if (!isSupabaseConfigured) return null
+  const client = supabase()
+  const { data, error } = await client
+    .from('user_wall_type_templates')
+    .select('id, name, makeup')
+    .order('created_at', { ascending: true })
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to load wall type templates', error.message)
+    return null
+  }
+  return data as Row[]
+}
+
+/**
+ * Insert-or-update a template. Signed in → upsert to Supabase (optimistic
+ * local update so the UI doesn't wait on the round-trip). Signed out /
+ * unconfigured → legacy IndexedDB list, same as before.
+ */
+export async function saveUserWallTypeTemplate(makeup: WallMakeup): Promise<void> {
+  const userId = signedInUserId()
+  if (!userId) {
+    setLocalTemplates(
+      localTemplates()
+        .filter((t) => t.id !== makeup.id)
+        .concat(makeup)
+    )
+    return
+  }
+  // Optimistic - replace any existing template with the same id.
+  state = {
+    ...state,
+    templates: state.templates.filter((t) => t.id !== makeup.id).concat(makeup),
+  }
+  notify()
+  const client = supabase()
+  const { error } = await client.from('user_wall_type_templates').upsert(
+    { id: makeup.id, user_id: userId, name: makeup.name, makeup },
+    { onConflict: 'id' }
+  )
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to save wall type template', error.message)
+    // Specific case: the migration hasn't been run on this Supabase
+    // project, so the table literally doesn't exist. Don't roll back
+    // - fall back to the local IndexedDB list so the user's work
+    // isn't lost, and surface a clearer error so they know they
+    // need to apply the migration. Same fallback the signed-out
+    // path uses; the template will live locally until the table
+    // exists and a future sync can push it up.
+    const isMissingTable =
+      error.code === 'PGRST205' ||
+      /could not find the table/i.test(error.message)
+    if (isMissingTable) {
+      setLocalTemplates(
+        localTemplates()
+          .filter((t) => t.id !== makeup.id)
+          .concat(makeup),
+      )
+      // Keep the optimistic insert in `state.templates` too so the
+      // UI doesn't lose the template while signed in - local list +
+      // cloud list both carry it. When the table is added later,
+      // refreshUserWallTypeTemplates will migrate the local list up.
+      throw new Error(
+        `Cloud sync unavailable - saved locally on this device. ` +
+        `Run supabase/migrations/2026_06_user_wall_type_templates.sql to enable cross-device sync.`,
+      )
+    }
+    // Other failures - roll back the optimistic insert so the UI
+    // doesn't show a phantom.
+    state = {
+      ...state,
+      templates: state.templates.filter((t) => t.id !== makeup.id),
+    }
+    notify()
+    throw new Error(error.message)
+  }
+}
+
+/** Delete a template by id (cloud when signed in, else the legacy list). */
+export async function deleteUserWallTypeTemplate(id: string): Promise<void> {
+  const userId = signedInUserId()
+  if (!userId) {
+    setLocalTemplates(localTemplates().filter((t) => t.id !== id))
+    return
+  }
+  const removed = state.templates.find((t) => t.id === id)
+  state = { ...state, templates: state.templates.filter((t) => t.id !== id) }
+  notify()
+  // Always remove from the local fallback store as well - when the
+  // cloud table is missing the template might live ONLY in local
+  // storage (see saveUserWallTypeTemplate's missing-table branch),
+  // and a cloud-only delete would leave it behind on this device.
+  setLocalTemplates(localTemplates().filter((t) => t.id !== id))
+  const client = supabase()
+  const { error } = await client
+    .from('user_wall_type_templates')
+    .delete()
+    .eq('id', id)
+  if (error) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to delete wall type template', error.message)
+    // Missing-table case: there's nothing in the cloud to delete
+    // anyway, and we already removed from local. Treat as success
+    // with a heads-up so the caller can surface the right toast.
+    const isMissingTable =
+      error.code === 'PGRST205' ||
+      /could not find the table/i.test(error.message)
+    if (isMissingTable) {
+      throw new Error(
+        `Cloud sync unavailable - removed locally on this device. ` +
+        `Run supabase/migrations/2026_06_user_wall_type_templates.sql to enable cross-device sync.`,
+      )
+    }
+    // Other errors - roll back the in-memory remove. We DON'T put
+    // the template back into local storage here because we don't
+    // know whether the local list ever held it; safer to leave it
+    // off than to risk a phantom revival.
+    if (removed) {
+      state = { ...state, templates: state.templates.concat(removed) }
+      notify()
+    }
+    throw new Error(error.message)
+  }
+}
+
+/** Refetch the templates for the currently signed-in user. */
+export async function refreshUserWallTypeTemplates(): Promise<void> {
+  if (!isSupabaseConfigured) return
+  const client = supabase()
+  const { data } = await client.auth.getSession()
+  const userId = data.session?.user?.id ?? null
+  if (!userId) {
+    state = { templates: [], userId: null, loading: false }
+    notify()
+    return
+  }
+  state = { ...state, userId, loading: true }
+  notify()
+  const rows = await listCloudTemplates()
+  // Guard against sign-out / user switch mid-fetch.
+  const { data: after } = await client.auth.getSession()
+  if ((after.session?.user?.id ?? null) !== userId) return
+  if (rows === null) {
+    state = { ...state, loading: false }
+    notify()
+    return
+  }
+  let templates = rows.map(rowToMakeup)
+
+  // One-time migration: cloud empty + local templates exist + this device
+  // hasn't migrated before → push the local list up so nothing the user
+  // saved pre-sync is lost. localStorage flag prevents resurrecting
+  // templates the user later deletes in the cloud on purpose.
+  let migrated = false
+  try {
+    migrated = localStorage.getItem(MIGRATED_FLAG) === '1'
+  } catch {
+    // localStorage unavailable - treat as not migrated; worst case is a
+    // duplicate-free re-upload (upsert by id).
+  }
+  const local = localTemplates()
+  if (templates.length === 0 && local.length > 0 && !migrated) {
+    const { error } = await client.from('user_wall_type_templates').upsert(
+      local.map((t) => ({ id: t.id, user_id: userId, name: t.name, makeup: t })),
+      { onConflict: 'id' }
+    )
+    if (!error) {
+      templates = local
+      try {
+        localStorage.setItem(MIGRATED_FLAG, '1')
+      } catch {
+        // ignore
+      }
+    } else {
+      // eslint-disable-next-line no-console
+      console.error('Failed to migrate local wall type templates', error.message)
+    }
+  } else if (!migrated) {
+    // Cloud already has data (or local is empty) - nothing to push, but
+    // mark the device migrated so we never push stale local data later.
+    try {
+      localStorage.setItem(MIGRATED_FLAG, '1')
+    } catch {
+      // ignore
+    }
+  }
+
+  state = { templates, userId, loading: false }
+  notify()
+}
+
+/**
+ * Call once at app boot. Fetches for the current session and re-fetches on
+ * every auth change (sign-in on another account, sign-out, token refresh).
+ */
+export function initUserWallTypeTemplates(): void {
+  if (!isSupabaseConfigured) return
+  void refreshUserWallTypeTemplates()
+  supabase().auth.onAuthStateChange((_event, session) => {
+    const nextUserId = session?.user?.id ?? null
+    if (nextUserId !== state.userId) {
+      void refreshUserWallTypeTemplates()
+    }
+  })
+}
+
+/**
+ * React hook. Returns the effective template list (cloud when signed in,
+ * legacy local list otherwise) + loading state; re-renders on changes.
+ */
+export function useUserWallTypeTemplates() {
+  const [, force] = useReducer((x: number) => x + 1, 0)
+  useEffect(() => {
+    const l = () => force()
+    listeners.add(l)
+    return () => {
+      listeners.delete(l)
+    }
+  }, [])
+  return {
+    templates: getUserWallTypeTemplates(),
+    loading: state.loading,
+    signedIn: state.userId !== null,
+  }
+}

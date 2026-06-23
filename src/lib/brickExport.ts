@@ -1,11 +1,11 @@
 /**
- * Brick estimate export — generates a printable HTML document in a new browser tab.
+ * Brick estimate export - generates a printable HTML document in a new browser tab.
  * User then prints to PDF via the browser's built-in Print → Save as PDF.
  *
  * The layout matches a typical brickwork takeoff document:
- *   Page 1 — Assumptions (auto-generated from settings + custom notes)
- *   Page 2 — Brick Area Summary + Lintels + Accessories tables
- *   Page 3 — Disclaimer
+ * Page 1 - Assumptions (auto-generated from settings + custom notes)
+ * Page 2 - Brick Area Summary + Lintels + Accessories tables
+ * Page 3 - Disclaimer
  */
 
 import type {
@@ -31,14 +31,15 @@ import {
 } from '../types/userSettings'
 import { BRICK_LIBRARY } from '../data/brickLibrary'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
+import { straightWallFootprintMm } from './wallFootprint'
 
 /**
  * Wall lineal length in mm. Mirrors the brickCalc helper:
- *   - Straight walls → Euclidean distance.
- *   - Curved walls → true centreline arc length (sweep × radius).
+ * - Straight walls → Euclidean distance.
+ * - Curved walls → true centreline arc length (sweep × radius).
  *
- * Centralised here too so every callsite — summary tiles, per-wall
- * tally, opening shape projection — reports the same length for the
+ * Centralised here too so every callsite - summary tiles, per-wall
+ * tally, opening shape projection - reports the same length for the
  * same wall.
  */
 function wallLinealMm(w: Wall): number {
@@ -55,8 +56,8 @@ function wallLinealMm(w: Wall): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
-/** Single-skin default — same value PdfWorkspace uses for wall thickness
- *  when no brick type is selected. Drives the layout-page wall stroke. */
+/** Single-skin default - same value PdfWorkspace uses for wall thickness
+ * when no brick type is selected. Drives the layout-page wall stroke. */
 const DEFAULT_BRICK_WALL_THICKNESS_MM = 110
 
 /**
@@ -131,7 +132,7 @@ interface ExportParams {
    */
   supplyItemAdjustments?: Record<string, number>
   /**
-   * Per-export supply-item NAME overrides — keyed by supply item id,
+   * Per-export supply-item NAME overrides - keyed by supply item id,
    * value is the renamed label to use in the PDF. Empty / missing
    * value falls back to the library item's name. Lets the user
    * rename a specific supply on a per-quote basis (e.g. "Galintel
@@ -140,7 +141,7 @@ interface ExportParams {
    */
   supplyItemNameOverrides?: Record<string, string>
   /**
-   * Per-export cover page text overrides — title, subtitle, intro.
+   * Per-export cover page text overrides - title, subtitle, intro.
    * Same shape as the block exporter. When ALL three are missing /
    * empty, no cover page is rendered. When any field is set, a
    * dedicated cover page is prepended using `projectDetails` as
@@ -154,20 +155,20 @@ interface ExportParams {
   walls: Wall[]
   openings: Opening[]
   settings: BrickSettings
-  /** Brick wall types — used to colour the Wall Layout diagrams and group
-   *  walls for the legend. Optional + defaulted-empty for older callers. */
+  /** Brick wall types - used to colour the Wall Layout diagrams and group
+   * walls for the legend. Optional + defaulted-empty for older callers. */
   makeups?: BrickMakeup[]
   /**
    * Project areas (e.g. "First Floor", "Second Floor"). Optional so older
    * callers stay valid. When provided, the Brickwork by Wall Type table
    * groups rows under area headings so the estimator can see at a glance
-   * which wall types live on which floor — and any wall whose areaId
+   * which wall types live on which floor - and any wall whose areaId
    * doesn't resolve gets surfaced under an "Unassigned" group so missing
    * area data isn't silently buried.
    */
   areas?: ProjectArea[]
   /**
-   * Per brick-type quantity adjustments — same semantics as
+   * Per brick-type quantity adjustments - same semantics as
    * `blockAdjustments` in blockExport: positive number = bricks of
    * that type to SUBTRACT from the final schedule. Used when some
    * bricks are already on site, reused, or excluded from the order.
@@ -193,10 +194,10 @@ interface ExportParams {
       headLinealM?: number
       sillLinealM?: number
       /** Per-wall-type drilldown within this area. Each entry is
-       *  keyed by makeup id and can override that wall type's
-       *  m² / head lineal m / sill lineal m contribution. Deltas are
-       *  computed against per-(area, makeup) auto totals and
-       *  applied to the project-wide brick tally. */
+       * keyed by makeup id and can override that wall type's
+       * m² / head lineal m / sill lineal m contribution. Deltas are
+       * computed against per-(area, makeup) auto totals and
+       * applied to the project-wide brick tally. */
       byMakeup?: Record<
         string,
         { sqM?: number; headLinealM?: number; sillLinealM?: number }
@@ -204,25 +205,25 @@ interface ExportParams {
     }
   >
   /** Wastage uplift percent for the brick AREA total (m²) only.
-   *  When supplied (> 0), the Brick Area Summary table grows a
-   *  second column showing the net area + X% wastage. Supply items,
-   *  per-area Quantities overrides, and the per-wall-type breakdown
-   *  are intentionally not touched — supplies are estimator-managed
-   *  allowances, and wastage is a single project-wide uplift on the
-   *  headline figure used to order brick. */
+   * When supplied (> 0), the Brick Area Summary table grows a
+   * second column showing the net area + X% wastage. Supply items,
+   * per-area Quantities overrides, and the per-wall-type breakdown
+   * are intentionally not touched - supplies are estimator-managed
+   * allowances, and wastage is a single project-wide uplift on the
+   * headline figure used to order brick. */
   wastagePercent?: number
   /** Optional business identity (from user settings). Same shape as block export. */
   business?: BusinessExportInfo
-  /** The primary plan PDF — when supplied alongside pagesInfo, each Wall
-   *  Layout section uses the rasterised page as its background. */
+  /** The primary plan PDF - when supplied alongside pagesInfo, each Wall
+   * Layout section uses the rasterised page as its background. */
   pdfFile?: File
   /** One entry per PDF page that carries walls. The export iterates these
-   *  to build per-page layout sections, identical to the block flow. */
+   * to build per-page layout sections, identical to the block flow. */
   pagesInfo?: PageInfo[]
 }
 
 /**
- * Palette for brick wall-type colouring on the layout pages — same shape
+ * Palette for brick wall-type colouring on the layout pages - same shape
  * as the block export's palette so the visual style matches.
  */
 const BRICK_WALL_TYPE_PALETTE: Array<{ body: string; dark: string }> = [
@@ -239,10 +240,10 @@ const BRICK_WALL_TYPE_PALETTE: Array<{ body: string; dark: string }> = [
 /**
  * Build one Wall Layout overview page for a brick estimate. Mirrors the
  * block export's buildPlanOverviewPage but simpler:
- *   - no piers (brick mode doesn't draw them)
- *   - no curves (brick walls are straight)
- *   - tally tiles are brickwork-flavoured (area, brick count) instead of
- *     block-flavoured (total blocks)
+ * - no piers (brick mode doesn't draw them)
+ * - no curves (brick walls are straight)
+ * - tally tiles are brickwork-flavoured (area, brick count) instead of
+ * block-flavoured (total blocks)
  *
  * Returns '' when the page has no walls, so the caller can splice the
  * result into the document unconditionally.
@@ -261,8 +262,8 @@ function buildBrickPlanOverviewPage(
     | { dataUrl: string; pageWidthMm: number; pageHeightMm: number; pageScaleRatio: number }
     | null,
   pageLabelSuffix: string,
-  /** Ruler measurements on this page — rendered as dashed cyan reference
-   *  lines when supplied. Empty array means no overlay. */
+  /** Ruler measurements on this page - rendered as dashed cyan reference
+   * lines when supplied. Empty array means no overlay. */
   measurements: Array<{ id: string; startMm: { x: number; y: number }; endMm: { x: number; y: number } }> = []
 ): string {
   if (walls.length === 0) return ''
@@ -294,7 +295,7 @@ function buildBrickPlanOverviewPage(
 
   // Per-wall length. Routes through wallLengthMm (same helper the 2D
   // canvas + tally use) so corner ends pick up the halfThickness
-  // extension out to the outer-edge corner — without this the export
+  // extension out to the outer-edge corner - without this the export
   // labels read ~halfThickness shorter than what the user drew at
   // every corner. Curved walls still resolve to true arc length via
   // wallLengthMm's internal isCurvedWall path. Brick is single-skin
@@ -319,13 +320,13 @@ function buildBrickPlanOverviewPage(
       value: String(walls.length),
       sub: `${wallTypeCount} wall type${wallTypeCount === 1 ? '' : 's'}`,
     },
-    { label: 'Total length', value: `${(totalWallLengthMm / 1000).toFixed(2)} m` },
+    { label: 'Total length', value: `${Math.round(totalWallLengthMm)} mm` },
     {
       label: 'Brickwork area',
       value: `${(netWallAreaSqMm / 1_000_000).toFixed(2)} m²`,
       sub: openings.length > 0 ? 'net of openings' : 'gross area',
     },
-    // "Bricks" tile intentionally removed — the deliverable now
+    // "Bricks" tile intentionally removed - the deliverable now
     // reports total wall area + lineal m for trim courses; the
     // estimator applies their own bricks/m² rate from the library.
   ]
@@ -405,53 +406,52 @@ function buildBrickPlanOverviewPage(
   const labelFontSize = labelDiameter * 0.55
   const lengthFontSize = labelFontSize * 0.85
 
-  // Two-pass wall rendering for visibility: a slightly-wider dark rim
-  // underneath, then the body colour on top at high opacity. Matches the
-  // block export's treatment (June 2026) — walls pop clearly against
-  // rasterised PDF backgrounds and pale page tints. Rim is 20 mm wider
-  // than the wall (10 mm border each side); brick walls are typically
-  // 110 mm thick so 20 mm is enough to register as a defined edge
-  // without dominating the body fill.
+  // Walls drawn to match the live 2D canvas: each straight wall is its
+  // MITRED FOOTPRINT POLYGON (straightWallFootprintMm) so corners meet in
+  // clean Ls / Ts instead of overlapping boxes; curved walls keep the SVG
+  // <path> A-arc so the plan shows the shape the user drew. TWO passes -
+  // every wall's dark rim first, then every body on top - so adjacent
+  // bodies cover the internal mitre seams and only the outer ~10 mm rim
+  // shows. Rim 20 mm wider than the wall (10 mm each side); plenty to
+  // register a defined edge on a ~110 mm brick wall without dominating it.
   const BRICK_RIM_EXTRA_MM = 20
-  const wallShapes = walls
-    .map((w) => {
-      const c = colourFor(w)
-      // Curved walls render as an SVG <path> A-arc instead of a
-      // straight <line> so the plan overview shows the same shape
-      // the user drew. Two stroked passes — wider dark rim, narrower
-      // body fill — match the straight-wall styling exactly so
-      // mixed straight + curved walls read as one drawing.
-      if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
-        const geom = arcFromThreePoints(
-          { x: w.startX, y: w.startY },
-          { x: w.midX, y: w.midY },
-          { x: w.endX, y: w.endY },
-        )
-        if (geom) {
-          // SVG arc flags: large-arc when |sweep| > π,
-          // sweep-flag = 1 for CCW in screen space (y grows down
-          // so the sign convention flips vs maths-conventional
-          // atan2). arcFromThreePoints uses screen-space y, so
-          // sweepAngle > 0 already maps to the visual CCW.
-          const largeArc = Math.abs(geom.sweepAngle) > Math.PI ? 1 : 0
-          const sweepFlag = geom.sweepAngle > 0 ? 1 : 0
-          const d = `M ${w.startX} ${w.startY} A ${geom.radiusMm} ${geom.radiusMm} 0 ${largeArc} ${sweepFlag} ${w.endX} ${w.endY}`
-          return [
-            `<path d="${d}" fill="none" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`,
-            `<path d="${d}" fill="none" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`,
-          ].join('\n          ')
-        }
-        // Degenerate curve (collinear points) — fall through to the
-        // straight-line render below so nothing disappears.
+  const rimShapes: string[] = []
+  const bodyShapes: string[] = []
+  for (const w of walls) {
+    const c = colourFor(w)
+    if (isCurvedWall(w) && w.midX !== undefined && w.midY !== undefined) {
+      const geom = arcFromThreePoints(
+        { x: w.startX, y: w.startY },
+        { x: w.midX, y: w.midY },
+        { x: w.endX, y: w.endY },
+      )
+      if (geom) {
+        // SVG arc flags: large-arc when |sweep| > π, sweep-flag = 1 for
+        // CCW in screen space (y grows down). arcFromThreePoints uses
+        // screen-space y, so sweepAngle > 0 already maps to visual CCW.
+        const largeArc = Math.abs(geom.sweepAngle) > Math.PI ? 1 : 0
+        const sweepFlag = geom.sweepAngle > 0 ? 1 : 0
+        const d = `M ${w.startX} ${w.startY} A ${geom.radiusMm} ${geom.radiusMm} 0 ${largeArc} ${sweepFlag} ${w.endX} ${w.endY}`
+        rimShapes.push(`<path d="${d}" fill="none" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`)
+        bodyShapes.push(`<path d="${d}" fill="none" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`)
+        continue
       }
-      return [
-        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`,
-        `<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`,
-      ].join('\n          ')
-    })
-    .join('\n          ')
+      // Degenerate curve (collinear points) - fall through to straight.
+    }
+    // Straight wall - mitred footprint polygon (matches the 2D canvas).
+    const fp = straightWallFootprintMm(w, walls, thicknessByWallId)
+    if (!fp) {
+      rimShapes.push(`<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${brickThicknessMm + BRICK_RIM_EXTRA_MM}" stroke-linecap="butt"/>`)
+      bodyShapes.push(`<line x1="${w.startX}" y1="${w.startY}" x2="${w.endX}" y2="${w.endY}" stroke="${c.body}" stroke-opacity="0.9" stroke-width="${brickThicknessMm}" stroke-linecap="butt"/>`)
+      continue
+    }
+    const poly = fp.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+    rimShapes.push(`<polygon points="${poly}" fill="${c.dark}" fill-opacity="0.85" stroke="${c.dark}" stroke-opacity="0.85" stroke-width="${BRICK_RIM_EXTRA_MM}" stroke-linejoin="miter"/>`)
+    bodyShapes.push(`<polygon points="${poly}" fill="${c.body}" fill-opacity="0.9" stroke="${c.body}" stroke-opacity="0.9" stroke-width="1" stroke-linejoin="miter"/>`)
+  }
+  const wallShapes = [...rimShapes, ...bodyShapes].join('\n          ')
 
-  // Opening markers — cream break on top of the wall line at each
+  // Opening markers - cream break on top of the wall line at each
   // opening's along-wall position with dark slate jamb ticks at each
   // end. Same architectural convention as the block export so
   // door / window positions read identically across both product
@@ -498,7 +498,7 @@ function buildBrickPlanOverviewPage(
     .filter(Boolean)
     .join('\n          ')
 
-  // Measurement overlays — dashed cyan lines with the measured length
+  // Measurement overlays - dashed cyan lines with the measured length
   // labelled at the midpoint. Same visual treatment as the block export
   // so the deliverables read consistently across product modes.
   const measurementStrokeWidth = Math.max(brickThicknessMm * 0.18, Math.min(viewW, viewH) * 0.004)
@@ -509,7 +509,7 @@ function buildBrickPlanOverviewPage(
       const dy = m.endMm.y - m.startMm.y
       const lenMm = Math.sqrt(dx * dx + dy * dy)
       if (lenMm < 1) return ''
-      const lenM = (lenMm / 1000).toFixed(2)
+      const lenLabel = Math.round(lenMm)
       const midX = (m.startMm.x + m.endMm.x) / 2
       const midY = (m.startMm.y + m.endMm.y) / 2
       const dash = measurementStrokeWidth * 4
@@ -519,12 +519,12 @@ function buildBrickPlanOverviewPage(
         <line x1="${m.startMm.x.toFixed(1)}" y1="${m.startMm.y.toFixed(1)}" x2="${m.endMm.x.toFixed(1)}" y2="${m.endMm.y.toFixed(1)}" stroke="#0891b2" stroke-width="${measurementStrokeWidth.toFixed(1)}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}" stroke-linecap="round"/>
         <circle cx="${m.startMm.x.toFixed(1)}" cy="${m.startMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
         <circle cx="${m.endMm.x.toFixed(1)}" cy="${m.endMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
-        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="Inter, system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenM} m</text>
+        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="Inter, system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenLabel} mm</text>
       `
     })
     .join('\n          ')
 
-  // Length-only labels — numbered circles dropped to match the block
+  // Length-only labels - numbered circles dropped to match the block
   // export. No companion table references wall numbers, so the circles
   // were just visual noise.
   void labelDiameter
@@ -532,9 +532,9 @@ function buildBrickPlanOverviewPage(
     .map((w, i) => {
       const cx = (w.startX + w.endX) / 2
       const cy = (w.startY + w.endY) / 2
-      const lengthM = (wallLengthsMm[i] / 1000).toFixed(2)
+      const lengthLabel = Math.round(wallLengthsMm[i])
       return `
-        <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthM} m</text>
+        <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthLabel} mm</text>
       `
     })
     .join('\n          ')
@@ -544,22 +544,22 @@ function buildBrickPlanOverviewPage(
     .map((m) => {
       const c = colourByMakeupId[m.id] ?? fallbackColour
       const wallsOfType = walls.filter((w) => w.makeupId === m.id)
-      const totalLenM =
+      const totalLenMm =
         wallsOfType.reduce((s, w) => {
           const idx = walls.indexOf(w)
           return s + (idx >= 0 ? wallLengthsMm[idx] : 0)
-        }, 0) / 1000
+        }, 0)
       return `
         <span class="legend-item">
           <span class="legend-swatch" style="background: ${c.body}; opacity: 0.85; border: 1px solid ${c.dark};"></span>
           <strong>${escapeHtml(m.name)}</strong>
-          <span class="legend-sub">${wallsOfType.length} wall${wallsOfType.length === 1 ? '' : 's'} · ${totalLenM.toFixed(2)} m</span>
+          <span class="legend-sub">${wallsOfType.length} wall${wallsOfType.length === 1 ? '' : 's'} · ${Math.round(totalLenMm)} mm</span>
         </span>
       `
     })
     .join('')
 
-  // Opening keys — break out by door / window kind so the reader
+  // Opening keys - break out by door / window kind so the reader
   // can match the kind-coloured markers on the plan to "opening of
   // kind X" in the legend. Each kind gets its own SVG swatch with
   // the same fill the plan uses (window=amber, door=teal), so the key
@@ -632,8 +632,16 @@ function buildBrickPlanOverviewPage(
 
 export interface BusinessExportInfo {
   companyName?: string
+  /**
+   * The person preparing the quote (e.g. the individual user's display
+   * name). Prints on the contact line under whichever brand mark is used,
+   * including the plain Beme mark for solo users who have no company name.
+   */
+  contactName?: string
   abn?: string
   phone?: string
+  /** Contact email printed on the quote (from Settings > Profile > Contact). */
+  email?: string
   website?: string
   addressLine1?: string
   addressLine2?: string
@@ -703,7 +711,7 @@ function buildAssumptions(
   customNotes: string,
   supplyItemNotes: string[] = [],
   /**
-   * Pre-formatted summary line for the wall-height assumption — built by
+   * Pre-formatted summary line for the wall-height assumption - built by
    * the caller from the project's BrickMakeup heights + per-wall
    * overrides so a multi-height project ("Facework 2400, Render 2700")
    * reads correctly. Empty / undefined falls back to the legacy single-
@@ -713,7 +721,7 @@ function buildAssumptions(
   wallHeightSummary: string = '',
   /**
    * True when the project has at least one opening on a brick wall.
-   * Used to gate the Openings group — no point telling the reader
+   * Used to gate the Openings group - no point telling the reader
    * about opening deductions when there are none.
    */
   hasOpenings: boolean = false,
@@ -743,7 +751,7 @@ function buildAssumptions(
   })
 
   // ── Openings ──
-  // Only when the project actually has any — no point telling the
+  // Only when the project actually has any - no point telling the
   // reader about opening deductions on a wall with no openings.
   if (hasOpenings) {
     groups.push({
@@ -787,7 +795,7 @@ function buildAssumptions(
   return groups
 }
 
-// groupLintels + LintelGroup removed — brick lintels now flow through
+// groupLintels + LintelGroup removed - brick lintels now flow through
 // the supply-item pipeline (per-opening unit with optional opening-width
 // range). The user defines their own lintels in the material library
 // and they render in the Accessories section like every other supply.
@@ -833,15 +841,15 @@ export async function buildBrickEstimateHtml(
   const rawTally = calculateBrickTally(walls, openings, settings, makeups)
   // Apply per-brick-type signed adjustments. Same semantics as the
   // block side:
-  //   - positive → remove from tally (on-site / reused).
-  //   - negative → add extra (user wants more than the auto-count,
-  //     or a brick type not in the auto-tally at all).
+  // - positive → remove from tally (on-site / reused).
+  // - negative → add extra (user wants more than the auto-count,
+  // or a brick type not in the auto-tally at all).
   // Final counts clamped to >= 0.
   const adjMap = params.brickAdjustments ?? {}
   let adjustedBricksByType: Record<string, number> = {}
   let adjustedBrickCount: number = 0
   if (Object.keys(rawTally.bricksByType).length > 0) {
-    // Mixed-type project — iterate over union of tally codes +
+    // Mixed-type project - iterate over union of tally codes +
     // adjustment codes so add-only entries land in the schedule.
     const allCodes = new Set([
       ...Object.keys(rawTally.bricksByType),
@@ -855,10 +863,14 @@ export async function buildBrickEstimateHtml(
       adjustedBrickCount += remaining
     }
   } else {
-    // Single-type project — adjustments apply to the project's
+    // Single-type project - adjustments apply to the project's
     // configured brick type code. Other codes in adjMap (if any)
     // are extra rows added by the user.
-    const projectCode = settings.brickTypeCode
+    // brickTypeCode can be unset on a not-yet-configured project; fall back
+    // to '' so the single-type adjustment keys on a real string instead of
+    // indexing with `undefined` (which silently keyed bricks under the
+    // literal "undefined" in the export).
+    const projectCode = settings.brickTypeCode ?? ''
     const projectAdj = adjMap[projectCode] ?? 0
     const projectRemaining = Math.max(0, rawTally.brickCount - projectAdj)
     if (projectRemaining > 0) {
@@ -867,7 +879,7 @@ export async function buildBrickEstimateHtml(
     }
     for (const [code, adj] of Object.entries(adjMap)) {
       if (code === projectCode) continue
-      // Add-only entries — base is 0, adj negative means add.
+      // Add-only entries - base is 0, adj negative means add.
       const remaining = Math.max(0, 0 - adj)
       if (remaining > 0) {
         adjustedBricksByType[code] = remaining
@@ -935,7 +947,7 @@ export async function buildBrickEstimateHtml(
       // the makeup, then push the (override - auto) delta into the
       // same global delta accumulators. m² edits only feed the
       // area-total delta when the area-level m² is NOT set
-      // (otherwise area-level wins). head/sill always stack —
+      // (otherwise area-level wins). head/sill always stack -
       // they're per-wall-type by nature and shouldn't get swamped
       // by area-level totals if both happen to be set.
       const byMakeup = ov.byMakeup
@@ -979,7 +991,7 @@ export async function buildBrickEstimateHtml(
     }
   }
   // Apply the cumulative deltas to the by-type maps proportionally to
-  // each type's share — so a 5% bump in head lineal m boosts every
+  // each type's share - so a 5% bump in head lineal m boosts every
   // existing head brick code by 5%, instead of dumping everything onto
   // one code. When no auto value exists (empty by-type map) the
   // delta is dropped on the floor: there's no code to assign it to.
@@ -1017,14 +1029,14 @@ export async function buildBrickEstimateHtml(
     projectDetails.siteAddress.trim() ||
     projectDetails.projectName.trim() ||
     'Brickwork Takeoff'
-  // Filename + document title — prefer site address so the saved
+  // Filename + document title - prefer site address so the saved
   // PDF is named by site. Falls back to project name, then generic.
   const docTitle =
-    `${projectDetails.siteAddress.trim() || projectDetails.projectName.trim() || 'Brickwork Takeoff'} — Brickwork Takeoff`
+    `${projectDetails.siteAddress.trim() || projectDetails.projectName.trim() || 'Brickwork Takeoff'} - Brickwork Takeoff`
 
   // Compute supply-item rows + assumption notes in a single pass so the
   // Accessories table below and the Assumptions section above stay in
-  // lockstep — the user-defined items show up in both places consistently.
+  // lockstep - the user-defined items show up in both places consistently.
   // Source of truth: org-synced list when an org is active; falls back
   // to local IndexedDB for personal mode.
   const supplyItems = getCurrentOrgId()
@@ -1036,8 +1048,8 @@ export async function buildBrickEstimateHtml(
     name: string
     qty: number
     /** Pre-formatted quantity using the item's decimalPlaces (0 dp = whole
-     *  units, 1–3 dp = decimal precision). Display only — `qty` is still
-     *  the numeric ceil result for any downstream maths. */
+     * units, 1-3 dp = decimal precision). Display only - `qty` is still
+     * the numeric ceil result for any downstream maths. */
     display: string
     noteRate: string
     category: string
@@ -1045,10 +1057,10 @@ export async function buildBrickEstimateHtml(
   const supplyRows: SupplyRow[] = []
   for (const item of supplyItems) {
     if (!item.appliesTo.includes('brick')) continue
-    // Honour the per-project selection — missing key means included by
+    // Honour the per-project selection - missing key means included by
     // default, `false` excludes the item from this export entirely.
     if (supplyItemSelections?.[item.id] === false) continue
-    // Honour the per-project rate override — undefined / unset falls back
+    // Honour the per-project rate override - undefined / unset falls back
     // to the library default rate so projects without overrides behave
     // exactly as before.
     const override = supplyItemRateOverrides?.[item.id]
@@ -1076,7 +1088,7 @@ export async function buildBrickEstimateHtml(
       case 'per-opening':
       case 'per-opening-head':
       case 'per-opening-sill': {
-        // Shared resolver — respects per-opening overrides + project
+        // Shared resolver - respects per-opening overrides + project
         // defaults + width-range / kind filter. Mirrors block export.
         const inScope = countOpeningsForSupplyItem(item, openings, supplyItems)
         qty = rate * inScope
@@ -1084,7 +1096,7 @@ export async function buildBrickEstimateHtml(
         const max = item.openingWidthMaxMm
         const rangeLabel =
           min !== undefined || max !== undefined
-            ? ` (${min ?? 0}–${max ?? '∞'} mm openings only)`
+            ? ` (${min ?? 0}-${max ?? '∞'} mm openings only)`
             : ''
         const scopeLabel =
           item.unit === 'per-opening-sill'
@@ -1096,18 +1108,18 @@ export async function buildBrickEstimateHtml(
         break
       }
       case 'per-block':
-        // Brick estimate — block-relative rates don't apply.
+        // Brick estimate - block-relative rates don't apply.
         continue
     }
-    // Round at the item's chosen precision (0 dp → whole units, 1–3 dp
+    // Round at the item's chosen precision (0 dp → whole units, 1-3 dp
     // → 0.1 / 0.01 / 0.001 increments). Same ceil semantics as before
-    // — no under-ordering — just at a finer step for consumables.
+    // - no under-ordering - just at a finer step for consumables.
     const rounded = roundSupplyQuantity(qty, item)
     // Apply the user's per-supply-item adjustment (positive = remove,
     // negative = add) AFTER rounding so the modal's preview number
     // matches the row that lands in the PDF. Clamp to >= 0; skip
     // zero-qty rows. The pre-adjusted `rounded` is intentionally
-    // NOT gated to zero — a negative delta promotes a zero-qty item
+    // NOT gated to zero - a negative delta promotes a zero-qty item
     // into the schedule.
     const supplyAdj = supplyItemAdjustments?.[item.id] ?? 0
     const finalQty = Math.max(0, rounded - supplyAdj)
@@ -1125,11 +1137,11 @@ export async function buildBrickEstimateHtml(
     })
   }
   const supplyItemNotes = supplyRows.map(
-    (r) => `${r.name} allowance at ${r.noteRate} — ${r.display} included.`
+    (r) => `${r.name} allowance at ${r.noteRate} - ${r.display} included.`
   )
 
   // Build a human-readable summary of the distinct wall heights actually
-  // used on this project — per-wall override wins over the makeup's
+  // used on this project - per-wall override wins over the makeup's
   // height, which wins over the project default. Single-height projects
   // collapse to one line ("2400 mm"); multi-makeup projects list each.
   // Sorted ascending so the reader sees the smallest first.
@@ -1171,22 +1183,34 @@ export async function buildBrickEstimateHtml(
     openings.length > 0,
   )
 
-  // ---------- HTML pieces ----------
+  // HTML pieces
 
-  // Branded header — mirrors blockExport's logic. Logo set → logo IS the
+  // Branded header - mirrors blockExport's logic. Logo set → logo IS the
   // brand mark and the name text drops out (no visual duplication). No
   // logo, company name set → render the name as text. Neither → generic
   // Beme wordmark. ABN/phone/website/address always print under whatever
   // mark is chosen.
   const hasBusinessIdentity = !!business?.companyName?.trim()
   const hasLogo = !!business?.logoUrl
-  const contactBlock = hasBusinessIdentity
-    ? `
-        <div class="brand-tag">
-          ${business?.abn ? `ABN ${escapeHtml(business.abn)}` : ''}
-          ${business?.phone ? ` · ${escapeHtml(business.phone)}` : ''}
-          ${business?.website ? ` · ${escapeHtml(business.website)}` : ''}
-        </div>
+  // Contact line - the preparer's name / ABN / phone / email / website,
+  // whichever are set. Renders under EVERY brand mark below (logo, company
+  // name, OR the plain Beme wordmark for solo users) so the phone + email
+  // entered in Settings > Profile > Contact always print on the quote.
+  const contactBits = [
+    business?.contactName,
+    business?.abn ? `ABN ${business.abn}` : '',
+    business?.phone,
+    business?.email,
+    business?.website,
+  ].filter((s) => !!s && String(s).trim().length > 0)
+  const contactBlock = `
+        ${
+          contactBits.length
+            ? `<div class="brand-tag">${contactBits
+                .map((s) => escapeHtml(String(s)))
+                .join(' · ')}</div>`
+            : ''
+        }
         ${
           business?.addressLine1
             ? `<div class="brand-address">${[
@@ -1202,7 +1226,6 @@ export async function buildBrickEstimateHtml(
             : ''
         }
       `
-    : ''
   const brandBlock = hasLogo
     ? `
         <img src="${escapeHtml(business!.logoUrl ?? '')}" alt="${escapeHtml(business?.companyName ?? 'Logo')}" class="brand-logo-primary" />
@@ -1214,15 +1237,23 @@ export async function buildBrickEstimateHtml(
         ${contactBlock}
       `
     : `
-        <div class="brand-name">Beme</div>
-        <div class="brand-tag">Building Estimates Made Easy</div>
+        <div class="brand-logo-row">
+          <svg class="beme-mark" viewBox="0 0 64 64" width="34" height="34" aria-hidden="true">
+            <path fill-rule="evenodd" clip-rule="evenodd" fill="#FF7A2D" d="M12 0 H52 A12 12 0 0 1 64 12 V52 A12 12 0 0 1 52 64 H12 A12 12 0 0 1 0 52 V12 A12 12 0 0 1 12 0 Z M17 12 A5 5 0 0 0 12 17 V47 A5 5 0 0 0 17 52 H47 A5 5 0 0 0 52 47 V17 A5 5 0 0 0 47 12 H17 Z" />
+          </svg>
+          <div>
+            <div class="brand-name" style="color:#000000">Beme</div>
+            <div class="brand-tag" style="color:#000000">Building Estimates Made Easy</div>
+          </div>
+        </div>
+        ${contactBlock}
       `
 
   const pageHeader = `
     <header class="page-header">
       <div class="brand">${brandBlock}</div>
       <div class="title-block">
-        <div class="title-main">Brickwork Takeoff — Material Schedule</div>
+        <div class="title-main">Brickwork Takeoff - Material Schedule</div>
         <div class="title-sub">${escapeHtml(headerTitle)} | All dimensions in mm${
           referenceText ? ` | Ref ${escapeHtml(referenceText)}` : ''
         }</div>
@@ -1236,13 +1267,13 @@ export async function buildBrickEstimateHtml(
       rows.push(`<div><span>Reference</span> ${escapeHtml(referenceText)}</div>`)
     if (projectDetails.clientName.trim())
       rows.push(`<div><span>Client</span> ${escapeHtml(projectDetails.clientName)}</div>`)
-    // Estimator name intentionally omitted — see blockExport.ts.
+    // Estimator name intentionally omitted - see blockExport.ts.
     if (projectDetails.date) rows.push(`<div><span>Date</span> ${formatDate(projectDetails.date)}</div>`)
     if (rows.length === 0) return ''
     return `<div class="meta">${rows.join('')}</div>`
   })()
 
-  // Per-page Wall Layout overview pages — built upfront so the
+  // Per-page Wall Layout overview pages - built upfront so the
   // async PDF rasterisation completes before the HTML document is
   // assembled. Each PDF page that has walls becomes one <section> with
   // its own SVG cropped to the walls + the rasterised plan beneath. The
@@ -1284,7 +1315,7 @@ export async function buildBrickEstimateHtml(
     // engine as the project-wide tally.
     const pageTally = calculateBrickTally(page.walls, page.openings, settings, makeups)
     const pageLabel = page.label?.trim() || `Page ${page.pageNumber}`
-    const labelSuffix = pagesToShow.length > 1 ? ` — ${pageLabel}` : ''
+    const labelSuffix = pagesToShow.length > 1 ? ` - ${pageLabel}` : ''
     planOverviewPagesArr.push(
       buildBrickPlanOverviewPage(
         page.walls,
@@ -1304,7 +1335,7 @@ export async function buildBrickEstimateHtml(
   }
   const planOverviewPages = planOverviewPagesArr.join('\n')
 
-  // Page 0: Cover page — emitted only when the user customised any
+  // Page 0: Cover page - emitted only when the user customised any
   // of the cover fields via the export modal. Mirrors the block
   // exporter's cover (same CSS classes for cross-trade
   // consistency).
@@ -1340,7 +1371,7 @@ export async function buildBrickEstimateHtml(
     `
     : ''
 
-  // Page 1: Assumptions — categorised groups with subheadings so
+  // Page 1: Assumptions - categorised groups with subheadings so
   // the reader can scan to the relevant area (Geometry vs Openings
   // vs Project-specific) rather than reading one long flat list.
   const assumptionsPage = inclusions.assumptions
@@ -1369,7 +1400,7 @@ export async function buildBrickEstimateHtml(
   const openingsAreaSqM = openings.reduce((sum, op) => sum + op.widthMm * op.heightMm, 0) / 1_000_000
   const grossAreaSqM = areaSqM + openingsAreaSqM
 
-  // Wastage uplift — when configured, a second column on the area
+  // Wastage uplift - when configured, a second column on the area
   // summary shows each row with X% added so the estimator can order
   // bricks against the inflated number. Supply items are not touched.
   const wastagePct =
@@ -1401,18 +1432,18 @@ export async function buildBrickEstimateHtml(
     `
     : ''
 
-  // Brick type breakdown — removed in favour of the lineal-metre
+  // Brick type breakdown - removed in favour of the lineal-metre
   // tables below. The deliverable used to count individual bricks
   // per type; now we surface total wall area and lineal metres for
   // each special course (head / sill / substitute) so the estimator
   // applies their own bricks/m² rate from the brick library.
   const typeBreakdownTable = ''
 
-  // Trim courses + course substitute — all reported in lineal METRES
+  // Trim courses + course substitute - all reported in lineal METRES
   // so the bricklayer can price by their own per-metre rates. One
   // table per category, each hidden when its bucket is empty so
   // projects without trim / substitute bricks see no blank sections.
-  // Head / sill course tables — summarised to a single total per
+  // Head / sill course tables - summarised to a single total per
   // section. Per-brick-code rows were removed: the brick code that
   // gets used at the head / sill is a 3D-render concern (set in the
   // wall type modal's "Opening visuals" tab) and the estimator
@@ -1447,7 +1478,7 @@ export async function buildBrickEstimateHtml(
       </table>
     `
   }
-  // Source the totals from byMakeup, not byType — byMakeup populates
+  // Source the totals from byMakeup, not byType - byMakeup populates
   // for every wall with openings regardless of whether the wall type
   // specifies a head/sill brick code (a 3D-render concern), so the
   // head/sill course rows still print when "Opening visuals" was
@@ -1462,7 +1493,7 @@ export async function buildBrickEstimateHtml(
     (s, v) => s + v,
     0,
   )
-  // Course substitute section removed — the per-course lineal m
+  // Course substitute section removed - the per-course lineal m
   // value was confusing on walls with mixed brick heights (e.g. a
   // double-height substitute would surface a count that didn't
   // match wall coursing intuition). The simpler "Total length" tile
@@ -1483,7 +1514,7 @@ export async function buildBrickEstimateHtml(
       sillTotalMm,
     )
 
-  // Per-wall-type breakdown — mirrors the headline aggregates (area,
+  // Per-wall-type breakdown - mirrors the headline aggregates (area,
   // run, head, sill) one wall type at a time so the estimator can
   // price each makeup separately. Net area = gross area minus any
   // openings landing on walls of this type, same calc the headline
@@ -1523,7 +1554,7 @@ export async function buildBrickEstimateHtml(
     })
     .sort((a, b) => b.netAreaSqMm - a.netAreaSqMm)
 
-  // Wastage uplift on the consumable totals (Area, Head, Sill) — wall
+  // Wastage uplift on the consumable totals (Area, Head, Sill) - wall
   // count and Length stay on the net figure because those are the
   // physical wall geometry, they don't change with wastage. Helper
   // formats each m / m² figure with its wastage twin in the same
@@ -1533,7 +1564,7 @@ export async function buildBrickEstimateHtml(
     unit: 'm' | 'm²',
     divisor: number,
   ): string => {
-    const net = valueMm > 0 ? formatNumber(valueMm / divisor, 2) : '—'
+    const net = valueMm > 0 ? formatNumber(valueMm / divisor, 2) : '-'
     if (!wastagePct || valueMm <= 0) return net
     const uplift = formatNumber((valueMm * wastageFactor) / divisor, 2)
     return `${net} <span style="color:#9a3f08;font-weight:600">(+${uplift} ${unit})</span>`
@@ -1595,7 +1626,7 @@ export async function buildBrickEstimateHtml(
   // Accessories table is driven exclusively by the user's supply-item
   // catalogue (Material library). Ties + plascourse used to be governed
   // by their own per-export inclusion flags and per-project BrickSettings
-  // toggles, but both layers have been retired — the user enables /
+  // toggles, but both layers have been retired - the user enables /
   // disables a supply item from one place (the Material library entry)
   // and overrides it per-project via supplyItemSelections.
   //
@@ -1658,7 +1689,7 @@ export async function buildBrickEstimateHtml(
     `
       : ''
 
-  // 3D view snapshots — same magazine-style hero pages as the block
+  // 3D view snapshots - same magazine-style hero pages as the block
   // export. One page per snapshot, in queue order, immediately after
   // the 2D plan overview so the same project geometry flows from
   // plan → 3D → tally tables.
@@ -1682,7 +1713,7 @@ export async function buildBrickEstimateHtml(
                   ${snap.legend
                     .map((item) => {
                       // Wall-type rows carry a `wt:<makeupId>` code that's
-                      // a UUID — useless to show alongside the name. Hide
+                      // a UUID - useless to show alongside the name. Hide
                       // the code column on those rows, and re-resolve the
                       // label off the LIVE brick makeups list so a renamed
                       // wall type updates in the export without re-capture.
@@ -1727,7 +1758,7 @@ export async function buildBrickEstimateHtml(
           </figure>
           ${legendHtml}
         </div>
-        <!-- Footer Reference/Client/Date row removed — same info
+        <!-- Footer Reference/Client/Date row removed - same info
              already sits at the top of the page meta block, and the
              reclaimed vertical space goes to the hero image. -->
       </section>
@@ -1749,7 +1780,7 @@ export async function buildBrickEstimateHtml(
     `
     : ''
 
-  // ---------- Assembled HTML ----------
+  // Assembled HTML
   //
   // Body content captured separately so the combined exporter can splice
   // brick pages into a document alongside the block side. Single-trade
@@ -1781,7 +1812,7 @@ export async function buildBrickEstimateHtml(
     color: #1f2937;
     margin: 0;
     background: #fff;
-    /* Tighter base font for a denser layout — see blockExport for
+    /* Tighter base font for a denser layout - see blockExport for
        the same rationale. */
     font-size: 11px;
     line-height: 1.4;
@@ -1793,11 +1824,11 @@ export async function buildBrickEstimateHtml(
   }
   .page:last-child { page-break-after: auto; }
 
-  /* Wall Layout overview pages — mirrored from the block export styles
+  /* Wall Layout overview pages - mirrored from the block export styles
      so brick and block exports look like siblings rather than cousins. */
   .plan-overview-page h2.section-title { margin: 12px 0 4px; }
   .plan-overview-page .page-intro { margin-bottom: 6px; }
-  /* Force wall-layout page to print as a single sheet — see
+  /* Force wall-layout page to print as a single sheet - see
      blockExport.ts for the same rule. */
   .plan-overview-page {
     page-break-inside: avoid;
@@ -1909,8 +1940,18 @@ export async function buildBrickEstimateHtml(
     display: block;
     margin-bottom: 4px;
   }
+  /* Beme mark + wordmark lockup in the header on unbranded exports. */
+  .brand-logo-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .beme-mark {
+    flex-shrink: 0;
+    display: block;
+  }
 
-  /* Cover page — A4 landscape layout, same as the block exporter so
+  /* Cover page - A4 landscape layout, same as the block exporter so
      a combined deliverable reads as one document. See
      blockExport.ts for the design notes. */
   .cover-page .cover-body {
@@ -1978,7 +2019,7 @@ export async function buildBrickEstimateHtml(
     white-space: pre-wrap;
   }
 
-  /* Primary brand mark — used when no text name accompanies the logo. */
+  /* Primary brand mark - used when no text name accompanies the logo. */
   .brand-logo-primary {
     max-height: 64px;
     max-width: 230px;
@@ -2004,7 +2045,7 @@ export async function buildBrickEstimateHtml(
     padding-top: 4px;
   }
 
-  /* 3D view pages — magazine-style hero shot. Same layout as the
+  /* 3D view pages - magazine-style hero shot. Same layout as the
      block export so the deliverables read consistently across
      product modes. Explicit mm dimensions because PDF print engines
      don't honour flex grow on landscape A4. */
@@ -2050,7 +2091,7 @@ export async function buildBrickEstimateHtml(
     display: flex;
     align-items: stretch;
     gap: 5mm;
-    /* Hero shot height — reduced from 140mm to 125mm so the page
+    /* Hero shot height - reduced from 140mm to 125mm so the page
        header + view3d-header stay on the same page as the image
        even when the title block runs over its expected 28mm. See
        blockExport.ts for the full chrome budget. */
@@ -2157,7 +2198,7 @@ export async function buildBrickEstimateHtml(
     border: 2px solid #FF7A2D;
     border-radius: 2px;
     box-sizing: border-box;
-    /* True transparent hole through the middle — matches the
+    /* True transparent hole through the middle - matches the
        BemeMark component in the app. */
   }
   .beme-credit strong {
@@ -2205,7 +2246,7 @@ export async function buildBrickEstimateHtml(
     font-size: 10.5px;
     line-height: 1.45;
   }
-  /* Categorised assumption groups — same structure as the block
+  /* Categorised assumption groups - same structure as the block
      export so the trade-combined PDF reads consistently. */
   .assumption-group {
     page-break-inside: avoid;
@@ -2285,7 +2326,7 @@ export async function buildBrickEstimateHtml(
     @page {
       margin: 1.1cm 0 0 0;
       size: A4 landscape;
-      /* Running header — see blockExport.ts for the full explainer. */
+      /* Running header - see blockExport.ts for the full explainer. */
       @top-center {
         content: string(sectionTitle);
         font-family: 'Inter', system-ui, -apple-system, sans-serif;
@@ -2306,7 +2347,7 @@ export async function buildBrickEstimateHtml(
       string-set: sectionTitle content();
     }
 
-    /* Page-break hygiene — see blockExport.ts for the rationale. Keep
+    /* Page-break hygiene - see blockExport.ts for the rationale. Keep
        table rows atomic, repeat thead/tfoot on continuation pages,
        glue subtotal/total rows to the rows above them so they don't
        orphan, and avoid splitting tables when they fit on a page. */
@@ -2335,7 +2376,7 @@ export async function buildBrickEstimateHtml(
 <body>${bodyContent}</body>
 </html>`
 
-  // "Built with Beme" credit on every page — injected before each section's
+  // "Built with Beme" credit on every page - injected before each section's
   // closing tag so all pages (assumptions / area / lintels / disclaimer)
   // carry the footer without touching the per-page builders.
   const bemeFooter = `
@@ -2365,7 +2406,7 @@ export async function buildBrickEstimateHtml(
 }
 
 /**
- * Single-trade entry point — kept as a thin wrapper over
+ * Single-trade entry point - kept as a thin wrapper over
  * `buildBrickEstimateHtml` so the existing BrickExportPanel call site
  * doesn't need to change.
  */
@@ -2396,11 +2437,11 @@ export function createDefaultExportInclusions(): BrickExportInclusions {
   return {
     assumptions: true,
     wallLayout: true,
-    // Ruler measurements default ON — same reasoning as the block side:
+    // Ruler measurements default ON - same reasoning as the block side:
     // if the user drew them, they likely want them carried through.
     measurements: true,
     brickAreaSummary: true,
-    // 3D snapshot default ON — same semantics as the block side. If
+    // 3D snapshot default ON - same semantics as the block side. If
     // the user hasn't captured any, the export is just silently
     // shorter by a page.
     view3d: true,

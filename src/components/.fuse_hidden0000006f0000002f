@@ -1,0 +1,202 @@
+import { memo, useMemo, useState } from 'react'
+import type { BrickMakeup, BrickSettings, Opening, Wall } from '../types/walls'
+import { calculateBrickTally } from '../lib/brickCalc'
+import { useBrickLibrary } from '../data/brickLibrary'
+import { useUserSettings } from '../lib/userSettings'
+import { useOrganisations } from '../lib/organisations'
+import { useOrgSupplyItems } from '../lib/orgSupplyItems'
+import { brickLintelWarnings } from '../lib/lintelCoverage'
+import LintelCoverageBand from './LintelCoverageBand'
+import AnimatedNumber from './AnimatedNumber'
+
+interface BrickTallyPanelProps {
+  walls: Wall[]
+  openings: Opening[]
+  settings: BrickSettings
+  /** Brick wall types — needed for per-wall heights when the calc
+   *  derives area. */
+  makeups?: BrickMakeup[]
+}
+
+/**
+ * Right-rail tally for brick estimates — intentionally minimal.
+ *
+ * Two numbers, surfaced loud:
+ *   - Total brickwork area (m²) — drives every quantity downstream
+ *     when multiplied by the brick rate
+ *   - Total wall lineal m — the run figure for spec-by-the-metre items
+ *     (ties, plascourse, flashing)
+ *
+ * The per-wall-type breakdown (area, head lineals, sill lineals) lives
+ * in the EXPORT PDF, not in the workspace rail. Reasoning: the rail
+ * is glanceable headline-only feedback while the estimator's drawing;
+ * the export is the deliverable where the breakdown actually gets
+ * used. Stuffing both into the rail makes the most-used affordance
+ * (the headline area) compete with information that belongs on
+ * paper.
+ *
+ * Lintel coverage warnings still surface here because they're a
+ * data-quality nudge — the estimator needs to know about misconfigured
+ * openings WHILE they're still drawing, not when they generate the PDF.
+ *
+ * Memoised so re-renders driven by zoom / pan don't recompute the tally.
+ */
+function BrickTallyPanelImpl({ walls, openings, settings, makeups }: BrickTallyPanelProps) {
+  const [expanded, setExpanded] = useState(true)
+  // Subscribe to brick-library version so a rate change on a library
+  // brick re-tallies immediately (the per-band counts read the rate
+  // off each band's brick type at calc time).
+  const { version: brickLibraryVersion } = useBrickLibrary()
+  const { settings: userSettings } = useUserSettings()
+  const { currentOrgId } = useOrganisations()
+  const { items: orgItems, orgId: orgItemsOrgId } = useOrgSupplyItems()
+
+  // Pick the right supply-items source. When the user is in an org,
+  // the org's supply items (Supabase) are the source of truth; the
+  // local userSettings.supplyItems list is only used for personal /
+  // offline accounts. The MaterialLibraryPage uses the same source
+  // selection — without matching that here, the warnings checked an
+  // empty list and flagged every opening as uncovered, even when the
+  // user clearly had Galintels covering those widths.
+  //
+  // Race guard: only trust orgItems when their carrier orgId matches
+  // the current org. During an org switch the singleton briefly holds
+  // the previous org's items.
+  const activeSupplyItems = useMemo(() => {
+    if (currentOrgId && orgItemsOrgId === currentOrgId) return orgItems
+    if (!currentOrgId) return userSettings.supplyItems ?? []
+    return []
+  }, [currentOrgId, orgItemsOrgId, orgItems, userSettings.supplyItems])
+
+  const tally = useMemo(() => {
+    void brickLibraryVersion
+    return calculateBrickTally(walls, openings, settings, makeups)
+  }, [walls, openings, settings, makeups, brickLibraryVersion])
+
+  // Lintel coverage warnings — surfaces openings whose width doesn't
+  // match any per-opening lintel supply item with a width range, and
+  // overlapping ranges that would double-count. See lib/lintelCoverage.
+  const lintelWarnings = useMemo(
+    () => brickLintelWarnings(openings, activeSupplyItems),
+    [openings, activeSupplyItems],
+  )
+
+  if (walls.length === 0) {
+    return (
+      <div className="border border-dashed border-ink-600 rounded-xl p-6 text-center text-ink-400 text-sm bg-ink-800/50">
+        Draw your first wall to see the brick tally.
+      </div>
+    )
+  }
+
+  const areaSqM = tally.totalAreaSqMm / 1_000_000
+  const lengthM = tally.totalLinealMm / 1000
+
+  return (
+    <div className="border border-ink-600 rounded-lg bg-ink-800 overflow-hidden">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full bg-ink-700 px-3 py-2 border-b border-ink-600 flex items-center justify-between gap-2 text-left group"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-ink-400 group-hover:text-ink-200 text-xs">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <h3 className="text-sm font-bold text-ink-50">Brick tally</h3>
+          <span className="text-xs text-beme-300 tabular-nums truncate">
+            · <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
+          </span>
+        </div>
+        <span className="text-xs text-ink-400 tabular-nums flex-shrink-0">
+          {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
+        </span>
+      </button>
+
+      {expanded && lintelWarnings.length > 0 && (
+        <div className="px-3 pt-3">
+          <LintelCoverageBand warnings={lintelWarnings} />
+        </div>
+      )}
+
+      {expanded && (
+        <>
+          {/* Big total card — orange hero, exact same structure as
+              BlockTallyPanel: uppercase eyebrow, big extrabold
+              headline number, single-line subtitle for wall count.
+              Body lineal moved out of the subtitle and into its own
+              row below so all four primary metrics (area, lineal,
+              head, sill) stack in a consistent order. */}
+          <div className="px-3 py-3 bg-gradient-to-br from-beme-500 to-beme-600 text-ink-900">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.1em] opacity-85">
+              Total brickwork area
+            </div>
+            <div className="text-3xl font-extrabold tracking-tight leading-none mt-1 tabular-nums">
+              <AnimatedNumber value={areaSqM} format={(n) => n.toFixed(2)} /> m²
+            </div>
+            <div className="text-xs opacity-85 mt-1 tabular-nums">
+              {tally.wallCount} wall{tally.wallCount === 1 ? '' : 's'}
+              {tally.openingCount > 0 && (
+                <>
+                  {' · '}
+                  {tally.openingCount} opening
+                  {tally.openingCount === 1 ? '' : 's'}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Lineal metres — stacked in fixed order under the hero:
+              Total lineal → Head lineal → Sill lineal. Mirrors the
+              user's mental model from the block tally where the
+              primary metric (count / area) headlines and the
+              supporting metrics flow underneath in a predictable
+              order. Each row uses the same label / value layout so
+              the panel reads as a list rather than a grid. Sources
+              from byMakeup so values populate even when the wall
+              type doesn't name a head/sill brick code. Doors are
+              excluded from the sill total (they reach the floor, no
+              sill course). */}
+          {(() => {
+            const headLinealM =
+              Object.values(tally.headLinealMmByMakeup ?? {}).reduce(
+                (s, v) => s + v,
+                0,
+              ) / 1000
+            const sillLinealM =
+              Object.values(tally.sillLinealMmByMakeup ?? {}).reduce(
+                (s, v) => s + v,
+                0,
+              ) / 1000
+            const rows: Array<{ label: string; value: number }> = [
+              { label: 'Total lineal', value: lengthM },
+              { label: 'Head lineal', value: headLinealM },
+              { label: 'Sill lineal', value: sillLinealM },
+            ]
+            return (
+              <div className="border-t border-ink-600 divide-y divide-ink-700/60">
+                {rows.map((r) => (
+                  <div
+                    key={r.label}
+                    className="px-3 py-2 flex items-center justify-between gap-2 text-sm tabular-nums"
+                  >
+                    <span className="text-ink-300 text-xs">{r.label}</span>
+                    <span className="text-ink-100 font-medium">
+                      <AnimatedNumber
+                        value={r.value}
+                        format={(n) => n.toFixed(2)}
+                      />{' '}
+                      m
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+        </>
+      )}
+    </div>
+  )
+}
+
+const BrickTallyPanel = memo(BrickTallyPanelImpl)
+export default BrickTallyPanel

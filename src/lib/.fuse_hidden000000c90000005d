@@ -1,0 +1,136 @@
+/**
+ * Lintel rules - pure functions implementing the rules from the Project Brief.
+ *
+ * Block walls: a lintel is any block in the user's library that the user
+ * has tagged with the `lintel` role. There's no separate concept of a
+ * "lintel block" any more - a 20.13, a 20.18, a bond beam, or even a
+ * regular body block can serve as a lintel just by adding the role.
+ *
+ * Selection is by head height: pick the SMALLEST lintel whose heightMm ≥
+ * the opening's head height (so the head course is fully bridged). If no
+ * single lintel is tall enough, the tallest is returned and the calc
+ * engine stacks it vertically to cover.
+ *
+ * If the library has NO block with the lintel role at all, no lintel
+ * block is added to the tally and the head course is simply left empty.
+ * (The body subtraction below the head still runs, so the wall maths
+ * remains correct.) Users in regions that bridge openings with a separate
+ * structural lintel beam can leave the role off and the schedule won't
+ * include any block-level lintels.
+ *
+ * Brick walls: handled separately via per-opening supply items.
+ */
+
+import {
+  pickLintelBlockIn,
+  BLOCK_LIBRARY,
+} from '../data/blockLibrary'
+import { DEFAULT_MORTAR_JOINT_MM, type BlockCode } from '../types/blocks'
+
+// ---------- Block walls: lintel spec by head height ----------
+
+export interface LintelSpec {
+  /** Block code used for this head range - references the user's library. */
+  code: string
+  /** Modular vertical height per stood-up lintel (block tall dim + 10mm mortar). */
+  verticalModuleMm: number
+  /** Modular horizontal face per stood-up lintel (190mm face + 10mm mortar = 200). */
+  horizontalModuleMm: number
+  /**
+   * Bearing length on each side of the opening, in mm. The calc engine
+   * computes the lintel span as `openingWidth + 2 × overhangMm`. Comes
+   * from the block's `lintelOverhangMm` field; defaults to 200mm when
+   * the block doesn't set it (standard AU masonry practice). Per-block
+   * so different lintels (e.g. a precast piece vs a masonry block) can
+   * carry their own bearing requirements.
+   */
+  overhangMm: number
+}
+
+/**
+ * Choose the appropriate lintel for an opening's head height. Returns
+ * `null` when no block in the user's library is tagged with the `lintel`
+ * role - callers treat that as "head course left empty, no lintel
+ * blocks added to tally".
+ *
+ * Role-based: looks up every block tagged with role `lintel` and picks
+ * by head-height bucket if the block carries one, else by the smallest
+ * block whose face height ≥ the head. There's no AU-default fallback -
+ * an empty / non-AU library that never tagged a lintel block produces a
+ * null result, not a phantom 20.18 in the schedule.
+ *
+ * Modular dims come from the block's actual dimensions + mortar joint -
+ * since the library stores dimensions in the as-used orientation,
+ * heightMm IS the vertical module driver and widthMm IS the horizontal
+ * one. No flipping.
+ */
+export function selectBlockLintel(
+  headHeightMm: number,
+  /**
+   * Modular heights of any height-makeup courses in the head area
+   * (above the lintel). Empty for a pure-body wall.
+   *
+   * Each entry is the makeup course's modular height (face + 10mm
+   * mortar). A wall typically has at most one of these. Examples:
+   *   - 20.71 (90mm face)  → pass [100]
+   *   - 20.140 (140mm)     → pass [150]
+   *
+   * The selector decomposes the head as
+   *   lintel.face + N × 200 + Σ(extraModules) + bearing mortar
+   * and picks whichever lintel produces the cleanest decomposition.
+   * For 1500mm head with a 100mm makeup course in the head area this
+   * picks 20.18 instead of 20.25 (20.25's 290mm + 6×200 = 1490 leaves
+   * no room for the 100mm course; 20.18's 390mm + 5×200 + 100 = 1490
+   * fits exactly with the makeup course slotted in).
+   */
+  extraCourseModulesMm: number[] = [],
+  /**
+   * Optional per-opening override - when set and the code refers to a
+   * lintel-tagged block in the live library, that block is used as the
+   * lintel instead of the auto-pick. Falls through to auto-pick when:
+   *   - the code is missing from the library (stale reference)
+   *   - the block is no longer tagged with the `lintel` role
+   * so the override never produces a hard failure.
+   */
+  overrideCode?: BlockCode
+): LintelSpec | null {
+  // Override path - honour the user's per-opening pick if it still
+  // resolves to a lintel-tagged block.
+  let block = undefined as ReturnType<typeof pickLintelBlockIn>
+  if (overrideCode) {
+    const candidate = BLOCK_LIBRARY[overrideCode]
+    if (candidate && candidate.roles.includes('lintel')) {
+      block = candidate
+    }
+  }
+  // Modular-fit selection: pick the lintel whose remaining head
+  // (head − lintel face) divides cleanest by the available course
+  // modulars. See `pickLintelBlockIn` for the rule.
+  if (!block) {
+    block = pickLintelBlockIn(
+      BLOCK_LIBRARY,
+      headHeightMm,
+      extraCourseModulesMm
+    )
+  }
+
+  if (!block) return null
+
+  return {
+    code: block.code,
+    verticalModuleMm: block.dimensions.heightMm + DEFAULT_MORTAR_JOINT_MM,
+    horizontalModuleMm: block.dimensions.widthMm + DEFAULT_MORTAR_JOINT_MM,
+    // Pull the per-block bearing override; default 200mm matches the
+    // historic constant that lived in blockCalc.ts. Users in regions
+    // with different conventions set lintelOverhangMm on their lintel
+    // blocks in the library editor.
+    overhangMm: block.lintelOverhangMm ?? 200,
+  }
+}
+
+// Brick-lintel bearing rules previously lived here as
+// brickLintelBearingMm + brickLintelTotalLengthMm. They were AU-specific
+// (Galintel catalogue, 100/150/200mm bearings) and have been replaced
+// by per-opening supply items with optional opening-width ranges (see
+// SupplyItem.openingWidthMinMm / openingWidthMaxMm). Users define
+// their own lintels in the material library now.

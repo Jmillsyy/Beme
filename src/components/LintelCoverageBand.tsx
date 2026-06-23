@@ -1,6 +1,6 @@
 /**
  * Small warning band rendered above / below the tally to surface lintel
- * coverage issues — openings without a matching lintel, overlapping
+ * coverage issues - openings without a matching lintel, overlapping
  * ranges between lintel items. Same UI in both block + brick tally
  * panels; the panel computes the warnings via the relevant per-mode
  * helper in lib/lintelCoverage and passes them in.
@@ -23,7 +23,6 @@ export default function LintelCoverageBand({ warnings }: Props) {
   return (
     <div className="my-3 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-100 text-xs overflow-hidden">
       <div className="px-3 py-2 bg-amber-500/15 border-b border-amber-500/30 flex items-center gap-2">
-        <span className="text-amber-300 text-base leading-none">⚠</span>
         <span className="font-semibold text-amber-200">
           Lintel coverage
         </span>

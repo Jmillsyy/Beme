@@ -13,12 +13,12 @@ type Mode = 'magic-link' | 'password'
 /**
  * Sign-in screen with two paths:
  *
- *   - Magic-link email: lowest-friction, works for anyone with any inbox. The
- *     primary option while you're dogfooding before Microsoft Entra is set up
- *     against your company's tenant.
- *   - Microsoft Outlook: corporate-tenant sign-in for the real product
- *     rollout. Visible whenever Supabase is configured; the user just picks
- *     whichever is right for them.
+ * - Magic-link email: lowest-friction, works for anyone with any inbox. The
+ * primary option while you're dogfooding before Microsoft Entra is set up
+ * against your company's tenant.
+ * - Microsoft Outlook: corporate-tenant sign-in for the real product
+ * rollout. Visible whenever Supabase is configured; the user just picks
+ * whichever is right for them.
  *
  * Once a user signs in, the route guard in `App.tsx` lets them through to the
  * dashboard. Studio Black themed throughout.
@@ -26,7 +26,7 @@ type Mode = 'magic-link' | 'password'
 export default function SignInPage() {
   const [busy, setBusy] = useState(false)
   const [mode, setMode] = useState<Mode>('magic-link')
-  // Email is shared across magic-link and password modes — switching mode
+  // Email is shared across magic-link and password modes - switching mode
   // shouldn't make the user retype it. Password is per-attempt; we never
   // persist it.
   const [email, setEmail] = useState('')
@@ -37,13 +37,24 @@ export default function SignInPage() {
   async function handleMicrosoftSignIn() {
     setBusy(true)
     setError(null)
+    // If the OAuth redirect lands, this page unloads and the guard below never
+    // fires. If it doesn't (provider misconfigured, redirect stalled, popup
+    // blocked) the user would otherwise be stranded on a spinner forever, so
+    // clear busy after a grace period and let them retry.
+    const stuckGuard = window.setTimeout(() => {
+      setBusy(false)
+      setError(
+        "Microsoft sign-in didn't open. Try again, or use an email link instead."
+      )
+    }, 12000)
     const { error } = await signInWithMicrosoft()
     if (error) {
+      window.clearTimeout(stuckGuard)
       setError(error.message)
       setBusy(false)
     }
     // On success the browser redirects to Microsoft and back; busy stays true
-    // until the redirect lands.
+    // until the redirect lands (or the guard above trips).
   }
 
   async function handleMagicLinkSubmit(e: React.FormEvent) {
@@ -72,7 +83,7 @@ export default function SignInPage() {
       setBusy(false)
       return
     }
-    // Supabase fires the onAuthStateChange listener in useAuth — the route
+    // Supabase fires the onAuthStateChange listener in useAuth - the route
     // guard in App.tsx will swap to the dashboard on next render.
     setBusy(false)
   }
@@ -233,7 +244,7 @@ export default function SignInPage() {
                 disabled={busy || !isSupabaseConfigured}
                 className="w-full px-5 py-3 rounded-lg border border-ink-600 hover:bg-ink-700 text-ink-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-3"
               >
-                {/* Microsoft "windows" logo — four coloured squares */}
+                {/* Microsoft "windows" logo - four coloured squares */}
                 <svg viewBox="0 0 21 21" width="18" height="18" aria-hidden>
                   <rect x="1" y="1" width="9" height="9" fill="#f25022" />
                   <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
@@ -248,7 +259,7 @@ export default function SignInPage() {
           {error && <p className="mt-4 text-sm text-rose-300">{error}</p>}
 
           <p className="mt-6 text-[11px] text-ink-400 leading-relaxed text-center">
-            Beme never sees your password — the sign-in is handled by Supabase / Microsoft
+            Beme never sees your password - the sign-in is handled by Supabase / Microsoft
             and returns a secure token. By signing in you agree to your projects being
             stored in our cloud database (Sydney region).
           </p>
