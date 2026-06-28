@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { confirm } from '../lib/confirm'
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
 import {
-  PROTECTED_BLOCK_CODES,
   removeBlock,
   resetBlockLibrary,
   upsertBlock,
@@ -541,10 +540,10 @@ function BlockEditor({ existing, existingCodes, roleSeed, onSave, onCancel }: Bl
   // `lintel` role is ticked. Empty string == "not set" (let the calc
   // engine use its default of 200mm bearing, or fall through to height-
   // based selection when the range is unset).
-  const [lintelMinHeadHeightMm, setLintelMinHeadHeightMm] = useState<number | ''>(
+  const [lintelMinHeadHeightMm] = useState<number | ''>(
     existing?.lintelMinHeadHeightMm ?? ''
   )
-  const [lintelMaxHeadHeightMm, setLintelMaxHeadHeightMm] = useState<number | ''>(
+  const [lintelMaxHeadHeightMm] = useState<number | ''>(
     existing?.lintelMaxHeadHeightMm ?? ''
   )
   const [lintelOverhangMm, setLintelOverhangMm] = useState<number | ''>(

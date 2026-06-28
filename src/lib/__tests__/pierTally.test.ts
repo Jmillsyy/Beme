@@ -13,6 +13,8 @@ import {
 
 const pmSingle: PierMakeup = { id: 'pm1', name: 'single', coursePattern: ['20.01'], suggestedPlacement: 'freestanding' }
 const pmAlt: PierMakeup = { id: 'pm2', name: 'alt', coursePattern: ['20.01', '20.48'], suggestedPlacement: 'freestanding' }
+// 40.925 is 390 deep, 20.01 is 190 deep: the 190 course fills the 390 footprint.
+const pmDepth: PierMakeup = { id: 'pm3', name: 'depth-fill', coursePattern: ['40.925', '20.01'], suggestedPlacement: 'freestanding' }
 
 const MK: WallMakeup = {
   id: 'mk', name: 'std 200', bondType: 'stretcher', heightMm: 2400,
@@ -33,6 +35,13 @@ describe('freestanding pier tally', () => {
   it('cycles a multi-block pattern course by course', () => {
     const p: FreestandingPier = { id: 'fp', type: 'freestanding', x: 0, y: 0, heightMm: 2400, pierMakeupId: 'pm2' }
     expect(calculateFreestandingPierTally(p, pmAlt)).toEqual({ '20.01': 6, '20.48': 6 })
+  })
+
+  it('fills a shallow course to match the deepest course footprint', () => {
+    const p: FreestandingPier = { id: 'fp', type: 'freestanding', x: 0, y: 0, heightMm: 2400, pierMakeupId: 'pm3' }
+    // 12 courses, alternating: 6 × 40.925 (390 deep, one each) and 6 × 20.01
+    // courses that each lay TWO 190-deep blocks to fill the 390 footprint.
+    expect(calculateFreestandingPierTally(p, pmDepth)).toEqual({ '40.925': 6, '20.01': 12 })
   })
 
   it('falls back to the default pattern when no makeup is supplied', () => {

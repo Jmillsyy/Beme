@@ -547,6 +547,84 @@ export interface PierMakeup {
 }
 
 /**
+ * A footing-level zone drawn over the plan that sets the footing (base) level
+ * for everything inside it. Walls whose footprint falls within a zone render
+ * at that level in 3D, so one plan can show a garage slab dropped below the
+ * house, a step-down lounge, etc.
+ *
+ * The outline is a rectilinear polygon (`points`, plan mm - the same coordinate
+ * space walls live in). `x/y/widthMm/heightMm` is the cached bounding box, kept
+ * in sync so quick bounds checks and legacy (pre-polygon) zones keep working;
+ * a zone with no `points` is a plain rectangle equal to that bounding box.
+ * `footingLevelMm` is relative to the project datum (0 = default ground);
+ * negative drops below it.
+ */
+export interface FootingZone {
+  id: string
+  /** Bounding-box top-left in real-world mm. */
+  x: number
+  y: number
+  /** Bounding-box size in real-world mm. */
+  widthMm: number
+  heightMm: number
+  /** Footing level in mm relative to datum (0). Negative = dropped lower. */
+  footingLevelMm: number
+  /**
+   * Polygon outline (plan mm), implicitly closed. Absent = a plain rectangle
+   * equal to the bounding box above.
+   */
+  points?: Array<{ x: number; y: number }>
+}
+
+/** A zone's outline as polygon points (derives a rectangle when `points` is unset). */
+export function getFootingPoints(z: FootingZone): Array<{ x: number; y: number }> {
+  if (z.points && z.points.length >= 3) return z.points
+  return [
+    { x: z.x, y: z.y },
+    { x: z.x + z.widthMm, y: z.y },
+    { x: z.x + z.widthMm, y: z.y + z.heightMm },
+    { x: z.x, y: z.y + z.heightMm },
+  ]
+}
+
+/** Bounding box of a list of points. */
+export function footingBounds(points: Array<{ x: number; y: number }>): {
+  x: number
+  y: number
+  widthMm: number
+  heightMm: number
+} {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const p of points) {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, widthMm: 0, heightMm: 0 }
+  return { x: minX, y: minY, widthMm: maxX - minX, heightMm: maxY - minY }
+}
+
+/** Even-odd point-in-polygon test against a footing zone's outline. */
+export function pointInFootingZone(px: number, py: number, z: FootingZone): boolean {
+  const pts = getFootingPoints(z)
+  let inside = false
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x
+    const yi = pts[i].y
+    const xj = pts[j].x
+    const yj = pts[j].y
+    const intersect =
+      yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+/**
  * Opening (window or door) on a wall.
  *
  * Position is measured along the wall (start to end) in mm.

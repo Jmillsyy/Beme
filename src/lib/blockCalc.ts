@@ -57,6 +57,15 @@ import {
   resolveCourseBlocks,
 } from './makeups'
 import { resolveBlockByRole } from './blockRoles'
+import {
+  calculateCourseStack,
+  resolveHmModules,
+  type CourseStack,
+} from './courseStack'
+// Re-export the shared course-stack picker (the single source of truth)
+// so existing importers of blockCalc - WorkspaceView3D, tests - keep
+// working after the move to ./courseStack.
+export { calculateCourseStack, resolveHmModules, type CourseStack }
 
 /**
  * Geometric derivation: a block of front-face width w_f, rear-face width w_r, depth d
@@ -162,22 +171,16 @@ export function curveZoneForRadius(radiusMm: number): CurveZone {
 
 // Modular constants (block face + mortar joint)
 
-/** Modular height of a standard 20.48-height course (190 + 10). */
-const COURSE_MODULE_MM = 200
+// COURSE_MODULE_MM (200) moved to ./courseStack with the picker.
 /** Modular length of a standard body block 20.48 (390 + 10). */
 const BODY_BLOCK_MODULE_MM = 400
 /** Modular length of a full end block 20.01 (390 + 10). */
 const FULL_END_MODULE_MM = 400
-/** Modular height of a 20.71 height-makeup course (90 block + 10 mortar
- * joint = 100mm). The makeup block sits in a course with its own mortar
- * bed, same as a standard. */
-const HEIGHT_MAKEUP_71_MM = 100
-/** Modular height of a 20.140 height-makeup course (140 block + 10 mortar
- * joint = 150mm). E.g. 13 standards + 1 × 20.140 = 13×200 + 150 = 2750mm,
- * which is also the closest achievable height when the user requests
- * 2740mm - the rounding-up logic in calculateCourseStack applies the
- * 20.140 and notes the 10 mm overage in the export Assumptions. */
-const HEIGHT_MAKEUP_140_MM = 150
+// Height-makeup band modulars are no longer hardcoded. The picker
+// receives each band's ACTUAL block face + mortar from the active
+// library (or undefined when the library has no such block), so AU's
+// 20.71 / 20.140, a US 4in CMU, or a library with no makeup block all
+// score against what will really render. See resolveHmModules.
 
 // Single-block-stub threshold is derived per wall from the body block's
 // module (face + mortar) - see planWall and calculateProjectTally - so it
@@ -293,184 +296,9 @@ function includesCourseTypeForFractions(
   return selected.includes(bucket)
 }
 
-// Course stack (height)
-
-export interface CourseStack {
-  /** Count of standard (20.48-height = 200mm) courses, including base and top. */
-  standardCount: number
-  /** True if a 20.71 height-makeup row is included. */
-  has71: boolean
-  /** True if a 20.140 height-makeup row is included. */
-  has140: boolean
-  /** Total courses in the wall (standard + 20.71 + 20.140). */
-  totalCourses: number
-  /** True if the wall height could be made up exactly with the available block heights. */
-  valid: boolean
-  /** Requested wall height in mm (what the user asked for). */
-  requestedHeightMm: number
-  /** Actual built height in mm given the stack - `standardCount * 200 + has71 * 90 + has140 * 140`. */
-  actualHeightMm: number
-  /** Difference between actual and requested (always ≥ 0 - we round UP). */
-  overageMm: number
-}
-
-/**
- * Decide how the wall height breaks down into courses.
- *
- * Modular course heights (block + 10 mm mortar joint):
- * Standard (20.48): 200mm (190 + 10)
- * 20.71:            100mm (90 + 10)
- * 20.140:           150mm (140 + 10)
- *
- * Rather than failing when the requested height doesn't sum exactly from
- * the available course heights, we pick the SMALLEST stack whose total is
- * ≥ the requested height - i.e. round UP to the nearest achievable height.
- * The closest-size makeup block gets applied and the bricklayer trims
- * mortar on site to suit. The overage is surfaced in the export's
- * Assumptions section so the estimator sees they're quoting for slightly
- * more than requested.
- *
- * Examples:
- * 3000mm → 15 standard (exact, 3000)
- * 2700mm → 13 standard + 1× 20.71 (exact, 2700)
- * 2750mm → 13 standard + 1× 20.140 (exact, 2750)
- * 2740mm → 13 standard + 1× 20.140 (2750, overage 10mm - the 20.140 is
- * the closest-size block that gets the wall ≥ the request)
- * 2850mm → 13 standard + 1× 20.71 + 1× 20.140 (exact, 2850)
- * 3050mm → 14 standard + 1× 20.71 + 1× 20.140 = 3050 (exact)
- */
-export function calculateCourseStack(
-  heightMm: number,
-  /**
-   * Optional standard course modular (face + mortar). When provided,
-   * replaces the hardcoded 200mm (AU 20.48: 190 + 10) so the stack
-   * counts courses for the actual block-in-use. Critical for libraries
-   * whose body block isn't 190mm tall - e.g. US CMU8 (194 + 10 = 204).
-   */
-  courseModuleMm: number = COURSE_MODULE_MM,
-  /**
-   * Optional ACTUAL height-makeup-band modulars (face + mortar) so
-   * the stack picker scores combinations against what will really
-   * render, not nominal AU values. Without this, a US library (e.g.
-   * CMU8-HH at 92mm face) gets the nominal 150mm budgeted but only
-   * 102mm actually emitted, leaving the wall ~48mm shorter than the
-   * picker thought it would be. Defaults preserve legacy AU values
-   * for callers that don't yet thread library-specific heights.
-   */
-  hm140ModuleMm: number = HEIGHT_MAKEUP_140_MM,
-  hm71ModuleMm: number = HEIGHT_MAKEUP_71_MM,
-): CourseStack {
-  // Enumerate every reasonable (N, has71, has140) combination and
-  // pick the one that lands the wall closest to the user's target,
-  // PREFERRING combinations that don't overshoot. Real masons would
-  // rather have a wall a few mm short of nominal (which the top of
-  // an adjacent slab or a strip flashing absorbs) than overshoot it
-  // and have to cut the top course. Height-makeup blocks (a 90 / 140
-  // mm block instead of a full course) are what make under-target
-  // landings possible - for a 2400 mm wall with US CMU8 (204 mm
-  // modular), 11 std + 1 × 92 mm HM = 2346 mm, beating 12 × 204 =
-  // 2448 mm (48 mm over).
-  //
-  // Algorithm:
-  // 1. Among combinations whose total ≤ heightMm, pick the one
-  // with the smallest undershoot (highest total).
-  // 2. If no combination fits under (e.g. heightMm smaller than
-  // one course), fall back to the smallest overshoot.
-  // 3. Tie-break by fewer total courses.
-  const maxN = Math.ceil(heightMm / courseModuleMm) + 2
-  type Candidate = {
-    N: number
-    has71: boolean
-    has140: boolean
-    total: number
-    dist: number
-    nCourses: number
-  }
-  let bestUnder: Candidate | null = null
-  let bestOver: Candidate | null = null
-  // Suppress hm71/hm140 module params from the dead-arg lint -
-  // the picker no longer considers HM courses (see below).
-  void hm140ModuleMm
-  void hm71ModuleMm
-  for (let N = 0; N <= maxN; N++) {
-    // Height-makeup courses produce library-specific visual + tally
-    // behaviour: AU's 200mm modular needs none, US's CMU8-HH lands
-    // one short course, UK's CB-65 needs two coursing bricks. That
-    // inconsistency surprised users - same wall height, totally
-    // different stacks. Skip HM enumeration entirely so every
-    // library uses the same rule: pick the closest std-only stack,
-    // let joint scaling absorb the remainder. has71 / has140 stay
-    // FALSE on every candidate.
-    const has71 = false
-    const has140 = false
-    {
-      {
-        const total =
-          N * courseModuleMm +
-          (has71 ? 0 : 0) +
-          (has140 ? 0 : 0)
-        if (total <= 0) continue
-        const dist = Math.abs(total - heightMm)
-        const nCourses = N
-        const cand: Candidate = { N, has71, has140, total, dist, nCourses }
-        if (total <= heightMm) {
-          if (
-            !bestUnder ||
-            dist < bestUnder.dist ||
-            (dist === bestUnder.dist && nCourses < bestUnder.nCourses)
-          ) {
-            bestUnder = cand
-          }
-        } else {
-          if (
-            !bestOver ||
-            dist < bestOver.dist ||
-            (dist === bestOver.dist && nCourses < bestOver.nCourses)
-          ) {
-            bestOver = cand
-          }
-        }
-      }
-    }
-  }
-  // Pick whichever side is closer to the target. The earlier 'always
-  // prefer undershoot' rule made sense when HM courses could fill
-  // the gap; without HM, undershooting by ~half a course leaves the
-  // wall noticeably short. Now: simple smallest absolute distance.
-  // Tie-break by picking the OVER stack (more masonry beats less for
-  // a fixed height target).
-  const best =
-    bestUnder && bestOver
-      ? bestOver.dist < bestUnder.dist
-        ? bestOver
-        : bestOver.dist === bestUnder.dist
-          ? bestOver
-          : bestUnder
-      : bestUnder ?? bestOver
-  if (!best) {
-    const fallbackN = Math.ceil(heightMm / courseModuleMm)
-    return {
-      standardCount: fallbackN,
-      has71: false,
-      has140: false,
-      totalCourses: fallbackN,
-      valid: false,
-      requestedHeightMm: heightMm,
-      actualHeightMm: fallbackN * courseModuleMm,
-      overageMm: fallbackN * courseModuleMm - heightMm,
-    }
-  }
-  return {
-    standardCount: best.N,
-    has71: best.has71,
-    has140: best.has140,
-    totalCourses: best.N + (best.has71 ? 1 : 0) + (best.has140 ? 1 : 0),
-    valid: true,
-    requestedHeightMm: heightMm,
-    actualHeightMm: best.total,
-    overageMm: best.total - heightMm,
-  }
-}
+// Course stack (height): CourseStack / calculateCourseStack /
+// resolveHmModules now live in ./courseStack (single source of truth),
+// imported and re-exported at the top of this file.
 
 // Length fit (body count + fractions)
 
@@ -1372,12 +1200,19 @@ export function buildCourses(stack: CourseStack, makeup: WallMakeup): CourseSpec
     const courseNumber = courses.length + 1
     const b = blocksForCourse(courseNumber)
     if (matchExactHeight) {
-      // Heal - falls back to height-makeup tagged block if the saved
-      // code isn't in the library, else to a body block.
-      courses.push({
-        type: 'height-71',
-        bodyBlock: healCode(b.heightMakeup71BlockCode, 'height-makeup'),
-      })
+      // Resolve the small (90mm) makeup block the same robust way the 140
+      // course does. The makeup's configured code is honoured when it is
+      // really a height-makeup block (a user override or a series-range
+      // default), but resolveCourseBlocks falls the field back to the BODY
+      // block when nothing sets it, and healCode keeps a valid body code
+      // as-is - so relying on the field alone silently laid a body block
+      // and the 20.71 never appeared in the render or tally. Target 100
+      // (90mm block + 10mm joint) finds the library's small makeup.
+      const configured = healCode(b.heightMakeup71BlockCode, 'height-makeup')
+      const code71 = BLOCK_LIBRARY[configured]?.roles.includes('height-makeup')
+        ? configured
+        : (pickHeightMakeupBlock(100, heightMakeupDepthMm)?.code ?? configured)
+      courses.push({ type: 'height-71', bodyBlock: code71 })
     } else {
       courses.push({
         type: 'height-71',
@@ -2084,16 +1919,8 @@ export function planWallLayout(
     typeof bodyHeightForStack === 'number'
       ? bodyHeightForStack + MORTAR_MM
       : undefined
-  const bodyDepthForHm =
-    BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.depthMm
-  const hm140Block = pickHeightMakeupBlock(140, bodyDepthForHm)
-  const hm71Block = pickHeightMakeupBlock(71, bodyDepthForHm)
-  const hm140Module = hm140Block
-    ? hm140Block.dimensions.heightMm + MORTAR_MM
-    : undefined
-  const hm71Module = hm71Block
-    ? hm71Block.dimensions.heightMm + MORTAR_MM
-    : undefined
+  const { hm71ModuleMm: hm71Module, hm140ModuleMm: hm140Module } =
+    resolveHmModules(makeup)
   const stack = calculateCourseStack(
     heightMm,
     courseModuleForStack,
@@ -2395,8 +2222,6 @@ export function planWallLayout(
     // the same formula applies to both sides of the corner.
     const naturalStartCornerW = baseStartEndModular - MORTAR_MM
     const naturalEndCornerW = baseEndEndModular - MORTAR_MM
-    const startCornerW = ownsStartCorner ? naturalStartCornerW : 0
-    const endCornerW = ownsEndCorner ? naturalEndCornerW : 0
 
     type CornerSeriesPath = 'baseline' | 'thick' | 'thin'
     interface CornerCorrection {
@@ -3326,9 +3151,12 @@ export function calculateTiedPierTally(
   const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
   const bodyHeightMm =
     BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+  const hmMods = resolveHmModules(makeup)
   const stack = calculateCourseStack(
     heightMm,
     typeof bodyHeightMm === 'number' ? bodyHeightMm + MORTAR_MM : undefined,
+    hmMods.hm140ModuleMm,
+    hmMods.hm71ModuleMm,
   )
   const N =
     makeup.coursePattern && makeup.coursePattern.length > 0
@@ -3362,7 +3190,26 @@ export function calculateFreestandingPierTally(
     (BLOCK_LIBRARY[pattern[0]]?.dimensions.heightMm ?? 190) + MORTAR_MM
   const courseCount = Math.floor(pier.heightMm / pierCourseModuleMm)
   if (courseCount <= 0) return {}
-  return tallyFromCoursePattern(pattern, courseCount)
+  // Footprint depth = the deepest course in the pattern. A standalone pier
+  // course built from shallower blocks (e.g. 190-deep on a 390 pier) lays as
+  // many of them as needed to fill that depth, so the layer matches the
+  // deepest course rather than leaving a single block floating. Tied piers
+  // stay at one per course - the wall fills the rest (see calculateTiedPierTally).
+  const footprintDepthMm = pattern.reduce(
+    (m, c) => Math.max(m, BLOCK_LIBRARY[c]?.dimensions.depthMm ?? 0),
+    0
+  )
+  const tally: BlockTally = {}
+  for (let i = 0; i < courseCount; i++) {
+    const code = pattern[i % pattern.length]
+    const d = BLOCK_LIBRARY[code]?.dimensions.depthMm ?? 190
+    const perCourse =
+      d > 0
+        ? Math.max(1, Math.round((footprintDepthMm + MORTAR_MM) / (d + MORTAR_MM)))
+        : 1
+    addToTally(tally, code, perCourse)
+  }
+  return tally
 }
 
 // Project-level aggregation
@@ -3470,11 +3317,14 @@ export function calculateProjectTally(
     const heightMm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
     const bodyHeightForStack =
       BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+    const hmMods = resolveHmModules(makeup)
     const stack = calculateCourseStack(
       heightMm,
       typeof bodyHeightForStack === 'number'
         ? bodyHeightForStack + MORTAR_MM
         : undefined,
+      hmMods.hm140ModuleMm,
+      hmMods.hm71ModuleMm,
     )
     const totalCourses =
       makeup.coursePattern && makeup.coursePattern.length > 0
@@ -3562,11 +3412,14 @@ export function calculateCornerAdjustment(
     const heightMm = firstWall.heightMmOverride ?? getMakeupHeightMm(makeup)
     const bodyHeightForStack =
       BLOCK_LIBRARY[makeup.bodyBlockCode]?.dimensions.heightMm
+    const hmMods = resolveHmModules(makeup)
     const stack = calculateCourseStack(
       heightMm,
       typeof bodyHeightForStack === 'number'
         ? bodyHeightForStack + MORTAR_MM
         : undefined,
+      hmMods.hm140ModuleMm,
+      hmMods.hm71ModuleMm,
     )
     const courses = buildCourses(stack, makeup)
     if (courses.length <= 0) continue

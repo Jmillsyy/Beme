@@ -1,7 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Stage, Layer, Line, Circle, Rect, Text, Group } from 'react-konva'
 import type Konva from 'konva'
-import type { Opening, Pier, Wall } from '../types/walls'
+import {
+  footingBounds,
+  getFootingPoints,
+  pointInFootingZone,
+} from '../types/walls'
+import type { FootingZone, Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, projectOntoArc, sampleArc } from '../lib/curveGeom'
 import { formatLengthShort, parseLengthInput } from '../lib/units'
 import { getUserSettings, useUserSettings } from '../lib/userSettings'
@@ -113,6 +118,89 @@ function MeasurementChip({
   )
 }
 
+// Distinct colours so adjacent footing zones read as separate areas. Hashed
+// off the zone id so a zone keeps its colour across renders, reorders and
+// re-selects. Rendered as a light rgba fill + a full-strength stroke.
+const FOOTING_ZONE_RGB: ReadonlyArray<readonly [number, number, number]> = [
+  [37, 99, 235], // blue
+  [5, 150, 105], // green
+  [217, 119, 6], // amber
+  [124, 58, 237], // violet
+  [219, 39, 119], // pink
+  [13, 148, 136], // teal
+  [234, 88, 12], // orange
+  [100, 116, 139], // slate
+]
+function footingZoneRgb(id: string): readonly [number, number, number] {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
+  return FOOTING_ZONE_RGB[h % FOOTING_ZONE_RGB.length]
+}
+/**
+ * Right-angle lock for the corner-to-corner footing tool: constrain the next
+ * vertex to a horizontal or vertical segment from the last one (whichever the
+ * cursor is more aligned with). Shift draws a free (angled) segment.
+ */
+function footingOrtho(
+  last: { x: number; y: number },
+  cursor: { x: number; y: number },
+  shift: boolean,
+): { x: number; y: number } {
+  if (shift) return cursor
+  return Math.abs(cursor.x - last.x) >= Math.abs(cursor.y - last.y)
+    ? { x: cursor.x, y: last.y }
+    : { x: last.x, y: cursor.y }
+}
+type XY = { x: number; y: number }
+function footingPointInPoly(px: number, py: number, pts: XY[]): boolean {
+  let inside = false
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x
+    const yi = pts[i].y
+    const xj = pts[j].x
+    const yj = pts[j].y
+    const intersect =
+      yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+function footingCentroid(pts: XY[]): XY {
+  let sx = 0
+  let sy = 0
+  for (const p of pts) {
+    sx += p.x
+    sy += p.y
+  }
+  const n = pts.length || 1
+  return { x: sx / n, y: sy / n }
+}
+/**
+ * Do two zone outlines overlap? Each vertex is nudged 1mm toward its own
+ * centroid before the inside test, so two zones that merely share an edge or
+ * corner (the flush case we WANT) don't count as overlapping - only a real
+ * interior intersection does.
+ */
+function footingPolysOverlap(a: XY[], b: XY[]): boolean {
+  const ca = footingCentroid(a)
+  const cb = footingCentroid(b)
+  const inset = (p: XY, c: XY): XY => {
+    const dx = c.x - p.x
+    const dy = c.y - p.y
+    const len = Math.hypot(dx, dy) || 1
+    return { x: p.x + (dx / len) * 1, y: p.y + (dy / len) * 1 }
+  }
+  for (const p of a) {
+    const ip = inset(p, ca)
+    if (footingPointInPoly(ip.x, ip.y, b)) return true
+  }
+  for (const p of b) {
+    const ip = inset(p, cb)
+    if (footingPointInPoly(ip.x, ip.y, a)) return true
+  }
+  return false
+}
+
 interface WallDrawingLayerProps {
   /**
    * Surfaces the underlying Konva.Stage to the workspace. Used by the
@@ -195,6 +283,20 @@ interface WallDrawingLayerProps {
   placingTiedPier?: boolean
   /** Whether placing-freestanding-pier mode is active. Click anywhere on the canvas. */
   placingFreestandingPier?: boolean
+  /** Whether footing-zone draw mode is active (click two corners to make a rectangle). */
+  placingFootingZone?: boolean
+  /** Footing zones drawn on the current page. */
+  footingZones?: FootingZone[]
+  /** Currently selected footing-zone id. */
+  selectedFootingZoneId?: string | null
+  /** Fired with the closed polygon outline (plan mm) when the user closes it; the parent opens the level modal. */
+  onFootingZoneDrawn?: (points: Array<{ x: number; y: number }>) => void
+  /** Fired when a zone is clicked (or null when the empty plan is clicked). */
+  onFootingZoneSelect?: (id: string | null) => void
+  /** Fired when a zone is moved (drag). */
+  onFootingZoneUpdate?: (id: string, patch: Partial<FootingZone>) => void
+  /** Fired on double-click to re-open the level modal for that zone. */
+  onFootingZoneEditLevel?: (id: string) => void
   /**
    * True while the user is actively wheel-zooming (the visual zoom is ahead of
    * the rasterised zoom). When true the layer suppresses hover state updates,
@@ -928,6 +1030,13 @@ function WallDrawingLayerInner({
   onTiedPierPlaced,
   onFreestandingPierPlaced,
   onPierSelect,
+  placingFootingZone = false,
+  footingZones = [],
+  selectedFootingZoneId = null,
+  onFootingZoneDrawn,
+  onFootingZoneSelect,
+  onFootingZoneUpdate,
+  onFootingZoneEditLevel,
   onCancelDraw,
 }: WallDrawingLayerProps) {
   const pxToMm = (px: number) => px / pxPerMmAtCurrentZoom
@@ -1017,6 +1126,98 @@ function WallDrawingLayerInner({
   const [tiedPierHoverSide, setTiedPierHoverSide] = useState<'left' | 'right'>('left')
   /** Live cursor in mm while placing a freestanding pier. */
   const [freestandingPierHoverMm, setFreestandingPierHoverMm] = useState<Point | null>(null)
+  // Footing-zone drawing: a rectilinear polygon built corner by corner.
+  // footingDraftPoints holds the committed vertices; footingZoneHoverMm is the
+  // live (ortho-locked, snapped) next vertex used for the preview segment.
+  const [footingDraftPoints, setFootingDraftPoints] = useState<Point[]>([])
+  const [footingZoneHoverMm, setFootingZoneHoverMm] = useState<Point | null>(null)
+  // True when, with no vertex down yet, the cursor sits inside an existing zone
+  // - the cursor turns "not-allowed" and the first click is rejected so a new
+  // zone can't be started on top of another.
+  const [footingStartBlocked, setFootingStartBlocked] = useState(false)
+
+  // Snap a point to the corners / edges of existing zones (and the in-progress
+  // polygon's own vertices) so a new footing can be drawn flush off another.
+  // Rectilinear edges sit at vertex coordinates, so snapping each axis to the
+  // nearest vertex x / y gives both corner and edge snapping. 8px radius.
+  const footingSnapRadiusMm = 8 / pxPerMmAtCurrentZoom
+  const snapFootingPointMm = (m: Point): Point => {
+    const xs: number[] = []
+    const ys: number[] = []
+    for (const z of footingZones) {
+      for (const p of getFootingPoints(z)) {
+        xs.push(p.x)
+        ys.push(p.y)
+      }
+    }
+    for (const p of footingDraftPoints) {
+      xs.push(p.x)
+      ys.push(p.y)
+    }
+    let sx = m.x
+    let sy = m.y
+    let bestDx = footingSnapRadiusMm
+    let bestDy = footingSnapRadiusMm
+    for (const x of xs) {
+      const d = Math.abs(m.x - x)
+      if (d < bestDx) {
+        bestDx = d
+        sx = x
+      }
+    }
+    for (const y of ys) {
+      const d = Math.abs(m.y - y)
+      if (d < bestDy) {
+        bestDy = d
+        sy = y
+      }
+    }
+    return { x: sx, y: sy }
+  }
+  // Snap a dragged zone's whole outline to existing zones' edges / corners:
+  // pick the small extra offset that aligns one of the moved vertices to a
+  // nearby vertex x / y line (per axis), so it lands flush on another footing.
+  const footingDragSnap = (
+    pts: Point[],
+    dxMm: number,
+    dyMm: number,
+    excludeId: string,
+  ): { dx: number; dy: number } => {
+    const candXs: number[] = []
+    const candYs: number[] = []
+    for (const z of footingZones) {
+      if (z.id === excludeId) continue
+      for (const p of getFootingPoints(z)) {
+        candXs.push(p.x)
+        candYs.push(p.y)
+      }
+    }
+    let ax = 0
+    let bestX = footingSnapRadiusMm
+    for (const p of pts) {
+      const mx = p.x + dxMm
+      for (const cx of candXs) {
+        const d = cx - mx
+        if (Math.abs(d) < bestX) {
+          bestX = Math.abs(d)
+          ax = d
+        }
+      }
+    }
+    let ay = 0
+    let bestY = footingSnapRadiusMm
+    for (const p of pts) {
+      const my = p.y + dyMm
+      for (const cy of candYs) {
+        const d = cy - my
+        if (Math.abs(d) < bestY) {
+          bestY = Math.abs(d)
+          ay = d
+        }
+      }
+    }
+    return { dx: dxMm + ax, dy: dyMm + ay }
+  }
 
   // Derive current pixel positions from mm state - these recompute automatically on zoom.
   const startPx: Point | null = startMm ? { x: mmToPx(startMm.x), y: mmToPx(startMm.y) } : null
@@ -1570,6 +1771,15 @@ function WallDrawingLayerInner({
   }, [placingFreestandingPier])
 
   useEffect(() => {
+    // Leaving footing-zone mode drops any in-progress polygon.
+    if (!placingFootingZone) {
+      setFootingDraftPoints([])
+      setFootingZoneHoverMm(null)
+      setFootingStartBlocked(false)
+    }
+  }, [placingFootingZone])
+
+  useEffect(() => {
     if (!drawingCurveMode) {
       setCurveAnchorA(null)
       setCurveAnchorB(null)
@@ -1585,6 +1795,20 @@ function WallDrawingLayerInner({
       const tgt = e.target as HTMLElement | null
       const inField =
         !!tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)
+
+      // Footing polygon: Enter closes the in-progress outline (3+ vertices).
+      if (
+        !inField &&
+        placingFootingZone &&
+        e.key === 'Enter' &&
+        footingDraftPoints.length >= 3
+      ) {
+        e.preventDefault()
+        onFootingZoneDrawn?.(footingDraftPoints)
+        setFootingDraftPoints([])
+        setFootingZoneHoverMm(null)
+        return
+      }
 
       // CAD-style typed length while drawing - only valid once the first
       // click has anchored startMm. Direction still comes from the cursor;
@@ -1835,6 +2059,8 @@ function WallDrawingLayerInner({
         setControlJointHover(null)
         setTiedPierHover(null)
         setFreestandingPierHoverMm(null)
+        setFootingDraftPoints([])
+        setFootingZoneHoverMm(null)
 
         // Drop any selection so the canvas is in pure view mode
         const hasWallSelection =
@@ -1856,7 +2082,7 @@ function WallDrawingLayerInner({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded, openingPlacementStart, openingHoverProjection, typedOpeningWidthMm, onOpeningPlaced, curveAnchorA, curveAnchorB, curveCursorMm, typedCurveRadiusMm, onCurvedWallAdded])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded, openingPlacementStart, openingHoverProjection, typedOpeningWidthMm, onOpeningPlaced, curveAnchorA, curveAnchorB, curveCursorMm, typedCurveRadiusMm, onCurvedWallAdded, placingFootingZone, footingDraftPoints, onFootingZoneDrawn])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -2021,6 +2247,36 @@ function WallDrawingLayerInner({
     // Identity transform without a crop - same value as before.
     const raw = stage.getRelativePointerPosition()
     if (!raw) return
+
+    if (placingFootingZone) {
+      const snapped = snapFootingPointMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      if (footingDraftPoints.length === 0) {
+        // First vertex - can't START inside an existing zone.
+        if (footingZones.some((z) => pointInFootingZone(snapped.x, snapped.y, z)))
+          return
+        setFootingDraftPoints([snapped])
+        setFootingZoneHoverMm(snapped)
+        return
+      }
+      const last = footingDraftPoints[footingDraftPoints.length - 1]
+      const next = footingOrtho(last, snapped, e.evt.shiftKey)
+      const first = footingDraftPoints[0]
+      // Click on / near the first vertex (with 3+ points) closes the polygon.
+      if (
+        footingDraftPoints.length >= 3 &&
+        distance(snapped, first) < footingSnapRadiusMm
+      ) {
+        onFootingZoneDrawn?.(footingDraftPoints)
+        setFootingDraftPoints([])
+        setFootingZoneHoverMm(null)
+        return
+      }
+      // Ignore a zero-length segment (clicking the same spot twice).
+      if (distance(next, last) < 1) return
+      setFootingDraftPoints([...footingDraftPoints, next])
+      setFootingZoneHoverMm(next)
+      return
+    }
 
     if (drawingMode) {
       // First click: just record the anchor (axis-snap has nothing to anchor
@@ -2309,6 +2565,25 @@ function WallDrawingLayerInner({
     if (!stage) return
     const raw = stage.getRelativePointerPosition()
     if (!raw) return
+
+    if (placingFootingZone) {
+      const snapped = snapFootingPointMm({ x: pxToMm(raw.x), y: pxToMm(raw.y) })
+      if (footingDraftPoints.length === 0) {
+        // No vertex down yet: crosshair follows, blocked when over a zone.
+        setCursorMm(snapped)
+        setFootingZoneHoverMm(snapped)
+        setFootingStartBlocked(
+          footingZones.some((z) => pointInFootingZone(snapped.x, snapped.y, z)),
+        )
+      } else {
+        // Ortho-lock the live segment from the last committed vertex.
+        const last = footingDraftPoints[footingDraftPoints.length - 1]
+        const next = footingOrtho(last, snapped, e.evt.shiftKey)
+        setCursorMm(next)
+        setFootingZoneHoverMm(next)
+      }
+      return
+    }
 
     if (drawingMode) {
       // While the user is moving the cursor for the second click, anchor
@@ -2691,14 +2966,16 @@ function WallDrawingLayerInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walls, wallThicknessByWallId, dragPreviewMm, pxPerMmAtCurrentZoom])
 
-  const containerCursor =
-    drawingMode ||
-    placingOpening ||
-    drawingCurveMode ||
-    placingControlJoint ||
-    placingTiedPier ||
-    placingFreestandingPier ||
-    placingRuler
+  const containerCursor = footingStartBlocked
+    ? 'not-allowed'
+    : drawingMode ||
+        placingOpening ||
+        drawingCurveMode ||
+        placingControlJoint ||
+        placingTiedPier ||
+        placingFreestandingPier ||
+        placingRuler ||
+        placingFootingZone
       ? 'crosshair'
       : 'inherit'
 
@@ -3250,6 +3527,127 @@ function WallDrawingLayerInner({
             project's pier block (via the `pierFootprintMm` prop) so US /
             UK / etc. piers don't render at the AU 390mm size - falls
             back to 390 when the prop isn't supplied. */}
+        {/* Footing-level zones (block mode): translucent rectilinear polygons
+            over the plan. Everything inside renders at the zone's footing level
+            in 3D. Click to select, double-click to set the level, drag to move,
+            Delete removes the selected one. Non-interactive while drawing a new
+            one so the placement clicks reach the stage. */}
+        {footingZones.map((zone) => {
+          const selected = zone.id === selectedFootingZoneId
+          const pts = getFootingPoints(zone)
+          const flat = pts.flatMap((p) => [mmToPx(p.x), mmToPx(p.y)])
+          const [zr, zg, zb] = footingZoneRgb(zone.id)
+          const zoneStroke = `rgb(${zr}, ${zg}, ${zb})`
+          const zoneFill = `rgba(${zr}, ${zg}, ${zb}, ${selected ? 0.3 : 0.16})`
+          const levelTxt = `${zone.footingLevelMm > 0 ? '+' : ''}${zone.footingLevelMm} mm`
+          return (
+            <Group
+              key={zone.id}
+              listening={!placingFootingZone}
+              draggable={selected && !placingFootingZone}
+              onDragMove={(e) => {
+                // Live-snap the dragged outline to other zones' edges/corners.
+                const s = footingDragSnap(
+                  pts,
+                  pxToMm(e.target.x()),
+                  pxToMm(e.target.y()),
+                  zone.id,
+                )
+                e.target.position({ x: mmToPx(s.dx), y: mmToPx(s.dy) })
+              }}
+              onDragEnd={(e) => {
+                const s = footingDragSnap(
+                  pts,
+                  pxToMm(e.target.x()),
+                  pxToMm(e.target.y()),
+                  zone.id,
+                )
+                e.target.position({ x: 0, y: 0 })
+                if (Math.abs(s.dx) < 0.5 && Math.abs(s.dy) < 0.5) return
+                const movedPts = pts.map((p) => ({
+                  x: Math.round(p.x + s.dx),
+                  y: Math.round(p.y + s.dy),
+                }))
+                // Revert (group is already back at origin) only on a real
+                // interior overlap; a flush shared edge is allowed.
+                const overlaps = footingZones.some(
+                  (z) =>
+                    z.id !== zone.id &&
+                    footingPolysOverlap(movedPts, getFootingPoints(z)),
+                )
+                if (overlaps) return
+                onFootingZoneUpdate?.(zone.id, {
+                  points: movedPts,
+                  ...footingBounds(movedPts),
+                })
+              }}
+              onClick={(e) => {
+                e.cancelBubble = true
+                onFootingZoneSelect?.(zone.id)
+              }}
+              onDblClick={(e) => {
+                e.cancelBubble = true
+                onFootingZoneEditLevel?.(zone.id)
+              }}
+            >
+              <Line
+                points={flat}
+                closed
+                fill={zoneFill}
+                stroke={zoneStroke}
+                strokeWidth={selected ? 1.6 : 1}
+                lineJoin="miter"
+                lineCap="butt"
+                hitStrokeWidth={10}
+              />
+              <Text
+                text={levelTxt}
+                x={mmToPx(zone.x) + 5}
+                y={mmToPx(zone.y) + 4}
+                fontSize={13}
+                fontStyle="bold"
+                fill={zoneStroke}
+                listening={false}
+              />
+            </Group>
+          )
+        })}
+        {/* In-progress polygon: committed vertices + the live ortho-locked
+            segment, with a highlighted first vertex you click to close. */}
+        {placingFootingZone && footingDraftPoints.length > 0 && (() => {
+          const live =
+            footingZoneHoverMm ?? footingDraftPoints[footingDraftPoints.length - 1]
+          const chain = [...footingDraftPoints, live]
+          const flat = chain.flatMap((p) => [mmToPx(p.x), mmToPx(p.y)])
+          const first = footingDraftPoints[0]
+          const nearClose =
+            footingDraftPoints.length >= 3 &&
+            footingZoneHoverMm !== null &&
+            distance(footingZoneHoverMm, first) < footingSnapRadiusMm
+          return (
+            <Group listening={false}>
+              <Line
+                points={flat}
+                stroke="#2563eb"
+                strokeWidth={1}
+                dash={[4, 3]}
+                lineJoin="miter"
+                lineCap="butt"
+              />
+              {footingDraftPoints.map((p, i) => (
+                <Circle
+                  key={i}
+                  x={mmToPx(p.x)}
+                  y={mmToPx(p.y)}
+                  radius={i === 0 ? (nearClose ? 7 : 4) : 3}
+                  fill={i === 0 && nearClose ? '#16a34a' : '#2563eb'}
+                  stroke="#ffffff"
+                  strokeWidth={1}
+                />
+              ))}
+            </Group>
+          )
+        })()}
         {piers.map((pier) => {
           const isSelected =
             (selectedPierIds && selectedPierIds.has(pier.id)) || pier.id === selectedPierId
@@ -3359,15 +3757,6 @@ function WallDrawingLayerInner({
                 strokeWidth={isSelected ? 2.5 : 1.5}
                 hitStrokeWidth={6}
               />
-              <Text
-                x={cxPx - 14}
-                y={cyPx - 6}
-                text={pier.type === 'tied' ? 'T' : 'P'}
-                fontSize={13}
-                fill={strokeColor}
-                fontStyle="bold"
-                listening={false}
-              />
             </Group>
           )
         })}
@@ -3463,7 +3852,8 @@ function WallDrawingLayerInner({
             placingControlJoint ||
             placingTiedPier ||
             placingFreestandingPier ||
-            placingRuler) && (
+            placingRuler ||
+            placingFootingZone) && (
             <Group listening={false}>
               <Line
                 points={[0, cursorPx.y, visualWidth, cursorPx.y]}

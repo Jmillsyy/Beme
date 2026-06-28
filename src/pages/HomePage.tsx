@@ -1231,6 +1231,34 @@ function PersonalDashboard() {
     }
   }
 
+  async function handleToggleStatus(project: SavedProject) {
+    const completing = project.status !== 'completed'
+    const nextStatus: ProjectStatus = completing ? 'completed' : 'in-progress'
+    const now = new Date().toISOString()
+    // Mirror the in-workspace toggle: stamp completedAt when completing, and
+    // keep the existing one otherwise so the completion date survives a round
+    // trip back to in-progress and on again.
+    const updated: SavedProject = {
+      ...project,
+      status: nextStatus,
+      completedAt: completing ? now : project.completedAt,
+      updatedAt: now,
+    }
+    setProjects((prev) => prev.map((p) => (p.id === project.id ? updated : p)))
+    try {
+      await saveProject(updated)
+      toast.success(
+        completing ? 'Marked as completed' : 'Moved back to in progress'
+      )
+    } catch (err) {
+      console.error('Failed to update status', err)
+      setProjects((prev) => prev.map((p) => (p.id === project.id ? project : p)))
+      toast.error('Could not update status', {
+        description: (err as Error).message,
+      })
+    }
+  }
+
   // Name for the hero greeting. Prefer the display name the user set in
   // Settings (read through the reactive settings hook so editing it updates
   // the greeting live), then fall back to the email local-part
@@ -1414,6 +1442,7 @@ function PersonalDashboard() {
                   onDelete={() => handleDelete(p.id)}
                   onDuplicate={() => handleDuplicate(p)}
                   onCycleOutcome={() => handleCycleOutcome(p)}
+                  onToggleStatus={() => handleToggleStatus(p)}
                 />
               ))}
             </ul>
@@ -1496,6 +1525,7 @@ function PersonalDashboard() {
                   onDelete={() => handleDelete(p.id)}
                   onDuplicate={() => handleDuplicate(p)}
                   onCycleOutcome={() => handleCycleOutcome(p)}
+                  onToggleStatus={() => handleToggleStatus(p)}
                 />
               ))}
             </ul>
@@ -1763,9 +1793,13 @@ function NewEstimateTile() {
 function RowActionsMenu({
   onDuplicate,
   onDelete,
+  onToggleStatus,
+  isCompleted,
 }: {
   onDuplicate: () => void
   onDelete: () => void
+  onToggleStatus: () => void
+  isCompleted: boolean
 }) {
   const [open, setOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -1814,8 +1848,21 @@ function RowActionsMenu({
               e.stopPropagation()
             }}
             style={{ position: 'fixed', top: pos.top, right: pos.right }}
-            className="w-40 rounded-lg border border-ink-600 bg-ink-800 shadow-xl py-1 z-50"
+            className="w-48 rounded-lg border border-ink-600 bg-ink-800 shadow-xl py-1 z-50"
           >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpen(false)
+                onToggleStatus()
+              }}
+              className="w-full text-left px-3 py-2 text-sm text-ink-200 hover:bg-beme-500/10 hover:text-beme-300 transition-colors"
+            >
+              {isCompleted ? 'Mark as in progress' : 'Mark as completed'}
+            </button>
             <button
               type="button"
               role="menuitem"
@@ -1854,11 +1901,13 @@ function ProjectRow({
   onDelete,
   onDuplicate,
   onCycleOutcome,
+  onToggleStatus,
 }: {
   project: SavedProject
   onDelete: () => void
   onDuplicate: () => void
   onCycleOutcome: () => void
+  onToggleStatus: () => void
 }) {
   const name =
     project.projectDetails.projectName.trim() ||
@@ -1927,7 +1976,12 @@ function ProjectRow({
           )}
         </div>
       </Link>
-      <RowActionsMenu onDuplicate={onDuplicate} onDelete={onDelete} />
+      <RowActionsMenu
+        onDuplicate={onDuplicate}
+        onDelete={onDelete}
+        onToggleStatus={onToggleStatus}
+        isCompleted={project.status === 'completed'}
+      />
     </li>
   )
 }

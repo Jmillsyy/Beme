@@ -56,7 +56,9 @@ import type {
   BrickMakeup,
   Pier,
   PierMakeup,
+  FootingZone,
 } from '../types/walls'
+import { getFootingPoints, pointInFootingZone } from '../types/walls'
 import type { ProjectArea } from '../lib/projectStorage'
 import type { Block, BlockCode } from '../types/blocks'
 import { arcFromThreePoints, isCurvedWall } from '../lib/curveGeom'
@@ -77,6 +79,7 @@ import {
   outerEdgeEndpoints,
   buildCourses,
   calculateCourseStack,
+  resolveHmModules,
   type WallLayout,
 } from '../lib/blockCalc'
 import {
@@ -152,6 +155,12 @@ export interface WorkspaceView3DProps {
    * baseline). Walls with no `areaId` also default to 0.
    */
   areaYOffsetMmByAreaId?: Record<string, number>
+  /**
+   * Footing zones on the active page. A wall whose centre falls inside a
+   * zone sits at that zone's footingLevelMm in 3D (overriding the area
+   * offset), so one plan can show stepped / dropped slabs.
+   */
+  footingZones?: FootingZone[]
   library: Record<string, Block>
   /**
    * Piers placed on the active page - both tied (on a wall) and
@@ -266,6 +275,74 @@ interface WallSegmentWedge {
   highlight: boolean
 }
 
+
+/**
+ * Tie a pier into the wall's bond. On the pier's full-depth (tie-in) courses
+ * the pier block occupies the wall at its along-position, so the wall's body
+ * blocks are cut out of the pier's slot: trimmed to butt against it, dropped
+ * if fully inside, or split if one block spans the whole slot. Shallower
+ * courses are left untouched - there the wall block runs straight through and
+ * the pier's half-block sits on the protruding side. Only invoked for walls
+ * that actually carry a tied pier, so plain walls are never affected.
+ *
+ * Works in wall-local "along" coordinates (centre projected onto the wall
+ * axis); a trim is a pure shift + shorten along the wall, preserving the
+ * block's perpendicular offset and everything else.
+ */
+function cutWallBoxesForTiedPier(
+  boxes: WallSegmentBox[],
+  wall: Wall,
+  alongMm: number,
+  slotWidthMm: number,
+  tieInYRanges: ReadonlyArray<readonly [number, number]>
+): WallSegmentBox[] {
+  if (tieInYRanges.length === 0) return boxes
+  const sx = -wall.startX / 1000
+  const sz = -wall.startY / 1000
+  let dx = -wall.endX / 1000 - sx
+  let dz = -wall.endY / 1000 - sz
+  const len = Math.hypot(dx, dz)
+  if (len === 0) return boxes
+  dx /= len
+  dz /= len
+  const halfM = slotWidthMm / 1000 / 2
+  const centreM = alongMm / 1000
+  const s0 = centreM - halfM
+  const s1 = centreM + halfM
+  const EPS = 1e-4
+  const result: WallSegmentBox[] = []
+  // A box belongs to a tie-in course if its CENTRE y sits in one of the
+  // pier's full-depth course bands (matched to the actual rendered pier
+  // blocks, so it works whatever the wall's base/top course heights are).
+  const inTieInCourse = (cy: number) =>
+    tieInYRanges.some(([y0, y1]) => cy >= y0 - EPS && cy <= y1 + EPS)
+  const keep = (b: WallSegmentBox, oldCentre: number, k0: number, k1: number) => {
+    const newLen = k1 - k0
+    if (newLen < 0.01) return // sub-10mm sliver - drop
+    const shift = (k0 + k1) / 2 - oldCentre
+    result.push({ ...b, cx: b.cx + dx * shift, cz: b.cz + dz * shift, length: newLen })
+  }
+  for (const b of boxes) {
+    if (!inTieInCourse(b.cy)) {
+      result.push(b)
+      continue
+    }
+    const a = (b.cx - sx) * dx + (b.cz - sz) * dz
+    const a0 = a - b.length / 2
+    const a1 = a + b.length / 2
+    if (a1 <= s0 + EPS || a0 >= s1 - EPS) {
+      result.push(b) // no overlap with the slot
+      continue
+    }
+    if (a0 >= s0 - EPS && a1 <= s1 + EPS) continue // fully inside slot - drop
+    // Recede the cut edge by the mortar gap so a joint opens between the
+    // trimmed wall block and the pier (the pier block fills the slot flush,
+    // so the full gap goes on the wall side to read as one mortar joint).
+    if (a0 < s0 - EPS) keep(b, a, a0, s0 - MORTAR_GAP_M) // left remnant
+    if (a1 > s1 + EPS) keep(b, a, s1 + MORTAR_GAP_M, a1) // right remnant
+  }
+  return result
+}
 
 /**
  * Convert a tally-aligned `WallLayout` (from `lib/blockCalc`) into 3D
@@ -929,7 +1006,6 @@ function segmentsForCurvedWall(
   const R_mm = geom.radiusMm
   const t_mm = thicknessMm
   const outerR_mm = R_mm + t_mm / 2
-  const innerR_mm = R_mm - t_mm / 2
 
   // OUTER arc length drives the virtual straight wall's length - this
   // is the line the visible front face follows, so blocks laid out at
@@ -2617,6 +2693,7 @@ function Scene({
   pierMakeupsById = {},
   pierColorByPierId = {},
   areaYOffsetMmByAreaId,
+  footingZones = [],
   navStyle,
   planTexture,
   pageWidthMm,
@@ -2781,11 +2858,14 @@ function Scene({
           wall.heightMmOverride ?? getMakeupHeightMm(makeup)
         const bodyHeightMm =
           library[makeup.bodyBlockCode]?.dimensions.heightMm
+        const hmMods = resolveHmModules(makeup)
         const stack = calculateCourseStack(
           wallHeightMm,
           typeof bodyHeightMm === 'number'
             ? bodyHeightMm + DEFAULT_MORTAR_JOINT_MM
             : undefined,
+          hmMods.hm140ModuleMm,
+          hmMods.hm71ModuleMm,
         )
         const courses = buildCourses(stack, makeup)
         for (const c of courses) {
@@ -3290,11 +3370,26 @@ function Scene({
       // area's vertical offset (multi-storey stacking in All-areas
       // view). When the offset is 0 (single-area view, or the
       // top-of-list area) the post-shift is a no-op.
+      // Footing zone wins over the area offset: a wall whose centre falls
+      // inside a drawn zone sits at that zone's level. Last match wins so a
+      // later-drawn zone overrides an earlier overlapping one. Coords are
+      // plan mm (same space the zones were drawn in), before the world-space
+      // negation, so the rectangle test is a straight compare.
+      const wallMidX = (wall.startX + wall.endX) / 2
+      const wallMidY = (wall.startY + wall.endY) / 2
+      let footingZoneLevelMm: number | null = null
+      for (const fz of footingZones) {
+        if (pointInFootingZone(wallMidX, wallMidY, fz)) {
+          footingZoneLevelMm = fz.footingLevelMm
+        }
+      }
       const yOffsetMmRaw =
-        (wall.areaId &&
-          areaYOffsetMmByAreaId &&
-          areaYOffsetMmByAreaId[wall.areaId]) ||
-        0
+        footingZoneLevelMm != null
+          ? footingZoneLevelMm
+          : (wall.areaId &&
+              areaYOffsetMmByAreaId &&
+              areaYOffsetMmByAreaId[wall.areaId]) ||
+            0
       const wallYOffsetM = yOffsetMmRaw / 1000
       const outStartLens = {
         out: out.length,
@@ -4754,19 +4849,64 @@ function Scene({
               }
             )
           }
-          out.push(
-            ...segmentsFromWallLayout(
-              wall,
-              layout,
-              thicknessMm,
-              colorMap,
-              library,
-              wallsByIdMap,
-              wallThicknessByWallId,
-              wr.makeup,
-              wallCoursesByIdCache,
-            )
+          let wallBoxes = segmentsFromWallLayout(
+            wall,
+            layout,
+            thicknessMm,
+            colorMap,
+            library,
+            wallsByIdMap,
+            wallThicknessByWallId,
+            wr.makeup,
+            wallCoursesByIdCache,
           )
+          // Tie any pier built into THIS wall into the bond: cut the wall
+          // blocks out of the pier's slot on its full-depth (tie-in) courses.
+          // Only walls carrying a tied pier are touched here.
+          for (const pier of piers) {
+            if (pier.type !== 'tied' || pier.wallId !== wall.id) continue
+            const ppm = pier.pierMakeupId
+              ? pierMakeupsById[pier.pierMakeupId]
+              : undefined
+            const ppat = ppm?.coursePattern?.length ? ppm.coursePattern : []
+            if (ppat.length === 0) continue
+            // Deepest course = the one that occupies the wall (the tie-in).
+            const maxDepthMm = ppat.reduce(
+              (m, c) => Math.max(m, library[c]?.dimensions.depthMm ?? 0),
+              0
+            )
+            const tieCode = ppat.find(
+              (c) => (library[c]?.dimensions.depthMm ?? 0) === maxDepthMm
+            )
+            const slotWidthMm = library[tieCode ?? '']?.dimensions.widthMm ?? 390
+            // Walk the pier's courses (same uniform module as the pier
+            // renderer) and collect the y-bands of its full-depth courses, so
+            // the cut lands on exactly the courses where the pier block
+            // occupies the wall - regardless of the wall's base/top heights.
+            const moduleMm = (library[ppat[0]]?.dimensions.heightMm ?? 190) + 10
+            const courseCount = Math.max(
+              1,
+              Math.floor(layout.heightMm / moduleMm)
+            )
+            const tieInYRanges: [number, number][] = []
+            let yc = 0
+            for (let i = 0; i < courseCount; i++) {
+              const c = ppat[i % ppat.length]
+              const bh = (library[c]?.dimensions.heightMm ?? 190) / 1000
+              if ((library[c]?.dimensions.depthMm ?? 0) === maxDepthMm) {
+                tieInYRanges.push([yc, yc + bh])
+              }
+              yc += bh + 10 / 1000
+            }
+            wallBoxes = cutWallBoxesForTiedPier(
+              wallBoxes,
+              wall,
+              pier.alongMm,
+              slotWidthMm,
+              tieInYRanges
+            )
+          }
+          out.push(...wallBoxes)
         } else {
           out.push(
             ...segmentsForStraightWall(
@@ -4855,7 +4995,6 @@ function Scene({
     // renderer's `-ext.startX / 1000` lines). Without the negation
     // piers land in a mirrored position off in the distance and the
     // user thinks the pier didn't draw.
-    const COURSE_FALLBACK_MM = 200
     const wallsByIdForPiers = new Map(walls.map((w) => [w.id, w]))
     for (const pier of piers) {
       const pm = pier.pierMakeupId
@@ -4929,11 +5068,15 @@ function Scene({
       )
       const totalPierHeightM = (courseCount * courseModuleMm) / 1000
 
-      // Side-snap offset: a tied pier straddles its wall and protrudes
-      // (pierDepth - wallDepth) on the chosen side. Shift the column centre
-      // perpendicular to the wall by half the protrusion so it ties in by
-      // the wall's depth - mirrors the 2D plan render. Legacy piers (no
-      // `side`) stay centred on the wall line.
+      // Side-snap: a tied pier straddles its wall and protrudes
+      // (pierDepth - wallDepth) on the chosen side. `perpX/perpZ` is the UNIT
+      // vector pointing OUT the protruding side; we shift the whole column
+      // centre along it by half the protrusion so the deepest course ties in
+      // by the wall's depth - mirrors the 2D plan render. The same vector
+      // aligns the shallower courses to the protruding face in the loop below.
+      // Legacy piers (no `side`) stay centred on the wall line (perp = 0).
+      let perpX = 0
+      let perpZ = 0
       if (pier.type === 'tied' && pier.side) {
         const sideWall = wallsByIdForPiers.get(pier.wallId)
         if (sideWall && !isCurvedWall(sideWall)) {
@@ -4946,8 +5089,10 @@ function Scene({
           const sdz = -(sideWall.endY - sideWall.startY) / 1000
           const slen = Math.hypot(sdx, sdz) || 1
           const sgn = pier.side === 'left' ? 1 : -1
-          cxM += (-sdz / slen) * protrudeM * sgn
-          czM += (sdx / slen) * protrudeM * sgn
+          perpX = (-sdz / slen) * sgn
+          perpZ = (sdx / slen) * sgn
+          cxM += perpX * protrudeM
+          czM += perpZ * protrudeM
         }
       }
 
@@ -4966,6 +5111,14 @@ function Scene({
         highlight: false,
       })
 
+      // Footprint depth = the deepest course. Freestanding piers fill it with
+      // as many shallow blocks as needed (mirrors calculateFreestandingPierTally
+      // in blockCalc); tied piers lay ONE block per course, flush to the
+      // protruding face, because the wall course fills the tie-in side.
+      const footprintDepthMm = pattern.reduce(
+        (m, c) => Math.max(m, library[c]?.dimensions.depthMm ?? 0),
+        0
+      )
       let yCursorM = 0
       for (let i = 0; i < courseCount; i++) {
         const code = pattern[i % pattern.length]
@@ -4973,28 +5126,60 @@ function Scene({
         const widthMm = block?.dimensions.widthMm ?? 390
         const depthMm = block?.dimensions.depthMm ?? 190
         const blockHeightMm = block?.dimensions.heightMm ?? 190
-        // Block renders at FULL face dimensions (width × depth ×
-        // block-height). No inset on width/depth - piers are one
-        // block wide per course, so there's no neighbour to leave a
-        // visual gap against. The mortar joint is the gap above the
-        // block (next course bottom sits at yCursor + blockHeight +
-        // MORTAR_MM), and the recessed mortar column above shows
-        // through it.
         const widthM = widthMm / 1000
         const depthM = depthMm / 1000
         const blockHeightM = blockHeightMm / 1000
-        out.push({
-          cx: cxM,
-          cy: yCursorM + blockHeightM / 2,
-          cz: czM,
-          length: widthM,
-          heightM: blockHeightM,
-          thickness: depthM,
-          yRotation,
-          color: bandColor(code, palette),
-          highlight: false,
-          code,
-        })
+        const cyM = yCursorM + blockHeightM / 2
+        if (pier.type === 'freestanding') {
+          // Stack enough blocks to fill the footprint depth, centred on the
+          // column. The depth axis follows the pier's rotation (0 today, so
+          // this reduces to world z).
+          const nDepth =
+            depthMm > 0
+              ? Math.max(
+                  1,
+                  Math.round(
+                    (footprintDepthMm + MORTAR_MM) / (depthMm + MORTAR_MM)
+                  )
+                )
+              : 1
+          const spanM = (nDepth * depthMm + (nDepth - 1) * MORTAR_MM) / 1000
+          const daxX = Math.sin(yRotation)
+          const daxZ = Math.cos(yRotation)
+          for (let k = 0; k < nDepth; k++) {
+            const localDz = -spanM / 2 + depthM / 2 + k * (depthM + mortarM)
+            out.push({
+              cx: cxM + daxX * localDz,
+              cy: cyM,
+              cz: czM + daxZ * localDz,
+              length: widthM,
+              heightM: blockHeightM,
+              thickness: depthM,
+              yRotation,
+              color: bandColor(code, palette),
+              highlight: false,
+              code,
+            })
+          }
+        } else {
+          // Tied: one block per course. Shallow courses sit flush with the
+          // protruding face (perp points out the protruding side) and recede
+          // on the tie-in side, where the wall course runs through, instead of
+          // floating in the middle of the footprint.
+          const faceOffsetM = (firstBlockDepthMm - depthMm) / 2 / 1000
+          out.push({
+            cx: cxM + perpX * faceOffsetM,
+            cy: cyM,
+            cz: czM + perpZ * faceOffsetM,
+            length: widthM,
+            heightM: blockHeightM,
+            thickness: depthM,
+            yRotation,
+            color: bandColor(code, palette),
+            highlight: false,
+            code,
+          })
+        }
         yCursorM += blockHeightM + mortarM
       }
     }
@@ -5218,6 +5403,67 @@ function Scene({
     onResolvedCodes(resolvedCodes, resolvedRoles, blockCounts)
   }, [resolvedCodes, resolvedRoles, blockCounts, onResolvedCodes])
 
+  // Footing-zone slabs: a flat polygon at each zone's footing level so the
+  // ground actually sits higher / lower under the walls (which are already
+  // offset to the same level) instead of the walls floating over nothing.
+  // Built as THREE.Shapes in world XZ - plan mm negated and /1000, the same
+  // convention the wall meshes and plan plane use - laid flat at y = level.
+  const footingSlabs = useMemo(() => {
+    const empty = {
+      baseY: 0,
+      slabs: [] as { id: string; shape: THREE.Shape; depth: number }[],
+      uvGen: undefined as THREE.UVGenerator | undefined,
+    }
+    if (footingZones.length === 0) return empty
+    const levels = footingZones.map((z) => z.footingLevelMm / 1000)
+    // Extrude every slab DOWN to a shared base 120mm below the lowest surface
+    // (ground or the deepest zone). Even a raised slab is then a solid block
+    // anchored below ground, not a floating sheet: the SIDES read as concrete
+    // and the TOP shows the plan, with the PDF plan plane still underneath.
+    const baseY = Math.min(0, ...levels) - 0.12
+    const w = planTexture?.widthM ?? 1
+    const h = planTexture?.heightM ?? 1
+    // Map the slab's top cap to the SAME plan texel each world point gets on
+    // the ground plane (plane world->UV is ((wx+w)/w, -wz/h); a cap vertex at
+    // shape (sx, sy) sits at world (sx, -sy)). Sides get throwaway UVs.
+    const uvGen: THREE.UVGenerator | undefined = planTexture
+      ? {
+          generateTopUV(_geometry, vertices, a, b, c) {
+            const ia = a * 3
+            const ib = b * 3
+            const ic = c * 3
+            return [
+              new THREE.Vector2((vertices[ia] + w) / w, vertices[ia + 1] / h),
+              new THREE.Vector2((vertices[ib] + w) / w, vertices[ib + 1] / h),
+              new THREE.Vector2((vertices[ic] + w) / w, vertices[ic + 1] / h),
+            ]
+          },
+          generateSideWallUV() {
+            return [
+              new THREE.Vector2(0, 0),
+              new THREE.Vector2(0, 0),
+              new THREE.Vector2(0, 0),
+              new THREE.Vector2(0, 0),
+            ]
+          },
+        }
+      : undefined
+    const slabs = footingZones.map((z) => {
+      const pts = getFootingPoints(z)
+      const shape = new THREE.Shape()
+      pts.forEach((p, i) => {
+        const sx = -p.x / 1000
+        const sy = p.y / 1000
+        if (i === 0) shape.moveTo(sx, sy)
+        else shape.lineTo(sx, sy)
+      })
+      shape.closePath()
+      const top = z.footingLevelMm / 1000 - 0.003
+      return { id: z.id, shape, depth: Math.max(0.02, top - baseY) }
+    })
+    return { baseY, slabs, uvGen }
+  }, [footingZones, planTexture])
+
   return (
     <>
       {/* Scene fog - fades the far ground plane into the canvas
@@ -5338,6 +5584,53 @@ function Scene({
           smooth on integrated GPUs. */}
       <InstancedSegments segments={segments} />
 
+      {/* Footing-zone slabs - the ground at each zone's footing level, so
+          walls inside a zone read as sitting on a stepped / dropped slab
+          instead of floating. Dropped 3mm so the wall bases don't z-fight. */}
+      {footingSlabs.slabs.map((s) => (
+        <mesh
+          key={s.id}
+          rotation={[-Math.PI / 2, 0, 0]}
+          position={[0, footingSlabs.baseY, 0]}
+        >
+          <extrudeGeometry
+            args={[
+              s.shape,
+              {
+                depth: s.depth,
+                bevelEnabled: false,
+                UVGenerator: footingSlabs.uvGen,
+              },
+            ]}
+          />
+          {/* Top cap (material-0) shows the plan; the sides (material-1) are
+              concrete so the slab reads as a solid pad, not a floating sheet. */}
+          {planTexture ? (
+            <meshBasicMaterial
+              attach="material-0"
+              map={planTexture.texture}
+              toneMapped={false}
+              side={THREE.DoubleSide}
+            />
+          ) : (
+            <meshStandardMaterial
+              attach="material-0"
+              color="#b9b3a7"
+              roughness={0.95}
+              metalness={0}
+              side={THREE.DoubleSide}
+            />
+          )}
+          <meshStandardMaterial
+            attach="material-1"
+            color="#b9b3a7"
+            roughness={0.95}
+            metalness={0}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+
       {/* Curved-wall blocks - trapezoidal wedges merged per colour into
           a single BufferGeometry so each palette colour is one draw
           call, mirroring the InstancedSegments batching above. */}
@@ -5427,7 +5720,7 @@ function snapshotsStorageKey(
 
 
 export default function WorkspaceView3D(props: WorkspaceView3DProps) {
-  const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio, projectId, mode, snapshots: snapshotsProp, onSnapshotsChange } = props
+  const { walls, pdfFile, currentPageNumber, pageWidthMm, pageHeightMm, pageScaleRatio, mode, snapshots: snapshotsProp, onSnapshotsChange } = props
   // Theme drives the scene clearColor + the PDF threshold pass colour
   // pair. We only read the value (the 3D view doesn't change the theme).
   // The Header has the picker; this view just re-renders when it flips.

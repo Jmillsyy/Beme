@@ -17,6 +17,7 @@ import {
   pickTopCourse,
 } from '../data/blockLibrary'
 import { resolveBlockByRole, type ResolveByRoleOptions } from './blockRoles'
+import { calculateCourseStack, resolveHmModules } from './courseStack'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import type {
   BrickMakeup,
@@ -894,68 +895,27 @@ export function convertMakeupToBands(
   const HEIGHT_71 = hm71Block
     ? hm71Block.dimensions.heightMm + DEFAULT_MORTAR_MM
     : 100
-  // Closest-fit-under-target scoring, matching calculateCourseStack.
-  // Picks the combo whose total is closest to but not above totalHeight
-  // - undershooting with a height-makeup band beats overshooting with
-  // an extra standard course. Falls back to smallest overshoot if no
-  // combo fits under.
+  // ONE source of truth: the course stack (how many standard courses +
+  // which makeup courses) comes from the shared calculateCourseStack,
+  // exactly like planWallLayout / buildCourses. resolveHmModules gates
+  // makeup per library (and dedupes a single-makeup library), so the
+  // bands system - wall envelope, cap, mortar, openings - can never
+  // disagree with the render about whether a 90mm / 140mm course exists.
+  // This is the duplication that drifted before and opened a fat joint.
   let stdCount = 0
   let has140 = false
   let has71 = false
   if (!skipHeightMakeup) {
-    const maxN = Math.ceil(totalHeight / COURSE) + 2
-    type Cand = { N: number; has71: boolean; has140: boolean; total: number; dist: number; nCourses: number }
-    let bestUnder: Cand | null = null
-    let bestOver: Cand | null = null
-    // Height-makeup courses produce library-specific stacks that
-    // surprised users on multi-library projects (AU needs none, US
-    // one short course, UK two coursing bricks). Skip HM entirely so
-    // every library picks the closest std-only stack and lets joint
-    // scaling absorb the remainder; matches calculateCourseStack.
-    void HEIGHT_71
-    void HEIGHT_140
-    for (let N = 0; N <= maxN; N++) {
-      const h71 = false
-      const h140 = false
-      {
-        {
-          const total =
-            N * COURSE +
-            (h71 ? 0 : 0) +
-            (h140 ? 0 : 0)
-          if (total <= 0) continue
-          const dist = Math.abs(total - totalHeight)
-          const nCourses = N
-          const cand: Cand = { N, has71: h71, has140: h140, total, dist, nCourses }
-          if (total <= totalHeight) {
-            if (!bestUnder || dist < bestUnder.dist || (dist === bestUnder.dist && nCourses < bestUnder.nCourses)) {
-              bestUnder = cand
-            }
-          } else {
-            if (!bestOver || dist < bestOver.dist || (dist === bestOver.dist && nCourses < bestOver.nCourses)) {
-              bestOver = cand
-            }
-          }
-        }
-      }
-    }
-    // Closest fit - over OR under. No HM means undershoots can be
-    // big (UK 2400mm vs 225mm modular: 10 std = 2250, 11 std = 2475
-    // → 11 std is closer). Tie-break prefers OVER (less likely to
-    // leave a visible gap between top course and slab).
-    const best =
-      bestUnder && bestOver
-        ? bestOver.dist < bestUnder.dist
-          ? bestOver
-          : bestOver.dist === bestUnder.dist
-            ? bestOver
-            : bestUnder
-        : bestUnder ?? bestOver
-    if (best) {
-      stdCount = best.N
-      has140 = best.has140
-      has71 = best.has71
-    }
+    const hmMods = resolveHmModules(makeup)
+    const stack = calculateCourseStack(
+      totalHeight,
+      COURSE,
+      hmMods.hm140ModuleMm,
+      hmMods.hm71ModuleMm,
+    )
+    stdCount = stack.standardCount
+    has140 = stack.has140
+    has71 = stack.has71
   } else {
     // Preview-only path keeps the legacy greedy pass - preview rounding
     // logic depends on `remainder` being separable from the body count.

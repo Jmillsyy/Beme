@@ -9,7 +9,6 @@ import {
 import { toast } from '../lib/toast'
 import { confirm } from '../lib/confirm'
 import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
-import { useTheme } from '../lib/theme'
 import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
@@ -45,7 +44,6 @@ import type {
   BusinessProfile,
   DateFormat,
   EstimatingDefaults,
-  Theme as ThemePref,
   UserPreferences,
   UserProfile,
   UserSettings,
@@ -736,20 +734,13 @@ function BusinessTab({ business, set }: { business: BusinessProfile; set: (p: Pa
 // ─── Preferences ──────────────────────────────────────────────────────────
 
 function PreferencesTab({ preferences, set }: { preferences: UserPreferences; set: (p: Partial<UserPreferences>) => void }) {
-  const [, setTheme] = useTheme()
   const [showRegionPicker, setShowRegionPicker] = useState(false)
-
-  // Keep the theme module in sync with settings.preferences.theme.
-  function handleThemeChange(t: ThemePref) {
-    set({ theme: t })
-    setTheme(t)
-  }
 
   return (
     <div className="space-y-6">
     <PanelCard
       title="Display"
-      description="How beme shows things - units, date format, theme."
+      description="How beme shows things - units and date format."
     >
       <FieldGroup>
         <Field
@@ -776,17 +767,6 @@ function PreferencesTab({ preferences, set }: { preferences: UserPreferences; se
               { value: 'DD/MM/YYYY', label: 'DD/MM/YYYY (Aus / UK)' },
               { value: 'MM/DD/YYYY', label: 'MM/DD/YYYY (US)' },
               { value: 'YYYY-MM-DD', label: 'YYYY-MM-DD (ISO)' },
-            ]}
-          />
-        </Field>
-
-        <Field label="Theme">
-          <Select<ThemePref>
-            value={preferences.theme}
-            onChange={handleThemeChange}
-            options={[
-              { value: 'dark', label: 'Dark (Studio Black)' },
-              { value: 'light', label: 'Light' },
             ]}
           />
         </Field>

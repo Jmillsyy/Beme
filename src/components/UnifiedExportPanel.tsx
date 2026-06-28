@@ -27,15 +27,9 @@ import { toast } from '../lib/toast'
 import { calculateProjectTally, wallLengthMm } from '../lib/blockCalc'
 import { calculateBrickTally } from '../lib/brickCalc'
 import { BLOCK_LIBRARY } from '../data/blockLibrary'
-import { BRICK_LIBRARY } from '../data/brickLibrary'
 
 function blockLabel(code: string): string {
   const b = BLOCK_LIBRARY[code]
-  return b ? b.name : ''
-}
-
-function brickLabel(code: string): string {
-  const b = BRICK_LIBRARY[code]
   return b ? b.name : ''
 }
 
@@ -149,7 +143,6 @@ export default function UnifiedExportPanel({
   supplyItemSelections,
   supplyItemRateOverrides,
   pdfFile,
-  projectId,
   view3dSnapshots: view3dSnapshotsProp,
   allWalls,
   allOpenings,
@@ -335,7 +328,7 @@ function ExportEstimateModal({
   const allSelected =
     allIds.length > 0 && allIds.every((id) => selectedAreas.has(id))
   function toggleAll() {
-    setSelectedAreas((prev) => {
+    setSelectedAreas(() => {
       if (allSelected) {
         // Already all on → clear so user can pick individuals.
         return new Set<string>()
@@ -526,24 +519,6 @@ function ExportEstimateModal({
   }, [blockWalls, blockMakeups, blockOpenings, includedPiers, pierMakeups])
   const hasBlockTally = Object.keys(blockBaseTally).length > 0
 
-  // ── Brick tally preview - same shape as the block one. ──
-  const brickBaseTally = useMemo(() => {
-    if (brickWalls.length === 0) return {} as Record<string, number>
-    const tally = calculateBrickTally(
-      brickWalls,
-      brickOpenings,
-      brickSettings,
-      brickMakeups
-    )
-    if (Object.keys(tally.bricksByType).length > 0) {
-      return tally.bricksByType as Record<string, number>
-    }
-    if (tally.brickCount > 0) {
-      return { [brickSettings.brickTypeCode]: tally.brickCount }
-    }
-    return {} as Record<string, number>
-  }, [brickWalls, brickOpenings, brickSettings, brickMakeups])
-  const hasBrickTally = Object.keys(brickBaseTally).length > 0
 
   // ── Per-area Quantities (brick + block) ──
   //
@@ -905,13 +880,6 @@ function ExportEstimateModal({
   const blockPickerOptions = useMemo(
     () =>
       Object.values(BLOCK_LIBRARY)
-        .map((b) => ({ code: b.code, description: b.name }))
-        .sort((a, b) => a.code.localeCompare(b.code)),
-    []
-  )
-  const brickPickerOptions = useMemo(
-    () =>
-      Object.values(BRICK_LIBRARY)
         .map((b) => ({ code: b.code, description: b.name }))
         .sort((a, b) => a.code.localeCompare(b.code)),
     []

@@ -8,7 +8,10 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "node scripts/typecheck-gate.mjs",
+    "typecheck:accept": "node scripts/typecheck-gate.mjs --update-baseline",
+    "check": "npm run typecheck && npm run test"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

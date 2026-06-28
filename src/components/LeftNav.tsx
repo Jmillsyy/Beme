@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { displayNameOf, initialsOf, signOut, useAuth } from '../lib/auth'
 import { useOrganisations } from '../lib/organisations'
-import { useTheme } from '../lib/theme'
 import { useOnlineStatus } from '../lib/useOnlineStatus'
 import BemeMark from './BemeMark'
 
@@ -434,7 +433,6 @@ function UserMenuRail({
 }) {
   const navigate = useNavigate()
   const { user } = useAuth()
-  const [theme, setTheme] = useTheme()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -479,7 +477,6 @@ function UserMenuRail({
   const showEmailSubtitle =
     !!user.email && primaryLabel !== user.email
   const initials = initialsOf(user)
-  const isLight = theme === 'light'
 
   // ── Inline option list ────────────────────────────────────────
   // Same three actions either way; render mode flips on `collapsed`:
@@ -498,20 +495,6 @@ function UserMenuRail({
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06A2 2 0 1 1 4.21 16.96l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06A2 2 0 1 1 7.04 4.21l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.5.2.91.6 1.18 1.06" />
-    </svg>
-  )
-  // Sun ↔ moon depending on current theme - the icon shows what
-  // you'll FLIP TO so the affordance reads as a switch, not a state.
-  const themeIcon = isLight ? (
-    // Currently light → button switches to dark → moon glyph.
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
-  ) : (
-    // Currently dark → button switches to light → sun glyph.
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
     </svg>
   )
   const signOutIcon = (
@@ -587,24 +570,6 @@ function UserMenuRail({
           >
             <span className={optionIconClass}>{settingsIcon}</span>
             {!collapsed && <span>Settings</span>}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setTheme(isLight ? 'dark' : 'light')
-            }}
-            title={
-              collapsed
-                ? isLight
-                  ? 'Switch to dark theme'
-                  : 'Switch to light theme'
-                : undefined
-            }
-            aria-label={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
-            className={optionRowClass}
-          >
-            <span className={optionIconClass}>{themeIcon}</span>
-            {!collapsed && <span>{isLight ? 'Dark theme' : 'Light theme'}</span>}
           </button>
           <button
             type="button"

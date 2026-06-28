@@ -408,7 +408,7 @@ export function createDefaultUserSettings(): UserSettings {
     preferences: {
       units: 'metric',
       dateFormat: 'DD/MM/YYYY',
-      theme: 'dark',
+      theme: 'light',
       blockColorMode: 'role',
       blockColorPalette: 'vibrant',
     },

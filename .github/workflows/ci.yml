@@ -1,0 +1,22 @@
+name: CI
+
+# Runs the full check gate on every push and pull request: the
+# baseline-aware type check, the vitest suite, and eslint. New type
+# errors, failing tests, or lint errors fail the build so a feature can
+# not silently break something else.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check

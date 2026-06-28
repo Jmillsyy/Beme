@@ -1,6 +1,6 @@
 import { Link, Outlet } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
-import BemeMark from './BemeMark'
+import BemeLogo from './BemeLogo'
 import LeftNav from './LeftNav'
 
 /**
@@ -67,12 +67,7 @@ export default function AppShell({
             mark so users can always get home. */}
         <header className="lg:hidden flex items-center justify-between px-5 py-3 border-b border-ink-700 bg-ink-900 sticky top-0 z-10">
           <Link to="/" className="flex items-center gap-2.5">
-            <span className="text-beme-500 inline-block">
-              <BemeMark size={28} wide />
-            </span>
-            <span className="text-base font-bold uppercase tracking-wide text-ink-50">
-              Beme
-            </span>
+            <BemeLogo size={28} />
           </Link>
         </header>
         <main className="flex-1 min-w-0">

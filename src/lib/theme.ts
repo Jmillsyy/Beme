@@ -1,100 +1,39 @@
 /**
- * Theme management - persists the user's choice to localStorage and applies it
- * via a `.light` class on `<html>`. The CSS variables in index.css flip under
- * that class so all `bg-ink-N` / `text-ink-N` utilities respond automatically.
+ * Theme management - the app is light-only now, so this module just pins the
+ * document to the light palette. The dark / light toggle was removed; what
+ * stays here is a thin shim so the few components that still read a theme
+ * (the 3D viewer, the PDF workspace) keep compiling without per-site edits.
  *
- * Default theme is light. Users who previously picked dark mode keep dark
- * (their preference lives in localStorage); first-time visitors and anyone
- * who's cleared storage now land on light.
+ * index.css treats dark as the bare `:root` default and flips to the warm
+ * light palette under a `.light` class on `<html>`. "Light-only" therefore
+ * means one thing: always add `.light`, never take it off. Any stale
+ * `beme-theme` value left in localStorage from the old toggle is ignored.
  */
-
-import { useEffect, useState } from 'react'
 
 export type Theme = 'dark' | 'light'
 
-const STORAGE_KEY = 'beme-theme'
+/** The single theme the app now ships. */
+const FIXED_THEME: Theme = 'light'
 
-function readStoredTheme(): Theme {
-  // SSR / no-window fallback matches the new client default so the
-  // server-rendered shell (when we eventually have one) doesn't flash
-  // a dark frame before hydration.
-  if (typeof window === 'undefined') return 'light'
-  const stored = window.localStorage.getItem(STORAGE_KEY)
-  // Only `dark` is the opt-in value now. Anything else (including
-  // missing / null) resolves to light - the new default.
-  return stored === 'dark' ? 'dark' : 'light'
-}
-
-/** Apply the theme class to the document root. Safe to call repeatedly. */
-function applyTheme(theme: Theme) {
+/** Add the light palette class to the document root. Safe to call repeatedly. */
+function applyLight() {
   if (typeof document === 'undefined') return
-  const root = document.documentElement
-  if (theme === 'light') root.classList.add('light')
-  else root.classList.remove('light')
+  document.documentElement.classList.add('light')
 }
 
 /**
- * Run this as early as possible on page load (e.g. in main.tsx) so there's no
- * flash of dark-mode chrome when the user had previously picked light mode.
+ * Run this as early as possible on page load (in main.tsx) so the first paint
+ * is already on the light palette - no flash of the dark `:root` default.
  */
 export function initTheme() {
-  applyTheme(readStoredTheme())
+  applyLight()
 }
 
 /**
- * Tiny same-tab pub/sub for theme changes.
- *
- * Why this exists: each `useTheme()` caller used to keep its own local
- * `useState`. When the Header's instance flipped the theme, the document
- * `light` class updated and `localStorage` was written - but every OTHER
- * component that had read the theme (e.g. the 3D viewer) stayed stale
- * because `setThemeState` only mutates that single hook's state.
- *
- * `window.storage` events only fire across tabs, not within the same one,
- * so we route same-tab updates through a module-level listener set. Every
- * hook instance subscribes on mount and gets notified whenever ANY other
- * instance calls its setter, keeping all readers in sync without needing
- * a Context provider (which would touch every consumer site).
- */
-type ThemeListener = (next: Theme) => void
-const themeListeners = new Set<ThemeListener>()
-function emitThemeChange(next: Theme) {
-  themeListeners.forEach((fn) => fn(next))
-}
-
-/**
- * React hook that returns the current theme + a setter. Persists changes to
- * localStorage, keeps the document class in sync, and stays in sync with
- * every other `useTheme()` consumer in the same tab.
+ * Back-compat shim for components that still read a theme. Always returns
+ * `light`; the setter is a no-op kept so existing call sites
+ * (`const [theme, setTheme] = useTheme()`) don't need touching.
  */
 export function useTheme(): [Theme, (next: Theme) => void] {
-  const [theme, setThemeState] = useState<Theme>(() => readStoredTheme())
-
-  // Subscribe to same-tab theme changes from sibling hook instances.
-  // Without this the Header's setter wouldn't re-render mounted views
-  // (3D, project bar, etc.) that read the theme via their own hook copy.
-  useEffect(() => {
-    const fn: ThemeListener = (next) => setThemeState(next)
-    themeListeners.add(fn)
-    return () => {
-      themeListeners.delete(fn)
-    }
-  }, [])
-
-  useEffect(() => {
-    applyTheme(theme)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, theme)
-    }
-  }, [theme])
-
-  function setTheme(next: Theme) {
-    setThemeState(next)
-    // Notify siblings synchronously so they re-render in the same React
-    // commit pass - avoids a one-frame flash of the old theme on the
-    // other panels.
-    emitThemeChange(next)
-  }
-
-  return [theme, setTheme]
+  return [FIXED_THEME, () => {}]
 }

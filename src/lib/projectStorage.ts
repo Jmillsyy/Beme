@@ -26,6 +26,7 @@ import type {
   BrickExportInclusions,
   BrickMakeup,
   BrickSettings,
+  FootingZone,
   Opening,
   Pier,
   PierMakeup,
@@ -323,6 +324,8 @@ export interface SavedProject {
   openingsByPage: Record<number, Opening[]>
   /** Piers per page (block mode). Optional - older saved projects predate this field. */
   piersByPage?: Record<number, Pier[]>
+  /** Footing-level zones per page (block mode). Optional - predates the feature. */
+  footingZonesByPage?: Record<number, FootingZone[]>
   /** Pier makeups (block mode). Optional - older saved projects predate this field. */
   pierMakeups?: PierMakeup[]
   /** Currently-active pier makeup id, if any. Used to seed the next-placed
@@ -741,6 +744,7 @@ export async function duplicateProject(sourceId: string): Promise<string | null>
     wallsByPage: {},
     openingsByPage: {},
     piersByPage: {},
+    footingZonesByPage: {},
     currentPage: 1,
     // Preserve the user's setup work - wall types, pier makeups, export prefs.
     makeups: source.makeups,

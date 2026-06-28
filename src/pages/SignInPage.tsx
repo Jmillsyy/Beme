@@ -2,23 +2,19 @@ import { useState } from 'react'
 import Header from '../components/Header'
 import {
   signInWithMagicLink,
-  signInWithMicrosoft,
   signInWithPassword,
 } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
+import BemeMark from '../components/BemeMark'
 
 /** Which auth flow the user has chosen on the sign-in page. */
 type Mode = 'magic-link' | 'password'
 
 /**
- * Sign-in screen with two paths:
+ * Sign-in screen with two email paths:
  *
- * - Magic-link email: lowest-friction, works for anyone with any inbox. The
- * primary option while you're dogfooding before Microsoft Entra is set up
- * against your company's tenant.
- * - Microsoft Outlook: corporate-tenant sign-in for the real product
- * rollout. Visible whenever Supabase is configured; the user just picks
- * whichever is right for them.
+ * - Magic-link email: lowest-friction, works for anyone with any inbox.
+ * - Password: for users who set one when accepting an invite.
  *
  * Once a user signs in, the route guard in `App.tsx` lets them through to the
  * dashboard. Studio Black themed throughout.
@@ -33,29 +29,6 @@ export default function SignInPage() {
   const [password, setPassword] = useState('')
   const [magicSent, setMagicSent] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  async function handleMicrosoftSignIn() {
-    setBusy(true)
-    setError(null)
-    // If the OAuth redirect lands, this page unloads and the guard below never
-    // fires. If it doesn't (provider misconfigured, redirect stalled, popup
-    // blocked) the user would otherwise be stranded on a spinner forever, so
-    // clear busy after a grace period and let them retry.
-    const stuckGuard = window.setTimeout(() => {
-      setBusy(false)
-      setError(
-        "Microsoft sign-in didn't open. Try again, or use an email link instead."
-      )
-    }, 12000)
-    const { error } = await signInWithMicrosoft()
-    if (error) {
-      window.clearTimeout(stuckGuard)
-      setError(error.message)
-      setBusy(false)
-    }
-    // On success the browser redirects to Microsoft and back; busy stays true
-    // until the redirect lands (or the guard above trips).
-  }
 
   async function handleMagicLinkSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -95,17 +68,17 @@ export default function SignInPage() {
       <main className="max-w-md mx-auto px-6 py-20">
         <div className="border border-ink-600 rounded-2xl bg-ink-800 p-8">
           <div className="text-center">
-            <div className="mx-auto w-14 h-14 rounded-xl bg-beme-500 relative mb-5">
-              <div className="absolute inset-[10px] rounded-md bg-ink-900" />
-            </div>
+            <span className="inline-block text-beme-500 mb-5">
+              <BemeMark size={40} wide />
+            </span>
 
-            <h2 className="text-2xl font-extrabold tracking-tight text-ink-50 mb-2">
+            <h2 className="text-2xl font-bold tracking-tight text-ink-50 mb-2">
               Sign in to Beme
             </h2>
             <p className="text-sm text-ink-300 mb-6">
               {mode === 'password'
                 ? 'Use the password you set when you accepted your invite.'
-                : "We'll email you a one-time link, or use Microsoft if your company has it set up."}
+                : "We'll email you a one-time sign-in link."}
             </p>
           </div>
 
@@ -227,40 +200,11 @@ export default function SignInPage() {
             </form>
           )}
 
-          {/* Divider + Microsoft option. Hidden in the "magic link sent"
-              state because the user's mid-action and we don't want to confuse
-              them with a second option. */}
-          {!magicSent && (
-            <>
-              <div className="flex items-center gap-3 my-5 text-[11px] uppercase tracking-wider text-ink-500">
-                <span className="flex-1 h-px bg-ink-600" />
-                <span>or</span>
-                <span className="flex-1 h-px bg-ink-600" />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleMicrosoftSignIn}
-                disabled={busy || !isSupabaseConfigured}
-                className="w-full px-5 py-3 rounded-lg border border-ink-600 hover:bg-ink-700 text-ink-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-3"
-              >
-                {/* Microsoft "windows" logo - four coloured squares */}
-                <svg viewBox="0 0 21 21" width="18" height="18" aria-hidden>
-                  <rect x="1" y="1" width="9" height="9" fill="#f25022" />
-                  <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
-                  <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
-                  <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
-                </svg>
-                {busy ? 'Redirecting…' : 'Sign in with Microsoft'}
-              </button>
-            </>
-          )}
-
           {error && <p className="mt-4 text-sm text-rose-300">{error}</p>}
 
           <p className="mt-6 text-[11px] text-ink-400 leading-relaxed text-center">
-            Beme never sees your password - the sign-in is handled by Supabase / Microsoft
-            and returns a secure token. By signing in you agree to your projects being
+            Beme never sees your password - the sign-in is handled by Supabase and
+            returns a secure token. By signing in you agree to your projects being
             stored in our cloud database (Sydney region).
           </p>
         </div>

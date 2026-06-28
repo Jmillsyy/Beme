@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import BemeMark from './BemeMark'
-import { useTheme } from '../lib/theme'
+import BemeLogo from './BemeLogo'
 import { displayNameOf, signOut, useAuth } from '../lib/auth'
 import { useUserSettings } from '../lib/userSettings'
 import { useOrganisations } from '../lib/organisations'
@@ -42,15 +41,13 @@ function resolvePersonalisedName(opts: {
 /**
  * App-level top header shown on every page. Contains the Beme brand, a
  * personalised "Tailored for X" line (company → display name → OAuth name →
- * fallback), and the dark / light theme switch. When signed in, also shows
+ * fallback). When signed in, also shows
  * the user pill on the right.
  */
 export default function Header() {
-  const [theme, setTheme] = useTheme()
   const { user, signedIn } = useAuth()
   const { settings } = useUserSettings()
   const { organisations, currentOrg, setCurrentOrg } = useOrganisations()
-  const isLight = theme === 'light'
 
   const personalisedName = resolvePersonalisedName({
     currentOrg,
@@ -69,12 +66,7 @@ export default function Header() {
           monitors of any width. */}
       <div className="px-20 py-6 flex items-center justify-between gap-6">
         <Link to="/" className="flex items-center gap-3 group">
-          <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
-            <BemeMark size={32} wide />
-          </span>
-          <div className="leading-tight">
-            <div className="text-2xl font-bold uppercase tracking-wide text-ink-50">Beme</div>
-          </div>
+          <BemeLogo size={28} />
         </Link>
 
         <div className="flex items-center gap-3">
@@ -123,8 +115,6 @@ export default function Header() {
               </svg>
             </Link>
           )}
-
-          <ThemeSwitch theme={theme} onToggle={() => setTheme(isLight ? 'dark' : 'light')} />
         </div>
       </div>
     </header>
@@ -342,35 +332,5 @@ function UserMenu({ user }: { user: import('@supabase/supabase-js').User }) {
         </div>
       )}
     </div>
-  )
-}
-
-/**
- * Compact icon-toggle between dark (moon) and light (sun) themes.
- */
-function ThemeSwitch({
-  theme,
-  onToggle,
-}: {
-  theme: 'dark' | 'light'
-  onToggle: () => void
-}) {
-  const isLight = theme === 'light'
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={isLight}
-      onClick={onToggle}
-      title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
-      className="relative inline-flex items-center h-8 w-[60px] rounded-full border border-ink-600 bg-ink-700/60 hover:bg-ink-700 transition-colors cursor-pointer"
-    >
-      {/* Thumb (slides left for dark, right for light; the title attr and
-          position convey the state without an icon). */}
-      <span
-        className="absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-beme-500 shadow-sm shadow-black/20 transition-transform duration-200"
-        style={{ transform: isLight ? 'translateX(28px)' : 'translateX(0)' }}
-      />
-    </button>
   )
 }

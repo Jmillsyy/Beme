@@ -57,7 +57,6 @@ import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
 import SupplyItemsPanel from './SupplyItemsPanel'
-import OpeningSupplyOverridePicker from './OpeningSupplyOverridePicker'
 import WallTopProfileBar from './WallTopProfileBar'
 import { useOrgSupplyItems } from '../lib/orgSupplyItems'
 import AreaTabs from './AreaTabs'
@@ -93,6 +92,7 @@ import type {
   BrickExportInclusions,
   BrickMakeup,
   BrickSettings,
+  FootingZone,
   Opening,
   Pier,
   PierMakeup,
@@ -100,6 +100,7 @@ import type {
   Wall,
   WallMakeup,
 } from '../types/walls'
+import { footingBounds } from '../types/walls'
 import {
   createDefaultBrickMakeup,
   createDefaultBrickMakeups,
@@ -112,7 +113,6 @@ import {
 } from '../lib/makeups'
 import { BLOCK_LIBRARY, pickPierBlock, useBlockLibrary } from '../data/blockLibrary'
 import type { BlockCode } from '../types/blocks'
-import { resolveBlockByRole } from '../lib/blockRoles'
 import { BRICK_LIBRARY, useBrickLibrary } from '../data/brickLibrary'
 import { getUserSettings, useUserSettings } from '../lib/userSettings'
 import {
@@ -141,6 +141,7 @@ const EMPTY_ARRAY: readonly never[] = Object.freeze([])
 const EMPTY_MEASUREMENTS: readonly never[] = EMPTY_ARRAY
 const EMPTY_OPENINGS: readonly never[] = EMPTY_ARRAY
 const EMPTY_PIERS: readonly never[] = EMPTY_ARRAY
+const EMPTY_FOOTING_ZONES: readonly never[] = EMPTY_ARRAY
 const EMPTY_WALLS: readonly never[] = EMPTY_ARRAY
 
 /**
@@ -928,6 +929,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       )
       return
     }
+    // No primary plan yet (fresh / empty workspace): the dropped PDF becomes
+    // the plan, not a reference - references only exist alongside a primary.
+    if (!pdfFile) {
+      void acceptDroppedAsPrimary(pdfs[0])
+      return
+    }
     setPendingReferenceFiles((prev) => [...prev, ...pdfs])
   }
 
@@ -1205,6 +1212,27 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const [placingTiedPier, setPlacingTiedPier] = useState(false)
   /** True while the user is choosing a point on the plan to drop a freestanding pier. */
   const [placingFreestandingPier, setPlacingFreestandingPier] = useState(false)
+  // Footing-zone state (block mode): rectangles drawn over the plan that set
+  // the footing (base) level for walls inside them, reflected in the 3D view.
+  const [footingZonesByPage, setFootingZonesByPage] = useState<Record<number, FootingZone[]>>({})
+  /** True while the user is drag-drawing a new footing-zone rectangle. */
+  const [placingFootingZone, setPlacingFootingZone] = useState(false)
+  /** Footing zone currently selected (for level edit / move / delete). */
+  const [selectedFootingZoneId, setSelectedFootingZoneId] = useState<string | null>(null)
+  /**
+   * A just-drawn (or being-edited) footing zone awaiting its level in the
+   * modal. editingId set = changing an existing zone's level; unset = a
+   * fresh rectangle not yet committed. Mirrors the pendingOpening flow.
+   */
+  const [pendingFootingZone, setPendingFootingZone] = useState<{
+    x: number
+    y: number
+    widthMm: number
+    heightMm: number
+    points?: Array<{ x: number; y: number }>
+    editingId?: string
+  } | null>(null)
+  const [footingLevelDraft, setFootingLevelDraft] = useState('0')
   /** Pier currently selected (for inspection / height / makeup edit). */
   const [selectedPierIds, _setSelectedPierIds] = useState<Set<string>>(new Set())
   const selectedPierId =
@@ -1335,6 +1363,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     wallsByPage: Record<number, Wall[]>
     openingsByPage: Record<number, Opening[]>
     piersByPage: Record<number, Pier[]>
+    footingZonesByPage: Record<number, FootingZone[]>
   }
   const UNDO_LIMIT = 50
   const [undoStack, setUndoStack] = useState<EditSnapshot[]>([])
@@ -1843,6 +1872,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           wallsByPage: proj.wallsByPage,
           openingsByPage: proj.openingsByPage,
           piersByPage: proj.piersByPage ?? {},
+          footingZonesByPage: proj.footingZonesByPage ?? {},
         }
         // ── Migrate per-area scope for makeups ────────────────────────
         // Older projects saved makeups without an areaId - every wall
@@ -1990,6 +2020,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setWallsByPage(orphanRepairedWallsByPage)
         setOpeningsByPage(proj.openingsByPage ?? {})
         if (proj.piersByPage) setPiersByPage(proj.piersByPage)
+        if (proj.footingZonesByPage) setFootingZonesByPage(proj.footingZonesByPage)
         // Hydrate pier makeups from save (or reset to empty if the project
         // has none - switching from a project WITH piers to one WITHOUT
         // mustn't carry the previous project's pier types over).
@@ -2203,6 +2234,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       }
       if (d.openingsByPage) setOpeningsByPage(d.openingsByPage as typeof openingsByPage)
       if (d.piersByPage) setPiersByPage(d.piersByPage as typeof piersByPage)
+      if (d.footingZonesByPage)
+        setFootingZonesByPage(d.footingZonesByPage as typeof footingZonesByPage)
       if (d.makeups) setMakeups(d.makeups as typeof makeups)
       if (d.pierMakeups) setPierMakeups(d.pierMakeups as typeof pierMakeups)
       if (typeof d.activeMakeupId === 'string') setActiveMakeupId(d.activeMakeupId)
@@ -2360,6 +2393,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       walls: wallsByPage,
       openings: openingsByPage,
       piers: piersByPage,
+      footingZones: footingZonesByPage,
       makeups,
       pierMakeups,
       details: projectDetails,
@@ -2416,6 +2450,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     wallsByPage,
     openingsByPage,
     piersByPage,
+    footingZonesByPage,
     makeups,
     pierMakeups,
     projectDetails,
@@ -2613,6 +2648,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       wallsByPage,
       openingsByPage,
       piersByPage,
+      footingZonesByPage,
       currentPage,
       supplyItemSelections,
       supplyItemRateOverrides,
@@ -2744,6 +2780,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       activeAreaId,
       openingsByPage,
       piersByPage,
+      footingZonesByPage,
       makeups,
       pierMakeups,
       activeMakeupId,
@@ -2878,6 +2915,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         wallsByPage,
         openingsByPage,
         piersByPage,
+        footingZonesByPage,
         currentPage,
         ...(areas.length > 0 ? { areas } : {}),
         // Always persist both trades' setup - see handleSaveProject for
@@ -3067,6 +3105,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setPlacingControlJoint(false)
     setPlacingTiedPier(false)
     setPlacingFreestandingPier(false)
+    setPlacingFootingZone(false)
+    setPendingFootingZone(null)
+    setSelectedFootingZoneId(null)
     setPlacingRuler(false)
     setRulerAnchorMm(null)
     // Also clear any pending-opening modal so Esc dismisses it the same
@@ -3276,6 +3317,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     () => piersByPage[currentPage] ?? (EMPTY_PIERS as unknown as Pier[]),
     [piersByPage, currentPage],
   )
+  const currentPageFootingZones = useMemo(
+    () =>
+      footingZonesByPage[currentPage] ??
+      (EMPTY_FOOTING_ZONES as unknown as FootingZone[]),
+    [footingZonesByPage, currentPage],
+  )
   const selectedPier = useMemo(
     () => (selectedPierId ? currentPagePiers.find((p) => p.id === selectedPierId) : null),
     [selectedPierId, currentPagePiers]
@@ -3319,19 +3366,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     return counts
   }, [allPiers])
 
-  // Auto-prune ORPHANED pier makeups. Every pier makeup is auto-created (on
-  // first pier placement or via + Add then immediate use), so a makeup with
-  // zero piers using it is just visual clutter. Whenever the pier counts
-  // change we drop any makeup that no longer has a pier. The active pier id
-  // is re-pointed at the first remaining makeup so the next placement still
-  // has a valid target.
-  useEffect(() => {
-    setPierMakeups((prev) => {
-      const inUse = prev.filter((m) => (pierCountsByMakeupId[m.id] ?? 0) > 0)
-      if (inUse.length === prev.length) return prev
-      return inUse
-    })
-  }, [pierCountsByMakeupId])
+  // Pier makeups PERSIST once created (like wall types) - we no longer prune
+  // a makeup just because no pier currently uses it, so a configured pier type
+  // sticks around for reuse instead of vanishing the moment its last pier is
+  // removed. Unwanted types are removed explicitly via the panel's delete
+  // action (handleDeletePierMakeup). `pierCountsByMakeupId` is still computed
+  // above for the panel's count badges and the active-id guard below.
 
   useEffect(() => {
     if (activePierMakeupId && !pierMakeups.some((m) => m.id === activePierMakeupId)) {
@@ -5186,6 +5226,107 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (selectedPierId === pierId) setSelectedPierId(null)
   }
 
+  // ── Footing-zone handlers ──────────────────────────────────────────
+  // A footing zone is a rectangle dragged over the plan; everything inside
+  // it sits at the zone's footingLevelMm in 3D. Placed -> add to the page;
+  // update -> move or re-level; delete -> remove + clear selection.
+  const handleFootingZonePlaced = useCallback(
+    (zone: FootingZone) => {
+      if (mode !== 'block') return
+      setFootingZonesByPage((prev) => ({
+        ...prev,
+        [currentPage]: [...(prev[currentPage] ?? []), zone],
+      }))
+      setPlacingFootingZone(false)
+      setSelectedFootingZoneId(zone.id)
+    },
+    [mode, currentPage],
+  )
+  const handleFootingZoneSelect = useCallback(
+    (id: string | null) => {
+      setSelectedFootingZoneId(id)
+      if (id) {
+        setSelectedWallId(null)
+        setSelectedOpeningId(null)
+        setSelectedPierId(null)
+      }
+    },
+    [setSelectedFootingZoneId, setSelectedWallId, setSelectedOpeningId, setSelectedPierId],
+  )
+  const handleFootingZoneUpdate = useCallback(
+    (id: string, patch: Partial<FootingZone>) => {
+      setFootingZonesByPage((prev) => {
+        const page = prev[currentPage] ?? []
+        return {
+          ...prev,
+          [currentPage]: page.map((z) => (z.id === id ? { ...z, ...patch } : z)),
+        }
+      })
+    },
+    [currentPage],
+  )
+  const handleDeleteFootingZone = useCallback(
+    (id: string) => {
+      setFootingZonesByPage((prev) => {
+        const page = prev[currentPage] ?? []
+        return { ...prev, [currentPage]: page.filter((z) => z.id !== id) }
+      })
+      setSelectedFootingZoneId((cur) => (cur === id ? null : cur))
+    },
+    [currentPage],
+  )
+  // Drawing a zone (two clicks on the canvas) opens the level modal rather
+  // than committing immediately - the same path openings take.
+  const handleFootingZoneDrawn = useCallback(
+    (points: Array<{ x: number; y: number }>) => {
+      if (points.length < 3) return
+      setPendingFootingZone({ ...footingBounds(points), points })
+      setFootingLevelDraft('0')
+      setPlacingFootingZone(false)
+    },
+    [],
+  )
+  // Re-open the modal to change an existing zone's level (canvas action).
+  const handleFootingZoneEditLevel = useCallback(
+    (id: string) => {
+      const zone = (footingZonesByPage[currentPage] ?? []).find((z) => z.id === id)
+      if (!zone) return
+      setPendingFootingZone({
+        x: zone.x,
+        y: zone.y,
+        widthMm: zone.widthMm,
+        heightMm: zone.heightMm,
+        editingId: id,
+      })
+      setFootingLevelDraft(String(zone.footingLevelMm))
+      setSelectedFootingZoneId(id)
+    },
+    [footingZonesByPage, currentPage],
+  )
+  // Commit the modal: update an existing zone's level, or create the new one.
+  const confirmPendingFootingZone = useCallback(() => {
+    if (!pendingFootingZone) return
+    const parsed = Number.parseInt(footingLevelDraft, 10)
+    const level = Number.isFinite(parsed) ? parsed : 0
+    if (pendingFootingZone.editingId) {
+      handleFootingZoneUpdate(pendingFootingZone.editingId, { footingLevelMm: level })
+    } else {
+      handleFootingZonePlaced({
+        id:
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `fz-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        x: pendingFootingZone.x,
+        y: pendingFootingZone.y,
+        widthMm: pendingFootingZone.widthMm,
+        heightMm: pendingFootingZone.heightMm,
+        footingLevelMm: level,
+        points: pendingFootingZone.points,
+      })
+    }
+    setPendingFootingZone(null)
+  }, [pendingFootingZone, footingLevelDraft, handleFootingZoneUpdate, handleFootingZonePlaced])
+
   // Ruler / measurement handlers
 
   // Ref mirror of the current anchor so handleRulerClick can read it
@@ -5425,6 +5566,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       wallsByPage,
       openingsByPage,
       piersByPage,
+      footingZonesByPage,
     }
     const prev = lastEditSnapshotRef.current
     if (!prev) {
@@ -5434,7 +5576,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (
       prev.wallsByPage === current.wallsByPage &&
       prev.openingsByPage === current.openingsByPage &&
-      prev.piersByPage === current.piersByPage
+      prev.piersByPage === current.piersByPage &&
+      prev.footingZonesByPage === current.footingZonesByPage
     ) {
       return
     }
@@ -5446,12 +5589,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setRedoStack([])
     lastEditSnapshotRef.current = current
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wallsByPage, openingsByPage, piersByPage])
+  }, [wallsByPage, openingsByPage, piersByPage, footingZonesByPage])
 
   function performUndo() {
     if (undoStack.length === 0) return
     const restore = undoStack[undoStack.length - 1]
-    const current: EditSnapshot = { wallsByPage, openingsByPage, piersByPage }
+    const current: EditSnapshot = { wallsByPage, openingsByPage, piersByPage, footingZonesByPage }
     setRedoStack((s) => [...s, current])
     setUndoStack((s) => s.slice(0, -1))
     // Update the ref BEFORE the state setters so the auto-snapshot effect's
@@ -5460,18 +5603,20 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setWallsByPage(restore.wallsByPage)
     setOpeningsByPage(restore.openingsByPage)
     setPiersByPage(restore.piersByPage)
+    setFootingZonesByPage(restore.footingZonesByPage)
   }
 
   function performRedo() {
     if (redoStack.length === 0) return
     const restore = redoStack[redoStack.length - 1]
-    const current: EditSnapshot = { wallsByPage, openingsByPage, piersByPage }
+    const current: EditSnapshot = { wallsByPage, openingsByPage, piersByPage, footingZonesByPage }
     setUndoStack((s) => [...s, current])
     setRedoStack((s) => s.slice(0, -1))
     lastEditSnapshotRef.current = restore
     setWallsByPage(restore.wallsByPage)
     setOpeningsByPage(restore.openingsByPage)
     setPiersByPage(restore.piersByPage)
+    setFootingZonesByPage(restore.footingZonesByPage)
   }
 
   // Ctrl+Z = undo, Ctrl+Y or Ctrl+Shift+Z = redo. Mac uses Cmd. Suppressed
@@ -5494,7 +5639,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [undoStack, redoStack, wallsByPage, openingsByPage, piersByPage])
+  }, [undoStack, redoStack, wallsByPage, openingsByPage, piersByPage, footingZonesByPage])
 
   // Help-overlay state used by the keyboard-shortcut effect (registered later
   // after currentScale + calibrating have been declared - TS const declarations
@@ -5514,6 +5659,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     openingIds: selectedOpeningIds,
     pierIds: selectedPierIds,
     measurementId: selectedMeasurementId,
+    footingZoneId: selectedFootingZoneId,
     currentPage,
   })
   // useLayoutEffect (not useEffect) so the ref is mirrored synchronously
@@ -5526,9 +5672,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       openingIds: selectedOpeningIds,
       pierIds: selectedPierIds,
       measurementId: selectedMeasurementId,
+      footingZoneId: selectedFootingZoneId,
       currentPage,
     }
-  }, [selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, currentPage])
+  }, [selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, selectedFootingZoneId, currentPage])
 
   // Refs to the latest deletion handlers - handleWallDelete and friends
   // close over component-scope state (currentPage, makeupsById, mode, ...)
@@ -5542,9 +5689,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const handleWallDeleteRef = useRef(handleWallDelete)
   const handleOpeningDeleteRef = useRef(handleOpeningDelete)
   const handleDeletePierRef = useRef(handleDeletePier)
+  const handleDeleteFootingZoneRef = useRef(handleDeleteFootingZone)
   handleWallDeleteRef.current = handleWallDelete
   handleOpeningDeleteRef.current = handleOpeningDelete
   handleDeletePierRef.current = handleDeletePier
+  handleDeleteFootingZoneRef.current = handleDeleteFootingZone
   // Same trick for the view-aware measurement setter. Without the
   // ref, the always-registered keydown listener captured render 1's
   // closure (activeReferenceDocId=null) and routed every Delete to
@@ -5572,7 +5721,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         sel.wallIds.size === 0 &&
         sel.openingIds.size === 0 &&
         sel.pierIds.size === 0 &&
-        !sel.measurementId
+        !sel.measurementId &&
+        !sel.footingZoneId
       ) return
       e.preventDefault()
       const wallIds = Array.from(sel.wallIds)
@@ -5582,6 +5732,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       for (const id of pierIds) handleDeletePierRef.current(id)
       for (const id of openingIds) handleOpeningDeleteRef.current(id)
       for (const id of wallIds) handleWallDeleteRef.current(id)
+      if (sel.footingZoneId) handleDeleteFootingZoneRef.current(sel.footingZoneId)
       if (measurementId) {
         // Route through the ref so the setter reflects the CURRENT
         // active doc - primary's measurementsByPage when on primary,
@@ -5867,11 +6018,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         setPlacingControlJoint(false)
         setPlacingTiedPier(false)
         setPlacingFreestandingPier(false)
+        setPlacingFootingZone(false)
         setPlacingRuler(false)
         setRulerAnchorMm(null)
         setSelectedWallId(null)
         setSelectedOpeningId(null)
         setSelectedPierId(null)
+        setSelectedFootingZoneId(null)
       }
       const k = e.key.toLowerCase()
       if (k === 'w') {
@@ -5946,6 +6099,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     placingOpening,
     placingControlJoint,
     placingFreestandingPier,
+    placingFootingZone,
     currentScale,
     calibrating,
     currentPageWalls.length,
@@ -5959,8 +6113,6 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       ? pageData.pageHeightMm / pageData.pageWidthMm
       : null
   const renderedPageHeight = aspectRatio ? renderedPageWidth * aspectRatio : null
-  const visualPageWidth = renderedPageWidth * visualScale
-  const visualPageHeight = renderedPageHeight ? renderedPageHeight * visualScale : null
 
   // Keep zoomRef in sync so wheel handler reads current value
   useEffect(() => {
@@ -6475,6 +6627,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
   function applyPdfFile(file: File) {
     setPdfFile(file)
+    // Loading a real PDF always exits empty-workspace mode. Without this, a
+    // PDF imported from an empty workspace loads into state but the blank
+    // surface keeps rendering (the render branches on isEmptyWorkspace), so
+    // the import silently appears to do nothing.
+    setIsEmptyWorkspace(false)
     setCurrentPage(1)
     setNumPages(0)
     setPagesData({})
@@ -6519,6 +6676,36 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       console.warn('Page-count probe failed; loading PDF without page picker', err)
     }
     applyPdfFile(file)
+  }
+
+  /**
+   * A PDF dropped when there is NO primary plan yet (a fresh workspace, or an
+   * empty workspace) becomes the plan itself - a "reference" only makes sense
+   * alongside a primary, so routing it there is never what the user wants.
+   *
+   * If the empty workspace already has walls, confirm first: those walls were
+   * drawn on a blank sheet without a plan scale, so they can't line up with a
+   * real PDF and are cleared when the plan loads.
+   */
+  const acceptDroppedAsPrimary = async (file: File | undefined | null) => {
+    if (!file || file.type !== 'application/pdf') return
+    const wallCount = Object.values(wallsByPage).reduce(
+      (n, ws) => n + (ws?.length ?? 0),
+      0
+    )
+    if (wallCount > 0) {
+      const ok = await confirm({
+        title: 'Add a PDF plan to this workspace?',
+        message: `This removes the ${wallCount} wall${wallCount === 1 ? '' : 's'} you drew on the empty sheet - they were placed without a plan scale, so they can't carry over onto the PDF.`,
+        confirmLabel: 'Remove walls and add PDF',
+        variant: 'destructive',
+      })
+      if (!ok) return
+      setWallsByPage({})
+      setOpeningsByPage({})
+      setPiersByPage({})
+    }
+    void acceptFile(file)
   }
 
   /**
@@ -6684,12 +6871,22 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  // Plain function (not useCallback) so it always reads the CURRENT pdfFile /
+  // wallsByPage - a stale closure would route every drop as if the workspace
+  // were still empty. Recreating this handler each render is free.
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
-    void acceptFile(e.dataTransfer.files?.[0])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    const file = e.dataTransfer.files?.[0]
+    // No primary plan yet (fresh / empty workspace) → the drop becomes the
+    // plan (with a wall-removal confirm if the empty sheet has walls).
+    // Otherwise it replaces the current primary, as before.
+    if (!pdfFile) {
+      void acceptDroppedAsPrimary(file)
+      return
+    }
+    void acceptFile(file)
+  }
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -8558,6 +8755,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </kbd>{' '}
                 to cancel.
               </span>
+            ) : placingFootingZone ? (
+              <span className="text-ink-50">
+                Click two opposite corners to draw a <strong>footing zone</strong>. Walls
+                inside it drop / rise to the zone&apos;s level in 3D; double-click a zone
+                to set its level, drag to move, the red badge deletes. Press{' '}
+                <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">
+                  Esc
+                </kbd>{' '}
+                to cancel.
+              </span>
             ) : !currentScale ? (
               <span className="text-ink-400">
                 Calibrate the scale on this page before drawing walls.
@@ -8950,6 +9157,69 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           placingFreestandingPier / placingRuler banners all moved INTO the
           wall-drawing toolbar's left slot. Chrome height stays the same
           regardless of which mode the user is in. */}
+
+      {/* Footing-zone level modal - mirrors the opening placement flow:
+          draw the rectangle, then set its level here. Editing a zone
+          (double-click on canvas) re-opens this with the stored level. */}
+      {pendingFootingZone && mode === 'block' && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setPendingFootingZone(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={pendingFootingZone.editingId ? 'Edit footing level' : 'New footing zone'}
+        >
+          <div
+            className="w-full max-w-sm bg-ink-800 border border-ink-600 rounded-xl shadow-xl shadow-black/40 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="px-5 py-3 border-b border-ink-600 bg-ink-900/40">
+              <h3 className="font-semibold text-ink-50">
+                {pendingFootingZone.editingId ? 'Footing level' : 'New footing zone'}
+              </h3>
+              <p className="text-xs text-ink-400 mt-0.5">
+                Level relative to the default ground (0). Negative drops it lower.
+              </p>
+            </header>
+            <div className="px-5 py-4">
+              <label className="flex items-center gap-2 text-sm text-ink-200">
+                <span className="shrink-0">Footing level</span>
+                <input
+                  type="number"
+                  autoFocus
+                  value={footingLevelDraft}
+                  onChange={(e) => setFootingLevelDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      confirmPendingFootingZone()
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setPendingFootingZone(null)
+                    }
+                  }}
+                  className="flex-1 px-2 py-1.5 rounded-lg bg-ink-900 border border-ink-600 text-ink-50 text-sm"
+                />
+                <span className="text-ink-400 text-sm">mm</span>
+              </label>
+            </div>
+            <footer className="px-5 py-3 border-t border-ink-600 bg-ink-900/40 flex justify-end gap-2">
+              <button
+                onClick={() => setPendingFootingZone(null)}
+                className="px-3 py-1.5 rounded-lg border border-ink-600 text-sm hover:bg-ink-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmPendingFootingZone}
+                className="px-4 py-1.5 rounded-lg bg-blue-700 text-white text-sm font-medium hover:bg-blue-800 transition-colors"
+              >
+                {pendingFootingZone.editingId ? 'Save' : 'Add zone'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
 
       {/* Pending opening form - block mode.
           Stripped down to the rule: HEAD HEIGHT + SILL HEIGHT,
@@ -9692,6 +9962,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 })()}
                 library={BLOCK_LIBRARY}
                 piers={currentPagePiers}
+                footingZones={currentPageFootingZones}
                 pierMakeupsById={pierMakeupsById}
                 pierColorByPierId={pierColorByPierId}
                 pdfFile={pdfFile}
@@ -10199,6 +10470,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   onTiedPierPlaced={handleTiedPierPlaced}
                   onFreestandingPierPlaced={handleFreestandingPierPlaced}
                   onPierSelect={handlePierSelect}
+                  footingZones={currentPageFootingZones}
+                  placingFootingZone={placingFootingZone}
+                  selectedFootingZoneId={selectedFootingZoneId}
+                  onFootingZoneDrawn={handleFootingZoneDrawn}
+                  onFootingZoneSelect={handleFootingZoneSelect}
+                  onFootingZoneUpdate={handleFootingZoneUpdate}
+                  onFootingZoneEditLevel={handleFootingZoneEditLevel}
                   onCancelDraw={handleCancelDraw}
                 />
               )}
