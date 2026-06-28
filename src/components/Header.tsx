@@ -44,7 +44,7 @@ function resolvePersonalisedName(opts: {
  * fallback). When signed in, also shows
  * the user pill on the right.
  */
-export default function Header() {
+export default function Header({ logoHref }: { logoHref?: string }) {
   const { user, signedIn } = useAuth()
   const { settings } = useUserSettings()
   const { organisations, currentOrg, setCurrentOrg } = useOrganisations()
@@ -67,9 +67,17 @@ export default function Header() {
         className="max-w-[1360px] mx-auto h-[68px] flex items-center justify-between gap-6"
         style={{ paddingInline: 'clamp(1.25rem, 3vw, 2.25rem)' }}
       >
-        <Link to="/" className="flex items-center gap-3 group">
-          <BemeLogo size={28} />
-        </Link>
+        {logoHref ? (
+          // External destination (the auth pages pass the bemeapp.app URL)
+          // so the logo leaves the app and returns to the marketing site.
+          <a href={logoHref} className="flex items-center gap-3 group">
+            <BemeLogo size={28} />
+          </a>
+        ) : (
+          <Link to="/" className="flex items-center gap-3 group">
+            <BemeLogo size={28} />
+          </Link>
+        )}
 
         <div className="flex items-center gap-3">
           {/* Offline indicator - only renders when navigator.onLine is

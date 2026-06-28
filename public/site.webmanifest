@@ -1,0 +1,14 @@
+{
+  "name": "Beme",
+  "short_name": "Beme",
+  "description": "Brick and block estimating software - trace the plan, see the build in 3D, order with confidence.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#16181d",
+  "theme_color": "#16181d",
+  "icons": [
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}

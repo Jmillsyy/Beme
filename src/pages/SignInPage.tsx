@@ -63,7 +63,7 @@ export default function SignInPage() {
 
   return (
     <div className="full-scale min-h-screen bg-ink-900 text-ink-50">
-      <Header />
+      <Header logoHref="https://bemeapp.app" />
 
       <main className="app-scale max-w-md mx-auto px-6 py-20">
         <div className="border border-ink-600 rounded-2xl bg-ink-800 p-8">
