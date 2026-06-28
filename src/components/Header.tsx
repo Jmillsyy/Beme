@@ -58,13 +58,15 @@ export default function Header() {
 
   return (
     <header className="bg-ink-800 border-b border-ink-600">
-      {/* Full-width row at px-20 so the Beme logo + org/user pills sit at
-          the same horizontal edges as the workspace canvas AND every
-          dashboard page below. All page `<main>` containers now use
-          `px-20` (no max-w cap) for the same reason - so the header's
-          left/right edges line up with every page's content edges on
-          monitors of any width. */}
-      <div className="px-20 py-6 flex items-center justify-between gap-6">
+      {/* Header bar matched to the marketing site's nav (Nav.astro): a
+          centered max-w-1360 container with the same clamp() side gutters
+          and ~0.95rem vertical padding, so the app's auth pages (sign in,
+          welcome, accept invite) read as the exact same chrome as
+          bemeapp.app rather than a taller, full-width bar. */}
+      <div
+        className="max-w-[1360px] mx-auto flex items-center justify-between gap-6"
+        style={{ paddingInline: 'clamp(1.25rem, 3vw, 2.25rem)', paddingBlock: '0.95rem' }}
+      >
         <Link to="/" className="flex items-center gap-3 group">
           <BemeLogo size={28} />
         </Link>
