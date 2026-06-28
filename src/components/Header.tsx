@@ -64,8 +64,8 @@ export default function Header() {
           welcome, accept invite) read as the exact same chrome as
           bemeapp.app rather than a taller, full-width bar. */}
       <div
-        className="max-w-[1360px] mx-auto flex items-center justify-between gap-6"
-        style={{ paddingInline: 'clamp(1.25rem, 3vw, 2.25rem)', paddingBlock: '0.95rem' }}
+        className="max-w-[1360px] mx-auto h-[68px] flex items-center justify-between gap-6"
+        style={{ paddingInline: 'clamp(1.25rem, 3vw, 2.25rem)' }}
       >
         <Link to="/" className="flex items-center gap-3 group">
           <BemeLogo size={28} />
