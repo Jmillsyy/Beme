@@ -1,12 +1,11 @@
 <!--
-  Beme favicon - matches the BemeMark React component used in the app.
-  Orange rounded square with a square HOLE cut from the middle (true
-  transparency, not a dark inset) so the favicon reads the same on any
-  browser tab colour. Single path with fill-rule="evenodd" subtracts
-  the inner shape from the outer.
+  Beme favicon - the two-block brand mark (matches the BemeMark React
+  component and the marketing site). Two rounded blocks with the centres
+  cut clean through (fill-rule="evenodd" subtracts the holes) so they're
+  genuinely transparent on any tab colour. The wide 104×56 mark is
+  centred in a square viewBox (min-y -24) so it reads as a tab icon.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -24 104 104" width="104" height="104">
   <path fill-rule="evenodd" clip-rule="evenodd" fill="#FF7A2D"
-    d="M12 0 H52 A12 12 0 0 1 64 12 V52 A12 12 0 0 1 52 64 H12 A12 12 0 0 1 0 52 V12 A12 12 0 0 1 12 0 Z
-       M17 12 A5 5 0 0 0 12 17 V47 A5 5 0 0 0 17 52 H47 A5 5 0 0 0 52 47 V17 A5 5 0 0 0 47 12 H17 Z"/>
+    d="M9 0 H95 A9 9 0 0 1 104 9 V47 A9 9 0 0 1 95 56 H9 A9 9 0 0 1 0 47 V9 A9 9 0 0 1 9 0 Z M15 11 H42 A4 4 0 0 1 46 15 V41 A4 4 0 0 1 42 45 H15 A4 4 0 0 1 11 41 V15 A4 4 0 0 1 15 11 Z M62 11 H89 A4 4 0 0 1 93 15 V41 A4 4 0 0 1 89 45 H62 A4 4 0 0 1 58 41 V15 A4 4 0 0 1 62 11 Z"/>
 </svg>

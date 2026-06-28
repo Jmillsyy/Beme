@@ -7,7 +7,7 @@ import { isSupabaseConfigured } from '../lib/supabase'
 /**
  * Welcome page - visitor lands here after completing Stripe Checkout.
  *
- * beme.com.au → Start free → Stripe Checkout → app.beme.com.au/welcome?session_id=...
+ * bemeapp.app → Start free → Stripe Checkout → app.bemeapp.app/welcome?session_id=...
  *
  * The stripe-webhook Edge Function has already provisioned the user
  * and queued a magic-link email by the time this page loads. This

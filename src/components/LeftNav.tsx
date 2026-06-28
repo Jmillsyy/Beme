@@ -110,15 +110,8 @@ export default function LeftNav({
               <BemeMark size={44} />
             </span>
             <div className="leading-tight min-w-0 relative z-10">
-              <div className="text-[26px] font-extrabold tracking-tight text-ink-50 leading-none">
+              <div className="text-[26px] font-bold uppercase tracking-wide text-ink-50 leading-none">
                 Beme
-              </div>
-              {/* Tagline under the wordmark. Sits in the same brand
-                  block as the mark so the whole top-left chunk reads
-                  as one unit. Quiet weight + muted ink so it doesn't
-                  fight the wordmark for the eye's first stop. */}
-              <div className="text-[11px] text-ink-400 mt-1 leading-tight">
-                Building estimates made easy
               </div>
             </div>
           </div>

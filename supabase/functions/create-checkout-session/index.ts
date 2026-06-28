@@ -14,7 +14,7 @@
 // STRIPE_PRICE_ORG               - price_... ($299/mo Organisation, 5 seats)
 // STRIPE_PRICE_EXTRA_SEAT        - price_... ($49/mo extra seat - used later
 // for the org "Add seat" flow, not here)
-// APP_URL                        - https://app.beme.com.au  (success/cancel base)
+// APP_URL                        - https://app.bemeapp.app  (success/cancel base)
 //
 // Deploy: supabase functions deploy create-checkout-session --no-verify-jwt
 // (--no-verify-jwt because this is called from the marketing site by
@@ -25,7 +25,7 @@ import Stripe from 'npm:stripe@17'
 const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY')
 const PRICE_INDIVIDUAL = Deno.env.get('STRIPE_PRICE_INDIVIDUAL')
 const PRICE_ORG = Deno.env.get('STRIPE_PRICE_ORG')
-const APP_URL = Deno.env.get('APP_URL') ?? 'https://app.beme.com.au'
+const APP_URL = Deno.env.get('APP_URL') ?? 'https://app.bemeapp.app'
 
 if (!STRIPE_SECRET_KEY) throw new Error('STRIPE_SECRET_KEY env var missing')
 if (!PRICE_INDIVIDUAL) throw new Error('STRIPE_PRICE_INDIVIDUAL env var missing')
@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
       // is a public page on the app that shows the "sign-in link sent"
       // message; /pricing is the marketing fallback if they bail out.
       success_url: `${APP_URL}/welcome?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: 'https://beme.com.au/pricing?cancelled=true',
+      cancel_url: 'https://bemeapp.app/pricing?cancelled=true',
     })
 
     return jsonResponse({ url: session.url }, 200)

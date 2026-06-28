@@ -67,7 +67,7 @@ export async function downloadPdfFromHtml({ html, filename }: PdfDownloadOptions
         z-index: 9999;
         background: #ff7a2d;
         color: #0e0e10;
-        font-family: Inter, system-ui, sans-serif;
+        font-family: 'Hanken Grotesk', system-ui, sans-serif;
         font-weight: 600;
         font-size: 14px;
         padding: 10px 16px;
@@ -84,7 +84,7 @@ export async function downloadPdfFromHtml({ html, filename }: PdfDownloadOptions
         top: 60px;
         right: 16px;
         z-index: 9999;
-        font-family: Inter, system-ui, sans-serif;
+        font-family: 'Hanken Grotesk', system-ui, sans-serif;
         font-size: 11px;
         color: #6d717a;
         text-align: right;

@@ -34,7 +34,7 @@ const STRIPE_SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY')
 const STRIPE_WEBHOOK_SECRET = Deno.env.get('STRIPE_WEBHOOK_SECRET')
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-const APP_URL = Deno.env.get('APP_URL') ?? 'https://app.beme.com.au'
+const APP_URL = Deno.env.get('APP_URL') ?? 'https://app.bemeapp.app'
 
 if (!STRIPE_SECRET_KEY) throw new Error('STRIPE_SECRET_KEY env var missing')
 if (!STRIPE_WEBHOOK_SECRET) throw new Error('STRIPE_WEBHOOK_SECRET env var missing')

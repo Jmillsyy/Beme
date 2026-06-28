@@ -716,7 +716,7 @@ function buildPlanOverviewPage(
         <line x1="${m.startMm.x.toFixed(1)}" y1="${m.startMm.y.toFixed(1)}" x2="${m.endMm.x.toFixed(1)}" y2="${m.endMm.y.toFixed(1)}" stroke="#0891b2" stroke-width="${measurementStrokeWidth.toFixed(1)}" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}" stroke-linecap="round"/>
         <circle cx="${m.startMm.x.toFixed(1)}" cy="${m.startMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
         <circle cx="${m.endMm.x.toFixed(1)}" cy="${m.endMm.y.toFixed(1)}" r="${dotR.toFixed(1)}" fill="#0891b2"/>
-        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="Inter, system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenLabel} mm</text>
+        <text x="${midX.toFixed(1)}" y="${(midY - measurementStrokeWidth * 2).toFixed(1)}" text-anchor="middle" dominant-baseline="alphabetic" font-family="'Hanken Grotesk', system-ui, sans-serif" font-size="${measurementFontSize.toFixed(1)}" font-weight="600" fill="#0e7490" stroke="#fff" stroke-width="${(measurementFontSize * 0.22).toFixed(1)}" paint-order="stroke">${lenLabel} mm</text>
       `
     })
     .join('\n          ')
@@ -743,7 +743,7 @@ function buildPlanOverviewPage(
     }
     const lengthLabel = Math.round(wallLengthsMm[i])
     return `
-      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="Inter, system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthLabel} mm</text>
+      <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-family="'Hanken Grotesk', system-ui, sans-serif" font-size="${lengthFontSize}" font-weight="600" fill="#1f2937" stroke="#fff" stroke-width="${lengthFontSize * 0.32}" paint-order="stroke">${lengthLabel} mm</text>
     `
   })
 
@@ -1754,11 +1754,11 @@ export async function buildBlockEstimateHtml(
       `
     : `
         <div class="brand-logo-row">
-          <svg class="beme-mark" viewBox="0 0 64 64" width="34" height="34" aria-hidden="true">
-            <path fill-rule="evenodd" clip-rule="evenodd" fill="#FF7A2D" d="M12 0 H52 A12 12 0 0 1 64 12 V52 A12 12 0 0 1 52 64 H12 A12 12 0 0 1 0 52 V12 A12 12 0 0 1 12 0 Z M17 12 A5 5 0 0 0 12 17 V47 A5 5 0 0 0 17 52 H47 A5 5 0 0 0 52 47 V17 A5 5 0 0 0 47 12 H17 Z" />
+          <svg class="beme-mark" viewBox="0 0 104 56" width="63" height="34" aria-hidden="true">
+            <path fill-rule="evenodd" clip-rule="evenodd" fill="#FF7A2D" d="M9 0 H95 A9 9 0 0 1 104 9 V47 A9 9 0 0 1 95 56 H9 A9 9 0 0 1 0 47 V9 A9 9 0 0 1 9 0 Z M15 11 H42 A4 4 0 0 1 46 15 V41 A4 4 0 0 1 42 45 H15 A4 4 0 0 1 11 41 V15 A4 4 0 0 1 15 11 Z M62 11 H89 A4 4 0 0 1 93 15 V41 A4 4 0 0 1 89 45 H62 A4 4 0 0 1 58 41 V15 A4 4 0 0 1 62 11 Z" />
           </svg>
           <div>
-            <div class="brand-name" style="color:#000000">Beme</div>
+            <div class="brand-name" style="color:#000000;text-transform:uppercase;letter-spacing:0.02em">Beme</div>
             <div class="brand-tag" style="color:#000000">Building Estimates Made Easy</div>
           </div>
         </div>
@@ -2161,13 +2161,6 @@ export async function buildBlockEstimateHtml(
   // soft drop shadow, and a project-metadata footer in a single
   // line. No dark frame on the image so it sits naturally on the
   // sheet.
-  const formattedDate = projectDetails.date
-    ? new Date(projectDetails.date).toLocaleDateString('en-AU', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      })
-    : ''
   const view3dPages =
     inclusions.view3d && view3dSnapshots && view3dSnapshots.length > 0
       ? view3dSnapshots
@@ -2976,7 +2969,7 @@ export async function buildBlockEstimateHtml(
          + section heading', which is the standard report layout. */
       @top-center {
         content: string(sectionTitle);
-        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
         font-size: 10pt;
         color: #6b7280;
         font-style: italic;

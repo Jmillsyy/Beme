@@ -68,9 +68,9 @@ export default function AppShell({
         <header className="lg:hidden flex items-center justify-between px-5 py-3 border-b border-ink-700 bg-ink-900 sticky top-0 z-10">
           <Link to="/" className="flex items-center gap-2.5">
             <span className="text-beme-500 inline-block">
-              <BemeMark size={28} />
+              <BemeMark size={28} wide />
             </span>
-            <span className="text-base font-extrabold tracking-tight text-ink-50">
+            <span className="text-base font-bold uppercase tracking-wide text-ink-50">
               Beme
             </span>
           </Link>

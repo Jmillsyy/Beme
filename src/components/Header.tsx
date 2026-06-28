@@ -70,11 +70,10 @@ export default function Header() {
       <div className="px-20 py-6 flex items-center justify-between gap-6">
         <Link to="/" className="flex items-center gap-3 group">
           <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
-            <BemeMark size={32} />
+            <BemeMark size={32} wide />
           </span>
           <div className="leading-tight">
-            <div className="text-2xl font-extrabold tracking-tight text-ink-50">Beme</div>
-            <div className="text-xs text-ink-300">Building estimates made easy</div>
+            <div className="text-2xl font-bold uppercase tracking-wide text-ink-50">Beme</div>
           </div>
         </Link>
 
