@@ -1,40 +1,53 @@
-import BemeMark from './BemeMark'
-
 /**
- * The Beme header lockup - the two-block mark followed by the BEME
- * wordmark, locked to one set of proportions so every header renders
- * identically. These values mirror the marketing site's nav lockup
- * exactly (mark 28 high, wordmark 22, 0.02em tracking, 11px gap) so the
- * app and bemeapp.app read as the same brand. Use this anywhere the mark
- * sits next to the word; the bare mark (favicon, nav rail, loader) keeps
- * using BemeMark directly.
+ * The Beme logo lockup - the two-block mark and the BEME wordmark drawn as
+ * ONE inline SVG. Because the spacing, sizes and vertical alignment are baked
+ * into the SVG's 256x56 coordinate space (not CSS flex / line-height), the
+ * lockup renders byte-for-byte identically here and on the marketing site,
+ * which carries the same artwork. The exact same paths live in the saved
+ * asset at /beme-logo.svg (and /beme-logo-on-dark.svg) for use outside the app.
  *
- * Callers wrap this in their own <Link> / <a>; it renders no link itself.
- * Drop it inside an element with the `group` class to get the mark's
- * hover colour shift (beme-500 to beme-400).
+ * The mark is fixed brand orange. The wordmark uses `currentColor`, so it
+ * takes the surrounding text colour - defaulting to ink-50 for the dark app
+ * chrome; pass a `className` like `text-ink-900` to recolour on light
+ * surfaces.
  *
- * `size` is the mark HEIGHT in px. The wordmark size and the mark-to-word
- * gap are tied to it (22 / 11 at the canonical 28) so the lockup scales
- * as a single unit if a surface ever needs a larger mark.
+ * `size` is the rendered HEIGHT of the mark band in px; the whole lockup
+ * scales as one unit off it (width = size * 256/56).
  */
 export default function BemeLogo({
   size = 28,
+  className = '',
 }: {
   size?: number
+  className?: string
 }) {
-  const wordPx = Math.round((size * 22) / 28)
-  const gapPx = Math.round((size * 11) / 28)
   return (
-    <span className="inline-flex items-center" style={{ gap: `${gapPx}px` }}>
-      <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
-        <BemeMark size={size} wide />
-      </span>
-      <span
-        className="font-bold uppercase text-ink-50"
-        style={{ fontSize: `${wordPx}px`, lineHeight: 1, letterSpacing: '0.02em' }}
+    <svg
+      viewBox="0 0 256 56"
+      height={size}
+      width={Math.round((size * 256) / 56)}
+      className={`text-ink-50 group-hover:brightness-110 transition ${className}`}
+      role="img"
+      aria-label="Beme"
+    >
+      <path
+        fill="#ff7a2d"
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M9 0 H95 A9 9 0 0 1 104 9 V47 A9 9 0 0 1 95 56 H9 A9 9 0 0 1 0 47 V9 A9 9 0 0 1 9 0 Z M15 11 H42 A4 4 0 0 1 46 15 V41 A4 4 0 0 1 42 45 H15 A4 4 0 0 1 11 41 V15 A4 4 0 0 1 15 11 Z M62 11 H89 A4 4 0 0 1 93 15 V41 A4 4 0 0 1 89 45 H62 A4 4 0 0 1 58 41 V15 A4 4 0 0 1 62 11 Z"
+      />
+      <text
+        x="126"
+        y="29"
+        dominantBaseline="central"
+        fontFamily="'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        fontWeight="700"
+        fontSize="44"
+        letterSpacing="0.88"
+        fill="currentColor"
       >
-        Beme
-      </span>
-    </span>
+        BEME
+      </text>
+    </svg>
   )
 }

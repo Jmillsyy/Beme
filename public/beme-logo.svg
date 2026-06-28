@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 56" width="256" height="56" role="img" aria-label="Beme">
+  <title>Beme</title>
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@700&amp;display=swap');
+      .beme-word { font-family: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-weight: 700; font-size: 44px; letter-spacing: 0.88px; }
+    </style>
+  </defs>
+  <!-- Two-block mark, fixed brand orange -->
+  <path fill="#ff7a2d" fill-rule="evenodd" clip-rule="evenodd" d="M9 0 H95 A9 9 0 0 1 104 9 V47 A9 9 0 0 1 95 56 H9 A9 9 0 0 1 0 47 V9 A9 9 0 0 1 9 0 Z M15 11 H42 A4 4 0 0 1 46 15 V41 A4 4 0 0 1 42 45 H15 A4 4 0 0 1 11 41 V15 A4 4 0 0 1 15 11 Z M62 11 H89 A4 4 0 0 1 93 15 V41 A4 4 0 0 1 89 45 H62 A4 4 0 0 1 58 41 V15 A4 4 0 0 1 62 11 Z"/>
+  <!-- Wordmark, dark for light surfaces -->
+  <text class="beme-word" x="126" y="29" dominant-baseline="central" fill="#16181d">BEME</text>
+</svg>
