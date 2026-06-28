@@ -216,6 +216,23 @@ html {
   zoom: 0.79;
 }
 
+/* Auth pages (sign in / welcome / accept invite) opt OUT of the global
+   html zoom so they render at 100%, matching the marketing site at
+   bemeapp.app. `zoom` compounds multiplicatively, so 0.79 × 1.2658 ≈ 1.0.
+   If you ever change the html zoom above, update this reciprocal (1 / zoom). */
+.full-scale {
+  zoom: 1.2658;
+}
+
+/* Re-apply the app's normal 0.79 zoom to auth-page CONTENT (the sign-in
+   card / form) that sits inside a .full-scale page. Net effect: only the
+   header bar ends up at the site's 100%, while the card stays the app's
+   size. Cumulative zoom on the card = 0.79 (html) x 1.2658 (.full-scale)
+   x 0.79 (this) = 0.79. */
+.app-scale {
+  zoom: 0.79;
+}
+
 body {
   background: var(--color-ink-900);
   color: var(--color-ink-50);

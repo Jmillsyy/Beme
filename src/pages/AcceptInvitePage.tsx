@@ -170,9 +170,9 @@ export default function AcceptInvitePage() {
 
   if (authLoading || previewLoading) {
     return (
-      <div className="min-h-screen bg-ink-900 text-ink-50">
+      <div className="full-scale min-h-screen bg-ink-900 text-ink-50">
         <Header />
-        <main className="max-w-md mx-auto px-6 py-16 flex justify-center">
+        <main className="app-scale max-w-md mx-auto px-6 py-16 flex justify-center">
           <BemeLoader caption="Loading invitation…" />
         </main>
       </div>
@@ -183,9 +183,9 @@ export default function AcceptInvitePage() {
   // a blank page or stack trace.
   if (previewError || !preview) {
     return (
-      <div className="min-h-screen bg-ink-900 text-ink-50">
+      <div className="full-scale min-h-screen bg-ink-900 text-ink-50">
         <Header />
-        <main className="max-w-md mx-auto px-6 py-16">
+        <main className="app-scale max-w-md mx-auto px-6 py-16">
           <div className="border border-ink-600 rounded-2xl bg-ink-800 p-8 text-center">
             <h2 className="text-2xl font-extrabold tracking-tight text-ink-50 mb-2">
               Invitation unavailable
@@ -210,9 +210,9 @@ export default function AcceptInvitePage() {
   }
 
   return (
-    <div className="min-h-screen bg-ink-900 text-ink-50">
+    <div className="full-scale min-h-screen bg-ink-900 text-ink-50">
       <Header />
-      <main className="max-w-md mx-auto px-6 py-16">
+      <main className="app-scale max-w-md mx-auto px-6 py-16">
         <div className="border border-ink-600 rounded-2xl bg-ink-800 p-8">
           <div className="mb-5 text-center">
             <div className="mx-auto w-14 h-14 rounded-xl bg-beme-500 relative mb-4">

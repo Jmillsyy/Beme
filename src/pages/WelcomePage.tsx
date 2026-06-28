@@ -57,10 +57,10 @@ export default function WelcomePage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-ink-900">
+    <div className="full-scale min-h-screen flex flex-col bg-ink-900">
       <Header />
 
-      <main className="flex-1 flex items-center justify-center px-6 py-20">
+      <main className="app-scale flex-1 flex items-center justify-center px-6 py-20">
         <div className="max-w-lg w-full">
           {/* Success badge */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-medium mb-6">
