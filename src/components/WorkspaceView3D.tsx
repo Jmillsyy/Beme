@@ -2429,6 +2429,8 @@ function CADControls({
     // Active touch pointers, for two-finger pinch-to-zoom (dolly).
     const activePointers = new Map<number, { x: number; y: number }>()
     let pinchPrevDist = 0
+    let pinchPrevMidX = 0
+    let pinchPrevMidY = 0
 
     // Orbit target. Initially at the scene's horizontal centre, just
     // above the ground (1m) so we're looking at roughly where the
@@ -2502,10 +2504,13 @@ function CADControls({
       if (e.pointerType === 'touch') {
         activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
         if (activePointers.size === 2) {
-          // Second finger down -> pinch-zoom; stop any single-finger orbit.
+          // Second finger down -> pinch-zoom + two-finger pan; stop any
+          // single-finger orbit.
           state.mode = 'idle'
           const pts = [...activePointers.values()]
           pinchPrevDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+          pinchPrevMidX = (pts[0].x + pts[1].x) / 2
+          pinchPrevMidY = (pts[0].y + pts[1].y) / 2
           e.preventDefault()
           return
         }
@@ -2530,8 +2535,32 @@ function CADControls({
         const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
         const midX = (pts[0].x + pts[1].x) / 2
         const midY = (pts[0].y + pts[1].y) / 2
-        if (pinchPrevDist > 0) dollyToward(midX, midY, dist / pinchPrevDist - 1)
+        if (pinchPrevDist > 0) {
+          // Spread/pinch zooms toward the midpoint...
+          dollyToward(midX, midY, dist / pinchPrevDist - 1)
+          // ...and dragging both fingers pans (the missing 3D dimension on
+          // touch). Move the orbit target with the midpoint, scaled to world
+          // units by camera distance + FOV - same math as the mouse pan.
+          const dpx = midX - pinchPrevMidX
+          const dpy = midY - pinchPrevMidY
+          if (dpx || dpy) {
+            const rect = dom.getBoundingClientRect()
+            const persp = camera as THREE.PerspectiveCamera
+            const fovRad = (persp.fov * Math.PI) / 180
+            const wppY = (2 * spherical.radius * Math.tan(fovRad / 2)) / rect.height
+            const wppX = wppY * persp.aspect
+            const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0)
+            const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1)
+            const move = new THREE.Vector3()
+              .addScaledVector(right, -dpx * wppX * PAN_SCREEN_FRACTION)
+              .addScaledVector(up, dpy * wppY * PAN_SCREEN_FRACTION)
+            target.add(move)
+            updateCamera()
+          }
+        }
         pinchPrevDist = dist
+        pinchPrevMidX = midX
+        pinchPrevMidY = midY
         return
       }
       if (state.mode === 'idle') return
@@ -6430,6 +6459,31 @@ function BlockLegend({
       return next
     })
 
+  // Whole-legend collapse - minimise the key to a small pill so it's out of
+  // the way (handy on a phone, where it otherwise covers the model). Tap the
+  // pill to bring it back.
+  const [collapsed, setCollapsed] = useState(false)
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        title="Show legend"
+        className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-300 px-2.5 py-1.5 inline-flex items-center gap-1.5 hover:text-ink-100 transition-colors"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+          <line x1="8" y1="6" x2="21" y2="6" />
+          <line x1="8" y1="12" x2="21" y2="12" />
+          <line x1="8" y1="18" x2="21" y2="18" />
+          <line x1="3" y1="6" x2="3.01" y2="6" />
+          <line x1="3" y1="12" x2="3.01" y2="12" />
+          <line x1="3" y1="18" x2="3.01" y2="18" />
+        </svg>
+        Legend
+      </button>
+    )
+  }
+
   // ── 'code' mode: flat per-code key ──────────────────────────────
   // Each distinct block (and brick wall type) gets its own row in its
   // own hue - no role collapsing, because in this mode the colour
@@ -6439,8 +6493,16 @@ function BlockLegend({
     const rows = [...items].sort((a, b) => a.label.localeCompare(b.label))
     return (
       <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[60vh] overflow-y-auto min-w-[150px]">
-        <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm">
-          Legend
+        <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between gap-2">
+          <span>Legend</span>
+          <button
+            type="button"
+            onClick={() => setCollapsed(true)}
+            aria-label="Hide legend"
+            className="text-ink-400 hover:text-ink-100 leading-none text-sm px-1"
+          >
+            −
+          </button>
         </div>
         <ul className="py-1">
           {rows.map((r) => {
@@ -6513,8 +6575,16 @@ function BlockLegend({
 
   return (
     <div className="bg-ink-800/85 backdrop-blur-sm border border-ink-600/70 rounded-lg shadow-md text-[11px] text-ink-200 max-h-[60vh] overflow-y-auto min-w-[150px]">
-      <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm">
-        Legend
+      <div className="px-2 py-1 border-b border-ink-700/70 text-ink-400 sticky top-0 bg-ink-800/95 backdrop-blur-sm flex items-center justify-between gap-2">
+        <span>Legend</span>
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          aria-label="Hide legend"
+          className="text-ink-400 hover:text-ink-100 leading-none text-sm px-1"
+        >
+          −
+        </button>
       </div>
       <ul className="py-1">
         {groups.map((g) => {
