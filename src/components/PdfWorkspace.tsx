@@ -8643,7 +8643,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           any) and the right rail. Flex column inside so the sticky drawing
           toolbar sits above the pan container which flex-fills the height. */}
       <div
-        className={`flex-1 min-w-0 min-h-0 w-full flex flex-col${
+        className={`beme-canvas-touch flex-1 min-w-0 min-h-0 w-full flex flex-col${
           mobile && !viewerOpen ? ' hidden' : ''
         }${mobile && viewerOpen ? ' fixed inset-0 z-[60] bg-ink-900 p-2' : ''}`}
       >

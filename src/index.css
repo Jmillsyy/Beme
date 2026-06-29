@@ -248,6 +248,14 @@ html {
   }
 }
 
+/* Workspace canvases (the Konva 2D plan + the three.js 3D model) own their
+   touch gestures via custom pan / orbit / pinch handlers, so stop the browser
+   from scrolling or pinch-zooming the page when a finger is on them. touch-
+   action must be on the canvas itself, not just its container. */
+.beme-canvas-touch canvas {
+  touch-action: none;
+}
+
 body {
   background: var(--color-ink-900);
   color: var(--color-ink-50);

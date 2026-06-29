@@ -2422,6 +2422,13 @@ function CADControls({
 
   useEffect(() => {
     const dom = gl.domElement
+    // Let our pointer + pinch controls own touch gestures. Without this the
+    // browser scrolls / pinch-zooms the page and cancels the pointer stream,
+    // so a finger can't orbit and pinch feels janky.
+    dom.style.touchAction = 'none'
+    // Active touch pointers, for two-finger pinch-to-zoom (dolly).
+    const activePointers = new Map<number, { x: number; y: number }>()
+    let pinchPrevDist = 0
 
     // Orbit target. Initially at the scene's horizontal centre, just
     // above the ground (1m) so we're looking at roughly where the
@@ -2492,6 +2499,17 @@ function CADControls({
       buttonToModeFor(navStyleRef.current, button, shift, alt)
 
     const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        if (activePointers.size === 2) {
+          // Second finger down -> pinch-zoom; stop any single-finger orbit.
+          state.mode = 'idle'
+          const pts = [...activePointers.values()]
+          pinchPrevDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+          e.preventDefault()
+          return
+        }
+      }
       const mode = buttonToMode(e.button, e.shiftKey, e.altKey)
       if (mode === 'idle') return
       state.mode = mode
@@ -2503,6 +2521,19 @@ function CADControls({
     }
 
     const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' && activePointers.has(e.pointerId)) {
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      }
+      // Two-finger pinch -> dolly toward the midpoint.
+      if (activePointers.size === 2) {
+        const pts = [...activePointers.values()]
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+        const midX = (pts[0].x + pts[1].x) / 2
+        const midY = (pts[0].y + pts[1].y) / 2
+        if (pinchPrevDist > 0) dollyToward(midX, midY, dist / pinchPrevDist - 1)
+        pinchPrevDist = dist
+        return
+      }
       if (state.mode === 'idle') return
       const dx = e.clientX - state.lastX
       const dy = e.clientY - state.lastY
@@ -2552,6 +2583,10 @@ function CADControls({
     }
 
     const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        activePointers.delete(e.pointerId)
+        if (activePointers.size < 2) pinchPrevDist = 0
+      }
       if (e.pointerId !== state.pointerId) return
       state.mode = 'idle'
       state.pointerId = -1
@@ -2564,34 +2599,27 @@ function CADControls({
       e.preventDefault()
     }
 
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      // Cursor-locked zoom: raycast through the cursor to find
-      // either a scene hit or a phantom-distance fallback point,
-      // then move BOTH camera and target a fraction of the way
-      // toward that point. The cursor's world position stays under
-      // the cursor after the zoom - the AutoCAD "scroll to zoom in
-      // there" feel.
-      const ray = screenToRay(e.clientX, e.clientY)
+    // Cursor / pinch-locked zoom: raycast through the point, then move BOTH
+    // camera and target a fraction of the way toward the hit so that point
+    // stays put (the AutoCAD "scroll to zoom in there" feel). Positive
+    // moveAmount zooms in, negative zooms out. Shared by wheel + pinch.
+    const dollyToward = (clientX: number, clientY: number, moveAmount: number) => {
+      if (moveAmount === 0) return
+      const ray = screenToRay(clientX, clientY)
       const hits = ray.intersectObjects(scene.children, true)
-      const dir = ray.ray.direction.clone() // already normalised
+      const dir = ray.ray.direction.clone()
       const origin = ray.ray.origin.clone()
       const targetWorld =
         hits.length > 0
           ? hits[0].point
           : origin.clone().addScaledVector(dir, WHEEL_FALLBACK_DISTANCE)
-
-      const sign = e.deltaY < 0 ? 1 : -1 // scroll up = zoom in
       const toTarget = new THREE.Vector3().subVectors(targetWorld, camera.position)
-      let moveAmount = sign * WHEEL_STEP
-      // Clamp inward zoom so we don't overshoot through the surface.
-      if (sign === 1 && toTarget.length() * (1 - moveAmount) < WHEEL_MIN_DISTANCE) {
-        moveAmount = 1 - WHEEL_MIN_DISTANCE / Math.max(toTarget.length(), 1e-3)
+      let amt = moveAmount
+      if (amt > 0 && toTarget.length() * (1 - amt) < WHEEL_MIN_DISTANCE) {
+        amt = 1 - WHEEL_MIN_DISTANCE / Math.max(toTarget.length(), 1e-3)
       }
-      camera.position.addScaledVector(toTarget, moveAmount)
-      target.addScaledVector(toTarget, moveAmount)
-      // Re-derive spherical from new camera/target so subsequent
-      // orbits + pans use the updated radius.
+      camera.position.addScaledVector(toTarget, amt)
+      target.addScaledVector(toTarget, amt)
       const newOffset = new THREE.Vector3().subVectors(camera.position, target)
       spherical.setFromVector3(newOffset)
       if (spherical.phi < PHI_EPSILON) spherical.phi = PHI_EPSILON
@@ -2600,6 +2628,11 @@ function CADControls({
       }
       camera.lookAt(target)
       invalidate()
+    }
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      dollyToward(e.clientX, e.clientY, e.deltaY < 0 ? WHEEL_STEP : -WHEEL_STEP)
     }
 
     /** Frame the building. Re-centres the target on the scene bounds,
