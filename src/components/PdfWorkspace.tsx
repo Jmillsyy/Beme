@@ -8648,39 +8648,97 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         }${mobile && viewerOpen ? ' fixed inset-0 z-[60] bg-ink-900 p-2' : ''}`}
       >
 
-      {/* Fullscreen-viewer control bar - 2D/3D switch + close, pinned at the
-          top of the overlay. The canvas / 3D fills the space below. */}
+      {/* Fullscreen-viewer control bar - the ONLY chrome over the plan/model:
+          close, 2D/3D, page nav, zoom. Everything else (thumbnails, drawn
+          count, the lists) sits behind the overlay so the view owns the
+          whole screen. */}
       {mobile && viewerOpen && (
-        <div className="flex items-center justify-between gap-2 mb-2 flex-shrink-0">
-          <div className="inline-flex rounded-lg border border-ink-600 overflow-hidden text-sm">
+        <div className="flex items-center gap-2 mb-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => setViewerOpen(false)}
+            aria-label="Close viewer"
+            className="inline-flex items-center justify-center w-10 h-10 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 transition-colors flex-shrink-0"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <div className="inline-flex rounded-lg border border-ink-600 overflow-hidden text-sm flex-shrink-0">
             <button
               type="button"
               onClick={() => setViewMode('2d')}
-              className={viewMode === '2d' ? 'px-5 py-2 bg-beme-500 text-black font-semibold' : 'px-5 py-2 text-ink-300'}
+              className={viewMode === '2d' ? 'px-4 py-2 bg-beme-500 text-black font-semibold' : 'px-4 py-2 text-ink-300'}
             >
               2D
             </button>
             <button
               type="button"
               onClick={() => setViewMode('3d')}
-              className={viewMode === '3d' ? 'px-5 py-2 bg-beme-500 text-black font-semibold' : 'px-5 py-2 text-ink-300'}
+              className={viewMode === '3d' ? 'px-4 py-2 bg-beme-500 text-black font-semibold' : 'px-4 py-2 text-ink-300'}
             >
               3D
             </button>
           </div>
-          <span className="text-[11px] text-ink-400 hidden min-[400px]:inline">Rotate for a bigger view</span>
-          <button
-            type="button"
-            onClick={() => setViewerOpen(false)}
-            aria-label="Close viewer"
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-            Close
-          </button>
+
+          <div className="flex-1" />
+
+          {/* Page nav - 2D, multi-page plans only. */}
+          {viewMode === '2d' && numPages > 1 && (() => {
+            const visiblePages =
+              activeReferenceSelectedPages && activeReferenceSelectedPages.length > 0
+                ? activeReferenceSelectedPages
+                : Array.from({ length: numPages }, (_, i) => i + 1)
+            const idx = Math.max(0, visiblePages.indexOf(currentPage))
+            return (
+              <div className="inline-flex items-center gap-1 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => idx > 0 && setCurrentPage(visiblePages[idx - 1])}
+                  disabled={idx <= 0}
+                  aria-label="Previous page"
+                  className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 disabled:opacity-40 transition-colors"
+                >
+                  ←
+                </button>
+                <span className="text-xs text-ink-300 tabular-nums min-w-[2.5rem] text-center">
+                  {currentPage}/{visiblePages.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => idx < visiblePages.length - 1 && setCurrentPage(visiblePages[idx + 1])}
+                  disabled={idx >= visiblePages.length - 1}
+                  aria-label="Next page"
+                  className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-ink-600 text-ink-200 hover:bg-ink-700 disabled:opacity-40 transition-colors"
+                >
+                  →
+                </button>
+              </div>
+            )
+          })()}
+
+          {/* Zoom - 2D only; 3D zooms with a pinch. */}
+          {viewMode === '2d' && (
+            <div className="inline-flex rounded-lg border border-ink-600 overflow-hidden flex-shrink-0">
+              <button
+                type="button"
+                onClick={zoomOutButton}
+                aria-label="Zoom out"
+                className="w-9 h-9 inline-flex items-center justify-center text-ink-200 hover:bg-ink-700 transition-colors"
+              >
+                −
+              </button>
+              <button
+                type="button"
+                onClick={zoomInButton}
+                aria-label="Zoom in"
+                className="w-9 h-9 inline-flex items-center justify-center text-ink-200 hover:bg-ink-700 transition-colors border-l border-ink-600"
+              >
+                +
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -10011,7 +10069,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             through the per-page <Page> rendering - without this, each zoom
             tick reconciled `numPages` PDF pages, which was the bottleneck on
             multi-page plans. */}
-        {numPages > 1 && displayedPdfFile && (
+        {numPages > 1 && displayedPdfFile && !mobile && (
           <ThumbnailSidebar
             sidebarRef={sidebarRef}
             // Thumbnails follow the displayed PDF - when the user flips to a
