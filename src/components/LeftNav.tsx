@@ -90,25 +90,15 @@ export default function LeftNav({
         title={collapsed ? 'Beme - Dashboard' : undefined}
       >
         {collapsed ? (
-          <span className="text-beme-500 group-hover:text-beme-400 transition-colors drop-shadow-[0_4px_12px_rgba(255,122,45,0.25)] inline-block">
+          <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
             <BemeMark size={44} />
           </span>
         ) : (
-          <div className="flex items-center gap-3 relative">
-            {/* Soft orange ambient glow behind the brand mark - gives
-                the otherwise-dark rail a warm anchor at the top without
-                turning into a hard panel. Mirrors how marketing-page
-                heroes use brand-tinted radial gradients to ground the
-                logo. pointer-events-none + behind-content z-stacking so
-                hover behaviour is unchanged. */}
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -inset-3 -z-0 bg-[radial-gradient(circle_at_top_left,rgba(255,122,45,0.18),transparent_70%)] rounded-2xl"
-            />
-            <span className="text-beme-500 group-hover:text-beme-400 transition-colors drop-shadow-[0_4px_12px_rgba(255,122,45,0.25)] relative z-10 inline-block">
+          <div className="flex items-center gap-3">
+            <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
               <BemeMark size={44} />
             </span>
-            <div className="leading-tight min-w-0 relative z-10">
+            <div className="leading-tight min-w-0">
               <div className="text-[26px] font-bold uppercase tracking-wide text-ink-50 leading-none">
                 Beme
               </div>
