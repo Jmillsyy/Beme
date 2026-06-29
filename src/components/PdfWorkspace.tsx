@@ -5960,6 +5960,9 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // Pan (click-and-drag) state
   const isPanningRef = useRef(false)
   const panStartRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  // Two-finger pinch state - last frame's finger distance + midpoint, used to
+  // derive the zoom ratio and anchor point each move (see the touch handlers).
+  const pinchRef = useRef<{ dist: number; midX: number; midY: number } | null>(null)
   /**
    * True if a pan was activated during the current mouse press. Stays true until the next
    * mousedown resets it. Used to suppress the browser's `click` event from reaching Konva
@@ -6460,6 +6463,105 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       panStartRef.current = null
     }
 
+    // Touch equivalents of the mouse pan handlers - one finger drags the
+    // plan. Multi-touch is ignored here (no pinch-zoom yet; use the +/- zoom
+    // buttons). preventDefault stops the page scrolling underneath the drag.
+    const handleDocTouchMove = (e: TouchEvent) => {
+      if (!containerRef.current) return
+
+      // Two-finger pinch: zoom anchored on the midpoint (same anchor math as
+      // the wheel handler) plus a pan by the midpoint's movement, so the
+      // gesture zooms AND drags like a native map.
+      if (e.touches.length === 2) {
+        e.preventDefault()
+        const t0 = e.touches[0]
+        const t1 = e.touches[1]
+        const midX = (t0.clientX + t1.clientX) / 2
+        const midY = (t0.clientY + t1.clientY) / 2
+        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY)
+        const prev = pinchRef.current
+        const pageEl = pageWrapperRef.current
+        if (prev && pageEl && prev.dist > 0) {
+          const oldZoom = zoomRef.current
+          const newZoom = clamp((oldZoom * dist) / prev.dist, MIN_ZOOM, maxZoomRef.current)
+          const k = newZoom / oldZoom
+          const wrapRect = pageEl.getBoundingClientRect()
+          const oldVisualScale = oldZoom / (renderedZoomRef.current || 1)
+          const layoutVisualW = pageEl.offsetWidth * (oldVisualScale || 1)
+          const zoomFactor = layoutVisualW > 0 ? wrapRect.width / layoutVisualW : 1
+          const pxOffX = (midX - wrapRect.left) / zoomFactor
+          const pxOffY = (midY - wrapRect.top) / zoomFactor
+          const newTx = viewTxRef.current + pxOffX * (1 - k) + (midX - prev.midX)
+          const newTy = viewTyRef.current + pxOffY * (1 - k) + (midY - prev.midY)
+          zoomRef.current = newZoom
+          viewTxRef.current = newTx
+          viewTyRef.current = newTy
+          const visualScaleNow = newZoom / (renderedZoomRef.current || 1)
+          pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
+          if (zoomCommitTimerRef.current) clearTimeout(zoomCommitTimerRef.current)
+          zoomCommitTimerRef.current = setTimeout(() => {
+            zoomCommitTimerRef.current = null
+            setZoom(newZoom)
+          }, 80)
+        }
+        // A pinch isn't a pan / tap - cancel any single-finger pan in flight.
+        panStartRef.current = null
+        isPanningRef.current = false
+        didPanDuringPressRef.current = true
+        pinchRef.current = { dist, midX, midY }
+        return
+      }
+
+      // Single-finger pan.
+      if (e.touches.length !== 1) return
+      // If a pinch just lifted to one finger, re-anchor the pan to the
+      // remaining finger so it doesn't jump.
+      if (pinchRef.current) {
+        pinchRef.current = null
+        panStartRef.current = null
+      }
+      const t = e.touches[0]
+      if (!panStartRef.current) {
+        panStartRef.current = { x: t.clientX, y: t.clientY, tx: viewTxRef.current, ty: viewTyRef.current }
+        return
+      }
+      const start = panStartRef.current
+      const dx = t.clientX - start.x
+      const dy = t.clientY - start.y
+      if (!isPanningRef.current) {
+        if (dx * dx + dy * dy < PAN_DRAG_THRESHOLD_PX * PAN_DRAG_THRESHOLD_PX) return
+        isPanningRef.current = true
+        didPanDuringPressRef.current = true
+        containerRef.current.classList.add('beme-pan-active')
+      }
+      e.preventDefault()
+      const pageEl = pageWrapperRef.current
+      if (!pageEl) return
+      const newTx = start.tx + dx
+      const newTy = start.ty + dy
+      viewTxRef.current = newTx
+      viewTyRef.current = newTy
+      const renderedZ = renderedZoomRef.current || 1
+      const visualScaleNow = zoomRef.current / renderedZ
+      pageEl.style.transform = `translate(${newTx}px, ${newTy}px) scale(${visualScaleNow})`
+    }
+
+    const handleDocTouchEnd = (e: TouchEvent) => {
+      // Other fingers still down (e.g. pinch lifted to one finger) - let the
+      // next touchmove re-anchor; don't tear the gesture down yet.
+      if (e.touches.length > 0) return
+      const wasInteracting = isPanningRef.current || pinchRef.current !== null
+      if (isPanningRef.current) {
+        isPanningRef.current = false
+        if (containerRef.current) {
+          containerRef.current.classList.remove('beme-pan-active')
+        }
+      }
+      if (wasInteracting) setViewSettleTick((t) => t + 1)
+      panStartRef.current = null
+      pinchRef.current = null
+    }
+
     // Capture-phase click listener: if a pan happened during this press, swallow the
     // browser's click event before it reaches Konva (which would otherwise treat the
     // click+drag as a click in its local coordinates).
@@ -6482,11 +6584,17 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
     document.addEventListener('mousemove', handleDocMouseMove)
     document.addEventListener('mouseup', handleDocMouseUp)
+    document.addEventListener('touchmove', handleDocTouchMove, { passive: false })
+    document.addEventListener('touchend', handleDocTouchEnd)
+    document.addEventListener('touchcancel', handleDocTouchEnd)
     container.addEventListener('click', handleContainerClickCapture, { capture: true })
     container.addEventListener('contextmenu', handleContextMenu)
     return () => {
       document.removeEventListener('mousemove', handleDocMouseMove)
       document.removeEventListener('mouseup', handleDocMouseUp)
+      document.removeEventListener('touchmove', handleDocTouchMove)
+      document.removeEventListener('touchend', handleDocTouchEnd)
+      document.removeEventListener('touchcancel', handleDocTouchEnd)
       container.removeEventListener('click', handleContainerClickCapture, { capture: true })
       container.removeEventListener('contextmenu', handleContextMenu)
     }
@@ -6528,6 +6636,37 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     panStartRef.current = {
       x: e.clientX,
       y: e.clientY,
+      tx: viewTxRef.current,
+      ty: viewTyRef.current,
+    }
+  }
+
+  // Touch pan start - mirrors handlePanMouseDown for a single finger. The
+  // document-level touchmove / touchend handlers (registered in the pan
+  // effect above) do the actual dragging. Multi-touch is ignored so a pinch
+  // doesn't get treated as a one-finger pan.
+  function handlePanTouchStart(e: React.TouchEvent<HTMLDivElement>) {
+    const container = containerRef.current
+    if (!container) return
+    // Two fingers down -> start a pinch (zoom). The doc-level touchmove does
+    // the work; here we just seed the first frame's distance + midpoint.
+    if (e.touches.length === 2) {
+      const t0 = e.touches[0]
+      const t1 = e.touches[1]
+      pinchRef.current = {
+        dist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+        midX: (t0.clientX + t1.clientX) / 2,
+        midY: (t0.clientY + t1.clientY) / 2,
+      }
+      panStartRef.current = null
+      return
+    }
+    if (e.touches.length !== 1) return
+    didPanDuringPressRef.current = false
+    const t = e.touches[0]
+    panStartRef.current = {
+      x: t.clientX,
+      y: t.clientY,
       tx: viewTxRef.current,
       ty: viewTyRef.current,
     }
@@ -10064,8 +10203,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
       <div
         ref={containerRef}
         onMouseDown={handlePanMouseDown}
+        onTouchStart={handlePanTouchStart}
         className={`flex-1 min-h-0 border border-ink-600 rounded-xl overflow-hidden bg-ink-800 relative ${viewMode === '3d' ? 'hidden' : ''}`}
         style={{
+          // Our pan handlers own touch gestures on the canvas, so stop the
+          // browser from scrolling / pinch-zooming the page underneath.
+          touchAction: 'none',
           // Cursor changes per tool: crosshair when an active placement
           // tool is engaged (calibrate / draw / opening / control-joint
           // / pier / ruler), open-hand grab otherwise so the user has a
