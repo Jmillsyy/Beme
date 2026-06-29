@@ -34,7 +34,10 @@ export default function AreaTabs({
   onRename,
   onDelete,
   onReorder,
+  /** Mobile read-only mode: hides the "+ New area" action. */
+  readOnly = false,
 }: {
+  readOnly?: boolean
   areas: ProjectArea[]
   /** null = the "All" view. */
   activeAreaId: string | null
@@ -324,6 +327,7 @@ export default function AreaTabs({
               multi-storey stacking, so capturing it on creation is
               cheaper than asking the user to edit every area after
               the fact. */}
+          {!readOnly && (
           <button
             type="button"
             onClick={() => setCreating(true)}
@@ -331,6 +335,7 @@ export default function AreaTabs({
           >
             + New area
           </button>
+          )}
         </div>
       )}
 

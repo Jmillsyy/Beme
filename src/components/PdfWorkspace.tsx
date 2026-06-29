@@ -73,6 +73,7 @@ import LoadingScreen from './LoadingScreen'
 import AnimatedNumber from './AnimatedNumber'
 import BrickTallyPanel from './BrickTallyPanel'
 import ProjectBar from './ProjectBar'
+import { useIsMobile } from '../lib/useIsMobile'
 import ProjectDetailsDrawer from './ProjectDetailsDrawer'
 import UnifiedExportPanel from './UnifiedExportPanel'
 import ReferencePagePickerModal from './ReferencePagePickerModal'
@@ -624,6 +625,14 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // is the mass-model 3D viewer (read-only orbit camera). Per-session UI
   // state, never persisted. Toggle button in the unified toolbar flips it.
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d')
+  // Read-only mobile mode: on phone-sized viewports we hide the drawing
+  // toolbar and edit affordances and expose a simple 2D / 3D switch, so
+  // the workspace becomes a viewer (pan/orbit, no editing).
+  const mobile = useIsMobile()
+  // Mobile fullscreen viewer: tap "View" to blow the plan / 3D model up to
+  // fullscreen. The inline canvas is cramped on a phone and page-scroll
+  // fights canvas panning; fullscreen gives the gestures to the canvas.
+  const [viewerOpen, setViewerOpen] = useState(false)
   const { user: currentUser } = useAuth()
   // Resolve the author's user id to a friendly display name. For org-scoped
   // projects we ask the org-members RPC (which returns full names + emails
@@ -7776,6 +7785,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   // Remount on area switch - see the keyed block-side
                   // note at the canvas-rail render below.
                   key={`wt-block-3d-${activeAreaId ?? 'all'}`}
+                  readOnly={mobile}
                   // Per-area filter - same as the main render below.
                   makeups={
                     activeAreaId
@@ -8109,6 +8119,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 e.target.value = ''
               }}
             />
+            {!mobile && (
             <button
               onClick={() =>
                 document.getElementById('reference-pdf-input')?.click()
@@ -8118,6 +8129,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             >
               + Reference
             </button>
+            )}
             {isReferenceView && activeReferenceIndex !== null && (
               // Promote: take the active reference and make it the new
               // primary. Wipes drawn quantities tied to the old primary
@@ -8203,7 +8215,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   without losing any takeoff. Fall-back UPLOAD path
                   next to it covers the case where the original isn't
                   in memory (e.g. after a project reload). */}
-              {!activeReferenceSelectedPages && pdfFile && originalPdfFileRef.current && (
+              {!activeReferenceSelectedPages && pdfFile && originalPdfFileRef.current && !mobile && (
                 <button
                   type="button"
                   onClick={() => void openAddPagePicker()}
@@ -8213,7 +8225,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   + Add page
                 </button>
               )}
-              {!activeReferenceSelectedPages && pdfFile && !originalPdfFileRef.current && (
+              {!activeReferenceSelectedPages && pdfFile && !originalPdfFileRef.current && !mobile && (
                 <label
                   className="px-2 py-1 rounded border border-ink-600 text-sm hover:bg-ink-700 cursor-pointer transition-colors whitespace-nowrap"
                   title="Add a page from a PDF - merges into this estimate without resetting your takeoff"
@@ -8352,7 +8364,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 ))}
                 <option value="custom">Custom…</option>
               </select>
-            ) : (
+            ) : mobile ? null : (
               <button
                 onClick={startCalibration}
                 className="text-xs text-beme-400 hover:text-beme-300 hover:underline whitespace-nowrap"
@@ -8415,7 +8427,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             reference (refs are inherited from the originating request and
             aren't editable here). Wipes drawn data on confirm so a fresh PDF
             starts clean. */}
-        {!isReferenceView && !isEmptyWorkspace && pdfFile && (
+        {!isReferenceView && !isEmptyWorkspace && pdfFile && !mobile && (
           <button
             onClick={async () => {
               const hasDrawnData =
@@ -8465,13 +8477,73 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
 
           The horizontal Trade switcher sits at the top of the right
           rail (just above WallTypesPanel) - see below. */}
+
+      {/* Mobile: standalone tap target to open the plan / 3D model fullscreen.
+          Kept OUTSIDE the canvas-area (which collapses to nothing on a phone)
+          so it always has its own height and isn't clipped. */}
+      {mobile && !viewerOpen && (
+        <button
+          type="button"
+          onClick={() => setViewerOpen(true)}
+          className="w-full mb-3 px-4 py-4 rounded-xl border border-ink-600 bg-ink-800 text-ink-100 font-semibold flex items-center justify-center gap-2 hover:bg-ink-700 transition-colors"
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M15 3h6v6" />
+            <path d="M9 21H3v-6" />
+            <path d="M21 3l-7 7" />
+            <path d="M3 21l7-7" />
+          </svg>
+          View {viewMode === '3d' ? '3D model' : '2D plan'} fullscreen
+        </button>
+      )}
+
       <div className="flex-1 min-h-0 flex flex-col gap-3 lg:flex-row">
 
       {/* ───── Canvas area ─────
           Takes the remaining horizontal space between the thumbnails (if
           any) and the right rail. Flex column inside so the sticky drawing
           toolbar sits above the pan container which flex-fills the height. */}
-      <div className="flex-1 min-w-0 min-h-0 w-full flex flex-col">
+      <div
+        className={`flex-1 min-w-0 min-h-0 w-full flex flex-col${
+          mobile && !viewerOpen ? ' hidden' : ''
+        }${mobile && viewerOpen ? ' fixed inset-0 z-[60] bg-ink-900 p-2' : ''}`}
+      >
+
+      {/* Fullscreen-viewer control bar - 2D/3D switch + close, pinned at the
+          top of the overlay. The canvas / 3D fills the space below. */}
+      {mobile && viewerOpen && (
+        <div className="flex items-center justify-between gap-2 mb-2 flex-shrink-0">
+          <div className="inline-flex rounded-lg border border-ink-600 overflow-hidden text-sm">
+            <button
+              type="button"
+              onClick={() => setViewMode('2d')}
+              className={viewMode === '2d' ? 'px-5 py-2 bg-beme-500 text-black font-semibold' : 'px-5 py-2 text-ink-300'}
+            >
+              2D
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('3d')}
+              className={viewMode === '3d' ? 'px-5 py-2 bg-beme-500 text-black font-semibold' : 'px-5 py-2 text-ink-300'}
+            >
+              3D
+            </button>
+          </div>
+          <span className="text-[11px] text-ink-400 hidden min-[400px]:inline">Rotate for a bigger view</span>
+          <button
+            type="button"
+            onClick={() => setViewerOpen(false)}
+            aria-label="Close viewer"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-ink-600 text-ink-200 text-sm hover:bg-ink-700 transition-colors"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+            Close
+          </button>
+        </div>
+      )}
 
       {/* Sticky action bar - keeps drawing controls + banners glued to the top of the
           viewport while the user scrolls, so they don't need to scroll up to start a new
@@ -8485,7 +8557,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
           Hiding the toolbar in 3D lets thumbnails+view (and therefore the
           3D wrapper) claim the full canvas-area height so the 3D viewport
           matches the rail's height. User flips back to 2D to draw. */}
-      {viewMode !== '3d' && (
+      {viewMode !== '3d' && !mobile && (
       <div className="sticky top-0 z-20 bg-ink-900 pt-1 pb-1 -mx-1 px-1 mb-1.5 shadow-[0_1px_0_rgba(255,255,255,0.06)]">
 
       {/* Keyboard shortcut help - pinned in the corner of the toolbar area.
@@ -10601,6 +10673,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
         {(mode === 'block' || mode === 'brick') && (
           <div className="pt-1 pb-1">
             <AreaTabs
+              readOnly={mobile}
               areas={areas}
               activeAreaId={activeAreaId}
               wallCountByAreaId={(() => {
@@ -10897,7 +10970,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             drives. Active trade dictates which panels render below,
             which makeup pool walls reference, and which walls the
             canvas filters in. */}
-        {(mode === 'block' || mode === 'brick') && (
+        {(mode === 'block' || mode === 'brick') && !mobile && (
           <TradeRail
             trades={['block', 'brick']}
             activeTrade={mode}
@@ -10936,6 +11009,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             // reference. 'all' is used for the null sentinel because
             // React keys are strings.
             key={`wt-block-${activeAreaId ?? 'all'}`}
+            readOnly={mobile}
             makeups={
               activeAreaId
                 ? makeups.filter((m) => m.areaId === activeAreaId)

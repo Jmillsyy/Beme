@@ -233,6 +233,21 @@ html {
   zoom: 0.79;
 }
 
+/* Phones: drop the desktop space-saving zoom and the auth-page counter-
+   zooms so the read-only mobile layout renders at true 100% (touch sized).
+   The full-height calc(100vh/0.79) elements that assume the 0.79 zoom are
+   all desktop-only (hidden below lg), so resetting here is safe. Keep this
+   breakpoint in sync with MOBILE_MAX_WIDTH in lib/useIsMobile.ts. */
+@media (max-width: 767px) {
+  html {
+    zoom: 1;
+  }
+  .full-scale,
+  .app-scale {
+    zoom: 1;
+  }
+}
+
 body {
   background: var(--color-ink-900);
   color: var(--color-ink-50);

@@ -1,7 +1,18 @@
 import { Link, Outlet } from 'react-router-dom'
-import { useAuth } from '../lib/auth'
+import { useState } from 'react'
+import { useAuth, signOut } from '../lib/auth'
 import BemeLogo from './BemeLogo'
 import LeftNav from './LeftNav'
+
+/** Primary app destinations shown in the mobile dropdown (the left rail is
+ *  hidden below lg). Mirrors the LeftNav's primary surfaces. */
+const MOBILE_NAV_ITEMS = [
+  { to: '/', label: 'Dashboard' },
+  { to: '/projects', label: 'Projects' },
+  { to: '/library', label: 'Material library' },
+  { to: '/guide', label: 'Guide' },
+  { to: '/settings', label: 'Settings' },
+]
 
 /**
  * App-wide layout chrome for non-workspace pages.
@@ -32,6 +43,7 @@ export default function AppShell({
   children?: React.ReactNode
 }) {
   const { signedIn } = useAuth()
+  const [menuOpen, setMenuOpen] = useState(false)
   return (
     <div className="min-h-screen bg-ink-900 text-ink-50 flex relative overflow-hidden">
       {/* Decorative ambient orange wash - a wide, soft radial that
@@ -65,10 +77,62 @@ export default function AppShell({
         {/* Mobile top brand strip - only on narrow viewports (<lg)
             where the left rail is hidden. Keeps a clickable Beme
             mark so users can always get home. */}
-        <header className="lg:hidden flex items-center justify-between px-5 py-3 border-b border-ink-700 bg-ink-900 sticky top-0 z-10">
-          <Link to="/" className="flex items-center gap-2.5">
-            <BemeLogo size={28} />
-          </Link>
+        <header className="lg:hidden sticky top-0 z-30 border-b border-ink-700 bg-ink-800">
+          <div className="flex items-center justify-between px-5 py-3">
+            <Link
+              to="/"
+              className="flex items-center gap-2.5"
+              onClick={() => setMenuOpen(false)}
+            >
+              <BemeLogo size={28} />
+            </Link>
+            {signedIn && (
+              <button
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+                aria-expanded={menuOpen}
+                className="inline-flex items-center justify-center w-10 h-10 -mr-1 rounded-lg text-ink-300 hover:text-ink-50 hover:bg-ink-700/40 transition-colors"
+              >
+                {menuOpen ? (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                ) : (
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <line x1="3" y1="6" x2="21" y2="6" />
+                    <line x1="3" y1="12" x2="21" y2="12" />
+                    <line x1="3" y1="18" x2="21" y2="18" />
+                  </svg>
+                )}
+              </button>
+            )}
+          </div>
+          {menuOpen && signedIn && (
+            <nav className="absolute top-full left-0 right-0 border-b border-ink-700 bg-ink-800 shadow-lg shadow-black/10 flex flex-col py-2">
+              {MOBILE_NAV_ITEMS.map((item) => (
+                <Link
+                  key={item.to}
+                  to={item.to}
+                  onClick={() => setMenuOpen(false)}
+                  className="px-5 py-3 text-ink-100 hover:text-beme-500 font-medium transition-colors"
+                >
+                  {item.label}
+                </Link>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setMenuOpen(false)
+                  void signOut()
+                }}
+                className="mt-1 border-t border-ink-700 px-5 py-3 text-left text-ink-300 hover:text-beme-500 font-medium transition-colors"
+              >
+                Sign out
+              </button>
+            </nav>
+          )}
         </header>
         <main className="flex-1 min-w-0">
           {/* Layout-route mode: render the matched child route via

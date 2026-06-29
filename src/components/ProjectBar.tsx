@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useIsMobile } from '../lib/useIsMobile'
 import type { ProjectDetails } from '../types/walls'
 import type { ProjectStatus } from '../lib/projectStorage'
 
@@ -150,6 +151,9 @@ export default function ProjectBar({
 
   // Status dot replaces the chip - same colour story, far less visual noise
   // when paired with the mode chip on the left.
+  // Read-only mobile mode: hide the save + status-change actions on phones
+  // (Export and back-to-dashboard stay, so it reads as a viewer).
+  const isMobile = useIsMobile()
   const statusLabel = !isSaved ? 'Unsaved' : status === 'completed' ? 'Completed' : 'In progress'
   const statusDotClass = !isSaved
     ? 'bg-ink-500'
@@ -296,6 +300,7 @@ export default function ProjectBar({
             gets a not-allowed cursor and no explanation of WHY they can't
             save. The span receives the hover instead and surfaces the
             saveBlockedReason. */}
+        {!isMobile && (
         <span title={!canSave ? saveTitle : undefined} className="inline-flex">
           <button
             onClick={onSave}
@@ -306,6 +311,7 @@ export default function ProjectBar({
             {isSaving ? 'Saving…' : isSaved ? 'Save changes' : 'Save'}
           </button>
         </span>
+        )}
 
         {/* Top-level shortcut to flip the project status. Only shown once the
             project's actually been saved - there's nothing to mark complete
@@ -313,7 +319,7 @@ export default function ProjectBar({
             positive primary action). Muted when reverting completed → in
             progress so it doesn't visually shout for the less-common path.
             The same action also lives in the overflow menu for discovery. */}
-        {isSaved && (
+        {!isMobile && isSaved && (
           <button
             onClick={onToggleStatus}
             title={

@@ -91,15 +91,15 @@ export default function LeftNav({
       >
         {collapsed ? (
           <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
-            <BemeMark size={44} />
+            <BemeMark size={52} />
           </span>
         ) : (
           <div className="flex items-center gap-3">
             <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
-              <BemeMark size={44} />
+              <BemeMark size={52} />
             </span>
             <div className="leading-tight min-w-0">
-              <div className="text-[26px] font-bold uppercase tracking-wide text-ink-50 leading-none">
+              <div className="text-[30px] font-bold uppercase tracking-wide text-ink-50 leading-none">
                 Beme
               </div>
             </div>
