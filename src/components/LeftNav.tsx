@@ -74,7 +74,7 @@ export default function LeftNav({
       // when they open. The profile dropdown escapes any stacking
       // issues by rendering in a Portal at the document root (see
       // UserMenuRail below).
-      className={`hidden lg:flex ${railWidth} flex-shrink-0 border-r border-ink-700 bg-ink-800 flex-col h-screen sticky top-0 transition-[width] duration-200 relative group/rail`}
+      className={`hidden lg:flex ${railWidth} flex-shrink-0 border-r border-ink-700 bg-ink-800 flex-col h-[calc(100vh/0.79)] sticky top-0 transition-[width] duration-200 relative group/rail`}
     >
       {/* Brand block - Beme square mark. In expanded mode the
           wordmark + tagline sit alongside; collapsed mode shows just
