@@ -100,6 +100,20 @@ import { getUserSettings } from '../lib/userSettings'
 
 // Constants
 
+// Fixed bed-joint thickness (mm) the 3D view renders between every
+// course (and between stepped-wall height bands). The course planner
+// otherwise STRETCHES the bed joint to land the stack exactly on the
+// typed height, so the joint thickness varied from wall to wall (and
+// per stepped band) and read as uneven / didn't line up at corners.
+// Re-stacking every block wall on this one fixed joint keeps the bed
+// joints identical everywhere and equal to the configured mortar joint.
+// The block COUNT is untouched (the tally still drives the estimate);
+// only the rendered course Y / wall height shift to a clean whole-course
+// total. A later "stretch up to N mm to avoid adding a course" feature
+// can relax this per the user's setting.
+const FIXED_JOINT_MM = 10
+const FIXED_JOINT_M = FIXED_JOINT_MM / 1000
+
 // Scene background pair - flips with the app theme. Dark mode is the
 // original "Studio Black" slate (#1a1d24); light mode is the warm
 // off-white that the rest of the app uses for the page surface
@@ -275,7 +289,6 @@ interface WallSegmentWedge {
   highlight: boolean
 }
 
-
 /**
  * Tie a pier into the wall's bond. On the pier's full-depth (tie-in) courses
  * the pier block occupies the wall at its along-position, so the wall's body
@@ -381,7 +394,45 @@ function segmentsFromWallLayout(
    * Without this map, falls back to wall-level (max) thickness so the
    * end face sits at the partner's wall-level outer face.
    */
-  wallCoursesById?: Record<string, ResolvedCourse[]>
+  wallCoursesById?: Record<string, ResolvedCourse[]>,
+  /**
+   * Optional per-section height clip for stepped walls. Given a position
+   * along the wall (mm from the start), returns the wall's height there.
+   * Any block whose course bottom sits at/above that height is dropped,
+   * so the rendered wall takes on the stepped profile while the bond
+   * still runs through the lower courses. Omitted → uniform height.
+   */
+  sectionHeightAtMm?: (alongMm: number) => number,
+  /**
+   * Stepped wall: x-boundaries (metres along the wall) where the height
+   * changes. Lets the exposed block at each step be trimmed flush to the
+   * step line and retagged as an end block (full on odd courses, half on
+   * even) so the exposed face terminates like a free end.
+   */
+  stepBoundariesM?: number[],
+  /**
+   * Stepped-wall bands: when a raised band sits on top of the through-
+   * wall, its bottom course isn't a base/cleanout and (unless it's the
+   * top of its column) its top course isn't a bond beam. These suppress
+   * the base / top role tinting so those courses render as plain body.
+   */
+  suppressBaseCourse?: boolean,
+  suppressTopCourse?: boolean,
+  /**
+   * Stepped wall: per-position predicate returning true where the wall
+   * continues ABOVE this band, so the top course renders as plain body
+   * there (the bond beam only caps the x-ranges that actually top out at
+   * this level - it stops at the step, not running through a taller
+   * section). Arg is the block's along-position in mm (outer-edge, same
+   * space as block.s0Mm).
+   */
+  topCourseSuppressedAtMm?: (alongMm: number) => boolean,
+  /**
+   * Stepped wall: this band sits ON TOP of a lower band (it's not on the
+   * ground), so its bottom course needs a bed joint below it instead of
+   * the flush base a ground-level wall uses.
+   */
+  bedJointAtBottom?: boolean
 ): WallSegmentBox[] {
   // The data endpoints `wall.startX/Y, wall.endX/Y` represent CENTRELINE
   // positions and at corners they sit halfThickness inside the outer
@@ -417,11 +468,15 @@ function segmentsFromWallLayout(
   // doing so would double-count the extension and the corner blocks
   // would protrude past the corner cube by halfThickness.
 
-  // Mortar joint visualisation: each box is inset slightly on edges
-  // that face a neighbour, so adjacent blocks read as discrete units.
-  // Outer wall edges and the wall base / top are flush (no inset)
-  // for clean corners.
-  const halfGap = MORTAR_GAP_M / 2
+  // Mortar joint: this builder is always block-driven (planWallLayout),
+  // whose block s-positions already sit a full mortar joint apart along
+  // the course and whose courses are pitched a fixed joint apart (the
+  // stepped band re-stack and resolveWallCourses both use 10mm). So the
+  // layout gap IS the joint - inset zero, otherwise we'd double it
+  // (10mm gap + 6mm inset = ~16mm) into the over-thick uneven mortar the
+  // wall showed. Envelope edges still take a sub-pixel COPLANAR_EPS to
+  // avoid z-fighting with neighbouring walls.
+  const halfGap = 0
   const totalHeightM = layout.heightMm / 1000
 
   // Control-joint sealant gap - when this wall has a 'control-joint'
@@ -535,6 +590,14 @@ function segmentsFromWallLayout(
   const blocksByCourse: Map<number, WorkBlock[]> = new Map()
   for (const block of layout.blocks) {
     if (block.role === 'paired-tile') continue
+    // Stepped wall: drop any block whose course sits at/above the local
+    // section height, so the wall renders the stepped profile (the bond
+    // still runs through the lower courses that span the step).
+    if (sectionHeightAtMm) {
+      const c = layout.courses[block.courseIdx]
+      const sMidMm = block.s0Mm + block.widthMm / 2
+      if (c && c.yBottomMm >= sectionHeightAtMm(sMidMm)) continue
+    }
     const work: WorkBlock = {
       block,
       s0: block.s0Mm / 1000,
@@ -805,8 +868,44 @@ function segmentsFromWallLayout(
 
     // Emit each block in this course.
     for (const w of courseBlocks) {
-      const s0 = w.s0
-      const s1 = w.s1
+      let s0 = w.s0
+      let s1 = w.s1
+      // Stepped wall: a block whose side faces a SHORTER section sits on an
+      // exposed step face. Trim it flush to the step line and flag it as an
+      // end block (full on odd courses, half on even) so the exposed face
+      // terminates like a free end instead of a cut body block. (At the
+      // step the running bond already alternates a full-start vs a centred
+      // block, so trimming to the line yields the correct full/half stagger.)
+      let stepEndRole: SlotRole | null = null
+      if (sectionHeightAtMm) {
+        const yBmm = course.yBottomMm
+        for (const Bm of stepBoundariesM ?? []) {
+          const leftH = sectionHeightAtMm(Bm * 1000 - 1)
+          const rightH = sectionHeightAtMm(Bm * 1000 + 1)
+          if (Math.abs(leftH - rightH) < 0.5) continue
+          if (yBmm < Math.min(leftH, rightH) - 0.001) continue
+          if (rightH > leftH) {
+            // Taller section to the RIGHT - its left face is exposed at Bm.
+            if (s1 > Bm + 1e-4 && s0 < Bm + 0.06) {
+              // A block that STARTS at the step line is a full end (corner);
+              // one that crossed it (now trimmed) is a half. This matches the
+              // running bond's natural full/half alternation - course parity
+              // guessed wrong on some courses, flipping the colours and
+              // colouring full blocks green.
+              const spanned = s0 < Bm - 1e-4
+              s0 = Math.max(s0, Bm)
+              stepEndRole = spanned ? 'half' : 'corner'
+            }
+          } else {
+            // Taller section to the LEFT - its right face is exposed at Bm.
+            if (s0 < Bm - 1e-4 && s1 > Bm - 0.06) {
+              const spanned = s1 > Bm + 1e-4
+              s1 = Math.min(s1, Bm)
+              stepEndRole = spanned ? 'half' : 'corner'
+            }
+          }
+        }
+      }
       // Clamp to wall envelope (control-joint sealant gap). Per-course
       // corner shifts are already baked into s0/s1 above.
       const cs0 = Math.max(effectiveStartM, Math.min(effectiveEndM, s0))
@@ -825,8 +924,17 @@ function segmentsFromWallLayout(
         cs0 < effectiveStartM + 0.001 ? COPLANAR_EPS_M : halfGap
       const rightInset =
         cs1 > effectiveEndM - 0.001 ? COPLANAR_EPS_M : halfGap
-      const bottomInset = y0 < 0.001 ? 0 : halfGap
-      const topInset = y1 > totalHeightM - 0.001 ? COPLANAR_EPS_M : halfGap
+      // Bed joint below a raised band's bottom course (it sits on the band
+      // below, not the ground). The top course stays flush ONLY where it's
+      // the real wall top; where a taller section continues above (the band
+      // boundary), keep the bed-joint gap so the joint reads through.
+      const continuesAbove = !!(
+        topCourseSuppressedAtMm &&
+        topCourseSuppressedAtMm(w.block.s0Mm + w.block.widthMm / 2)
+      )
+      const bottomInset = y0 < 0.001 && !bedJointAtBottom ? 0 : halfGap
+      const topInset =
+        y1 > totalHeightM - 0.001 && !continuesAbove ? COPLANAR_EPS_M : halfGap
 
       const aS0 = cs0 + leftInset
       const aS1 = cs1 - rightInset
@@ -870,13 +978,42 @@ function segmentsFromWallLayout(
         slotRole = 'corner'
       } else if (w.block.role === 'end-half') {
         slotRole = 'half'
-      } else if (course.type === 'base') {
+      } else if (course.type === 'base' && !suppressBaseCourse) {
         slotRole = 'base'
-      } else if (course.type === 'top') {
+      } else if (
+        course.type === 'top' &&
+        !suppressTopCourse &&
+        !(
+          topCourseSuppressedAtMm &&
+          topCourseSuppressedAtMm(w.block.s0Mm + w.block.widthMm / 2)
+        )
+      ) {
         slotRole = 'top'
       } else {
         slotRole = 'body'
       }
+      // Exposed step-face block → render as its end-block role/colour.
+      if (stepEndRole) slotRole = stepEndRole
+      // ...and carry the REAL end-block code so it matches genuine corner /
+      // half blocks everywhere - legend, export, and (critically) the
+      // highlight emissive glow. Keeping the body code left the step end
+      // un-highlighted while a knockout corner block glows, so it looked
+      // brighter/duller than the wall's other corners.
+      const stepEndCode =
+        stepEndRole === 'corner'
+          ? makeup?.cornerBlockCode
+          : stepEndRole === 'half'
+            ? makeup?.halfBlockCode
+            : undefined
+      // A base/top course suppressed to body (a stepped-wall raised band's
+      // bottom, or the through-course under a taller section) must NOT keep
+      // its base/top highlight glow - the cleanout / bond-beam code is
+      // "highlighted", which rendered those body courses a brighter blue
+      // than the real body blocks. Treat them as plain body.
+      const suppressedToBody =
+        !stepEndRole &&
+        slotRole === 'body' &&
+        (course.type === 'base' || course.type === 'top')
       boxes.push({
         cx: sx + dirX * localCx,
         cy: (aY0 + aY1) / 2 - (recess > 0 && aY1 > totalHeightM - 0.001 ? recess / 2 : 0),
@@ -886,14 +1023,16 @@ function segmentsFromWallLayout(
         thickness: Math.max(0.01, perBlockThickness - recess * 2),
         yRotation,
         color: ROLE_COLORS[slotRole],
-        highlight: isHighlightedBlock(w.block.code, library),
+        highlight: suppressedToBody
+          ? false
+          : isHighlightedBlock(stepEndCode ?? w.block.code, library),
         // Tag the box with its library block code so the legend pass
         // (which walks emitted boxes to figure out which codes are
         // physically in the scene) picks this block up. Without it
         // every block emitted by planWallLayout / segmentsFromWallLayout
         // was anonymous and the legend dropped them - the user saw
         // only one row even when several block types were rendering.
-        code: w.block.code,
+        code: stepEndCode ?? w.block.code,
         role: slotRole,
       })
       // colorOf still in scope for fallbacks elsewhere; reference it
@@ -3055,7 +3194,24 @@ function Scene({
         /** y range in metres. */
         y0: number
         y1: number
-      }>
+      }>,
+      /**
+       * Stepped wall: per-position height (mm from the start) + the section
+       * x-boundaries (metres along the wall). When provided, each mortar
+       * strip is split at the boundaries and clipped to its section height,
+       * so the mortar plane follows the steps instead of filling to the
+       * tallest section. Omitted → uniform full-height plane.
+       */
+      sectionHeightAtMm?: (alongMm: number) => number,
+      stepBoundariesM?: number[],
+      // Stepped-wall bands: when a raised band sits on the band below
+      // (noBottomInset) or a taller band continues above this one
+      // (noTopInset), the recessed mortar shell must reach the band
+      // boundary rather than inset away from it, so the two bands'
+      // shells meet and the bed joint between them renders grey instead
+      // of letting the scene background show through the gap.
+      noTopInset?: boolean,
+      noBottomInset?: boolean
     ) {
       // Use outer-edge endpoints (matches the block-emission extent so
       // mortar terminates at the same outer corner the blocks do, not
@@ -3248,7 +3404,7 @@ function Scene({
       const sortedYs = Array.from(yBoundaries).sort((a, b) => a - b)
 
       const envelopeInset = MORTAR_GAP_M
-      const pushMortarStrip = (
+      const pushMortarStripRaw = (
         s0: number,
         s1: number,
         y0: number,
@@ -3265,8 +3421,17 @@ function Scene({
         const atRightEdge = Math.abs(s1 - bandS1) < 0.001
         const aS0 = atLeftEdge ? s0 + envelopeInset : s0
         const aS1 = atRightEdge ? s1 - envelopeInset : s1
-        const aY0 = y0 < 0.001 ? envelopeInset : y0
-        const aY1 = y1 > totalHeightM - 0.001 ? totalHeightM - envelopeInset : y1
+        const aY0 = y0 < 0.001 && !noBottomInset ? envelopeInset : y0
+        const aY1 =
+          y1 > totalHeightM - 0.001
+            ? noTopInset
+              ? // Taller band continues above: push this band's shell UP
+                // through the bed joint to the next band's bottom so the
+                // boundary joint fills grey (the two bands' shells overlap
+                // there) instead of leaving the scene background showing.
+                totalHeightM + FIXED_JOINT_M
+              : totalHeightM - envelopeInset
+            : y1
         if (aS1 - aS0 < 0.005 || aY1 - aY0 < 0.005) return
         const localCx = (aS0 + aS1) / 2
         out.push({
@@ -3280,6 +3445,44 @@ function Scene({
           color: MORTAR_COLOR,
           highlight: false,
         })
+      }
+
+      // Stepped wall: split each strip at the section boundaries and clip
+      // its top to the local section height, so the mortar plane steps with
+      // the wall. Uniform walls (no sectionHeightAtMm) push the strip as-is.
+      const pushMortarStrip = (
+        s0: number,
+        s1: number,
+        y0: number,
+        y1: number,
+        bandMortarThick: number,
+        bandS0: number,
+        bandS1: number
+      ) => {
+        if (!sectionHeightAtMm) {
+          pushMortarStripRaw(s0, s1, y0, y1, bandMortarThick, bandS0, bandS1)
+          return
+        }
+        const cutsInside = (stepBoundariesM ?? []).filter(
+          (b) => b > s0 + 1e-4 && b < s1 - 1e-4
+        )
+        const cuts = [s0, ...cutsInside, s1]
+        for (let k = 0; k < cuts.length - 1; k++) {
+          const a = cuts[k]
+          const b = cuts[k + 1]
+          if (b - a < 0.005) continue
+          const secHM = sectionHeightAtMm(((a + b) / 2) * 1000) / 1000
+          if (secHM <= y0 + 1e-4) continue // band sits above this section
+          pushMortarStripRaw(
+            a,
+            b,
+            y0,
+            Math.min(y1, secHM),
+            bandMortarThick,
+            bandS0,
+            bandS1
+          )
+        }
       }
 
       for (let bi = 0; bi < sortedYs.length - 1; bi++) {
@@ -4794,7 +4997,226 @@ function Scene({
         // learns to emit jambs / lintels / body-subtraction under
         // openings. Tracked as the follow-up to task #62.
         const wallHasOpenings = adjustedOpenings.some((o) => o.wallId === wall.id)
+        // Stepped-wall height profile - shared by the block layout (built to
+        // the tallest section, then clipped) and the mortar shell (so it
+        // follows the steps instead of filling to the tallest section).
+        const stepEntries =
+          !isCurvedWall(wall) && wall.heightSteps && wall.heightSteps.length > 0
+            ? [...wall.heightSteps].sort((a, b) => a.alongMm - b.alongMm)
+            : null
+        const stepBaseHeightMm = Math.round(wr.totalHeightM * 1000)
+        const maxSectionHeightMm = stepEntries
+          ? Math.max(stepBaseHeightMm, ...stepEntries.map((s) => s.heightMm))
+          : stepBaseHeightMm
+        // Block s-positions in the 3D run along the OUTER edge (s=0 at the
+        // outer corner), but step alongMm is centreline-based (0 at the
+        // corner intersection, ~halfThickness inside the outer corner).
+        // Convert by the start outer-edge extension so the step cuts where
+        // it was placed instead of ~halfThickness early.
+        let stepStartExtMm = 0
+        if (stepEntries) {
+          const extW = outerEdgeEndpoints(wall, wallThicknessByWallId, wallsByIdMap)
+          const clLenMm = Math.hypot(
+            wall.endX - wall.startX,
+            wall.endY - wall.startY
+          )
+          if (clLenMm > 0) {
+            const dxu = (wall.endX - wall.startX) / clLenMm
+            const dyu = (wall.endY - wall.startY) / clLenMm
+            stepStartExtMm =
+              (wall.startX - extW.startX) * dxu + (wall.startY - extW.startY) * dyu
+          }
+        }
+        const sectionHeightAtMm = stepEntries
+          ? (outerAlongMm: number): number => {
+              let h = stepBaseHeightMm
+              for (const s of stepEntries) {
+                if (outerAlongMm >= stepStartExtMm + s.alongMm) h = s.heightMm
+                else break
+              }
+              return h
+            }
+          : undefined
+        const stepBoundariesM = stepEntries
+          ? stepEntries.map((s) => (stepStartExtMm + s.alongMm) / 1000)
+          : undefined
         if (!wallHasOpenings) {
+          if (stepEntries) {
+            // Stepped wall: render as stacked horizontal BANDS so the bond
+            // runs THROUGH the lower (shared) courses and only the RAISED
+            // parts terminate at the step with clean free-end blocks. Band 0
+            // spans the whole wall up to the lowest section height; each
+            // higher band spans only the x-range tall enough for it, sits on
+            // top, and free-ends at the step. (Rendering each section as a
+            // full wall put end blocks down the whole step seam; the earlier
+            // clip-and-trim mis-sized the end blocks at off-grid steps.)
+            const ownership = cornerOwnershipFor(
+              wall,
+              wallsByIdMap,
+              wallThicknessByWallId
+            )
+            const effectiveMakeup = wr.makeup
+            const bodyDepthByWallId: Record<string, number> = {}
+            for (let j = 0; j < walls.length; j++) {
+              const wj = walls[j]
+              const wrj = wallResolutions[j]
+              const bodyCode = wrj?.makeup?.bodyBlockCode
+              const depth = bodyCode
+                ? library[bodyCode]?.dimensions.depthMm
+                : undefined
+              if (wj && depth !== undefined) bodyDepthByWallId[wj.id] = depth
+            }
+            const clLenMm = Math.hypot(
+              wall.endX - wall.startX,
+              wall.endY - wall.startY
+            )
+            const ux = clLenMm > 0 ? (wall.endX - wall.startX) / clLenMm : 0
+            const uy = clLenMm > 0 ? (wall.endY - wall.startY) / clLenMm : 0
+            const boundaries = [0, ...stepEntries.map((s) => s.alongMm), clLenMm]
+            const sectionHeights = [
+              stepBaseHeightMm,
+              ...stepEntries.map((s) => s.heightMm),
+            ]
+            const levels = Array.from(new Set(sectionHeights)).sort(
+              (p, q) => p - q
+            )
+            let prevLevel = 0
+            // Vertical cursor (m) for stacking bands. Tracks the ACTUAL
+            // rendered height (fixed-joint, whole-course) of the bands
+            // below - not the user's entered step heights - so the bands
+            // tile without gaps and every bed joint stays one thickness.
+            let cumActualM = 0
+            for (const level of levels) {
+              const bandHMm = level - prevLevel
+              if (bandHMm < 1) {
+                prevLevel = level
+                continue
+              }
+              const isBottomBand = prevLevel < 1
+              const yOffM = cumActualM
+              // This band's natural (fixed-joint) height, filled in when
+              // its courses are re-stacked; advances cumActualM afterwards.
+              let bandNaturalMm = 0
+              // Contiguous x-ranges of sections tall enough for this band.
+              // The top course renders as a bond beam only where a section
+              // tops out at this level; where a taller section continues
+              // above, topSuppress (below) renders it as body so the bond
+              // beam stops at the step edge.
+              const ranges: Array<{ a: number; b: number }> = []
+              let curStart: number | null = null
+              for (let i = 0; i < sectionHeights.length; i++) {
+                if (sectionHeights[i] >= level - 0.5) {
+                  if (curStart === null) curStart = boundaries[i]
+                } else if (curStart !== null) {
+                  ranges.push({ a: curStart, b: boundaries[i] })
+                  curStart = null
+                }
+              }
+              if (curStart !== null) {
+                ranges.push({ a: curStart, b: boundaries[sectionHeights.length] })
+              }
+              for (const r of ranges) {
+                if (r.b - r.a < 1) continue
+                const subWall: Wall = {
+                  ...wall,
+                  startX: wall.startX + ux * r.a,
+                  startY: wall.startY + uy * r.a,
+                  endX: wall.startX + ux * r.b,
+                  endY: wall.startY + uy * r.b,
+                  heightMmOverride: bandHMm,
+                  heightSteps: undefined,
+                  startJunction:
+                    r.a < 1 ? wall.startJunction : { type: 'free' },
+                  endJunction:
+                    r.b > clLenMm - 1 ? wall.endJunction : { type: 'free' },
+                }
+                // The top course is a bond beam only where the section tops
+                // out at this band; where a taller section continues above,
+                // render it as body so the bond beam STOPS at the step edge
+                // instead of running through. Maps the block's outer-edge
+                // position back to a centreline position along the wall.
+                const subStartExtMm =
+                  subWall.startJunction.type === 'free' ? 0 : stepStartExtMm
+                const topSuppress = (subOuterSmm: number): boolean => {
+                  const cl = r.a + (subOuterSmm - subStartExtMm)
+                  let h = stepBaseHeightMm
+                  for (const s of stepEntries) {
+                    if (cl >= s.alongMm) h = s.heightMm
+                    else break
+                  }
+                  return h > level + 0.5
+                }
+                const subLayout = planWallLayout(
+                  subWall,
+                  effectiveMakeup,
+                  [],
+                  wallThicknessByWallId,
+                  wallsByIdMap,
+                  ownership,
+                  bodyDepthByWallId
+                )
+                // Re-stack this band's courses on one fixed bed joint so
+                // the joint thickness is identical across every band (see
+                // FIXED_JOINT_MM). planWallLayout otherwise stretched
+                // the joint to land on bandHMm exactly, making the joint
+                // jump from step to step. Block count is unchanged - only
+                // the course Y / band height move to a whole-course total.
+                let yc = 0
+                for (const c of subLayout.courses) {
+                  c.yBottomMm = yc
+                  yc += c.heightMm + FIXED_JOINT_MM
+                }
+                subLayout.heightMm = Math.max(0, yc - FIXED_JOINT_MM)
+                bandNaturalMm = Math.max(bandNaturalMm, subLayout.heightMm)
+                const subBoxes = segmentsFromWallLayout(
+                  subWall,
+                  subLayout,
+                  thicknessMm,
+                  colorMap,
+                  library,
+                  wallsByIdMap,
+                  wallThicknessByWallId,
+                  wr.makeup,
+                  wallCoursesByIdCache,
+                  undefined,
+                  undefined,
+                  !isBottomBand,
+                  false,
+                  topSuppress,
+                  !isBottomBand
+                )
+                // Lift this band's boxes to sit on the band below it.
+                for (const box of subBoxes) box.cy += yOffM
+                out.push(...subBoxes)
+                if (!isCurvedWall(subWall)) {
+                  const mStart = out.length
+                  emitMortarForWall(
+                    subWall,
+                    thicknessMm,
+                    bandNaturalMm / 1000,
+                    [],
+                    wr.courses,
+                    undefined,
+                    undefined,
+                    // Reach the band boundary above when a taller band
+                    // continues over this one, and below when this band
+                    // sits on the band beneath it, so adjacent bands'
+                    // shells meet and the bed joint between them fills
+                    // grey instead of showing the scene background.
+                    level < levels[levels.length - 1],
+                    !isBottomBand
+                  )
+                  for (let k = mStart; k < out.length; k++) out[k].cy += yOffM
+                }
+              }
+              // Advance the cursor by this band's actual rendered height
+              // plus one bed joint to the next band (the boundary joint),
+              // so the band above sits a uniform joint above this one.
+              cumActualM += bandNaturalMm / 1000 + FIXED_JOINT_M
+              prevLevel = level
+            }
+            return
+          }
           // Corner ownership: at each shared corner, only ONE wall
           // emits the corner block per course (alternating per
           // course). The cumulative count across both walls matches
@@ -4839,8 +5261,15 @@ function Scene({
               bodyDepthByWallId[wj.id] = depth
             }
           }
+          // Stepped wall: build the layout at the TALLEST section so every
+          // course exists; segmentsFromWallLayout + the mortar then clip
+          // per section. (stepEntries / sectionHeightAtMm are hoisted above
+          // so the mortar pass below can share them.)
+          const layoutWall: Wall = stepEntries
+            ? { ...wall, heightMmOverride: maxSectionHeightMm }
+            : wall
           const layout = planWallLayout(
-            wall,
+            layoutWall,
             effectiveMakeup,
             [],
             wallThicknessByWallId,
@@ -4848,6 +5277,20 @@ function Scene({
             ownership,
             bodyDepthByWallId,
           )
+          // Re-stack this wall's courses on the fixed mortar joint so the
+          // bed joints render at exactly the configured 10mm instead of
+          // the planner's height-landing stretch (which varied per wall
+          // and wouldn't line up with a stepped neighbour at the corner).
+          // Block count is unchanged; the wall lands on its natural whole-
+          // course height. Mirrors the stepped band re-stack above.
+          {
+            let yc = 0
+            for (const c of layout.courses) {
+              c.yBottomMm = yc
+              yc += c.heightMm + FIXED_JOINT_MM
+            }
+            layout.heightMm = Math.max(0, yc - FIXED_JOINT_MM)
+          }
           // Dev-time sanity check: layout aggregated → tally check.
           // With ownership applied, the per-wall tally is below
           // calculateWallTally by design (corners deduplicated), so
@@ -4921,6 +5364,8 @@ function Scene({
             wallThicknessByWallId,
             wr.makeup,
             wallCoursesByIdCache,
+            sectionHeightAtMm,
+            stepBoundariesM,
           )
           // Tie any pier built into THIS wall into the bond: cut the wall
           // blocks out of the pier's slot on its full-depth (tie-in) courses.
@@ -4993,9 +5438,11 @@ function Scene({
           emitMortarForWall(
             wall,
             thicknessMm,
-            wr.totalHeightM,
+            stepEntries ? maxSectionHeightMm / 1000 : wr.totalHeightM,
             adjustedOpenings,
-            wr.courses
+            wr.courses,
+            sectionHeightAtMm,
+            stepBoundariesM,
           )
         }
       }

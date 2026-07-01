@@ -9,6 +9,12 @@ import {
 import type { FootingZone, Opening, Pier, Wall } from '../types/walls'
 import { arcFromThreePoints, isCurvedWall, projectOntoArc, sampleArc } from '../lib/curveGeom'
 import { formatLengthShort, parseLengthInput } from '../lib/units'
+import {
+  isPointPlacementValid,
+  isOpeningPlacementValid,
+  isOverOpening,
+  type PlacementContext,
+} from '../lib/placementGuards'
 import { getUserSettings, useUserSettings } from '../lib/userSettings'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { hexToRgba } from '../lib/wallTypeColors'
@@ -388,6 +394,9 @@ interface WallDrawingLayerProps {
   /** Called when all three clicks are made: anchor A, anchor B, midpoint on arc. */
   onCurvedWallAdded: (startMm: Point, midMm: Point, endMm: Point) => void
   onWallSelect: (wallId: string | null) => void
+  /** Stepped wall: report which height section was clicked, so the banner
+   * can edit that section's height like an individual wall. */
+  onWallSectionSelect?: (wallId: string, sectionIndex: number) => void
   /**
    * Shift+click handlers - additive selection. Toggle the id in/out of the set
    * without disturbing the rest. Optional: if omitted, shift+click falls back to
@@ -410,6 +419,18 @@ interface WallDrawingLayerProps {
   onOpeningSelect: (openingId: string | null) => void
   /** Called when a control-joint click on a wall is confirmed. The wall is split at alongMm. */
   onControlJointPlaced?: (wallId: string, alongMm: number) => void
+  /** A placed control joint currently selected for block editing (or null). */
+  selectedControlJoint?: { wallId: string; end: 'start' | 'end' } | null
+  /** Select (or clear) a placed control joint to edit its termination blocks. */
+  onControlJointSelect?: (sel: { wallId: string; end: 'start' | 'end' } | null) => void
+  /** A free end currently selected for block editing (or null). */
+  selectedFreeEnd?: { wallId: string; end: 'start' | 'end' } | null
+  /** Select (or clear) a free end to edit its termination blocks. */
+  onFreeEndSelect?: (sel: { wallId: string; end: 'start' | 'end' } | null) => void
+  /** Whether the Step tool is active (click a wall to add a height step). */
+  placingStep?: boolean
+  /** Called when a step click on a wall is confirmed, at alongMm from start. */
+  onStepPlaced?: (wallId: string, alongMm: number) => void
   /** Called when a tied pier is placed on a wall at alongMm. `side` is which
    * side of the wall the cursor was on (the pier snaps to + protrudes from it). */
   onTiedPierPlaced?: (wallId: string, alongMm: number, side?: 'left' | 'right') => void
@@ -541,6 +562,16 @@ const WALL_LENGTH_SNAP_MM = WALL_LENGTH_SNAP_FALLBACK_MM
 const OPENING_SNAP_MM = 10
 
 /**
+ * Fixed on-screen size (px) for every endpoint / junction marker (corner,
+ * T-junction, free end, control joint) so they all render at ONE equal
+ * size, independent of wall thickness or zoom. Selected markers get a
+ * small bump (EQUAL_MARKER_PX + SELECTED_MARKER_BUMP_PX) for a grabbable
+ * drag handle.
+ */
+const EQUAL_MARKER_PX = 9
+const SELECTED_MARKER_BUMP_PX = 3
+
+/**
  * Round a mm length to the nearest snap increment. Shared by every
  * placement path (wall length, control joint position, tied/freestanding
  * pier coords) so the user sees a consistent grid no matter what they're
@@ -555,9 +586,15 @@ function snapMmToGrid(mm: number, snapMm: number = WALL_LENGTH_SNAP_MM): number 
   return Math.round(mm / snapMm) * snapMm
 }
 
-/** Round to the coarser opening grid - see OPENING_SNAP_MM. */
-function snapOpeningMm(mm: number): number {
-  return Math.round(mm / OPENING_SNAP_MM) * OPENING_SNAP_MM
+/**
+ * Round to the opening grid. `snapMm` comes from
+ * `userSettings.defaults.openingSnapMm` (e.g. 200mm to land reveals on
+ * block ends); falls back to the coarse {@link OPENING_SNAP_MM} when the
+ * user hasn't set one or passes a non-positive value.
+ */
+function snapOpeningMm(mm: number, snapMm?: number): number {
+  const step = snapMm && snapMm > 0 ? snapMm : OPENING_SNAP_MM
+  return Math.round(mm / step) * step
 }
 
 /**
@@ -660,6 +697,23 @@ function wallLengthMmOf(wall: Wall) {
   const dx = wall.endX - wall.startX
   const dy = wall.endY - wall.startY
   return Math.sqrt(dx * dx + dy * dy)
+}
+
+/**
+ * Which height section of a stepped wall a given alongMm falls in.
+ * Section 0 = before the first step (the base height); section k = after
+ * the k-th step (heightSteps[k-1]). Walls with no steps are all section 0.
+ */
+function stepSectionIndexForAlong(wall: Wall, alongMm: number): number {
+  const steps = (wall.heightSteps ?? [])
+    .slice()
+    .sort((a, b) => a.alongMm - b.alongMm)
+  let idx = 0
+  for (const s of steps) {
+    if (alongMm >= s.alongMm) idx++
+    else break
+  }
+  return idx
 }
 
 /**
@@ -1020,6 +1074,7 @@ function WallDrawingLayerInner({
   onWallAdded,
   onCurvedWallAdded,
   onWallSelect,
+  onWallSectionSelect,
   onWallToggleSelect,
   onOpeningToggleSelect,
   onPierToggleSelect,
@@ -1027,6 +1082,12 @@ function WallDrawingLayerInner({
   onOpeningPlaced,
   onOpeningSelect,
   onControlJointPlaced,
+  selectedControlJoint = null,
+  onControlJointSelect,
+  selectedFreeEnd = null,
+  onFreeEndSelect,
+  placingStep = false,
+  onStepPlaced,
   onTiedPierPlaced,
   onFreestandingPierPlaced,
   onPierSelect,
@@ -1390,6 +1451,69 @@ function WallDrawingLayerInner({
     return { wallId: wall.id, alongMm, px: { x: projX, y: projY }, distFromLinePx }
   }
 
+  // Build the placement-guard context for a wall: its length plus the
+  // openings and height steps already on it. Used both to red-flag the
+  // hover preview and to ignore an invalid commit (control joint / step
+  // on an opening, opening across a step, items crowded against an end,
+  // overlaps). Control joints aren't included - placing one splits the
+  // wall, so a wall never carries an inline control joint; the end
+  // clearance covers a control-joint junction sitting at an end.
+  function placementContextFor(wall: Wall): PlacementContext {
+    // Reserve the corner-block module at each end so nothing lands on the
+    // corner section. Along this wall that section is as deep as the
+    // PERPENDICULAR wall's thickness (the 200x200 box where two 200-series
+    // walls meet, 300x300 for 300s, ...) plus a mortar joint, so placement
+    // starts at the next block. Nothing is hardcoded - it reads each wall's
+    // real thickness; a free end (no perpendicular wall) reserves this
+    // wall's own end block. Distances are read off the OUTER face from the
+    // corner, so convert that tape figure into the centreline space the
+    // guards use by taking off the end's corner extension (endExtensionMm -
+    // the same figure the placement measurements use).
+    const startClearanceMm = Math.max(
+      0,
+      cornerModuleMmForEnd(wall, 'start') - endExtensionMm(wall, 'start'),
+    )
+    const endClearanceMm = Math.max(
+      0,
+      cornerModuleMmForEnd(wall, 'end') - endExtensionMm(wall, 'end'),
+    )
+    const genericModuleMm =
+      (wallThicknessByWallId[wall.id] ?? 190) + DEFAULT_MORTAR_JOINT_MM
+    return {
+      wallLengthMm: wallLengthMmOf(wall),
+      openings: openings
+        .filter((o) => o.wallId === wall.id)
+        .map((o) => ({
+          startAlongWallMm: o.startAlongWallMm,
+          widthMm: o.widthMm,
+        })),
+      stepAlongMms: (wall.heightSteps ?? []).map((s) => s.alongMm),
+      clearanceMm: genericModuleMm,
+      startClearanceMm,
+      endClearanceMm,
+    }
+  }
+
+  // The corner-block module to reserve at one end of `wall`: how deep the
+  // corner section reaches ALONG this wall. At a corner / T-junction that
+  // is the PERPENDICULAR wall's real thickness (the 200x200 box on a pair
+  // of 200-series walls, 300x300 on 300s) plus a mortar joint, so the next
+  // block - not the corner block face - is the first placeable spot. A free
+  // end has no perpendicular wall, so it falls back to this wall's own end
+  // block. Reads live thicknesses; no fixed clearance baked in.
+  function cornerModuleMmForEnd(wall: Wall, which: 'start' | 'end'): number {
+    const j = which === 'start' ? wall.startJunction : wall.endJunction
+    if (
+      (j.type === 'corner' || j.type === 't-junction') &&
+      j.connectedWallIds &&
+      j.connectedWallIds.length > 0
+    ) {
+      const otherT = wallThicknessByWallId[j.connectedWallIds[0]]
+      if (otherT && otherT > 0) return otherT + DEFAULT_MORTAR_JOINT_MM
+    }
+    return (wallThicknessByWallId[wall.id] ?? 190) + DEFAULT_MORTAR_JOINT_MM
+  }
+
   function findClosestWallProjection(
     clickPx: Point,
     only?: string,
@@ -1594,6 +1718,82 @@ function WallDrawingLayerInner({
     const ex = mmToPx(wall.endX)
     const ey = mmToPx(wall.endY)
     return { x: sx + t * (ex - sx), y: sy + t * (ey - sy) }
+  }
+
+  // Outer-face extension at one end: how far the wall's outside face runs
+  // PAST its centreline endpoint. At a corner the centreline endpoint sits
+  // at the intersection (the centre of the corner block), but the outside
+  // face reaches the building's outer corner ~halfThickness further out -
+  // so centreline alongMm 0 is actually `startExt` mm along the outside
+  // face, not 0. Mirrors the per-end adjust used in wallGeometry.
+  function endExtensionMm(wall: Wall, which: 'start' | 'end'): number {
+    const j = which === 'start' ? wall.startJunction : wall.endJunction
+    if (j.type !== 'corner' && j.type !== 't-junction') return 0
+    const otherId = j.connectedWallIds?.[0]
+    if (!otherId) return 0
+    const otherThickness = wallThicknessByWallId[otherId]
+    if (!otherThickness) return 0
+    const other = wallsById.get(otherId)
+    if (!other) return 0
+    const dataX = which === 'start' ? wall.startX : wall.endX
+    const dataY = which === 'start' ? wall.startY : wall.endY
+    const odx = other.endX - other.startX
+    const ody = other.endY - other.startY
+    const oLen = Math.sqrt(odx * odx + ody * ody)
+    if (oLen === 0) return 0
+    const onx = -ody / oLen
+    const ony = odx / oLen
+    const perpDist = Math.abs(
+      (dataX - other.startX) * onx + (dataY - other.startY) * ony
+    )
+    const overlap = Math.max(0, otherThickness / 2 - perpDist)
+    return j.type === 'corner' ? overlap : -overlap
+  }
+
+  // Snap a centreline alongMm so the OUTER-FACE distance from the wall's
+  // outer corner lands on the grid (block ends are measured along the
+  // outside face, starting at the outer corner - not the centreline
+  // endpoint, which sits ~halfThickness inside it). Returns a centreline
+  // alongMm (what callers store / render).
+  function snapAlongToOuterGrid(
+    wall: Wall,
+    alongMmCentreline: number,
+    snapMm: number
+  ): number {
+    const clLen = wallLengthMmOf(wall)
+    if (clLen <= 0) return snapMmToGrid(alongMmCentreline, snapMm)
+    const startExt = endExtensionMm(wall, 'start')
+    const endExt = endExtensionMm(wall, 'end')
+    // Outer-face length, and the cursor's outer distance from the START
+    // outer corner.
+    const outerLen = startExt + clLen + endExt
+    const dStart = startExt + alongMmCentreline
+    // Snap to the block grid measured from the NEAREST outer corner. A
+    // start-only anchor leaves the far corner out of phase: a 200mm
+    // increment on a wall whose length isn't a clean multiple lets you
+    // reach 200mm at the near corner but only e.g. 250mm at the far one.
+    // Snapping from whichever corner is closer makes the first placement
+    // land the same distance from either corner, so a step / control joint
+    // starts right at the corner block on both ends.
+    let snappedOuter: number
+    if (dStart <= outerLen / 2) {
+      snappedOuter = snapMmToGrid(dStart, snapMm)
+    } else {
+      snappedOuter = outerLen - snapMmToGrid(outerLen - dStart, snapMm)
+    }
+    return Math.max(0, Math.min(clLen, snappedOuter - startExt))
+  }
+
+  // Snap an opening edge to the block grid measured from the nearest outer
+  // corner (the same rule steps / control joints use), so an opening can
+  // start right at the corner block instead of a whole module past it.
+  // Curves keep the plain centreline opening grid (no outer-face corner to
+  // anchor to).
+  function snapOpeningAlongMm(wall: Wall, alongMmCentreline: number): number {
+    const openingSnap = __userSettings.defaults.openingSnapMm
+    if (isCurvedWall(wall)) return snapOpeningMm(alongMmCentreline, openingSnap)
+    const step = openingSnap && openingSnap > 0 ? openingSnap : OPENING_SNAP_MM
+    return snapAlongToOuterGrid(wall, alongMmCentreline, step)
   }
 
   function findSnap(
@@ -2073,6 +2273,7 @@ function WallDrawingLayerInner({
         if (hasOpeningSelection) onOpeningSelect(null)
         if (hasPierSelection && onPierSelect) onPierSelect(null)
         if (selectedMeasurementId && onMeasurementSelect) onMeasurementSelect(null)
+        if (selectedControlJoint && onControlJointSelect) onControlJointSelect(null)
 
         // Tell the parent to exit every drawing mode and dismiss the
         // active-makeup glow. Safe to call unconditionally - when nothing
@@ -2082,7 +2283,7 @@ function WallDrawingLayerInner({
     }
     document.addEventListener('keydown', handleKey)
     return () => document.removeEventListener('keydown', handleKey)
-  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded, openingPlacementStart, openingHoverProjection, typedOpeningWidthMm, onOpeningPlaced, curveAnchorA, curveAnchorB, curveCursorMm, typedCurveRadiusMm, onCurvedWallAdded, placingFootingZone, footingDraftPoints, onFootingZoneDrawn])
+  }, [drawingMode, drawingCurveMode, placingOpening, placingControlJoint, placingTiedPier, placingFreestandingPier, placingRuler, selectedWallId, selectedOpeningId, selectedPierId, selectedWallIds, selectedOpeningIds, selectedPierIds, selectedMeasurementId, onCancelDraw, onWallSelect, onOpeningSelect, onPierSelect, onMeasurementSelect, startMm, cursorMm, typedLengthMm, onWallAdded, openingPlacementStart, openingHoverProjection, typedOpeningWidthMm, onOpeningPlaced, curveAnchorA, curveAnchorB, curveCursorMm, typedCurveRadiusMm, onCurvedWallAdded, placingFootingZone, footingDraftPoints, onFootingZoneDrawn, selectedControlJoint, onControlJointSelect])
 
   function setCursor(stage: Konva.Stage | null, cursor: string) {
     if (stage) stage.container().style.cursor = cursor
@@ -2387,8 +2588,29 @@ function WallDrawingLayerInner({
       // opening land on a clean increment and the width comes out as a
       // multiple of 10 mm - matches how doors and windows are spec'd in
       // the real world. Shift-click bypasses for an off-grid placement.
-      const snappedAlong = useGrid ? snapOpeningMm(proj.alongMm) : proj.alongMm
+      const openingSnapWall = wallsById.get(proj.wallId)
+      const snappedAlong =
+        useGrid && openingSnapWall
+          ? snapOpeningAlongMm(openingSnapWall, proj.alongMm)
+          : proj.alongMm
       if (!openingPlacementStart) {
+        // Guard the ANCHOR too: don't let an opening even START on an
+        // existing opening or inside a corner / end clearance (the span
+        // guard on the second click can't run yet). Matches the blanked
+        // pre-placement tick at those spots.
+        const anchorWall = walls.find((w) => w.id === proj.wallId)
+        if (anchorWall) {
+          const aCtx = placementContextFor(anchorWall)
+          const aStartC = aCtx.startClearanceMm ?? aCtx.clearanceMm ?? 0
+          const aEndC = aCtx.endClearanceMm ?? aCtx.clearanceMm ?? 0
+          if (
+            isOverOpening(snappedAlong, aCtx.openings) ||
+            snappedAlong < aStartC ||
+            snappedAlong > aCtx.wallLengthMm - aEndC
+          ) {
+            return
+          }
+        }
         setOpeningPlacementStart({ wallId: proj.wallId, alongMm: snappedAlong })
         return
       }
@@ -2398,6 +2620,21 @@ function WallDrawingLayerInner({
       const startAlong = Math.min(a, b)
       const widthMm = Math.abs(b - a)
       if (widthMm < 100) return // ignore degenerate
+      // Guard: ignore an opening that overlaps another opening, straddles
+      // a height step, or runs into a wall end. The drag preview already
+      // shows this span in red, so just swallow the click and let the
+      // user re-aim (the anchor stays set).
+      const openingWall = walls.find((w) => w.id === proj.wallId)
+      if (
+        openingWall &&
+        !isOpeningPlacementValid(
+          startAlong,
+          widthMm,
+          placementContextFor(openingWall),
+        )
+      ) {
+        return
+      }
       onOpeningPlaced(proj.wallId, startAlong, widthMm)
       setOpeningPlacementStart(null)
       setOpeningHoverProjection(null)
@@ -2405,22 +2642,35 @@ function WallDrawingLayerInner({
       return
     }
 
-    if (placingControlJoint) {
+    if (placingControlJoint || placingStep) {
       const proj = findClosestWallProjection(raw)
       if (!proj) return
       const wall = walls.find((w) => w.id === proj.wallId)
       if (!wall) return
-      // Both straight and curved walls are splittable now - projectOntoWall
-      // returns alongMm in arc-length units for curves, and
-      // handleControlJointPlaced uses splitArcAtParameter to derive
-      // the two sub-arcs. Grid snap is skipped on curves (snapping an
-      // arc-length to a 10 mm grid doesn't translate visually the way
-      // it does for a straight wall).
+      // Steps are straight-wall only for now (a stepped curve isn't supported).
+      if (placingStep && isCurvedWall(wall)) return
+      // Both straight and curved walls are splittable - projectOntoWall
+      // returns alongMm in arc-length units for curves, and the split
+      // handler uses splitArcAtParameter to derive the two sub-arcs. Grid
+      // snap is skipped on curves (snapping an arc-length to a 10 mm grid
+      // doesn't translate visually the way it does for a straight wall).
+      // Control joints get their own snap increment (e.g. 200mm to land
+      // on block ends); steps stay on the wall-length grid. Both fall
+      // back to wallSnapMm when no control-joint increment is set.
+      const cjSnap = __userSettings.defaults.controlJointSnapMm
+      const cjIncrement =
+        !placingStep && cjSnap && cjSnap > 0 ? cjSnap : wallSnapMm
       const snapped =
         isCurvedWall(wall) || !useGrid
           ? proj.alongMm
-          : snapMmToGrid(proj.alongMm, wallSnapMm)
-      onControlJointPlaced?.(proj.wallId, snapped)
+          : snapAlongToOuterGrid(wall, proj.alongMm, cjIncrement)
+      // Guard: ignore a control joint / step that would land on an
+      // opening, crowd a wall end, or sit on an existing step. The hover
+      // preview already shows this spot in red; keep the tool active so
+      // the user can drop it somewhere valid.
+      if (!isPointPlacementValid(snapped, placementContextFor(wall))) return
+      if (placingStep) onStepPlaced?.(proj.wallId, snapped)
+      else onControlJointPlaced?.(proj.wallId, snapped)
       setControlJointHover(null)
       return
     }
@@ -2625,8 +2875,11 @@ function WallDrawingLayerInner({
         // snapped alongMm onto the wall so the preview line lands on the
         // grid visually, not just numerically.
         const useGrid = !e.evt.shiftKey
-        const snappedAlong = useGrid ? snapOpeningMm(proj.alongMm) : proj.alongMm
         const wall = wallsById.get(proj.wallId)
+        const snappedAlong =
+          useGrid && wall
+            ? snapOpeningAlongMm(wall, proj.alongMm)
+            : proj.alongMm
         const snappedPx = wall ? pointAlongWallPx(wall, snappedAlong) : proj.px
         setOpeningHoverProjection({
           ...proj,
@@ -2642,13 +2895,35 @@ function WallDrawingLayerInner({
       // wander off the wall (mouse jitter, dragging past an end, etc.)
       // doesn't abort the in-progress opening - the live width readout
       // and the second-click commit both keep using the last snap.
-    } else if (placingControlJoint) {
+    } else if (placingControlJoint || placingStep) {
       // Cut wall now works on both straight AND curved walls.
       // projectOntoWall returns a curve-aware projection (radial onto
       // the arc, alongMm in arc length), so the hover dot lands on
       // the curve where the cursor sits and the split point will
       // match.
-      setControlJointHover(findClosestWallProjection(raw))
+      const proj = findClosestWallProjection(raw)
+      if (!proj) {
+        setControlJointHover(null)
+      } else {
+        // Snap the preview to the same grid the commit uses so the
+        // marker lands exactly where the joint will drop. Control
+        // joints use their own increment; steps stay on the wall grid;
+        // curves + Shift bypass (arc-length snap doesn't read well).
+        const wall = wallsById.get(proj.wallId)
+        const cjSnap = __userSettings.defaults.controlJointSnapMm
+        const cjIncrement =
+          !placingStep && cjSnap && cjSnap > 0 ? cjSnap : wallSnapMm
+        if (wall && !isCurvedWall(wall) && !e.evt.shiftKey) {
+          const snappedAlong = snapAlongToOuterGrid(wall, proj.alongMm, cjIncrement)
+          setControlJointHover({
+            ...proj,
+            alongMm: snappedAlong,
+            px: pointAlongWallPx(wall, snappedAlong),
+          })
+        } else {
+          setControlJointHover(proj)
+        }
+      }
     } else if (placingTiedPier) {
       const proj = findClosestWallProjection(raw)
       if (proj) {
@@ -2979,6 +3254,158 @@ function WallDrawingLayerInner({
       ? 'crosshair'
       : 'inherit'
 
+  // Endpoint / corner markers, factored out so they can render in a
+  // dedicated pass ABOVE all wall bodies (see {walls.map(renderEndpointMarkers)}
+  // near the end of the Layer). Rendered inline inside each wall's group a
+  // corner square or T-junction marker could be hidden under an adjacent
+  // wall's fill drawn afterwards; this guarantees markers stay on top,
+  // matching how the control-joint dots already render.
+  // While ANY placement / drawing tool is active, the corner / free-end /
+  // T-junction / control-joint markers must be inert: a click near a corner
+  // should place the control joint / step / opening (handled by the stage
+  // click), not open the block-picker modal. Dropping their onClick (so it
+  // doesn't cancelBubble) lets the click reach handleStageClick; dropping
+  // drag stops the handle moving the wall end mid-placement.
+  const placementToolActive =
+    drawingMode ||
+    drawingCurveMode ||
+    placingOpening ||
+    placingControlJoint ||
+    placingStep ||
+    placingTiedPier ||
+    placingFreestandingPier ||
+    placingFootingZone ||
+    placingRuler
+
+  const renderEndpointMarkers = (wall: Wall) => {
+    const start = effectiveEndpoint(wall, 'start')
+    const end = effectiveEndpoint(wall, 'end')
+    const startIsCorner = wall.startJunction.type === 'corner'
+    const endIsCorner = wall.endJunction.type === 'corner'
+    const startIsTjunction = wall.startJunction.type === 't-junction'
+    const endIsTjunction = wall.endJunction.type === 't-junction'
+    const startIsControlJoint = wall.startJunction.type === 'control-joint'
+    const endIsControlJoint = wall.endJunction.type === 'control-joint'
+    const isHighlightedByActive =
+      !!activeMakeupIdForHighlight && wall.makeupId === activeMakeupIdForHighlight
+    const wallSelected =
+      (selectedWallIds && selectedWallIds.has(wall.id)) ||
+      wall.id === selectedWallId ||
+      isHighlightedByActive
+    const startIsFree = wall.startJunction.type === 'free'
+    const endIsFree = wall.endJunction.type === 'free'
+    const startFreeSelected =
+      !!selectedFreeEnd &&
+      selectedFreeEnd.wallId === wall.id &&
+      selectedFreeEnd.end === 'start'
+    const endFreeSelected =
+      !!selectedFreeEnd &&
+      selectedFreeEnd.wallId === wall.id &&
+      selectedFreeEnd.end === 'end'
+    const wallThicknessPx =
+      (wallThicknessByWallId[wall.id] ?? 190) * pxPerMmAtCurrentZoom
+    return (
+      <Group key={`endpoint-markers-${wall.id}`}>
+        {(() => {
+          const result = cornerMarkerPosOrSkip(
+            wall,
+            'start',
+            startIsCorner,
+            walls,
+            mmToPx,
+            start
+          )
+          if (result === 'skip') return null
+          return renderEndpointMarker({
+            pos: result,
+            isCorner: startIsCorner,
+            isTjunction: startIsTjunction,
+            isControlJoint: startIsControlJoint,
+            isSelected: wallSelected || startFreeSelected,
+            draggable:
+              wallSelected &&
+              !startIsCorner &&
+              !startIsControlJoint &&
+              !placementToolActive,
+            wallThicknessPx,
+            onClick:
+              !placementToolActive &&
+              (startIsFree || startIsCorner || startIsTjunction) &&
+              onFreeEndSelect
+                ? (ev) => {
+                    ev.cancelBubble = true
+                    onFreeEndSelect({ wallId: wall.id, end: 'start' })
+                  }
+                : undefined,
+            onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'start'),
+            onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'start'),
+            onMouseEnterStage: (ev) =>
+              setCursor(
+                ev.target.getStage(),
+                placementToolActive
+                  ? 'inherit'
+                  : wallSelected
+                    ? 'move'
+                    : startIsFree || startIsCorner || startIsTjunction
+                      ? 'pointer'
+                      : 'inherit'
+              ),
+            onMouseLeaveStage: (ev) =>
+              setCursor(ev.target.getStage(), containerCursor),
+          })
+        })()}
+        {(() => {
+          const result = cornerMarkerPosOrSkip(
+            wall,
+            'end',
+            endIsCorner,
+            walls,
+            mmToPx,
+            end
+          )
+          if (result === 'skip') return null
+          return renderEndpointMarker({
+            pos: result,
+            isCorner: endIsCorner,
+            isTjunction: endIsTjunction,
+            isControlJoint: endIsControlJoint,
+            isSelected: wallSelected || endFreeSelected,
+            draggable:
+              wallSelected &&
+              !endIsCorner &&
+              !endIsControlJoint &&
+              !placementToolActive,
+            wallThicknessPx,
+            onClick:
+              !placementToolActive &&
+              (endIsFree || endIsCorner || endIsTjunction) &&
+              onFreeEndSelect
+                ? (ev) => {
+                    ev.cancelBubble = true
+                    onFreeEndSelect({ wallId: wall.id, end: 'end' })
+                  }
+                : undefined,
+            onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'end'),
+            onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'end'),
+            onMouseEnterStage: (ev) =>
+              setCursor(
+                ev.target.getStage(),
+                placementToolActive
+                  ? 'inherit'
+                  : wallSelected
+                  ? 'move'
+                  : endIsFree || endIsCorner || endIsTjunction
+                    ? 'pointer'
+                    : 'inherit'
+              ),
+            onMouseLeaveStage: (ev) =>
+              setCursor(ev.target.getStage(), containerCursor),
+          })
+        })()}
+      </Group>
+    )
+  }
+
   return (
     <Stage
       ref={(stage: Konva.Stage | null) => {
@@ -3066,17 +3493,9 @@ function WallDrawingLayerInner({
           const strokeColor = isCurveAnchor
             ? '#8b5cf6'
             : wallTypeStroke
-          const startIsCorner = wall.startJunction.type === 'corner'
-          const endIsCorner = wall.endJunction.type === 'corner'
-          const startIsTjunction = wall.startJunction.type === 't-junction'
-          const endIsTjunction = wall.endJunction.type === 't-junction'
-          const startIsControlJoint = wall.startJunction.type === 'control-joint'
-          const endIsControlJoint = wall.endJunction.type === 'control-joint'
-          // Pixel thickness of this wall at the current zoom - feeds the
-          // endpoint marker so brick walls (thin) get tighter markers than
-          // block walls (chunky).
-          const wallThicknessPx =
-            (wallThicknessByWallId[wall.id] ?? 190) * pxPerMmAtCurrentZoom
+          // Endpoint / corner / T-junction marker rendering moved to a
+          // dedicated top pass (renderEndpointMarkers) so markers always sit
+          // above adjacent wall fills - see {walls.map(...)} below.
 
           return (
             <Group
@@ -3084,13 +3503,15 @@ function WallDrawingLayerInner({
               onClick={(e) => {
                 // Right-click is reserved for pan - never selects walls.
                 if (e.evt.button !== 0) return
-                // Curve / control-joint / pier modes: clicks bubble up to the stage handler
-                // (which picks anchors / splits / drops piers). Selection is suppressed.
+                // Curve / control-joint / step / pier modes: clicks bubble up to
+                // the stage handler (which picks anchors / splits / adds steps /
+                // drops piers). Selection is suppressed.
                 if (
                   drawingMode ||
                   placingOpening ||
                   drawingCurveMode ||
                   placingControlJoint ||
+                  placingStep ||
                   placingTiedPier ||
                   placingFreestandingPier ||
                   placingRuler
@@ -3098,7 +3519,27 @@ function WallDrawingLayerInner({
                 // Shift+click = additive multi-select (toggle this wall in/out of the
                 // selection). Plain click = replace whole selection with just this wall.
                 if (e.evt.shiftKey && onWallToggleSelect) onWallToggleSelect(wall.id)
-                else onWallSelect(wall.id)
+                else {
+                  onWallSelect(wall.id)
+                  // Stepped wall: also report WHICH section was clicked so the
+                  // banner edits that section's height like an individual wall.
+                  if (
+                    wall.heightSteps &&
+                    wall.heightSteps.length > 0 &&
+                    onWallSectionSelect
+                  ) {
+                    const raw = e.target.getStage()?.getRelativePointerPosition()
+                    if (raw) {
+                      const proj = projectOntoWall(raw, wall)
+                      if (proj) {
+                        onWallSectionSelect(
+                          wall.id,
+                          stepSectionIndexForAlong(wall, proj.alongMm)
+                        )
+                      }
+                    }
+                  }
+                }
                 e.cancelBubble = true
               }}
               onMouseDown={(e) => {
@@ -3186,63 +3627,9 @@ function WallDrawingLayerInner({
                 }}
               />
 
-              {/* Endpoint markers. For corner-tagged endpoints, render ONE marker per
-                  corner pair at the centreline-centreline intersection (the geometric
-                  centre of the L). The "primary" wall - the one with the lower id -
-                  renders the marker; the other wall skips it to avoid duplicates. */}
-              {(() => {
-                const result = cornerMarkerPosOrSkip(
-                  wall,
-                  'start',
-                  startIsCorner,
-                  walls,
-                  mmToPx,
-                  start
-                )
-                if (result === 'skip') return null
-                return renderEndpointMarker({
-                  pos: result,
-                  isCorner: startIsCorner,
-                  isTjunction: startIsTjunction,
-                  isControlJoint: startIsControlJoint,
-                  isSelected,
-                  draggable: isSelected && !startIsCorner && !startIsControlJoint,
-                  wallThicknessPx,
-                  onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'start'),
-                  onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'start'),
-                  onMouseEnterStage: (ev) =>
-                    setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
-                  onMouseLeaveStage: (ev) =>
-                    setCursor(ev.target.getStage(), containerCursor),
-                })
-              })()}
-
-              {(() => {
-                const result = cornerMarkerPosOrSkip(
-                  wall,
-                  'end',
-                  endIsCorner,
-                  walls,
-                  mmToPx,
-                  end
-                )
-                if (result === 'skip') return null
-                return renderEndpointMarker({
-                  pos: result,
-                  isCorner: endIsCorner,
-                  isTjunction: endIsTjunction,
-                  isControlJoint: endIsControlJoint,
-                  isSelected,
-                  draggable: isSelected && !endIsCorner && !endIsControlJoint,
-                  wallThicknessPx,
-                  onDragMove: (ev) => handleEndpointDragMove(ev, wall.id, 'end'),
-                  onDragEnd: (ev) => handleEndpointDragEnd(ev, wall.id, 'end'),
-                  onMouseEnterStage: (ev) =>
-                    setCursor(ev.target.getStage(), isSelected ? 'move' : 'inherit'),
-                  onMouseLeaveStage: (ev) =>
-                    setCursor(ev.target.getStage(), containerCursor),
-                })
-              })()}
+              {/* Endpoint / corner markers now render in a trailing top pass
+                  (renderEndpointMarkers) so they're never hidden by an
+                  adjacent wall drawn after this one. */}
 
               {/* Wall length only shows when the wall is selected -
                   keeps the plan view clean while drawing / panning,
@@ -3438,6 +3825,24 @@ function WallDrawingLayerInner({
                   }
                 }
                 const previewWidth = hasTyped ? typedNum : cursorWidthMm
+                // Red-flag a span the commit guard would reject: overlaps
+                // another opening, straddles a height step, or runs into a
+                // wall end. Dashed red band = blocked.
+                const anchorAlong = openingPlacementStart.alongMm
+                const otherAlong = hasTyped
+                  ? anchorAlong +
+                    (openingHoverProjection.alongMm >= anchorAlong ? 1 : -1) *
+                      typedNum
+                  : openingHoverProjection.alongMm
+                const spanInvalid = !isOpeningPlacementValid(
+                  Math.min(anchorAlong, otherAlong),
+                  previewWidth,
+                  placementContextFor(startWall),
+                )
+                // Blank the band where the opening can't be placed (overlaps
+                // another, crosses a step, or runs into a corner / end)
+                // rather than drawing it red.
+                if (spanInvalid) return null
                 return (
                   <>
                     <Line
@@ -3465,7 +3870,11 @@ function WallDrawingLayerInner({
                               : `${typedOpeningWidthMm} mm …`
                             : `${formatMm(previewWidth)} wide`
                       }
-                      bg={hasTyped ? 'rgba(59, 130, 246, 0.95)' : 'rgba(146, 64, 14, 0.95)'}
+                      bg={
+                        hasTyped
+                          ? 'rgba(59, 130, 246, 0.95)'
+                          : 'rgba(146, 64, 14, 0.95)'
+                      }
                     />
                   </>
                 )
@@ -3483,7 +3892,25 @@ function WallDrawingLayerInner({
           // arc point needs the tangent - straightforward but not in
           // scope here).
           const hoverWall = wallsById.get(openingHoverProjection.wallId)
-          if (!hoverWall || isCurvedWall(hoverWall)) {
+          if (!hoverWall) return null
+          // Show nothing where a new opening can't begin: on an existing
+          // opening, or inside the corner / end clearance (no valid opening
+          // could touch there). Blanking reads cleaner than a marker, and
+          // the anchor click is blocked at these spots too.
+          {
+            const startCtx = placementContextFor(hoverWall)
+            const startC = startCtx.startClearanceMm ?? startCtx.clearanceMm ?? 0
+            const endC = startCtx.endClearanceMm ?? startCtx.clearanceMm ?? 0
+            const a = openingHoverProjection.alongMm
+            if (
+              isOverOpening(a, startCtx.openings) ||
+              a < startC ||
+              a > startCtx.wallLengthMm - endC
+            ) {
+              return null
+            }
+          }
+          if (isCurvedWall(hoverWall)) {
             return (
               <Circle
                 x={openingHoverProjection.px.x}
@@ -3850,6 +4277,7 @@ function WallDrawingLayerInner({
             drawingCurveMode ||
             placingOpening ||
             placingControlJoint ||
+            placingStep ||
             placingTiedPier ||
             placingFreestandingPier ||
             placingRuler ||
@@ -3870,33 +4298,199 @@ function WallDrawingLayerInner({
             </Group>
           )}
 
-        {/* Control-joint hover preview - show where the click would split the wall. */}
-        {placingControlJoint && controlJointHover && (() => {
+        {/* Endpoint / corner / T-junction markers - rendered here, after all
+            wall bodies + openings, so a corner square or junction marker is
+            never hidden under an adjacent wall's fill. */}
+        {walls.map(renderEndpointMarkers)}
+
+        {/* Placed control joints - clickable seam markers. Tap one to edit
+            its termination blocks. Always shown (like the corner / free-end
+            markers) so they don't vanish while a placement tool is active. */}
+        {onControlJointSelect &&
+          (() => {
+            const seen = new Set<string>()
+            const markers: Array<{
+              key: string
+              x: number
+              y: number
+              wallId: string
+              end: 'start' | 'end'
+            }> = []
+            for (const w of walls) {
+              if (isCurvedWall(w)) continue
+              const ends: Array<'start' | 'end'> = []
+              if (w.startJunction.type === 'control-joint') ends.push('start')
+              if (w.endJunction.type === 'control-joint') ends.push('end')
+              for (const e of ends) {
+                const junction = e === 'start' ? w.startJunction : w.endJunction
+                const partner = junction.connectedWallIds?.[0] ?? ''
+                // Dedupe by seam (the two halves share a partner link) so the
+                // sealant gap between them doesn't render two dots at one joint.
+                const seamKey = [w.id, partner].sort().join('|')
+                if (seen.has(seamKey)) continue
+                seen.add(seamKey)
+                const p = effectiveEndpoint(w, e)
+                markers.push({ key: seamKey, x: p.x, y: p.y, wallId: w.id, end: e })
+              }
+            }
+            return markers.map((m) => {
+              const isSel =
+                selectedControlJoint?.wallId === m.wallId &&
+                selectedControlJoint?.end === m.end
+              return (
+                <Circle
+                  key={m.key}
+                  x={m.x}
+                  y={m.y}
+                  radius={
+                    isSel
+                      ? (EQUAL_MARKER_PX + SELECTED_MARKER_BUMP_PX) / 2
+                      : EQUAL_MARKER_PX / 2
+                  }
+                  stroke="#e11d48"
+                  strokeWidth={2.5}
+                  fill={isSel ? '#e11d48' : 'white'}
+                  shadowColor="white"
+                  shadowBlur={3}
+                  shadowOpacity={0.9}
+                  onClick={(e) => {
+                    if (placementToolActive) return
+                    e.cancelBubble = true
+                    onControlJointSelect({ wallId: m.wallId, end: m.end })
+                  }}
+                  onTap={(e) => {
+                    if (placementToolActive) return
+                    e.cancelBubble = true
+                    onControlJointSelect({ wallId: m.wallId, end: m.end })
+                  }}
+                />
+              )
+            })
+          })()}
+
+        {/* Placed height-step markers - a sky tick across the wall at each
+            step point on a stepped wall (visual cue only). */}
+        {walls.flatMap((w) => {
+          if (isCurvedWall(w) || !w.heightSteps || w.heightSteps.length === 0) return []
+          const dx = w.endX - w.startX
+          const dy = w.endY - w.startY
+          const len = Math.hypot(dx, dy)
+          if (len === 0) return []
+          const perpX = -dy / len
+          const perpY = dx / len
+          const thicknessMm = wallThicknessByWallId[w.id] ?? 190
+          const halfPx = mmToPx(thicknessMm / 2 + 6)
+          return w.heightSteps.map((s, i) => {
+            const p = pointAlongWallPx(w, s.alongMm)
+            return (
+              <Line
+                key={`${w.id}-step-${i}`}
+                points={[
+                  p.x - perpX * halfPx,
+                  p.y - perpY * halfPx,
+                  p.x + perpX * halfPx,
+                  p.y + perpY * halfPx,
+                ]}
+                stroke="#0ea5e9"
+                strokeWidth={2.5}
+                lineCap="round"
+                listening={false}
+              />
+            )
+          })
+        })}
+
+        {/* Control-joint hover preview - same line graphic as placing an
+            opening: a short perpendicular tick across the wall thickness
+            marking where the click will split the wall. */}
+        {(placingControlJoint || placingStep) && controlJointHover && (() => {
           const wall = walls.find((w) => w.id === controlJointHover.wallId)
-          if (!wall || isCurvedWall(wall)) return null
-          const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
-          // Perpendicular tick across the wall thickness at the projected point.
+          if (!wall) return null
+          // Don't draw the preview anywhere the commit guard would reject
+          // it - on an opening, crowding a corner / end, or on an existing
+          // step. Blanking reads cleaner than a red marker.
+          if (
+            !isPointPlacementValid(
+              controlJointHover.alongMm,
+              placementContextFor(wall),
+            )
+          ) {
+            return null
+          }
+          if (isCurvedWall(wall)) {
+            return (
+              <Circle
+                x={controlJointHover.px.x}
+                y={controlJointHover.px.y}
+                radius={4}
+                stroke="#e11d48"
+                strokeWidth={1.5}
+                fill="rgba(225, 29, 72, 0.3)"
+                listening={false}
+              />
+            )
+          }
           const dx = wall.endX - wall.startX
           const dy = wall.endY - wall.startY
-          const wlen = Math.sqrt(dx * dx + dy * dy)
-          if (wlen === 0) return null
-          const nx = -dy / wlen
-          const ny = dx / wlen
-          const half = thicknessMm / 2 + 30 // mm - overhang a touch outside the wall for visibility
+          const len = Math.hypot(dx, dy)
+          if (len === 0) return null
+          // Perpendicular = wall direction rotated +90 in screen space.
+          const perpX = -dy / len
+          const perpY = dx / len
+          const thicknessMm = wallThicknessByWallId[wall.id] ?? 190
+          const halfThicknessPx = mmToPx(thicknessMm / 2)
           const cx = controlJointHover.px.x
           const cy = controlJointHover.px.y
-          const tx = mmToPx(nx * half)
-          const ty = mmToPx(ny * half)
+          // Live lengths of the wall on each side of the hover point, so
+          // the user can place a step / control joint knowing how much
+          // wall sits either side. Work off the OUTER-FACE length (what a
+          // tape reads on the outside of the wall = the figure shown on the
+          // wall), NOT the raw centreline - they differ at corners. alongMm
+          // is centreline-based, so split the outer length by the centreline
+          // fraction; positions still use the centreline (pointAlongWallPx
+          // expects centreline alongMm).
+          const alongMmCl = controlJointHover.alongMm
+          const outerLenMm = wallGeometry.get(wall.id)?.lengthMm ?? len
+          // The outside face starts at the outer corner, ~halfThickness
+          // before the centreline start, so add the start extension. This
+          // makes alongMm 0 read as the real outer offset (e.g. 100), not 0.
+          const startExtMm = endExtensionMm(wall, 'start')
+          const leftLenMm = startExtMm + alongMmCl
+          const rightLenMm = Math.max(0, outerLenMm - leftLenMm)
+          const labelOffPx = halfThicknessPx + 16
+          const leftMid = pointAlongWallPx(wall, alongMmCl / 2)
+          const rightMid = pointAlongWallPx(wall, alongMmCl + (len - alongMmCl) / 2)
           return (
             <Group listening={false}>
               <Line
-                points={[cx - tx, cy - ty, cx + tx, cy + ty]}
+                points={[
+                  cx - perpX * halfThicknessPx,
+                  cy - perpY * halfThicknessPx,
+                  cx + perpX * halfThicknessPx,
+                  cy + perpY * halfThicknessPx,
+                ]}
                 stroke="#e11d48"
-                strokeWidth={2}
-                dash={[6, 4]}
+                strokeWidth={3}
+                lineCap="round"
               />
-              <Circle x={cx} y={cy} radius={7} stroke="#e11d48" strokeWidth={2} fill="white" />
-              <Circle x={cx} y={cy} radius={2.5} fill="#e11d48" />
+              {leftLenMm > 1 && (
+                <MeasurementChip
+                  x={leftMid.x + perpX * labelOffPx - 12}
+                  y={leftMid.y + perpY * labelOffPx - 8}
+                  text={formatMm(leftLenMm)}
+                  bg="#0369a1"
+                  listening={false}
+                />
+              )}
+              {rightLenMm > 1 && (
+                <MeasurementChip
+                  x={rightMid.x + perpX * labelOffPx - 12}
+                  y={rightMid.y + perpY * labelOffPx - 8}
+                  text={formatMm(rightLenMm)}
+                  bg="#0369a1"
+                  listening={false}
+                />
+              )}
             </Group>
           )
         })()}
@@ -4264,6 +4858,8 @@ interface EndpointMarkerProps {
   onDragEnd: (e: Konva.KonvaEventObject<DragEvent>) => void
   onMouseEnterStage: (e: Konva.KonvaEventObject<MouseEvent>) => void
   onMouseLeaveStage: (e: Konva.KonvaEventObject<MouseEvent>) => void
+  /** Optional click handler - opens the per-end block editor on free ends. */
+  onClick?: (e: Konva.KonvaEventObject<MouseEvent>) => void
 }
 
 function renderEndpointMarker({
@@ -4274,6 +4870,7 @@ function renderEndpointMarker({
   isSelected,
   draggable,
   wallThicknessPx,
+  onClick,
   onDragMove,
   onDragEnd,
   onMouseEnterStage,
@@ -4286,10 +4883,15 @@ function renderEndpointMarker({
   // 4× zoom doesn't end up with markers obscuring the wall ends or PDF
   // detail underneath. Selected markers get a slight bump so the drag
   // handle is easy to find without dominating the plan.
-  const baseSize = Math.max(3, Math.min(7, wallThicknessPx * 0.55))
-  const radius = (isSelected ? baseSize * 1.2 : baseSize) / 2
-  const cornerSquareSize = isSelected ? Math.min(8, baseSize * 1.15) : baseSize
-  const tjunctionDiamondSize = cornerSquareSize
+  // One equal size for every marker type + wall thickness. wallThicknessPx
+  // is no longer used for sizing (markers are a fixed on-screen size now).
+  void wallThicknessPx
+  const baseSize = isSelected
+    ? EQUAL_MARKER_PX + SELECTED_MARKER_BUMP_PX
+    : EQUAL_MARKER_PX
+  const radius = baseSize / 2
+  const cornerSquareSize = baseSize
+  const tjunctionDiamondSize = baseSize
   const controlJointOuterRadius = baseSize * 0.55
   const controlJointInnerRadius = Math.max(1, baseSize * 0.2)
   const fill = isSelected
@@ -4336,6 +4938,8 @@ function renderEndpointMarker({
         fill={fill}
         stroke="white"
         strokeWidth={1.5}
+        onClick={onClick}
+        onTap={onClick}
         draggable={draggable}
         onDragMove={onDragMove}
         onDragEnd={onDragEnd}
@@ -4359,6 +4963,8 @@ function renderEndpointMarker({
         fill={fill}
         stroke="white"
         strokeWidth={1.5}
+        onClick={onClick}
+        onTap={onClick}
         draggable={draggable}
         onDragMove={onDragMove}
         onDragEnd={onDragEnd}
@@ -4379,6 +4985,8 @@ function renderEndpointMarker({
       fill={fill}
       stroke="white"
       strokeWidth={1.5}
+      onClick={onClick}
+      onTap={onClick}
       draggable={draggable}
       onDragMove={onDragMove}
       onDragEnd={onDragEnd}

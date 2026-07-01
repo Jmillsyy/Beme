@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, lazy, Suspense } from 'react'
 import type { ComponentType } from 'react'
-import { flushSync } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 
 // 3D view is lazy-loaded so users who never open it pay zero bundle cost
@@ -56,6 +56,7 @@ import { renderPdfRegion, type PdfRegionTask } from '../lib/pdfViewportRender'
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
 import WallDrawingLayer from './WallDrawingLayer'
+import PlanLegend from './PlanLegend'
 import SupplyItemsPanel from './SupplyItemsPanel'
 import WallTopProfileBar from './WallTopProfileBar'
 import { useOrgSupplyItems } from '../lib/orgSupplyItems'
@@ -300,7 +301,7 @@ import {
   createDefaultProjectDetails,
 } from '../lib/brickExport'
 import { createDefaultBlockExportInclusions } from '../lib/blockExport'
-import { recomputeAllJunctions } from '../lib/junctions'
+import { recomputeAllJunctions, mergeCollinearWalls } from '../lib/junctions'
 import { arcFromThreePoints, splitArcAtParameter } from '../lib/curveGeom'
 import { masonryTypeColor, wallTypeColor } from '../lib/wallTypeColors'
 import { useTheme } from '../lib/theme'
@@ -1135,6 +1136,8 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   // When active, clicking on a wall splits it into two halves at the click point. Each
   // half gets its own end termination at the joint (junction.type = 'control-joint').
   const [placingControlJoint, setPlacingControlJoint] = useState(false)
+  // Step tool: click a wall to add a height-change point (stepped wall).
+  const [placingStep, setPlacingStep] = useState(false)
   const placingControlJointRef = useRef(false)
 
   // Ruler / measurement state
@@ -1244,6 +1247,13 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
   const [footingLevelDraft, setFootingLevelDraft] = useState('0')
   /** Pier currently selected (for inspection / height / makeup edit). */
   const [selectedPierIds, _setSelectedPierIds] = useState<Set<string>>(new Set())
+  /** Placed control joint selected for termination-block editing (or null). */
+  const [selectedControlJoint, setSelectedControlJoint] = useState<{ wallId: string; end: 'start' | 'end' } | null>(null)
+  /** Free wall end selected for termination-block editing (or null). */
+  const [selectedFreeEnd, setSelectedFreeEnd] = useState<{ wallId: string; end: 'start' | 'end' } | null>(null)
+  /** Which height section of the selected stepped wall is being edited.
+   * Section 0 = base; section k = after the k-th step. Null = none clicked. */
+  const [selectedStepSection, setSelectedStepSection] = useState<{ wallId: string; sectionIndex: number } | null>(null)
   const selectedPierId =
     selectedPierIds.size === 1 ? Array.from(selectedPierIds)[0]! : null
   const setSelectedPierId = useCallback((id: string | null) => {
@@ -2984,6 +2994,11 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     if (id) {
       setSelectedOpeningId(null)
       setSelectedMeasurementId(null)
+      setSelectedControlJoint(null)
+      setSelectedFreeEnd(null)
+      // Reset section focus; a stepped-wall click re-sets it via
+      // handleWallSectionSelect right after this runs.
+      setSelectedStepSection(null)
       // Clicking a SINGLE wall should highlight only that wall, not every
       // wall of the same type. The active-makeup glow is reserved for the
       // sidebar's wall-type click - that's an explicit "show me everything
@@ -3010,11 +3025,223 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wallsByPage, mode])
+  // Stepped wall: remember which section the user clicked so the banner
+  // edits that section's height (like selecting an individual wall).
+  const handleWallSectionSelect = useCallback(
+    (wallId: string, sectionIndex: number) => {
+      setSelectedStepSection({ wallId, sectionIndex })
+    },
+    []
+  )
+  const handleControlJointSelect = useCallback(
+    (sel: { wallId: string; end: 'start' | 'end' } | null) => {
+      setSelectedControlJoint(sel)
+      if (sel) {
+        setSelectedWallId(null)
+        setSelectedOpeningId(null)
+        setSelectedPierId(null)
+        setSelectedMeasurementId(null)
+        setSelectedFreeEnd(null)
+      }
+    },
+    [setSelectedWallId, setSelectedOpeningId, setSelectedPierId, setSelectedMeasurementId]
+  )
+  // Write a control-joint block override to BOTH sides of the seam (the
+  // selected wall's junction and its connected partner). Passing undefined
+  // for a field clears it back to the default.
+  const setControlJointBlocks = useCallback(
+    (patch: { fullEndBlockCode?: BlockCode; halfEndBlockCode?: BlockCode }) => {
+      if (!selectedControlJoint) return
+      const sel = selectedControlJoint
+      setWallsByPage((prev) => {
+        const pageWalls = prev[currentPage] ?? []
+        const anchor = pageWalls.find((w) => w.id === sel.wallId)
+        if (!anchor) return prev
+        const anchorJ = sel.end === 'start' ? anchor.startJunction : anchor.endJunction
+        const partnerId = anchorJ.connectedWallIds?.[0]
+        const apply = (j: Wall['startJunction']): Wall['startJunction'] => ({ ...j, ...patch })
+        const next = pageWalls.map((w) => {
+          let sj = w.startJunction
+          let ej = w.endJunction
+          if (w.id === sel.wallId) {
+            if (sel.end === 'start') sj = apply(sj)
+            else ej = apply(ej)
+          }
+          if (partnerId && w.id === partnerId) {
+            if (sj.type === 'control-joint' && (sj.connectedWallIds?.includes(sel.wallId) ?? false)) sj = apply(sj)
+            if (ej.type === 'control-joint' && (ej.connectedWallIds?.includes(sel.wallId) ?? false)) ej = apply(ej)
+          }
+          return sj === w.startJunction && ej === w.endJunction ? w : { ...w, startJunction: sj, endJunction: ej }
+        })
+        return { ...prev, [currentPage]: next }
+      })
+    },
+    [selectedControlJoint, currentPage]
+  )
+  // Remove a control joint: merge its two halves back into one continuous
+  // wall (the inverse of placing the joint). Straight walls only - a control
+  // joint on a curve is left untouched.
+  const handleControlJointRemove = useCallback(() => {
+    if (!selectedControlJoint) return
+    const sel = selectedControlJoint
+    const pageWalls = wallsByPage[currentPage] ?? []
+    const anchor = pageWalls.find((w) => w.id === sel.wallId)
+    if (!anchor) return
+    const anchorJ = sel.end === 'start' ? anchor.startJunction : anchor.endJunction
+    if (anchorJ.type !== 'control-joint') return
+    const partnerId = anchorJ.connectedWallIds?.[0]
+    const partner = partnerId ? pageWalls.find((w) => w.id === partnerId) : undefined
+    if (!partner) return
+    // firstHalf = the wall whose END is the seam; secondHalf = the wall whose
+    // START is the seam. Merge spans firstHalf.start to secondHalf.end.
+    const firstHalf = sel.end === 'end' ? anchor : partner
+    const secondHalf = sel.end === 'end' ? partner : anchor
+    if (firstHalf.kind === 'curved' || secondHalf.kind === 'curved') return
+    const mergedId = firstHalf.id
+    const merged: Wall = {
+      ...firstHalf,
+      endX: secondHalf.endX,
+      endY: secondHalf.endY,
+      startJunction: { ...firstHalf.startJunction },
+      endJunction: { ...secondHalf.endJunction },
+    }
+    const others = pageWalls
+      .filter((w) => w.id !== firstHalf.id && w.id !== secondHalf.id)
+      .map((w) => {
+        const fix = (j: Wall['startJunction']): Wall['startJunction'] =>
+          j.connectedWallIds?.includes(secondHalf.id)
+            ? {
+                ...j,
+                connectedWallIds: j.connectedWallIds.map((id) =>
+                  id === secondHalf.id ? mergedId : id
+                ),
+              }
+            : j
+        return { ...w, startJunction: fix(w.startJunction), endJunction: fix(w.endJunction) }
+      })
+    const nextWalls = [...others, merged]
+    const thicknesses = computeWallThicknessByWallId(
+      nextWalls,
+      makeupsById,
+      mode,
+      brickSettings.brickTypeCode
+    )
+    const recomputed = recomputeAllJunctions(nextWalls, thicknesses)
+    const offsetMm = Math.hypot(
+      secondHalf.startX - firstHalf.startX,
+      secondHalf.startY - firstHalf.startY
+    )
+    setWallsByPage((prev) => ({ ...prev, [currentPage]: recomputed }))
+    setOpeningsByPage((prev) => {
+      const pageOpenings = prev[currentPage] ?? []
+      let changed = false
+      const updated = pageOpenings.map((op) => {
+        if (op.wallId === secondHalf.id) {
+          changed = true
+          return { ...op, wallId: mergedId, startAlongWallMm: op.startAlongWallMm + offsetMm }
+        }
+        return op
+      })
+      return changed ? { ...prev, [currentPage]: updated } : prev
+    })
+    setSelectedControlJoint(null)
+  }, [selectedControlJoint, wallsByPage, currentPage, makeupsById, mode, brickSettings])
+  // Delete / Backspace removes the selected control joint (merges the halves),
+  // matching how the rest of the canvas responds to those keys.
+  useEffect(() => {
+    if (!selectedControlJoint) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return
+      const t = e.target as HTMLElement | null
+      if (
+        t &&
+        (t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT' ||
+          t.isContentEditable)
+      )
+        return
+      e.preventDefault()
+      handleControlJointRemove()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selectedControlJoint, handleControlJointRemove])
+
+  // ── Free-end block editing ──────────────────────────────────────────
+  // Tapping a free wall end opens a small modal to pin its termination
+  // blocks, the same way control joints work. Unlike control joints a
+  // free end belongs to ONE wall, so the override writes to just that
+  // wall's junction (no shared seam).
+  const handleFreeEndSelect = useCallback(
+    (sel: { wallId: string; end: 'start' | 'end' } | null) => {
+      setSelectedFreeEnd(sel)
+      if (sel) {
+        setSelectedWallId(null)
+        setSelectedOpeningId(null)
+        setSelectedPierId(null)
+        setSelectedMeasurementId(null)
+        setSelectedControlJoint(null)
+      }
+    },
+    [setSelectedWallId, setSelectedOpeningId, setSelectedPierId, setSelectedMeasurementId]
+  )
+  const setFreeEndBlocks = useCallback(
+    (patch: { fullEndBlockCode?: BlockCode; halfEndBlockCode?: BlockCode }) => {
+      if (!selectedFreeEnd) return
+      const sel = selectedFreeEnd
+      setWallsByPage((prev) => {
+        const pageWalls = prev[currentPage] ?? []
+        const anchor = pageWalls.find((w) => w.id === sel.wallId)
+        if (!anchor) return prev
+        const anchorJ =
+          sel.end === 'start' ? anchor.startJunction : anchor.endJunction
+        // Corners are shared between two walls - write the override to BOTH
+        // sides so it applies regardless of which wall the calc counts the
+        // corner block on. Free / T-junction ends belong to one wall only.
+        const partnerIds =
+          anchorJ.type === 'corner' ? anchorJ.connectedWallIds ?? [] : []
+        const apply = (j: Wall['startJunction']): Wall['startJunction'] => ({
+          ...j,
+          ...patch,
+        })
+        const next = pageWalls.map((w) => {
+          let sj = w.startJunction
+          let ej = w.endJunction
+          if (w.id === sel.wallId) {
+            if (sel.end === 'start') sj = apply(sj)
+            else ej = apply(ej)
+          }
+          if (partnerIds.includes(w.id)) {
+            if (sj.type === 'corner' && (sj.connectedWallIds?.includes(sel.wallId) ?? false)) sj = apply(sj)
+            if (ej.type === 'corner' && (ej.connectedWallIds?.includes(sel.wallId) ?? false)) ej = apply(ej)
+          }
+          return sj === w.startJunction && ej === w.endJunction
+            ? w
+            : { ...w, startJunction: sj, endJunction: ej }
+        })
+        return { ...prev, [currentPage]: next }
+      })
+    },
+    [selectedFreeEnd, currentPage]
+  )
+  // Esc closes the free-end editor (mirrors every other tool / dialog).
+  useEffect(() => {
+    if (!selectedFreeEnd) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setSelectedFreeEnd(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [selectedFreeEnd])
+
   const handleOpeningSelect = useCallback((id: string | null) => {
     setSelectedOpeningId(id)
     if (id) {
       setSelectedWallId(null)
       setSelectedMeasurementId(null)
+      setSelectedControlJoint(null)
       // Clicking an opening re-opens the same modal the user saw at
       // creation time, this time pre-filled and in "edit" mode. The
       // banner that used to sit above the canvas is gone - all
@@ -3112,6 +3339,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     setPlacingOpening(false)
     setDrawingCurveMode(false)
     setPlacingControlJoint(false)
+    setPlacingStep(false)
     setPlacingTiedPier(false)
     setPlacingFreestandingPier(false)
     setPlacingFootingZone(false)
@@ -3998,12 +4226,34 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     // AND an existing wall's free endpoint now lying on the new wall's body (T on existing).
     const newWalls = [...existing, rawWall]
     const thicknesses = computeWallThicknessByWallId(newWalls, makeupsById, mode, brickSettings.brickTypeCode)
-    const recomputed = recomputeAllJunctions(newWalls, thicknesses)
+    // Fuse any straight continuation (this wall drawn off another, or a
+    // pre-existing collinear same-type pair) into one continuous wall before
+    // deriving junctions - avoids the overlapping seam at the join.
+    const { walls: fused, merges } = mergeCollinearWalls(newWalls, thicknesses)
+    const fusedThicknesses =
+      merges.length > 0
+        ? computeWallThicknessByWallId(fused, makeupsById, mode, brickSettings.brickTypeCode)
+        : thicknesses
+    const recomputed = recomputeAllJunctions(fused, fusedThicknesses)
 
     setWallsByPage((prev) => ({
       ...prev,
       [currentPage]: recomputed,
     }))
+    // Rebase openings that lived on a wall absorbed by a merge.
+    if (merges.length > 0) {
+      setOpeningsByPage((prev) => {
+        const pageOpenings = prev[currentPage] ?? []
+        let openingChanged = false
+        const updated = pageOpenings.map((op) => {
+          const m = merges.find((x) => x.fromId === op.wallId)
+          if (!m) return op
+          openingChanged = true
+          return { ...op, wallId: m.intoId, startAlongWallMm: op.startAlongWallMm + m.offsetMm }
+        })
+        return openingChanged ? { ...prev, [currentPage]: updated } : prev
+      })
+    }
   }, [
     wallsByPage,
     currentPage,
@@ -4792,6 +5042,98 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     })
   }
 
+  // ── Stepped wall (variable height in one continuous run) ──────────────
+  // Add a height step to a wall at `alongMm`. The wall stays ONE wall; the
+  // new section drops ~2 courses below the section it lands in so the step
+  // is immediately visible, then the user fine-tunes in the wall banner.
+  const handleStepPlaced = useCallback(
+    (wallId: string, alongMm: number) => {
+      setWallsByPage((prev) => {
+        const pageWalls = prev[currentPage] ?? []
+        const updated = pageWalls.map((w) => {
+          if (w.id !== wallId) return w
+          const mk = makeupsById[w.makeupId]
+          const baseH = w.heightMmOverride ?? (mk ? getMakeupHeightMm(mk) : 2400)
+          const existing = (w.heightSteps ?? []).slice().sort((a, b) => a.alongMm - b.alongMm)
+          const at = Math.round(alongMm)
+          if (existing.some((s) => Math.abs(s.alongMm - at) < 1)) return w
+          let prevH = baseH
+          for (const s of existing) {
+            if (s.alongMm <= at) prevH = s.heightMm
+            else break
+          }
+          const courseH =
+            (BLOCK_LIBRARY[mk?.bodyBlockCode ?? '']?.dimensions.heightMm ?? 190) + 10
+          const newH = Math.max(courseH * 2, prevH - courseH * 2)
+          const steps = [...existing, { alongMm: at, heightMm: newH }].sort(
+            (a, b) => a.alongMm - b.alongMm,
+          )
+          return { ...w, heightSteps: steps }
+        })
+        return { ...prev, [currentPage]: updated }
+      })
+      setPlacingStep(false)
+      setSelectedWallId(wallId)
+    },
+    [currentPage, makeupsById, setSelectedWallId],
+  )
+  const handleSetStepHeight = useCallback(
+    (wallId: string, index: number, heightMm: number) => {
+      setWallsByPage((prev) => {
+        const updated = (prev[currentPage] ?? []).map((w) => {
+          if (w.id !== wallId || !w.heightSteps) return w
+          const steps = w.heightSteps.map((s, i) =>
+            i === index ? { ...s, heightMm: Math.max(200, Math.round(heightMm)) } : s,
+          )
+          return { ...w, heightSteps: steps }
+        })
+        return { ...prev, [currentPage]: updated }
+      })
+    },
+    [currentPage],
+  )
+  const handleRemoveStep = useCallback(
+    (wallId: string, index: number) => {
+      setWallsByPage((prev) => {
+        const updated = (prev[currentPage] ?? []).map((w) => {
+          if (w.id !== wallId || !w.heightSteps) return w
+          const steps = w.heightSteps.filter((_, i) => i !== index)
+          if (steps.length === 0) {
+            const { heightSteps: _drop, ...rest } = w
+            void _drop
+            return rest as Wall
+          }
+          return { ...w, heightSteps: steps }
+        })
+        return { ...prev, [currentPage]: updated }
+      })
+    },
+    [currentPage],
+  )
+  // Step is mutually exclusive with the other placement tools - turn it off
+  // whenever another tool engages.
+  useEffect(() => {
+    if (
+      drawingMode ||
+      drawingCurveMode ||
+      placingOpening ||
+      placingControlJoint ||
+      placingTiedPier ||
+      placingFreestandingPier ||
+      placingRuler
+    ) {
+      setPlacingStep(false)
+    }
+  }, [
+    drawingMode,
+    drawingCurveMode,
+    placingOpening,
+    placingControlJoint,
+    placingTiedPier,
+    placingFreestandingPier,
+    placingRuler,
+  ])
+
   // Opening handlers
 
   const handleOpeningPlaced = useCallback((wallId: string, startAlongWallMm: number, widthMm: number) => {
@@ -4879,7 +5221,10 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
     wallHeightMm: number
   ): number {
     if (kind === 'door') return 0
-    const WINDOW_HEAD_RESERVE_MM = 300
+    // User-configurable lintel band (Material Library → Defaults →
+    // Openings). Undefined falls back to the 300mm residential default.
+    const WINDOW_HEAD_RESERVE_MM =
+      getUserSettings().defaults.windowHeadReserveMm ?? 300
     return Math.max(
       0,
       wallHeightMm - WINDOW_HEAD_RESERVE_MM - openingHeightMm
@@ -8791,7 +9136,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 </div>
                 <div>
                   <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">J</kbd>
-                  <span className="ml-2">Cut wall</span>
+                  <span className="ml-2">Control joint</span>
                 </div>
                 <div>
                   <kbd className="px-1.5 py-0.5 rounded border border-ink-600 bg-ink-900 text-ink-100 text-xs font-mono">P</kbd>
@@ -9330,7 +9675,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
             {(mode === 'block' || mode === 'brick') && (
               <LibraryGuidance
                 mode={mode === 'brick' ? 'brick' : 'block'}
-                actionLabel="Cut wall"
+                actionLabel="Control joint"
                 position="bottom"
               >
               <button
@@ -9354,12 +9699,12 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 }
                 title={
                   isReferenceView
-                    ? 'Reference PDFs are read-only - switch to the primary plan to split walls.'
+                    ? 'Reference PDFs are read-only - switch to the primary plan to add control joints.'
                     : !canDraw
                     ? drawBlockedReason ?? undefined
                     : currentPageWalls.length === 0
-                    ? 'Draw at least one wall before cutting.'
-                    : 'Click on a wall to cut it at that point (creates two independent walls with a sealant gap).'
+                    ? 'Draw at least one wall before adding a control joint.'
+                    : 'Click on a wall to place a control joint at that point (splits it into two walls with a sealant gap).'
                 }
                 className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   placingControlJoint
@@ -9367,7 +9712,55 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                     : 'bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed'
                 }`}
               >
-                {placingControlJoint ? 'Cancel cut' : '+ Cut wall'}
+                {placingControlJoint ? 'Cancel' : '+ Control joint'}
+              </button>
+              </LibraryGuidance>
+            )}
+            {/* Step - adds a height-change point on a wall. The wall stays
+                one continuous bonded wall; only the exposed step faces get
+                end blocks. Block + brick both expose the tool. */}
+            {(mode === 'block' || mode === 'brick') && (
+              <LibraryGuidance
+                mode={mode === 'brick' ? 'brick' : 'block'}
+                actionLabel="Step"
+                position="bottom"
+              >
+              <button
+                onClick={() => {
+                  setPlacingStep((v) => !v)
+                  setDrawingMode(false)
+                  setDrawingCurveMode(false)
+                  setPlacingOpening(false)
+                  setPlacingControlJoint(false)
+                  setPlacingTiedPier(false)
+                  setPlacingFreestandingPier(false)
+                  setSelectedWallId(null)
+                  setSelectedOpeningId(null)
+                  setSelectedPierId(null)
+                }}
+                disabled={
+                  !currentScale ||
+                  calibrating ||
+                  currentPageWalls.length === 0 ||
+                  isReferenceView ||
+                  !canDraw
+                }
+                title={
+                  isReferenceView
+                    ? 'Reference PDFs are read-only - switch to the primary plan to add steps.'
+                    : !canDraw
+                    ? drawBlockedReason ?? undefined
+                    : currentPageWalls.length === 0
+                    ? 'Draw at least one wall before adding a step.'
+                    : 'Click on a wall to add a height step at that point (the wall stays one continuous wall).'
+                }
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  placingStep
+                    ? 'bg-sky-700 text-white hover:bg-sky-800'
+                    : 'bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
+              >
+                {placingStep ? 'Cancel' : '+ Step'}
               </button>
               </LibraryGuidance>
             )}
@@ -10414,37 +10807,97 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                       {selMakeup?.name ?? 'Wall'}
                       <span className="text-ink-400 font-normal"> · {(lengthMm / 1000).toFixed(2)} m</span>
                     </div>
-                    <label className="flex items-center gap-1.5 text-xs">
-                      <span className="text-ink-300">Height</span>
-                      <LengthInput
-                        valueMm={Math.round(effectiveHeightMm)}
-                        onChangeMm={(mm) => {
-                          const next = Math.round(Math.max(200, mm))
-                          // Only stamp an override when the value differs
-                          // from the makeup default - otherwise clear it
-                          // so future makeup edits propagate.
-                          if (next === makeupHeightMm) {
-                            handleSetWallHeightOverride(selWall.id, undefined)
-                          } else {
-                            handleSetWallHeightOverride(selWall.id, next)
-                          }
-                        }}
-                        minMm={200}
-                        ariaLabel="Wall height override"
-                        className="text-xs"
-                      />
-                      {selWall.heightMmOverride !== undefined && (
-                        <button
-                          onClick={() =>
-                            handleSetWallHeightOverride(selWall.id, undefined)
-                          }
-                          className="text-[10px] text-ink-400 hover:text-ink-200 underline"
-                          title={`Reset to wall type default (${formatLengthMm(makeupHeightMm, userSettings.preferences.units)})`}
-                        >
-                          reset
-                        </button>
-                      )}
-                    </label>
+                    {selWall.heightSteps && selWall.heightSteps.length > 0 ? (
+                      (() => {
+                        // Edit the height of the SECTION the user clicked on
+                        // the plan (like selecting an individual wall). Click
+                        // another section to switch to it.
+                        const stepsArr = selWall
+                          .heightSteps!.slice()
+                          .sort((a, b) => a.alongMm - b.alongMm)
+                        const bounds = [0, ...stepsArr.map((s) => s.alongMm), lengthMm]
+                        const secCount = stepsArr.length + 1
+                        const selIdx =
+                          selectedStepSection?.wallId === selWall.id
+                            ? Math.min(selectedStepSection.sectionIndex, secCount - 1)
+                            : 0
+                        const isBase = selIdx === 0
+                        const h = isBase
+                          ? effectiveHeightMm
+                          : stepsArr[selIdx - 1].heightMm
+                        const fmtM = (mm: number) => (mm / 1000).toFixed(2)
+                        return (
+                          <div className="flex items-center gap-2 flex-wrap text-xs">
+                            <span className="text-ink-300">
+                              Section {selIdx + 1}/{secCount}
+                            </span>
+                            <span className="text-ink-500 text-[10px] tabular-nums">
+                              {fmtM(bounds[selIdx])}-{fmtM(bounds[selIdx + 1])}m
+                            </span>
+                            <LengthInput
+                              valueMm={Math.round(h)}
+                              onChangeMm={(mm) => {
+                                const next = Math.round(Math.max(200, mm))
+                                if (isBase) {
+                                  if (next === makeupHeightMm)
+                                    handleSetWallHeightOverride(selWall.id, undefined)
+                                  else handleSetWallHeightOverride(selWall.id, next)
+                                } else {
+                                  handleSetStepHeight(selWall.id, selIdx - 1, next)
+                                }
+                              }}
+                              minMm={200}
+                              ariaLabel={`Section ${selIdx + 1} height`}
+                              className="text-xs"
+                            />
+                            {!isBase && (
+                              <button
+                                onClick={() => handleRemoveStep(selWall.id, selIdx - 1)}
+                                className="text-ink-400 hover:text-rose-400 text-[11px] underline"
+                                title="Remove this step (merge the two sections)"
+                              >
+                                remove step
+                              </button>
+                            )}
+                            <span className="text-ink-500 text-[10px]">
+                              click a section on the plan to edit it
+                            </span>
+                          </div>
+                        )
+                      })()
+                    ) : (
+                      <label className="flex items-center gap-1.5 text-xs">
+                        <span className="text-ink-300">Height</span>
+                        <LengthInput
+                          valueMm={Math.round(effectiveHeightMm)}
+                          onChangeMm={(mm) => {
+                            const next = Math.round(Math.max(200, mm))
+                            // Only stamp an override when the value differs
+                            // from the makeup default - otherwise clear it
+                            // so future makeup edits propagate.
+                            if (next === makeupHeightMm) {
+                              handleSetWallHeightOverride(selWall.id, undefined)
+                            } else {
+                              handleSetWallHeightOverride(selWall.id, next)
+                            }
+                          }}
+                          minMm={200}
+                          ariaLabel="Wall height override"
+                          className="text-xs"
+                        />
+                        {selWall.heightMmOverride !== undefined && (
+                          <button
+                            onClick={() =>
+                              handleSetWallHeightOverride(selWall.id, undefined)
+                            }
+                            className="text-[10px] text-ink-400 hover:text-ink-200 underline"
+                            title={`Reset to wall type default (${formatLengthMm(makeupHeightMm, userSettings.preferences.units)})`}
+                          >
+                            reset
+                          </button>
+                        )}
+                      </label>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -10707,6 +11160,7 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   drawingCurveMode={drawingCurveMode}
                   placingOpening={placingOpening}
                   placingControlJoint={placingControlJoint}
+                  placingStep={placingStep}
                   placingTiedPier={placingTiedPier}
                   placingFreestandingPier={placingFreestandingPier}
                   placingRuler={placingRuler}
@@ -10736,10 +11190,16 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                   onWallAdded={handleWallAdded}
                   onCurvedWallAdded={handleCurvedWallAdded}
                   onWallSelect={handleWallSelect}
+                  onWallSectionSelect={handleWallSectionSelect}
                   onWallEndpointMoved={handleWallEndpointMoved}
                   onOpeningPlaced={handleOpeningPlaced}
                   onOpeningSelect={handleOpeningSelect}
                   onControlJointPlaced={handleControlJointPlaced}
+                  onStepPlaced={handleStepPlaced}
+                  selectedControlJoint={selectedControlJoint}
+                  onControlJointSelect={mobile ? undefined : handleControlJointSelect}
+                  selectedFreeEnd={selectedFreeEnd}
+                  onFreeEndSelect={mobile ? undefined : handleFreeEndSelect}
                   onTiedPierPlaced={handleTiedPierPlaced}
                   onFreestandingPierPlaced={handleFreestandingPierPlaced}
                   onPierSelect={handlePierSelect}
@@ -10754,6 +11214,299 @@ export default function PdfWorkspace({ mode: initialMode, projectId }: PdfWorksp
                 />
               )}
 
+
+              {/* Plan marker legend - small bottom-left button that opens a
+                  key for the canvas glyphs (corner, control joint, etc.). */}
+              <PlanLegend />
+
+              {/* Control-joint block editor - opens when a placed control
+                  joint is tapped on the plan. Writes to both sides of the
+                  seam (whole joint). Empty = use the Material Library default. */}
+              {!mobile && selectedControlJoint && (() => {
+                const aWall = currentPageWalls.find((w) => w.id === selectedControlJoint.wallId)
+                const j = aWall
+                  ? (selectedControlJoint.end === 'start' ? aWall.startJunction : aWall.endJunction)
+                  : null
+                if (!aWall || !j || j.type !== 'control-joint') return null
+                const labelFor = (code: string) => {
+                  const b = BLOCK_LIBRARY[code]
+                  return b ? `${code} - ${b.name}` : code
+                }
+                const sorted = Object.values(BLOCK_LIBRARY).sort((x, y) =>
+                  x.code.localeCompare(y.code)
+                )
+                // Only offer blocks that match THIS wall's thickness (its
+                // body block depth), so a 200-series wall doesn't list
+                // 300-series ends and vice versa. Falls back to all blocks
+                // when the wall's depth can't be resolved.
+                const wallMakeup = makeupsById[aWall.makeupId]
+                const wallDepthMm = wallMakeup
+                  ? BLOCK_LIBRARY[wallMakeup.bodyBlockCode]?.dimensions.depthMm
+                  : undefined
+                const matchesDepth = (b: (typeof sorted)[number]) =>
+                  wallDepthMm == null || b.dimensions.depthMm === wallDepthMm
+                const fullCodes = sorted
+                  .filter(
+                    (b) =>
+                      matchesDepth(b) &&
+                      (b.roles.includes('corner') ||
+                        (b.roles.includes('end-termination') && b.fraction !== 0.5))
+                  )
+                  .map((b) => b.code)
+                const halfCodes = sorted
+                  .filter(
+                    (b) =>
+                      matchesDepth(b) &&
+                      b.roles.includes('end-termination') &&
+                      b.fraction === 0.5
+                  )
+                  .map((b) => b.code)
+                // Keep an already-saved override visible even if its depth
+                // no longer matches (so the dropdown reflects the real value
+                // instead of silently blanking).
+                if (j.fullEndBlockCode && !fullCodes.includes(j.fullEndBlockCode)) {
+                  fullCodes.unshift(j.fullEndBlockCode)
+                }
+                if (j.halfEndBlockCode && !halfCodes.includes(j.halfEndBlockCode)) {
+                  halfCodes.unshift(j.halfEndBlockCode)
+                }
+                const hasOverride = !!(j.fullEndBlockCode || j.halfEndBlockCode)
+                // Portal to <body> so the backdrop + centring use the real
+                // viewport. Rendered inline it would sit inside the zoom /
+                // pan transformed plan layer, which traps position:fixed and
+                // made the dialog feel pinned to the canvas. Now it behaves
+                // like every other modal.
+                return createPortal(
+                  <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={() => setSelectedControlJoint(null)}
+                  >
+                    <div
+                      className="w-80 rounded-2xl border border-ink-200 bg-white p-5 shadow-2xl"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-semibold text-ink-50">Control joint blocks</span>
+                      <button
+                        onClick={() => setSelectedControlJoint(null)}
+                        className="text-ink-400 hover:text-ink-700 text-xl leading-none px-1"
+                        aria-label="Close"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <p className="text-xs text-ink-400 mb-3">
+                      Applies to both sides of this joint. Leave on the default to use your
+                      Material Library default.
+                    </p>
+                    <label className="block mb-3">
+                      <span className="block text-xs font-medium text-ink-500 mb-1">
+                        Full-end block
+                      </span>
+                      <select
+                        value={j.fullEndBlockCode ?? ''}
+                        onChange={(e) =>
+                          setControlJointBlocks({ fullEndBlockCode: e.target.value || undefined })
+                        }
+                        className="w-full px-2 py-1.5 border border-ink-300 rounded-lg text-sm bg-white"
+                      >
+                        <option value="">Use default</option>
+                        {fullCodes.map((c) => (
+                          <option key={c} value={c}>
+                            {labelFor(c)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block mb-3">
+                      <span className="block text-xs font-medium text-ink-500 mb-1">
+                        Half-end block
+                      </span>
+                      <select
+                        value={j.halfEndBlockCode ?? ''}
+                        onChange={(e) =>
+                          setControlJointBlocks({ halfEndBlockCode: e.target.value || undefined })
+                        }
+                        className="w-full px-2 py-1.5 border border-ink-300 rounded-lg text-sm bg-white"
+                      >
+                        <option value="">Use default</option>
+                        {halfCodes.map((c) => (
+                          <option key={c} value={c}>
+                            {labelFor(c)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        disabled={!hasOverride}
+                        onClick={() =>
+                          setControlJointBlocks({
+                            fullEndBlockCode: undefined,
+                            halfEndBlockCode: undefined,
+                          })
+                        }
+                        className="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium bg-ink-100 text-ink-700 hover:bg-ink-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Reset to default
+                      </button>
+                      <button
+                        onClick={handleControlJointRemove}
+                        className="flex-1 px-3 py-1.5 rounded-lg text-sm font-medium bg-rose-600 text-white hover:bg-rose-700"
+                        title="Remove this control joint and merge the wall back into one"
+                      >
+                        Remove joint
+                      </button>
+                    </div>
+                    </div>
+                  </div>,
+                  document.body
+                )
+              })()}
+
+              {/* Free-end block editor - opens when a free wall end is tapped
+                  on the plan. Writes the override to just that wall's end
+                  junction (free ends aren't shared). Empty = use the wall
+                  type's normal end blocks. */}
+              {!mobile && selectedFreeEnd && (() => {
+                const aWall = currentPageWalls.find((w) => w.id === selectedFreeEnd.wallId)
+                const j = aWall
+                  ? (selectedFreeEnd.end === 'start' ? aWall.startJunction : aWall.endJunction)
+                  : null
+                if (
+                  !aWall ||
+                  !j ||
+                  (j.type !== 'free' &&
+                    j.type !== 't-junction' &&
+                    j.type !== 'corner')
+                )
+                  return null
+                const isCornerEnd = j.type === 'corner'
+                const labelFor = (code: string) => {
+                  const b = BLOCK_LIBRARY[code]
+                  return b ? `${code} - ${b.name}` : code
+                }
+                const sorted = Object.values(BLOCK_LIBRARY).sort((x, y) =>
+                  x.code.localeCompare(y.code)
+                )
+                // Only offer blocks matching this wall's thickness (its body
+                // block depth), same as the control joint editor.
+                const wallMakeup = makeupsById[aWall.makeupId]
+                const wallDepthMm = wallMakeup
+                  ? BLOCK_LIBRARY[wallMakeup.bodyBlockCode]?.dimensions.depthMm
+                  : undefined
+                const matchesDepth = (b: (typeof sorted)[number]) =>
+                  wallDepthMm == null || b.dimensions.depthMm === wallDepthMm
+                const fullCodes = sorted
+                  .filter(
+                    (b) =>
+                      matchesDepth(b) &&
+                      (b.roles.includes('corner') ||
+                        (b.roles.includes('end-termination') && b.fraction !== 0.5))
+                  )
+                  .map((b) => b.code)
+                const halfCodes = sorted
+                  .filter(
+                    (b) =>
+                      matchesDepth(b) &&
+                      b.roles.includes('end-termination') &&
+                      b.fraction === 0.5
+                  )
+                  .map((b) => b.code)
+                if (j.fullEndBlockCode && !fullCodes.includes(j.fullEndBlockCode)) {
+                  fullCodes.unshift(j.fullEndBlockCode)
+                }
+                if (j.halfEndBlockCode && !halfCodes.includes(j.halfEndBlockCode)) {
+                  halfCodes.unshift(j.halfEndBlockCode)
+                }
+                const hasOverride = !!(j.fullEndBlockCode || j.halfEndBlockCode)
+                return createPortal(
+                  <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                    role="dialog"
+                    aria-modal="true"
+                    onClick={() => setSelectedFreeEnd(null)}
+                  >
+                    <div
+                      className="w-80 rounded-2xl border border-ink-200 bg-white p-5 shadow-2xl"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm font-semibold text-ink-50">
+                          {isCornerEnd ? 'Corner block' : 'End blocks'}
+                        </span>
+                        <button
+                          onClick={() => setSelectedFreeEnd(null)}
+                          className="text-ink-400 hover:text-ink-700 text-xl leading-none px-1"
+                          aria-label="Close"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <p className="text-xs text-ink-400 mb-3">
+                        {isCornerEnd
+                          ? "Sets the corner block for this corner. Leave on the default to use the wall type's corner block."
+                          : "Sets the end blocks for just this wall end. Leave on the default to use the wall type's normal end blocks."}
+                      </p>
+                      <label className="block mb-3">
+                        <span className="block text-xs font-medium text-ink-500 mb-1">
+                          {isCornerEnd ? 'Corner block' : 'Full-end block'}
+                        </span>
+                        <select
+                          value={j.fullEndBlockCode ?? ''}
+                          onChange={(e) =>
+                            setFreeEndBlocks({ fullEndBlockCode: e.target.value || undefined })
+                          }
+                          className="w-full px-2 py-1.5 border border-ink-300 rounded-lg text-sm bg-white"
+                        >
+                          <option value="">Use default</option>
+                          {fullCodes.map((c) => (
+                            <option key={c} value={c}>
+                              {labelFor(c)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {!isCornerEnd && (
+                        <label className="block mb-3">
+                          <span className="block text-xs font-medium text-ink-500 mb-1">
+                            Half-end block
+                          </span>
+                          <select
+                            value={j.halfEndBlockCode ?? ''}
+                            onChange={(e) =>
+                              setFreeEndBlocks({ halfEndBlockCode: e.target.value || undefined })
+                            }
+                            className="w-full px-2 py-1.5 border border-ink-300 rounded-lg text-sm bg-white"
+                          >
+                            <option value="">Use default</option>
+                            {halfCodes.map((c) => (
+                              <option key={c} value={c}>
+                                {labelFor(c)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      <button
+                        disabled={!hasOverride}
+                        onClick={() =>
+                          setFreeEndBlocks({
+                            fullEndBlockCode: undefined,
+                            halfEndBlockCode: undefined,
+                          })
+                        }
+                        className="w-full px-3 py-1.5 rounded-lg text-sm font-medium bg-ink-100 text-ink-700 hover:bg-ink-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Reset to default
+                      </button>
+                    </div>
+                  </div>,
+                  document.body
+                )
+              })()}
 
               {/* Calibration overlay - rendered AFTER WallDrawingLayer so it
                   sits on top of the Konva canvas. The Konva Stage has

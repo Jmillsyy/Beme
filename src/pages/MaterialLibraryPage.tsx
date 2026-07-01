@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import BlockLibraryPanel from '../components/BlockLibraryPanel'
+import EstimatingDefaultsForm from '../components/EstimatingDefaultsForm'
 import LengthInput from '../components/LengthInput'
 import { WallTypeTemplatesSection } from '../components/WallTypesPanel'
 import LibraryHealthBanner from '../components/LibraryHealthBanner'
@@ -10,6 +11,7 @@ import { useAuth } from '../lib/auth'
 import { confirm } from '../lib/confirm'
 import { toast } from '../lib/toast'
 import { useOrganisations, listOrgMembers } from '../lib/organisations'
+import { confirmLeavePendingEdits } from '../lib/pendingEdits'
 import { updateUserSettings, useUserSettings } from '../lib/userSettings'
 import {
   saveOrgSupplyItem,
@@ -61,7 +63,12 @@ export default function MaterialLibraryPage() {
     const tab = LIBRARY_TABS.find((t) => t.id === hash)
     return tab ? tab.id : 'blocks'
   }, [location.hash])
-  function setActiveTab(id: LibraryTabId) {
+  async function setActiveTab(id: LibraryTabId) {
+    if (id === activeTabId) return
+    // Guard a tab that holds an unsaved draft (the Defaults tab). The
+    // router blocker only catches pathname nav, not this hash switch,
+    // so prompt here before the editor unmounts.
+    if (!(await confirmLeavePendingEdits())) return
     // Replace (not push) so the back button doesn't have to undo every
     // tab toggle the user did while exploring.
     navigate({ hash: `#${id}` }, { replace: true })
@@ -176,7 +183,7 @@ export default function MaterialLibraryPage() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => void setActiveTab(tab.id)}
                 className={`relative text-left rounded-xl border p-4 transition-colors ${
                   isActive
                     ? 'border-beme-500 bg-beme-500/10 ring-2 ring-beme-500/30'
@@ -258,6 +265,15 @@ export default function MaterialLibraryPage() {
               <SupplyItemsEditor readOnly={readOnly} />
             </TabSection>
           )}
+
+          {activeTabId === 'defaults' && (
+            <TabSection
+              title="Defaults"
+              description="Starting values every new estimate inherits, plus which block fills each role when a wall type doesn't name one. Changes save as you make them."
+            >
+              <EstimatingDefaultsForm readOnly={readOnly} />
+            </TabSection>
+          )}
         </div>
       </div>
     </>
@@ -284,6 +300,7 @@ const LIBRARY_TABS = [
   { id: 'blocks' as const, label: 'Blocks', kindLabel: 'Catalogue' },
   { id: 'wall-types' as const, label: 'Wall types', kindLabel: 'Your builds' },
   { id: 'supply-items' as const, label: 'Supply items', kindLabel: 'Rates & extras' },
+  { id: 'defaults' as const, label: 'Defaults', kindLabel: 'Starting values' },
 ]
 type LibraryTabId = (typeof LIBRARY_TABS)[number]['id']
 

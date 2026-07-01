@@ -123,6 +123,30 @@ export interface EstimatingDefaults {
    * 0 (no bearing), so existing estimates are unchanged until set.
    */
   defaultLintelBearingMm?: number
+  /**
+   * Snap increment (mm) for opening placement. When a user drops a door
+   * / window, its start position AND width round to a multiple of this,
+   * so the reveals land on clean increments. 200mm lands reveals on
+   * block ends; 10mm (the historical default when unset) is effectively
+   * free placement. Bypassed by holding Shift while placing.
+   */
+  openingSnapMm?: number
+  /**
+   * Snap increment (mm) for control-joint placement, independent of the
+   * opening + wall-length grids. Set 200mm / 400mm to land control
+   * joints on block ends. Undefined → falls back to the wall-length
+   * snap (the historical behaviour). Steps keep using the wall grid.
+   * Bypassed by holding Shift while placing.
+   */
+  controlJointSnapMm?: number
+  /**
+   * Default gap (mm) from the TOP of a new window to the TOP of the
+   * wall - the lintel band a window head sits below. New windows derive
+   * their sill from this (sill = wallHeight − reserve − openingHeight).
+   * Per-opening edits still win. Undefined → 300mm (the historical
+   * residential default).
+   */
+  windowHeadReserveMm?: number
   /** Default brick type code - references a code in the user's BrickLibrary. */
   defaultBrickTypeCode: string
   /**
@@ -353,6 +377,10 @@ export interface DefaultsByRole {
   cornerLeadIn?: string
   /** Capping tile seeded onto new wall types ('' / undefined = no cap). */
   cap?: string
+  /** Full-end block placed at a control joint (e.g. a squint). */
+  controlJointFull?: string
+  /** Half-end block placed at a control joint. */
+  controlJointHalf?: string
 }
 
 export interface UserSettings {

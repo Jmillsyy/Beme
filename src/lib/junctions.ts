@@ -170,6 +170,45 @@ function freeEndCornerPoint(
  * target), OR when both walls' inset points coincide (when both ends were drawn with
  * the inset snap behaviour).
  */
+/**
+ * Unit direction from a wall's endpoint INTO the wall body (toward the
+ * other end). Null for curves or zero-length walls.
+ */
+function intoWallDir(wall: Wall, end: 'start' | 'end'): { x: number; y: number } | null {
+  if (isCurvedWall(wall)) return null
+  const jx = end === 'start' ? wall.startX : wall.endX
+  const jy = end === 'start' ? wall.startY : wall.endY
+  const ox = end === 'start' ? wall.endX : wall.startX
+  const oy = end === 'start' ? wall.endY : wall.startY
+  const dx = ox - jx
+  const dy = oy - jy
+  const len = Math.hypot(dx, dy)
+  if (len < 1e-6) return null
+  return { x: dx / len, y: dy / len }
+}
+
+/**
+ * True when two walls meeting at a shared endpoint run in (nearly) the
+ * same straight line - a continuation, not a real corner. Their into-wall
+ * directions come out antiparallel (straight through) or parallel
+ * (overlap); either way there is no meaningful turn, so forming a corner
+ * would drop a full corner block mid-run. Threshold ~15 degrees from
+ * straight, so genuine corners (and even shallow 45-degree bends) still
+ * count as corners.
+ */
+function jointIsCollinear(
+  wallA: Wall,
+  endA: 'start' | 'end',
+  wallB: Wall,
+  endB: 'start' | 'end'
+): boolean {
+  const a = intoWallDir(wallA, endA)
+  const b = intoWallDir(wallB, endB)
+  if (!a || !b) return false
+  const dot = a.x * b.x + a.y * b.y
+  return dot < -0.966 || dot > 0.966
+}
+
 function endpointsFormCorner(
   wallA: Wall,
   endA: 'start' | 'end',
@@ -184,8 +223,6 @@ function endpointsFormCorner(
     ? { x: wallB.startX, y: wallB.startY }
     : { x: wallB.endX, y: wallB.endY }
 
-  if (pointsMatch(aPoint, bPoint)) return true
-
   // halfThickness - matches the drawing layer's snap-target offset
   // exactly. WallDrawingLayer.tsx places the green corner-snap dot
   // halfThickness inset from each free end (the geometric outer-
@@ -196,10 +233,74 @@ function endpointsFormCorner(
   const aCornerPt = freeEndCornerPoint(wallA, endA, halfThicknessA)
   const bCornerPt = freeEndCornerPoint(wallB, endB, halfThicknessB)
 
-  if (pointsMatch(aPoint, bCornerPt)) return true
-  if (pointsMatch(bPoint, aCornerPt)) return true
-  if (pointsMatch(aCornerPt, bCornerPt)) return true
-  return false
+  // Coincidence makes a corner. A straight continuation also coincides,
+  // but those are fused into one wall upstream (mergeCollinearWalls), so by
+  // the time junctions are derived any remaining coincident endpoints are
+  // genuine corners.
+  return (
+    pointsMatch(aPoint, bPoint) ||
+    pointsMatch(aPoint, bCornerPt) ||
+    pointsMatch(bPoint, aCornerPt) ||
+    pointsMatch(aCornerPt, bCornerPt)
+  )
+}
+
+/**
+ * Fuse straight continuations into single walls. When a wall is drawn
+ * directly off the end of another (no turn), the two coincide at the seam
+ * but their block geometry overlaps (the second wall starts half a block
+ * inside the first). Rather than render an overlapping butt joint or a
+ * corner block mid-run, merge the pair into one continuous wall so the
+ * bond laps straight through.
+ *
+ * Only fuses pairs that are the same wall type + height, both straight,
+ * neither stepped, and meeting end-to-start in a near-straight line.
+ * Returns the new wall list plus a `merges` log so the caller can rebase
+ * the absorbed wall's openings (shifted by `offsetMm` along the survivor).
+ */
+export function mergeCollinearWalls(
+  walls: Wall[],
+  thicknessByWallId: Record<string, number>,
+): { walls: Wall[]; merges: Array<{ fromId: string; intoId: string; offsetMm: number }> } {
+  const result = walls.map((w) => ({ ...w }))
+  const merges: Array<{ fromId: string; intoId: string; offsetMm: number }> = []
+  let changed = true
+  while (changed) {
+    changed = false
+    for (let i = 0; i < result.length && !changed; i++) {
+      for (let j = 0; j < result.length && !changed; j++) {
+        if (i === j) continue
+        const a = result[i]
+        const b = result[j]
+        if (isCurvedWall(a) || isCurvedWall(b)) continue
+        if (a.makeupId !== b.makeupId) continue
+        if ((a.heightMmOverride ?? null) !== (b.heightMmOverride ?? null)) continue
+        if ((a.heightSteps?.length ?? 0) > 0 || (b.heightSteps?.length ?? 0) > 0) continue
+        // Only fuse a's END meeting b's START in a near-straight line. The
+        // double loop covers the reverse (b's END meeting a's START).
+        if (!endpointsFormCorner(a, 'end', b, 'start', thicknessByWallId)) continue
+        if (!jointIsCollinear(a, 'end', b, 'start')) continue
+        const offsetMm = Math.hypot(b.startX - a.startX, b.startY - a.startY)
+        const intoId = a.id
+        const fromId = b.id
+        // Extend a to b's far end, inheriting b's far junction.
+        result[i] = { ...a, endX: b.endX, endY: b.endY, endJunction: { ...b.endJunction } }
+        result.splice(j, 1)
+        // Repoint any wall that referenced the absorbed wall.
+        for (let k = 0; k < result.length; k++) {
+          const w = result[k]
+          const fix = (jn: WallJunction): WallJunction =>
+            jn.connectedWallIds?.includes(fromId)
+              ? { ...jn, connectedWallIds: jn.connectedWallIds.map((id) => (id === fromId ? intoId : id)) }
+              : jn
+          result[k] = { ...w, startJunction: fix(w.startJunction), endJunction: fix(w.endJunction) }
+        }
+        merges.push({ fromId, intoId, offsetMm })
+        changed = true
+      }
+    }
+  }
+  return { walls: result, merges }
 }
 
 /**

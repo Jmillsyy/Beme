@@ -339,6 +339,14 @@ export interface WallJunction {
   type: JunctionType
   /** IDs of the other walls involved in this junction (for corners/T-junctions). */
   connectedWallIds?: string[]
+  /**
+   * Per control-joint block overrides. When this junction is a control
+   * joint, these win over the settings control-joint default and the
+   * wall's normal end blocks. Set by tapping the joint on the 2D plan;
+   * undefined means "use the default". Applied to both sides of the seam.
+   */
+  fullEndBlockCode?: BlockCode
+  halfEndBlockCode?: BlockCode
 }
 
 /**
@@ -403,6 +411,22 @@ export interface Wall {
   endJunction: WallJunction
   /** Optional per-wall height override (mm), otherwise inherits from makeup. */
   heightMmOverride?: number
+  /**
+   * Stepped wall height: ordered points where the wall's height changes
+   * along its length, measured in mm from the start. Each entry sets the
+   * height from `alongMm` onward until the next entry (or the wall end).
+   * The section before the first entry uses the wall's base height
+   * (`heightMmOverride` ?? makeup height).
+   *
+   * The wall stays ONE continuous bonded wall: courses that span a step
+   * run straight through with no termination joint. Only the upper courses
+   * that stop at a step get an end (termination) block on the exposed
+   * vertical face, alternating full / half by course like a free end.
+   *
+   * Undefined / empty → uniform height (the existing behaviour).
+   */
+  heightSteps?: Array<{ alongMm: number; heightMm: number }>
+
   /**
    * Wall geometry kind. Defaults to 'straight' if missing (so old saved data still loads).
    * 'curved' walls additionally have midX/midY defining a point on the arc between

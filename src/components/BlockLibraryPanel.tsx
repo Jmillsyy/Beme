@@ -45,6 +45,8 @@ const ROLE_OPTIONS: { value: BlockRole; label: string }[] = [
   { value: 'body', label: 'Body (main course)' },
   { value: 'end-termination', label: 'End termination' },
   { value: 'corner', label: 'Corner' },
+  { value: 'control-joint-full', label: 'Control joint - full end' },
+  { value: 'control-joint-half', label: 'Control joint - half end' },
   { value: 'fraction', label: 'Fraction (length makeup)' },
   { value: 'height-makeup', label: 'Height makeup' },
   { value: 'base-course', label: 'Base course' },

@@ -28,6 +28,8 @@ import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import {
   BLOCK_LIBRARY,
   pickCornerBlock,
+  pickControlJointFull,
+  pickControlJointHalf,
   pickCurveWedge,
   pickFractionBlocks,
   pickHalfBlock,
@@ -1303,6 +1305,12 @@ export function calculateWallTally(
     return calculateCurvedWallTally(wall, makeup)
   }
 
+  // Stepped walls (variable height in one continuous run) get their own
+  // tally - the bond runs through and only exposed step faces terminate.
+  if (wall.heightSteps && wall.heightSteps.length > 0) {
+    return calculateSteppedWallTally(wall, makeup, thicknessByWallId, wallsById)
+  }
+
   if (openings.length > 0) {
     return enumeratedStraightWallTally(
       wall,
@@ -1339,6 +1347,134 @@ export function calculateWallTally(
     }
   }
 
+  return tally
+}
+
+/**
+ * Tally a STEPPED wall - one continuous wall whose height changes along
+ * its length (`wall.heightSteps`). The bond runs straight through, so the
+ * courses that span a step are body blocks (no termination joint); only
+ * the upper courses that stop at a step face get an end (termination)
+ * block, alternating full / half by course exactly like a free end.
+ *
+ * v1 scope: no shared-corner dedup (every exposed run end counts a full
+ * end column), each section's top course counts as a body course rather
+ * than the bond-beam top, height-makeup courses count as body, and
+ * openings on a stepped wall are not deducted. Accurate for typical
+ * free-standing stepped walls (retaining / boundary walls on a slope).
+ */
+function calculateSteppedWallTally(
+  wall: Wall,
+  makeup: WallMakeup,
+  thicknessByWallId?: Record<string, number>,
+  wallsById?: Record<string, Wall>,
+): BlockTally {
+  const tally: BlockTally = {}
+  const steps = (wall.heightSteps ?? [])
+    .slice()
+    .sort((a, b) => a.alongMm - b.alongMm)
+  const wallLen = wallLengthMm(wall, thicknessByWallId, wallsById)
+  if (steps.length === 0 || wallLen <= 0) {
+    return calculateWallTally(wall, makeup, [], thicknessByWallId, wallsById)
+  }
+  const baseHeight = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
+
+  // Body-aware course module so course counts match the rest of the engine.
+  const bodyDef = BLOCK_LIBRARY[makeup.bodyBlockCode]
+  const bodyHeightMm = bodyDef?.dimensions.heightMm
+  const courseModule =
+    typeof bodyHeightMm === 'number' ? bodyHeightMm + MORTAR_MM : undefined
+  const bodyWidthMm = bodyDef?.dimensions.widthMm ?? 390
+  const bodyModule = bodyWidthMm + MORTAR_MM
+  const bodyDepthMm = bodyDef?.dimensions.depthMm
+  const { hm71ModuleMm, hm140ModuleMm } = resolveHmModules(makeup)
+  const courseCountFor = (h: number): number =>
+    calculateCourseStack(h, courseModule, hm140ModuleMm, hm71ModuleMm).totalCourses
+
+  // Segment boundaries + heights. The section before the first step uses
+  // the base height; each step sets the height from its `alongMm` onward.
+  const xs: number[] = [0]
+  const hs: number[] = [baseHeight]
+  for (const s of steps) {
+    const a = Math.min(Math.max(s.alongMm, 0), wallLen)
+    if (a <= xs[xs.length - 1] + 0.5) {
+      hs[hs.length - 1] = s.heightMm
+      continue
+    }
+    xs.push(a)
+    hs.push(s.heightMm)
+  }
+  xs.push(wallLen)
+  const segments: Array<{ start: number; end: number; courses: number }> = []
+  for (let i = 0; i < xs.length - 1; i++) {
+    const len = xs[i + 1] - xs[i]
+    if (len <= 0.5) continue
+    segments.push({ start: xs[i], end: xs[i + 1], courses: courseCountFor(hs[i]) })
+  }
+  if (segments.length === 0) return tally
+  const maxCourses = Math.max(...segments.map((s) => s.courses))
+  if (maxCourses <= 0) return tally
+
+  // Block-per-course composition from the tallest section (fixed pattern
+  // stripped so the height, not the pattern, drives the stack length).
+  const tallestHeight = Math.max(baseHeight, ...steps.map((s) => s.heightMm))
+  const stackMakeup = makeup.coursePattern?.length
+    ? { ...makeup, coursePattern: undefined }
+    : makeup
+  const courseSpecs = buildCourses(
+    calculateCourseStack(tallestHeight, courseModule, hm140ModuleMm, hm71ModuleMm),
+    stackMakeup,
+  )
+  const isStack = makeup.bondType === 'stack'
+  const useFractions = makeup.useFractions !== false
+  const widthOf = (code: BlockCode): number =>
+    (BLOCK_LIBRARY[code]?.dimensions.widthMm ?? bodyWidthMm) + MORTAR_MM
+
+  for (let c = 1; c <= maxCourses; c++) {
+    const resolved = resolveCourseBlocks(makeup, c)
+    const oddCourse = c % 2 === 1
+    const fullEnd = healCode(resolved.cornerBlockCode, 'corner')
+    const halfEnd = healCode(resolved.halfBlockCode, 'end-termination')
+    // Stretcher alternates full (odd) / half (even); stack is full every course.
+    const endCode = isStack || oddCourse ? fullEnd : halfEnd
+    const endModular = widthOf(endCode)
+    const bodyCode = courseSpecs[c - 1]?.bodyBlock ?? resolved.bodyBlockCode
+    const bodyCodeDef = BLOCK_LIBRARY[bodyCode]
+
+    // Walk sections left to right, emitting one course-row per contiguous
+    // run of sections tall enough for this course. Each run has two exposed
+    // ends (a real wall end or a step face), both the same parity.
+    let runStart: number | null = null
+    let runEnd = 0
+    const flushRun = () => {
+      if (runStart === null) return
+      const runLen = runEnd - runStart
+      runStart = null
+      if (runLen <= 0.5) return
+      const fit = fitCourseLength(runLen, endModular * 2, useFractions, bodyDepthMm, bodyModule)
+      addToTally(tally, endCode, 2)
+      if (fit.bodyCount > 0) {
+        addToTally(tally, bodyCode, fit.bodyCount)
+        if (bodyCodeDef?.pairedWith) {
+          addToTally(
+            tally,
+            bodyCodeDef.pairedWith,
+            Math.ceil(fit.bodyCount / (bodyCodeDef.pairedPer ?? 1)),
+          )
+        }
+      }
+      for (const f of fit.fractions) addToTally(tally, f, 1)
+    }
+    for (const seg of segments) {
+      if (seg.courses >= c) {
+        if (runStart === null) runStart = seg.start
+        runEnd = seg.end
+      } else {
+        flushRun()
+      }
+    }
+    flushRun()
+  }
   return tally
 }
 
@@ -1928,7 +2064,16 @@ export function planWallLayout(
     hm71Module,
   )
   const plan = planWall(wall, makeup, thicknessByWallId, wallsById)
-  const courses = buildCourses(stack, makeup)
+  // A per-wall height override must change the course COUNT even when the
+  // wall type carries a fixed coursePattern - otherwise the override is
+  // silently ignored (buildCourses voids the height-derived stack when a
+  // pattern is set). Strip the pattern so the stack derives from the
+  // override height; the makeup's block roles still drive which blocks emit.
+  const stackMakeup =
+    typeof wall.heightMmOverride === 'number' && makeup.coursePattern?.length
+      ? { ...makeup, coursePattern: undefined }
+      : makeup
+  const courses = buildCourses(stack, stackMakeup)
   const lengthMm = wallLengthMm(wall, thicknessByWallId, wallsById)
 
   // Resolve a block's face width from the library, falling back to
@@ -2031,6 +2176,12 @@ export function planWallLayout(
   // ends.
   const wallLenForRefit = lengthMm
 
+  // Control-joint termination blocks come from the Material Library role
+  // tags (control-joint-full / control-joint-half). Undefined when nothing
+  // is tagged, so control joints fall back to the wall's normal end blocks.
+  const cjFullDefault: BlockCode | undefined = pickControlJointFull()?.code
+  const cjHalfDefault: BlockCode | undefined = pickControlJointHalf()?.code
+
   for (let i = 0; i < courses.length; i++) {
     const courseSpec = courses[i]
     const courseNumber = i + 1
@@ -2046,15 +2197,41 @@ export function planWallLayout(
     const resolveEndForCourse = (
       junctionType: JunctionType,
       cNum: number,
-      odd: boolean
+      odd: boolean,
+      overrideFull?: BlockCode,
+      overrideHalf?: BlockCode
     ): BlockCode => {
       const blocks = resolveCourseBlocks(makeup, cNum)
       if (makeup.bondType === 'stretcher' && junctionType !== 'corner') {
+        // Any non-corner end (free, T-junction, control joint) can carry
+        // its own termination blocks, set by tapping the end on the 2D
+        // plan. Precedence: this end's own override → (control joints only)
+        // the Material Library control-joint role default → the wall's
+        // normal end blocks. Full on odd courses, half on even.
+        const roleFull =
+          junctionType === 'control-joint' ? cjFullDefault : undefined
+        const roleHalf =
+          junctionType === 'control-joint' ? cjHalfDefault : undefined
+        const full =
+          overrideFull && BLOCK_LIBRARY[overrideFull]
+            ? overrideFull
+            : roleFull ?? blocks.cornerBlockCode
+        const half =
+          overrideHalf && BLOCK_LIBRARY[overrideHalf]
+            ? overrideHalf
+            : roleHalf ?? blocks.halfBlockCode
         return odd
-          ? healCode(blocks.cornerBlockCode, 'corner')
-          : healCode(blocks.halfBlockCode, 'end-termination')
+          ? healCode(full, 'corner')
+          : healCode(half, 'end-termination')
       }
-      return healCode(blocks.cornerBlockCode, 'corner')
+      // Corner (full block every course). A per-corner override set on the
+      // plan wins over the wall type's corner block.
+      return healCode(
+        overrideFull && BLOCK_LIBRARY[overrideFull]
+          ? overrideFull
+          : blocks.cornerBlockCode,
+        'corner'
+      )
     }
     // Rule 4 (running bond): apply whichever side planWall flipped to
     // commit the inversion. Exactly one of the two flags can be true,
@@ -2063,10 +2240,22 @@ export function planWallLayout(
     const endParityOdd = plan.endParityInverted ? !isOddCourse : isOddCourse
     const startBlock: BlockCode = plan.noEndBlocks
       ? (isOddCourse ? plan.startEnd.oddBlock : plan.startEnd.evenBlock)
-      : resolveEndForCourse(wall.startJunction.type, courseNumber, startParityOdd)
+      : resolveEndForCourse(
+          wall.startJunction.type,
+          courseNumber,
+          startParityOdd,
+          wall.startJunction.fullEndBlockCode,
+          wall.startJunction.halfEndBlockCode
+        )
     const endBlock: BlockCode = plan.noEndBlocks
       ? (isOddCourse ? plan.endEnd.oddBlock : plan.endEnd.evenBlock)
-      : resolveEndForCourse(wall.endJunction.type, courseNumber, endParityOdd)
+      : resolveEndForCourse(
+          wall.endJunction.type,
+          courseNumber,
+          endParityOdd,
+          wall.endJunction.fullEndBlockCode,
+          wall.endJunction.halfEndBlockCode
+        )
 
     let leadInCode: BlockCode | undefined
     let startLeadInCount = 0

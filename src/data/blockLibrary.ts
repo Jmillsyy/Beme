@@ -951,10 +951,9 @@ export function pickHalfBlockIn(
   library: Record<BlockCode, Block>,
   opts: ResolveByRoleOptions = {}
 ): Block | undefined {
-  // Step 1: explicit user default for 'half' (mapped from end-termination
-  // → half in the role-default map).
+  // Step 1: library role-tag scan for an end-termination block.
   const fromDefault = resolveBlockByRole('end-termination', library, opts)
-  // Only accept the default if it actually matches the half-block contract.
+  // Only accept the tag pick if it matches the half-block contract.
   if (fromDefault && fromDefault.fraction === 0.5) return fromDefault
   // Step 2: library tag scan with the original 0.5 constraint.
   return Object.values(library).find(
@@ -963,6 +962,19 @@ export function pickHalfBlockIn(
 }
 export function pickHalfBlock(opts: ResolveByRoleOptions = {}): Block | undefined {
   return pickHalfBlockIn(BLOCK_LIBRARY, opts)
+}
+
+/**
+ * Control-joint termination blocks. The library tags which block plays the
+ * full-end / half-end role at a control joint; the calc falls back to the
+ * wall's normal corner / half when nothing is tagged. Lives in the library
+ * (not Settings) so it travels with the catalogue, like every other role.
+ */
+export function pickControlJointFull(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return resolveBlockByRole('control-joint-full', BLOCK_LIBRARY, opts) ?? undefined
+}
+export function pickControlJointHalf(opts: ResolveByRoleOptions = {}): Block | undefined {
+  return resolveBlockByRole('control-joint-half', BLOCK_LIBRARY, opts) ?? undefined
 }
 
 /**

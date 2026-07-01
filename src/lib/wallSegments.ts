@@ -6,7 +6,7 @@
  * renderer draws is the same list the tally counts. Pure functions, no
  * Three.js / React dependencies.
  */
-import type { Wall, Opening, WallMakeup, CourseBand } from '../types/walls'
+import type { Wall, Opening, WallMakeup, CourseBand, BlockTally } from '../types/walls'
 import type { Block, BlockCode } from '../types/blocks'
 import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import { isCurvedWall } from './curveGeom'
@@ -19,6 +19,7 @@ import { pickDepthScopedSlotBlockIn } from '../data/blockLibrary'
 import { selectBlockLintel } from './lintels'
 import { getUserSettings } from './userSettings'
 import { outerEdgeEndpoints } from './wallGeom'
+import { isWallEndHardAgainstCorner } from './openingCorner'
 import type { CornerOwnership } from './blockCalc'
 import { ROLE_COLORS } from './roleColors'
 
@@ -172,7 +173,10 @@ export function resolveWallCourses(
   // Clone with override so band counts size to the wall's actual height.
   const scopedMakeup: WallMakeup =
     typeof wall.heightMmOverride === 'number'
-      ? { ...makeup, heightMm: wall.heightMmOverride }
+      ? // Strip the fixed coursePattern when a per-wall height override is
+        // set so the course count derives from the override height instead
+        // of being pinned to the makeup's pattern.
+        { ...makeup, heightMm: wall.heightMmOverride, coursePattern: undefined }
       : makeup
   // Band source priority:
   // 1. makeup.coursePattern (user-defined band stack) - authoritative
@@ -338,17 +342,14 @@ export function resolveWallCourses(
   // (no clean fit) would render at the closest stack - 2346 or 2448
   // depending on the picker - and the user would type 2400 and see
   // something else.
-  const naturalFaceM = drafts.reduce((s, d) => s + d.faceHeightM, 0)
-  const jointCount = Math.max(0, drafts.length - 1)
-  const naturalJointM = jointCount * (DEFAULT_MORTAR_JOINT_MM / 1000)
-  const naturalTotalM = naturalFaceM + naturalJointM
-  const targetTotalM = heightMm / 1000
-  const standardJointM = DEFAULT_MORTAR_JOINT_MM / 1000
-  const minJointM = 0.002
-  const adjustedJointM =
-    jointCount > 0
-      ? Math.max(minJointM, standardJointM + (targetTotalM - naturalTotalM) / jointCount)
-      : standardJointM
+  // Mortar joint: render every bed joint at exactly the configured
+  // DEFAULT_MORTAR_JOINT_MM (10mm). We deliberately DON'T stretch the
+  // joint to land on the user's typed height any more - stretching made
+  // the joint vary from wall to wall (and from stepped band to band), so
+  // joints looked uneven and didn't line up at corners. With a fixed
+  // joint the wall lands on its natural whole-course height instead; a
+  // future bounded-stretch setting can reclaim the small remainder.
+  const adjustedJointM = DEFAULT_MORTAR_JOINT_MM / 1000
   let y = 0
   for (let i = 0; i < drafts.length; i++) {
     const d = drafts[i]
@@ -457,6 +458,34 @@ export interface WallSegmentBox {
    * unset, in which case the renderer falls back to `bandColor(code)`
    * for that specific box. */
   role?: 'body' | 'corner' | 'half' | 'base' | 'top' | 'cap'
+}
+
+/**
+ * Count the blocks the 3D renderer actually draws for a wall, by code -
+ * the first step toward a single source of truth. Instead of the estimate
+ * computing the masonry a second time, it can count THIS list (the exact
+ * positioned blocks the 3D draws), so the picture and the estimate can
+ * never disagree.
+ *
+ * Paired tiles (e.g. a cleanout TILE that rides hidden inside its cleanout
+ * BLOCK) aren't drawn as their own box, so add one per host here to match
+ * the physical order. Render-only geometry (mortar fill, corner-cube
+ * fillers) carries no `code` and is skipped.
+ */
+export function tallyFromRenderBoxes(
+  boxes: WallSegmentBox[],
+  library: Record<string, Block>,
+): BlockTally {
+  const tally: BlockTally = {}
+  for (const b of boxes) {
+    if (!b.code) continue
+    tally[b.code] = (tally[b.code] ?? 0) + 1
+  }
+  for (const code of Object.keys(tally)) {
+    const paired = library[code]?.pairedWith
+    if (paired) tally[paired] = (tally[paired] ?? 0) + (tally[code] ?? 0)
+  }
+  return tally
 }
 
 /**
@@ -647,7 +676,15 @@ export function segmentsForStraightWall(
     courseNumber?: number,
     role?: WallSegmentBox['role'],
   ): WallSegmentBox => {
-    const halfGap = MORTAR_GAP_M / 2
+    // Block walls (gridMortarM > 0) already step the cell grid at the
+    // true modular pitch, so consecutive block faces sit a full mortar
+    // joint apart in the layout. Insetting again would DOUBLE the joint
+    // (10mm grid gap + 6mm inset = ~16mm), which is the over-thick,
+    // uneven mortar the wall showed. So for block walls the inset is
+    // zero and the grid gap IS the 10mm joint. Brick walls tile their
+    // cells edge-to-edge (gridMortarM === 0) and still rely on the inset
+    // to open their joint, so they keep the original half-gap.
+    const halfGap = gridMortarM > 0 ? 0 : MORTAR_GAP_M / 2
     // Clamp to effective wall extent (= wall length minus any control-
     // joint sealant gap), so blocks at a control-joint end render
     // inset by SEALANT_GAP_M.
@@ -982,6 +1019,29 @@ export function segmentsForStraightWall(
     if (bondType === 'stack') return phase === 'lead-odd'
     return phase === 'lead-odd' ? courseNum % 2 === 1 : courseNum % 2 === 0
   }
+
+  // Opening hard against a corner end: the corner block on this wall's side
+  // of the corner reads as a half-end termination (the opening jamb sits
+  // right against it). We KEEP the corner ownership, geometry and bond
+  // exactly as-is - this only flips the END-block ROLE to 'half' so it
+  // renders as a half (green) instead of a full corner (red), which is the
+  // alternation the user expects there. endKind is colour-only, so the bond
+  // is untouched.
+  const wallOpeningSpans = openings
+    .filter((o) => o.wallId === wall.id)
+    .map((o) => ({ startAlongWallMm: o.startAlongWallMm, widthMm: o.widthMm }))
+  const hardStartCorner = isWallEndHardAgainstCorner(
+    wall,
+    'start',
+    wallOpeningSpans,
+    wallThicknessByWallId,
+  )
+  const hardEndCorner = isWallEndHardAgainstCorner(
+    wall,
+    'end',
+    wallOpeningSpans,
+    wallThicknessByWallId,
+  )
 
   // ── Phase 1: build empty grid (per course: END + BODY cells + END) ──
   const grid: CourseEntry[] = courses.map((course) => {
@@ -1833,6 +1893,25 @@ export function segmentsForStraightWall(
   for (const { course, cells } of grid) {
     for (const cell of cells) {
       if (cell.role === 'REMOVED') continue
+      // An opening jammed against a corner cuts that corner block down to a
+      // half's width. Where that has happened - a CORNER end cell now no
+      // wider than a half block - the block IS a half termination, so relabel
+      // it (code + role). Full-width corner blocks (below / above the
+      // opening, or the wall's other end) are left as corners. Geometry is
+      // untouched, so the bond is unchanged and the parity holds.
+      if (
+        (cell.role === 'END' || cell.role === 'JAMB') &&
+        cell.endKind === 'corner'
+      ) {
+        const atStart = cell.s0 < 0.02 && hardStartCorner
+        const atEnd = cell.s1 > length - 0.02 && hardEndCorner
+        const halfWM =
+          widthOf(course.halfCode, library, FALLBACK_HALF_WIDTH_MM) / 1000
+        if ((atStart || atEnd) && cell.s1 - cell.s0 <= halfWM + 0.05) {
+          cell.endKind = 'half'
+          cell.code = course.halfCode
+        }
+      }
       const { role, color } = roleForCell(cell, course)
       // Partial-overlap openings crossing this cell's x-range.
       const partials = wallOpenings.filter(

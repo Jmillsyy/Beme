@@ -38,12 +38,35 @@
  * the calc engine wants to scope to.
  */
 import type { Block, BlockCode, BlockRole } from '../types/blocks'
-import type { UserSettings } from '../types/userSettings'
+import type { DefaultsByRole, UserSettings } from '../types/userSettings'
+import { getUserSettings } from './userSettings'
 
 export interface ResolveByRoleOptions {
   /** Optional user settings - read `defaultsByRole` from here when
-   * provided, otherwise the helper relies solely on library tags. */
+   * provided. When omitted the helper reads the live settings
+   * singleton, so the user's per-role default block applies even at
+   * the convenience `pickX()` call sites that pass nothing. */
   settings?: Pick<UserSettings, 'defaultsByRole'>
+}
+
+/**
+ * Maps a functional BlockRole to its DefaultsByRole key. Only roles the
+ * user can pin a preferred block for appear here; roles without a key
+ * (fraction, height-makeup, legacy) resolve by library tag alone.
+ */
+const ROLE_TO_DEFAULT_KEY: Partial<Record<BlockRole, keyof DefaultsByRole>> = {
+  body: 'body',
+  corner: 'corner',
+  'end-termination': 'half',
+  'base-course': 'base',
+  'top-course': 'top',
+  cap: 'cap',
+  pier: 'pier',
+  lintel: 'lintel',
+  'curve-tight': 'curveWedge',
+  'corner-lead-in': 'cornerLeadIn',
+  'control-joint-full': 'controlJointFull',
+  'control-joint-half': 'controlJointHalf',
 }
 
 /**
@@ -56,18 +79,39 @@ export interface ResolveByRoleOptions {
 export function resolveBlockByRole(
   role: BlockRole,
   library: Record<BlockCode, Block>,
-  // Settings plumbing kept for call-site compatibility but no longer
-  // read - the per-user role override was removed (library tag only).
-  _opts: ResolveByRoleOptions = {}
+  opts: ResolveByRoleOptions = {}
 ): Block | null {
-  // The library's role tag is the single source of truth for a role's
-  // default block - there's no per-user override. A US / UK / custom
-  // library brings its own tagged blocks, so this stays region-correct.
+  // Step 1: the user's per-role preferred block (Material Library →
+  // Defaults). When they've pinned "this is my body block", that wins -
+  // as long as the code still exists in the library being scoped to.
+  const key = ROLE_TO_DEFAULT_KEY[role]
+  if (key) {
+    const settings = opts.settings ?? readSettingsSafely()
+    const preferred = settings?.defaultsByRole?.[key]
+    if (preferred && library[preferred]) return library[preferred]
+  }
+
+  // Step 2: library role-tag fallback. A US / UK / custom library brings
+  // its own tagged blocks, so this stays region-correct when nothing is
+  // pinned.
   for (const block of Object.values(library)) {
     if (block.roles.includes(role)) return block
   }
 
   return null
+}
+
+/**
+ * Read the live settings singleton without throwing if it isn't ready
+ * (e.g. very early module init). Returns undefined on any failure so
+ * resolution falls through to the library-tag path.
+ */
+function readSettingsSafely(): Pick<UserSettings, 'defaultsByRole'> | undefined {
+  try {
+    return getUserSettings()
+  } catch {
+    return undefined
+  }
 }
 
 /**

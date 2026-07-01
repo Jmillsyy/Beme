@@ -96,10 +96,10 @@ export default function LeftNav({
         ) : (
           <div className="flex items-center gap-3">
             <span className="text-beme-500 group-hover:text-beme-400 transition-colors inline-block">
-              <BemeMark size={62} />
+              <BemeMark size={48} />
             </span>
             <div className="leading-tight min-w-0">
-              <div className="text-[34px] font-bold uppercase tracking-wide text-ink-50 leading-none">
+              <div className="text-[26px] font-bold uppercase tracking-wide text-ink-50 leading-none">
                 Beme
               </div>
             </div>

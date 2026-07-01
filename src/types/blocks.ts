@@ -64,6 +64,8 @@ export type BlockRole =
   | 'top-course' // top course (e.g. bond beam)
   | 'cap' // capping tile that sits on top of the wall (e.g. 40mm tile across the top)
   | 'corner' // at a wall corner
+  | 'control-joint-full' // full-end block placed at a control joint (e.g. squint)
+  | 'control-joint-half' // half-end block placed at a control joint
   | 'pier' // tied or freestanding pier
   | 'lintel' // over an opening
   | 'curve-tight' // for tight-radius curved walls

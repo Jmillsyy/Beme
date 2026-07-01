@@ -12,13 +12,9 @@ import { useUnsavedChangesPrompt } from '../lib/useUnsavedChangesPrompt'
 import { signOut, updateEmail, updatePassword, useAuth } from '../lib/auth'
 import { isSupabaseConfigured } from '../lib/supabase'
 import { resetBlockLibrary, useBlockLibrary } from '../data/blockLibrary'
-import LengthInput from '../components/LengthInput'
-import { formatLengthMm } from '../lib/units'
 import { resetBrickLibrary, useBrickLibrary } from '../data/brickLibrary'
 import { getLibraryTemplate } from '../data/libraryTemplates'
-import { computeAutoWallLengthSnapMm } from '../lib/wallLengthSnap'
 import { PALETTE_LABELS, type PaletteName } from '../lib/blockColors'
-import { DEFAULT_MORTAR_JOINT_MM } from '../types/blocks'
 import RegionPicker from '../components/RegionPicker'
 import {
   updateOrganisationLogo,
@@ -43,7 +39,6 @@ import { orgRoleLabel } from '../types/organisations'
 import type {
   BusinessProfile,
   DateFormat,
-  EstimatingDefaults,
   UserPreferences,
   UserProfile,
   UserSettings,
@@ -74,7 +69,6 @@ const TABS: Tab[] = [
     showWhen: ({ hasOrg }) => hasOrg,
   },
   { key: 'preferences', label: 'Preferences', description: 'Units, date, theme, library template' },
-  { key: 'defaults', label: 'Defaults', description: 'Starting values for new estimates' },
   {
     key: 'organisation',
     label: 'Organisation',
@@ -169,13 +163,6 @@ export default function SettingsPage() {
     (p: Partial<UserPreferences>) => {
       userEditedRef.current = true
       setDraft((d) => ({ ...d, preferences: { ...d.preferences, ...p } }))
-    },
-    []
-  )
-  const setDefaults = useCallback(
-    (p: Partial<EstimatingDefaults>) => {
-      userEditedRef.current = true
-      setDraft((d) => ({ ...d, defaults: { ...d.defaults, ...p } }))
     },
     []
   )
@@ -315,9 +302,6 @@ export default function SettingsPage() {
             )}
             {activeTab === 'preferences' && (
               <PreferencesTab preferences={draft.preferences} set={setPreferences} />
-            )}
-            {activeTab === 'defaults' && (
-              <DefaultsTab defaults={draft.defaults} set={setDefaults} />
             )}
             {activeTab === 'organisation' && <OrganisationTab />}
             {activeTab === 'account' && <AccountTab />}
@@ -890,238 +874,6 @@ export function Toggle({
         {hint && <div className="text-xs text-ink-400 mt-0.5">{hint}</div>}
       </div>
     </label>
-  )
-}
-
-// ─── Defaults ─────────────────────────────────────────────────────────────
-
-function DefaultsTab({
-  defaults,
-  set,
-}: {
-  defaults: EstimatingDefaults
-  set: (p: Partial<EstimatingDefaults>) => void
-}) {
-  // User's units pref drives the labels + hints below. Reads the live
-  // (saved) settings - not the draft from the edit form - so the
-  // measurements format the same way they do everywhere else in the
-  // app.
-  const { settings: liveSettings } = useUserSettings()
-  const unitsPref = liveSettings.preferences.units
-  // Block library - used by the auto wall-length-snap value below.
-  const { library: blockLibrary } = useBlockLibrary()
-
-  return (
-    <div className="space-y-6">
-      <PanelCard
-        title="Wall basics"
-        description="Applied to every new wall makeup you create in a project."
-      >
-        <FieldGroup>
-          <Field label="Default wall height">
-            <LengthInput
-              valueMm={defaults.defaultWallHeightMm}
-              onChangeMm={(v) => set({ defaultWallHeightMm: v })}
-              minMm={200}
-            />
-          </Field>
-          <Field label="Default bond type">
-            <Select<'stretcher' | 'stack'>
-              value={defaults.defaultBondType}
-              onChange={(v) => set({ defaultBondType: v })}
-              options={[
-                { value: 'stretcher', label: 'Stretcher bond (half-block stagger)' },
-                { value: 'stack', label: 'Stack bond (no stagger)' },
-              ]}
-            />
-          </Field>
-          <Field label="Default mortar joint">
-            <LengthInput
-              valueMm={defaults.defaultMortarJointMm}
-              onChangeMm={(v) => set({ defaultMortarJointMm: v })}
-              minMm={0}
-            />
-          </Field>
-        </FieldGroup>
-      </PanelCard>
-
-      <PanelCard
-        title="Openings"
-        description="Defaults for doors and windows in new walls."
-      >
-        <FieldGroup>
-          <Field
-            label="Default lintel overlap"
-            hint="Lintel end-bearing added to EACH side of an opening head. A 1000mm opening at 190mm lays a 1380mm lintel; the lintel ends rest on the masonry either side. Adjust per opening by clicking it. 0 = no bearing."
-          >
-            <LengthInput
-              valueMm={defaults.defaultLintelBearingMm ?? 0}
-              onChangeMm={(v) => set({ defaultLintelBearingMm: v })}
-              minMm={0}
-            />
-          </Field>
-        </FieldGroup>
-      </PanelCard>
-
-      <PanelCard
-        title="Length &amp; cuts"
-        description="How new walls round off and absorb leftover length."
-      >
-        <FieldGroup>
-          {(() => {
-            // The auto value is derived from the active block library
-            // + the user's mortar joint default. When the user hasn't
-            // explicitly set a snap, this is the value drawing uses.
-            const autoSnap = computeAutoWallLengthSnapMm(
-              blockLibrary,
-              defaults.defaultMortarJointMm ?? DEFAULT_MORTAR_JOINT_MM
-            )
-            const isAuto = defaults.wallLengthSnapMm === undefined
-            const autoSnapDisplay = formatLengthMm(autoSnap, unitsPref)
-            return (
-              <Field
-                label="Wall length snap"
-                hint={`When drawing a wall, the live length rounds to the nearest multiple of this. Leave on Auto to follow the active library - currently ${autoSnapDisplay}. Set a custom value to override.`}
-              >
-                <div className="flex items-center gap-2">
-                  <LengthInput
-                    valueMm={defaults.wallLengthSnapMm ?? autoSnap}
-                    onChangeMm={(v) =>
-                      set({ wallLengthSnapMm: Math.max(1, v) })
-                    }
-                    minMm={1}
-                  />
-                  {isAuto ? (
-                    <span className="text-[11px] px-2 py-0.5 rounded bg-beme-500/20 text-beme-300 font-medium border border-beme-500/30">
-                      Auto
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => set({ wallLengthSnapMm: undefined })}
-                      className="text-[11px] px-2 py-0.5 rounded border border-ink-600 text-ink-300 hover:bg-ink-700 transition-colors"
-                      title={`Reset to auto-derived (${autoSnapDisplay})`}
-                    >
-                      Use auto
-                    </button>
-                  )}
-                </div>
-              </Field>
-            )
-          })()}
-          <Field
-            label="Match exact wall length"
-            hint="When on, the calc absorbs leftover length using fraction-tagged blocks (e.g. AU 20.02 / 20.22), or tallies cut blocks if your library has none. When off, walls round up to whole body blocks and the gap is ignored."
-          >
-            <Select<'yes' | 'no'>
-              value={(defaults.defaultMatchExactLength ?? true) ? 'yes' : 'no'}
-              onChange={(v) =>
-                set({ defaultMatchExactLength: v === 'yes' })
-              }
-              options={[
-                { value: 'yes', label: 'On (use fractions / cut blocks)' },
-                { value: 'no', label: 'Off (round up to whole blocks)' },
-              ]}
-            />
-          </Field>
-          {(defaults.defaultMatchExactLength ?? true) && (
-            <Field
-              label="Apply exact length to"
-              hint="Which course types match exact length. The rest round up to whole blocks. 'Body only' is the most common - avoids cuts on the cleanout / cap row. 'Body + bottom' or 'Body + top' lets you also match the base or cap course. 'All courses' matches everything."
-            >
-              {(() => {
-                // Preset → set of course-type buckets. The dropdown
-                // shows these presets; selecting one writes the set
-                // back to defaultExactLengthCourses. Matching the saved
-                // set against the presets picks the displayed value.
-                type Bucket = 'base' | 'body' | 'height-makeup' | 'top'
-                const PRESETS: Array<{
-                  key: string
-                  label: string
-                  set: Bucket[]
-                }> = [
-                  {
-                    key: 'all',
-                    label: 'All courses',
-                    set: ['base', 'body', 'height-makeup', 'top'],
-                  },
-                  {
-                    key: 'body',
-                    label: 'Body courses only',
-                    set: ['body'],
-                  },
-                  {
-                    key: 'body-bottom',
-                    label: 'Body + bottom (base)',
-                    set: ['body', 'base'],
-                  },
-                  {
-                    key: 'body-top',
-                    label: 'Body + top',
-                    set: ['body', 'top'],
-                  },
-                  {
-                    key: 'body-bottom-top',
-                    label: 'Body + bottom + top',
-                    set: ['body', 'base', 'top'],
-                  },
-                  {
-                    key: 'body-hm',
-                    label: 'Body + height makeup',
-                    set: ['body', 'height-makeup'],
-                  },
-                  {
-                    key: 'none',
-                    label: 'None',
-                    set: [],
-                  },
-                ]
-                const sameSet = (a: Bucket[], b: Bucket[]): boolean => {
-                  if (a.length !== b.length) return false
-                  const sa = [...a].sort()
-                  const sb = [...b].sort()
-                  for (let i = 0; i < sa.length; i++) {
-                    if (sa[i] !== sb[i]) return false
-                  }
-                  return true
-                }
-                const current: Bucket[] =
-                  defaults.defaultExactLengthCourses ?? [
-                    'base',
-                    'body',
-                    'height-makeup',
-                    'top',
-                  ]
-                const matched = PRESETS.find((p) => sameSet(p.set, current))
-                const value = matched?.key ?? 'custom'
-                const options = matched
-                  ? PRESETS.map((p) => ({ value: p.key, label: p.label }))
-                  : [
-                      { value: 'custom', label: 'Custom combination' },
-                      ...PRESETS.map((p) => ({
-                        value: p.key,
-                        label: p.label,
-                      })),
-                    ]
-                return (
-                  <Select<string>
-                    value={value}
-                    onChange={(v) => {
-                      const preset = PRESETS.find((p) => p.key === v)
-                      if (preset) {
-                        set({ defaultExactLengthCourses: preset.set })
-                      }
-                    }}
-                    options={options}
-                  />
-                )
-              })()}
-            </Field>
-          )}
-        </FieldGroup>
-      </PanelCard>
-
-    </div>
   )
 }
 
