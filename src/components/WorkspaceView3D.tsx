@@ -608,37 +608,6 @@ function segmentsFromWallLayout(
     else blocksByCourse.set(block.courseIdx, [work])
   }
 
-  // ── TEMP DIAGNOSTIC: corner gap hunt ─────────────────────────────
-  // Logs every wall once, all courses: each block's rendered s-position
-  // (mm) + width + role + renderOnly, and flags any gap >15mm between
-  // consecutive blocks (a real head joint is 10mm - anything bigger is
-  // the grey strip). Share the [GAP] line for the wall with the strip.
-  // Remove once the corner gap is fixed.
-  if (typeof window !== 'undefined') {
-    const W = window as unknown as { __gapLogged?: Set<string> }
-    if (!W.__gapLogged) W.__gapLogged = new Set<string>()
-    if (!W.__gapLogged.has(wall.id)) {
-      W.__gapLogged.add(wall.id)
-      console.log(
-        `[GAP] wall ${wall.id}  start=${wall.startJunction.type} end=${wall.endJunction.type}  renderLen=${Math.round(wallLenM * 1000)}mm  thick=${thicknessMm}mm`
-      )
-      for (const c of [...blocksByCourse.keys()].sort((a, b) => a - b)) {
-        const sorted = [...(blocksByCourse.get(c) ?? [])].sort((a, b) => a.s0 - b.s0)
-        let line = `  c${c}: `
-        let prevEnd: number | null = null
-        for (const w of sorted) {
-          const s = Math.round(w.s0 * 1000)
-          const wid = Math.round((w.s1 - w.s0) * 1000)
-          const gap = prevEnd === null ? 0 : s - prevEnd
-          if (gap > 15) line += `<<GAP ${gap}mm>> `
-          line += `[${s}+${wid} ${w.block.role}${w.block.renderOnly ? ' ro' : ''}] `
-          prevEnd = Math.round(w.s1 * 1000)
-        }
-        console.log(line)
-      }
-    }
-  }
-
   const MORTAR_M = DEFAULT_MORTAR_JOINT_MM / 1000
   for (const [courseIdx, courseBlocks] of blocksByCourse) {
     const course = layout.courses[courseIdx]
@@ -932,14 +901,24 @@ function segmentsFromWallLayout(
         topCourseSuppressedAtMm &&
         topCourseSuppressedAtMm(w.block.s0Mm + w.block.widthMm / 2)
       )
-      const bottomInset = y0 < 0.001 && !bedJointAtBottom ? 0 : halfGap
+      // Partial-height band: openings make the engine emit blocks that fill
+      // only part of a course (the lintel band, and the body packed above a
+      // lintel). yBottomMm/heightMm override the course Y; absent = full
+      // course (every plain-wall block), so this is a no-op off openings.
+      const bandY0 =
+        w.block.yBottomMm !== undefined ? w.block.yBottomMm / 1000 : y0
+      const bandY1 =
+        w.block.yBottomMm !== undefined && w.block.heightMm !== undefined
+          ? (w.block.yBottomMm + w.block.heightMm) / 1000
+          : y1
+      const bottomInset = bandY0 < 0.001 && !bedJointAtBottom ? 0 : halfGap
       const topInset =
-        y1 > totalHeightM - 0.001 && !continuesAbove ? COPLANAR_EPS_M : halfGap
+        bandY1 > totalHeightM - 0.001 && !continuesAbove ? COPLANAR_EPS_M : halfGap
 
       const aS0 = cs0 + leftInset
       const aS1 = cs1 - rightInset
-      const aY0 = y0 + bottomInset
-      const aY1 = y1 - topInset
+      const aY0 = bandY0 + bottomInset
+      const aY1 = bandY1 - topInset
       if (aS1 - aS0 < 0.001 || aY1 - aY0 < 0.001) continue
 
       const localCx = (aS0 + aS1) / 2

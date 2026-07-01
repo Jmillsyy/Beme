@@ -3139,7 +3139,14 @@ export function planWallLayout(
   // opening's span is taken in the SAME frame the render uses
   // (startAlongWallMm / sillHeightMm directly, clamped to the wall) - see
   // wallOpenings in wallSegments.ts. Jambs + lintels follow in later slices.
-  const wallHmm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
+  // Use the top of the last course (block faces + joints), NOT the nominal
+  // makeup height - this is the render's totalHeightM. A 2400 makeup lands
+  // on 2390 (12x190 + 11 joints), so the head is 390, not 400, which is what
+  // picks the right lintel block.
+  const lastCourse = layout.courses[layout.courses.length - 1]
+  const wallHmm = lastCourse
+    ? lastCourse.yBottomMm + lastCourse.heightMm
+    : layout.heightMm
   const wallOpenings = openings
     .filter((o) => o.wallId === wall.id)
     .map((o) => ({
@@ -3151,51 +3158,67 @@ export function planWallLayout(
     .filter((o) => o.endMm > o.startMm && o.headMm > o.sillMm)
   if (wallOpenings.length > 0) {
     const EPS = 0.5
-    // Slice 1: carve the body fully inside each opening.
-    layout.blocks = layout.blocks.filter((b) => {
-      const course = layout.courses[b.courseIdx]
-      if (!course) return true
-      const cY0 = course.yBottomMm
-      const cY1 = course.yBottomMm + course.heightMm
-      const bS0 = b.s0Mm
-      const bS1 = b.s0Mm + b.widthMm
-      for (const op of wallOpenings) {
-        // Course fully inside the opening's height AND block fully inside
-        // its width -> the opening carves it out. Straddlers stay (they
-        // become jambs below); partially-covered courses stay.
-        const courseCovered = op.sillMm <= cY0 + EPS && op.headMm >= cY1 - EPS
-        const blockInside = bS0 >= op.startMm - EPS && bS1 <= op.endMm + EPS
-        if (courseCovered && blockInside) return false
+    // stampCourse: replace the blocks of one course in [zS0, zS1] - drop
+    // fully-inside, clip straddlers, split blocks spanning both edges - then
+    // optionally insert one block. This is the flat-block equivalent of the
+    // render's cell stampZone, so carve + jambs land block-for-block.
+    const stampCourse = (
+      courseIdx: number,
+      zS0: number,
+      zS1: number,
+      insert: PositionedBlock | null,
+    ): void => {
+      // Fragments narrower than this are dropped, matching the render's
+      // stampZone (a 10mm clip remnant isn't a real block).
+      const MIN = 20
+      const out: PositionedBlock[] = []
+      const keep = (blk: PositionedBlock) => { if (blk.widthMm > MIN) out.push(blk) }
+      for (const b of layout.blocks) {
+        if (b.courseIdx !== courseIdx) { out.push(b); continue }
+        if (b.role !== 'body') { out.push(b); continue }
+        const s0 = b.s0Mm
+        const s1 = b.s0Mm + b.widthMm
+        if (s1 <= zS0 + EPS || s0 >= zS1 - EPS) { out.push(b); continue }
+        if (s0 >= zS0 - EPS && s1 <= zS1 + EPS) continue // fully inside -> drop
+        if (s0 < zS0 - EPS && s1 > zS1 + EPS) {
+          keep({ ...b, widthMm: zS0 - s0 })
+          keep({ ...b, s0Mm: zS1, widthMm: s1 - zS1 })
+        } else if (s0 < zS0 - EPS) {
+          keep({ ...b, widthMm: zS0 - s0 })
+        } else {
+          keep({ ...b, s0Mm: zS1, widthMm: s1 - zS1 })
+        }
       }
-      return true
-    })
+      if (insert) out.push(insert)
+      layout.blocks = out
+    }
+    const widthOfCode = (c: BlockCode): number =>
+      BLOCK_LIBRARY[c]?.dimensions.widthMm ?? FALLBACK_BODY_WIDTH_MM
 
-    // Slice 2: jambs. The block that survives at each opening edge on a
-    // fully-covered course becomes a jamb - corner on one side, half on the
-    // other, swapping sides every course (the render's running-bond rule:
-    // left jamb = half on EVEN stretcher courses, right jamb = half on ODD).
-    // Stack bond uses the corner block both sides.
+    // Slices 1+2: per fully-covered course, carve the opening span then
+    // stamp a jamb at each edge - corner one side, half the other, swapping
+    // every course (render's running-bond rule: left jamb = half on EVEN
+    // stretcher courses, right = half on ODD). Stack bond = corner both sides.
     const stretcher = makeup.bondType !== 'stack'
     for (const op of wallOpenings) {
       for (const course of layout.courses) {
         const cY0 = course.yBottomMm
         const cY1 = course.yBottomMm + course.heightMm
         if (!(op.sillMm <= cY0 + EPS && op.headMm >= cY1 - EPS)) continue
+        const idx = course.courseNumber - 1
+        stampCourse(idx, op.startMm, op.endMm, null) // carve
         const even = stretcher && course.courseNumber % 2 === 0
         const odd = stretcher && course.courseNumber % 2 === 1
         const leftCode = even ? makeup.halfBlockCode : makeup.cornerBlockCode
         const rightCode = odd ? makeup.halfBlockCode : makeup.cornerBlockCode
-        const idx = course.courseNumber - 1
-        // Nearest surviving body just LEFT of the opening -> left jamb.
-        let left: PositionedBlock | null = null
-        let right: PositionedBlock | null = null
-        for (const b of layout.blocks) {
-          if (b.courseIdx !== idx || b.role !== 'body') continue
-          if (b.s0Mm < op.startMm - EPS && (!left || b.s0Mm > left.s0Mm)) left = b
-          if (b.s0Mm + b.widthMm > op.endMm + EPS && (!right || b.s0Mm < right.s0Mm)) right = b
-        }
-        if (left) { left.code = leftCode; left.role = 'jamb' }
-        if (right) { right.code = rightCode; right.role = 'jamb' }
+        const leftW = widthOfCode(leftCode)
+        const rightW = widthOfCode(rightCode)
+        stampCourse(idx, op.startMm - leftW, op.startMm, {
+          code: leftCode, role: 'jamb', s0Mm: op.startMm - leftW, widthMm: leftW, courseIdx: idx,
+        })
+        stampCourse(idx, op.endMm, op.endMm + rightW, {
+          code: rightCode, role: 'jamb', s0Mm: op.endMm, widthMm: rightW, courseIdx: idx,
+        })
       }
     }
 
@@ -3238,18 +3261,16 @@ export function planWallLayout(
               .filter((b) => b.courseIdx === topCourseIdx && b.role === 'body')
               .map((b) => ({ s0: b.s0Mm, w: b.widthMm, code: b.code }))
           : []
-      // Carve body fully inside the lintel span, across courses the lintel
-      // overlaps in Y.
-      layout.blocks = layout.blocks.filter((b) => {
-        if (b.role !== 'body') return true
-        const c = layout.courses[b.courseIdx]
-        if (!c) return true
+      // Carve the lintel span across every course it overlaps in Y, via the
+      // same stamp (clip straddlers + drop slivers) the render's stampZone
+      // uses - otherwise sub-20mm clipped remnants survive in the engine.
+      for (const c of layout.courses) {
         const cY0 = c.yBottomMm
         const cY1 = cY0 + c.heightMm
-        if (!(cY1 > ly0 + EPS && cY0 < ly1 - EPS)) return true
-        const inside = b.s0Mm >= spanStart - EPS && b.s0Mm + b.widthMm <= spanEnd + EPS
-        return !inside
-      })
+        if (cY1 > ly0 + EPS && cY0 < ly1 - EPS) {
+          stampCourse(c.courseNumber - 1, spanStart, spanEnd, null)
+        }
+      }
       // Emit lintel blocks across the span (mortar-stepped) as a partial-
       // height band spanning [ly0, ly1].
       const headCourseIdx = layout.courses.findIndex(
@@ -3294,6 +3315,32 @@ export function planWallLayout(
             }
           }
         }
+      }
+    }
+
+    // Reconcile paired tiles to the SURVIVING host count. Tiles are emitted
+    // (evenly spaced, not host-aligned) from the pre-carve body count, so
+    // after carving we recompute how many the remaining host blocks warrant
+    // per tile course and drop the excess - matching the render, which
+    // derives the tile count from the surviving host-code count.
+    const tileCourses = new Set(
+      layout.blocks.filter((b) => b.role === 'paired-tile').map((b) => b.courseIdx),
+    )
+    for (const ci of tileCourses) {
+      const tiles = layout.blocks.filter((b) => b.role === 'paired-tile' && b.courseIdx === ci)
+      if (tiles.length === 0) continue
+      const tileCode = tiles[0].code
+      const hosts = layout.blocks.filter(
+        (b) => b.role !== 'paired-tile' && b.courseIdx === ci && BLOCK_LIBRARY[b.code]?.pairedWith === tileCode,
+      )
+      const pairedPer = hosts[0] ? BLOCK_LIBRARY[hosts[0].code]?.pairedPer ?? 1 : 1
+      const want = Math.ceil(hosts.length / pairedPer)
+      let drop = tiles.length - want
+      if (drop > 0) {
+        layout.blocks = layout.blocks.filter((b) => {
+          if (drop > 0 && b.role === 'paired-tile' && b.courseIdx === ci) { drop--; return false }
+          return true
+        })
       }
     }
   }
