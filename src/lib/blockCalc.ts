@@ -51,6 +51,7 @@ import type {
   WallMakeup,
 } from '../types/walls'
 import { findCornerPoints } from './junctions'
+import { selectBlockLintel } from './lintels'
 import { arcFromThreePoints, isCurvedWall } from './curveGeom'
 import {
   getCourseCount,
@@ -1650,6 +1651,12 @@ export interface PositionedBlock {
   widthMm: number
   /** 0-based course index this block belongs to. */
   courseIdx: number
+  /** Optional partial-height override (mm from wall base). When set, the
+   * block occupies [yBottomMm, yBottomMm+heightMm] instead of the whole
+   * course - used for opening height-bands (lintel course, packed body
+   * above a lintel, sill/head straddle courses). Omitted = full course. */
+  yBottomMm?: number
+  heightMm?: number
   /** When true, the block is included for visual rendering but
    * EXCLUDED from tally aggregation. Used for cube fillers at
    * shared corners on non-owning courses - the corner block is
@@ -3125,16 +3132,171 @@ export function planWallLayout(
     }
   }
 
-  // Openings - TODO: extend planWallLayout to emit jamb + lintel
-  // positioned blocks and remove body blocks under openings. Until
-  // then we don't apply opening adjustments here; the 3D renderer
-  // will continue to apply its own opening carving on top of the
-  // layout for the visual. This means the layout's tally is
-  // _wall-without-openings_ and will diverge from
-  // calculateWallTally(...) for any wall that HAS openings.
-  // verifyLayoutMatchesTally handles this gracefully (it skips the
-  // check when openings are present).
-  void openings
+  // ── Openings (engine port, slice 1: carve body under the void) ──
+  // The engine is becoming the single source of truth for opening walls
+  // too: it must emit the SAME positioned blocks the render draws. Slice 1
+  // removes the body blocks a fully-covering opening carves away. The
+  // opening's span is taken in the SAME frame the render uses
+  // (startAlongWallMm / sillHeightMm directly, clamped to the wall) - see
+  // wallOpenings in wallSegments.ts. Jambs + lintels follow in later slices.
+  const wallHmm = wall.heightMmOverride ?? getMakeupHeightMm(makeup)
+  const wallOpenings = openings
+    .filter((o) => o.wallId === wall.id)
+    .map((o) => ({
+      startMm: Math.max(0, o.startAlongWallMm),
+      endMm: Math.min(layout.lengthMm, o.startAlongWallMm + o.widthMm),
+      sillMm: Math.max(0, o.sillHeightMm),
+      headMm: Math.min(wallHmm, o.sillHeightMm + o.heightMm),
+    }))
+    .filter((o) => o.endMm > o.startMm && o.headMm > o.sillMm)
+  if (wallOpenings.length > 0) {
+    const EPS = 0.5
+    // Slice 1: carve the body fully inside each opening.
+    layout.blocks = layout.blocks.filter((b) => {
+      const course = layout.courses[b.courseIdx]
+      if (!course) return true
+      const cY0 = course.yBottomMm
+      const cY1 = course.yBottomMm + course.heightMm
+      const bS0 = b.s0Mm
+      const bS1 = b.s0Mm + b.widthMm
+      for (const op of wallOpenings) {
+        // Course fully inside the opening's height AND block fully inside
+        // its width -> the opening carves it out. Straddlers stay (they
+        // become jambs below); partially-covered courses stay.
+        const courseCovered = op.sillMm <= cY0 + EPS && op.headMm >= cY1 - EPS
+        const blockInside = bS0 >= op.startMm - EPS && bS1 <= op.endMm + EPS
+        if (courseCovered && blockInside) return false
+      }
+      return true
+    })
+
+    // Slice 2: jambs. The block that survives at each opening edge on a
+    // fully-covered course becomes a jamb - corner on one side, half on the
+    // other, swapping sides every course (the render's running-bond rule:
+    // left jamb = half on EVEN stretcher courses, right jamb = half on ODD).
+    // Stack bond uses the corner block both sides.
+    const stretcher = makeup.bondType !== 'stack'
+    for (const op of wallOpenings) {
+      for (const course of layout.courses) {
+        const cY0 = course.yBottomMm
+        const cY1 = course.yBottomMm + course.heightMm
+        if (!(op.sillMm <= cY0 + EPS && op.headMm >= cY1 - EPS)) continue
+        const even = stretcher && course.courseNumber % 2 === 0
+        const odd = stretcher && course.courseNumber % 2 === 1
+        const leftCode = even ? makeup.halfBlockCode : makeup.cornerBlockCode
+        const rightCode = odd ? makeup.halfBlockCode : makeup.cornerBlockCode
+        const idx = course.courseNumber - 1
+        // Nearest surviving body just LEFT of the opening -> left jamb.
+        let left: PositionedBlock | null = null
+        let right: PositionedBlock | null = null
+        for (const b of layout.blocks) {
+          if (b.courseIdx !== idx || b.role !== 'body') continue
+          if (b.s0Mm < op.startMm - EPS && (!left || b.s0Mm > left.s0Mm)) left = b
+          if (b.s0Mm + b.widthMm > op.endMm + EPS && (!right || b.s0Mm < right.s0Mm)) right = b
+        }
+        if (left) { left.code = leftCode; left.role = 'jamb' }
+        if (right) { right.code = rightCode; right.role = 'jamb' }
+      }
+    }
+
+    // Slice 3: lintels. Auto-pick the lintel block from the head height
+    // (or the opening's override), extend by the bearing, carve the body
+    // in its footprint and emit lintel blocks mortar-stepped across the
+    // span - the same rule the render uses. (Bearing default from user
+    // settings is threaded in when we switch production over; the harness
+    // and per-opening override cover it for now.)
+    const openingsForWall = openings.filter((o) => o.wallId === wall.id)
+    for (const op of openingsForWall) {
+      const headMm = op.sillHeightMm + op.heightMm
+      const headHeightMm = wallHmm - headMm
+      if (headHeightMm <= 0) continue
+      let lintelCode = op.headCourseBlockCode as BlockCode | undefined
+      if (!lintelCode) {
+        const mod200 = Math.round(wallHmm) % 200
+        const extras = mod200 === 100 ? [100] : mod200 === 150 ? [150] : []
+        lintelCode = selectBlockLintel(headHeightMm, extras, op.lintelBlockCodeOverride)?.code as BlockCode | undefined
+      }
+      if (!lintelCode) continue
+      const lblock = BLOCK_LIBRARY[lintelCode]
+      if (!lblock) continue
+      const lWmm = lblock.dimensions.widthMm
+      const lHmm = lblock.dimensions.heightMm
+      const bearingMm = op.lintelBearingMmOverride ?? 0
+      const spanStart = Math.max(0, op.startAlongWallMm - bearingMm)
+      const spanEnd = Math.min(layout.lengthMm, op.startAlongWallMm + op.widthMm + bearingMm)
+      const ly0 = headMm
+      const ly1 = Math.min(headMm + lHmm, wallHmm)
+      // The lintel's TOP course (where ly1 lands mid-course): snapshot its
+      // body positions BEFORE the carve so we can pack the remainder above
+      // the lintel back as a partial-height band (matches the render).
+      const topCourseIdx = layout.courses.findIndex(
+        (c) => c.yBottomMm < ly1 - EPS && c.yBottomMm + c.heightMm > ly1 + EPS,
+      )
+      const topPack =
+        topCourseIdx >= 0
+          ? layout.blocks
+              .filter((b) => b.courseIdx === topCourseIdx && b.role === 'body')
+              .map((b) => ({ s0: b.s0Mm, w: b.widthMm, code: b.code }))
+          : []
+      // Carve body fully inside the lintel span, across courses the lintel
+      // overlaps in Y.
+      layout.blocks = layout.blocks.filter((b) => {
+        if (b.role !== 'body') return true
+        const c = layout.courses[b.courseIdx]
+        if (!c) return true
+        const cY0 = c.yBottomMm
+        const cY1 = cY0 + c.heightMm
+        if (!(cY1 > ly0 + EPS && cY0 < ly1 - EPS)) return true
+        const inside = b.s0Mm >= spanStart - EPS && b.s0Mm + b.widthMm <= spanEnd + EPS
+        return !inside
+      })
+      // Emit lintel blocks across the span (mortar-stepped) as a partial-
+      // height band spanning [ly0, ly1].
+      const headCourseIdx = layout.courses.findIndex(
+        (c) => c.yBottomMm < ly1 - EPS && c.yBottomMm + c.heightMm > ly0 + EPS,
+      )
+      let cursor = spanStart
+      while (cursor < spanEnd) {
+        const blockEnd = Math.min(cursor + lWmm, spanEnd)
+        if (blockEnd - cursor > 20) {
+          layout.blocks.push({
+            code: lintelCode,
+            role: 'lintel',
+            s0Mm: cursor,
+            widthMm: blockEnd - cursor,
+            courseIdx: Math.max(0, headCourseIdx),
+            yBottomMm: ly0,
+            heightMm: ly1 - ly0,
+          })
+        }
+        cursor += lWmm + DEFAULT_MORTAR_JOINT_MM
+      }
+      // Pack the top course's remainder above the lintel with body, as a
+      // partial-height band, from the pre-carve snapshot clipped to span.
+      if (topCourseIdx >= 0) {
+        const tc = layout.courses[topCourseIdx]
+        const fillY0 = ly1 + DEFAULT_MORTAR_JOINT_MM
+        const fillY1 = tc.yBottomMm + tc.heightMm
+        if (fillY1 - fillY0 >= 30) {
+          for (const s of topPack) {
+            const cs = Math.max(s.s0, spanStart)
+            const ce = Math.min(s.s0 + s.w, spanEnd)
+            if (ce - cs > 20) {
+              layout.blocks.push({
+                code: s.code,
+                role: 'body',
+                s0Mm: cs,
+                widthMm: ce - cs,
+                courseIdx: topCourseIdx,
+                yBottomMm: fillY0,
+                heightMm: fillY1 - fillY0,
+              })
+            }
+          }
+        }
+      }
+    }
+  }
 
   return layout
 }
