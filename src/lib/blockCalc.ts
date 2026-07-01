@@ -3193,7 +3193,7 @@ export function planWallLayout(
       layout.blocks = out
     }
     const widthOfCode = (c: BlockCode): number =>
-      BLOCK_LIBRARY[c]?.dimensions.widthMm ?? FALLBACK_BODY_WIDTH_MM
+      BLOCK_LIBRARY[c]?.dimensions.widthMm ?? 390
 
     // Slices 1+2: per fully-covered course, carve the opening span then
     // stamp a jamb at each edge - corner one side, half the other, swapping
